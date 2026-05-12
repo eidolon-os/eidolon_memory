@@ -11,6 +11,8 @@ cd /path/to/eidolon_memory
 uv sync --extra dev --extra mcp   # MCP 可选；无 MCP 可只 sync
 ```
 
+需要本机 MemPalace MCP/CLI 时，自行安装（例如 `uv tool install mempalace`），并把可执行路径配进 `EIDOLON_MEMORY_MCP_COMMAND`。
+
 ## 环境变量（节选）
 
 | 变量 | 说明 |
