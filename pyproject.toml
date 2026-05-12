@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "eidolon-memory"
+version = "0.1.0"
+description = "Eidolon semantic memory — MCP, NATS writes, JetStream"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "faststream[nats]>=0.5",
+    "python-dotenv>=1.0",
+    "nats-py>=2.9",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+eidolon-memory-worker = "eidolon.memory.entrypoints.worker:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["eidolon"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"eidolon/memory/**/__init__.py" = ["F401"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["mempalace: needs real MemPalace MCP subprocess"]
