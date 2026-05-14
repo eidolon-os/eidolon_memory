@@ -56,6 +56,8 @@ Drawer = 一条可召回的具体记忆片段
 - `Wing_Health`：生理与医学心理健康记录。
 - `Wing_Privacy`：禁记与封存规则，普通召回过滤。
 
+详细**分类边界**（Profile/Life、Event/语义记忆、Emotion/Health、Interaction/Privacy 等）以 `memory.default.yaml.example` 内各 `description` 为准。
+
 Room 命名规范：
 
 - `profile_core`：用户核心画像。
