@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
+from eidolon.memory.application.admin_visibility import admin_row_visible
+from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hierarchy_snapshot
 from eidolon.memory.application.public_recall import (
     group_recall_context,
     search_all_wings_mcp_style,
@@ -88,6 +90,53 @@ def build_server():
             "steward_mode": settings.steward.mode,
             "wings": [w.model_dump() for w in settings.wings],
         }
+
+    @mcp.tool()
+    async def eidolon_memory_list(
+        tenant_id: str = "",
+        limit: int = 500,
+        offset: int = 0,
+        include_private: bool = False,
+    ) -> dict[str, Any]:
+        """Paginated listing aligned with Admin scan (omit tenant for full palace)."""
+        backend = await _get_backend()
+        tid = tenant_id.strip()
+        lim = max(1, min(limit, 5000))
+        off = max(0, offset)
+        rows = await backend.get_all(tid, limit=lim, offset=off)
+        filtered = [r for r in rows if admin_row_visible(r, include_private=include_private)]
+        return {
+            "records": [wire_record_to_public_dict(r) for r in filtered],
+            "total_hint": len(filtered),
+        }
+
+    @mcp.tool()
+    async def eidolon_memory_delete(key: str, user_id: str = "") -> dict[str, Any]:
+        """Delete a drawer by MemPalace id (expects ``drawer_*`` prefix)."""
+        del user_id
+        if not key.startswith("drawer_"):
+            msg = "key must be a MemPalace drawer_* id"
+            raise ValueError(msg)
+        backend = await _get_backend()
+        await backend.delete("", key)
+        return {"status": "deleted", "key": key}
+
+    @mcp.tool()
+    async def eidolon_memory_hierarchy_snapshot(
+        max_records: int = 8000,
+        max_drawers_per_room: int = 48,
+    ) -> dict[str, Any]:
+        """Return wing→room→drawer tree snapshot (bounded scan) matching Admin hierarchy."""
+        backend = await _get_backend()
+        settings = get_memory_settings()
+        mr = max(50, min(max_records, 50_000))
+        md = max(4, min(max_drawers_per_room, 400))
+        return await build_mempalace_hierarchy_snapshot(
+            backend,
+            settings,
+            max_records=mr,
+            max_drawers_per_room=md,
+        )
 
     return mcp
 

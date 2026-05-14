@@ -4,7 +4,7 @@
 
 **语义读**：推荐使用本项目自有 MCP read server（`eidolon-memory-mcp` → `MemPalacePythonBackend`），对外不暴露 MemPalace 内部 API。**写入**：推荐 JetStream 异步 worker；legacy NATS RPC `MEMORY_*` 仅保留兼容。
 
-完整架构基线见 [`docs/memory-architecture-plan.md`](docs/memory-architecture-plan.md)。
+完整架构基线见 [`docs/memory-architecture-plan.md`](docs/memory-architecture-plan.md)。**外部如何调用 MCP / NATS / Admin 等**：[`docs/external-integration.md`](docs/external-integration.md)。
 
 ## 本地安装
 

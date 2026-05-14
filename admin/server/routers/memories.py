@@ -1,56 +1,50 @@
-"""Memory CRUD-ish HTTP surface (search matches MCP semantics)."""
+"""Memory HTTP surface: reads via MCP tools, writes via JetStream (worker)."""
 
 from __future__ import annotations
 
-from dependencies import AdminAuth, BackendDep, SettingsDep, get_serialize_lock
+import uuid
+from datetime import UTC, datetime
+
+from dependencies import AdminAuth, McpSessionDep, SettingsDep, TurnPublisherDep
 from fastapi import APIRouter, HTTPException, Query
 from schemas import MemoryCreateRequest, MemoryListResponse, MemorySearchResponse
 
-from eidolon.memory.application.ingest import ingest_fragment
-from eidolon.memory.application.public_recall import (
-    search_all_wings_mcp_style,
-    wire_record_to_public_dict,
-)
-from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon.memory.infrastructure.admin_mcp_client import call_tool_json
 
 router = APIRouter(prefix="/memories", tags=["memories"])
-
-
-def _admin_row_visible(rec: MemoryWireRecord, *, include_private: bool) -> bool:
-    if include_private:
-        return True
-    if rec.metadata.get("wing") == "Wing_Privacy" or rec.user_id == "Wing_Privacy":
-        return False
-    return True
 
 
 @router.get("/search", response_model=MemorySearchResponse)
 async def search_memories(
     _: AdminAuth,
-    backend: BackendDep,
-    settings: SettingsDep,
+    mcp: McpSessionDep,
     query: str = Query(..., min_length=1),
     user_id: str = Query("default"),
     top_k: int = Query(5, ge=1, le=100),
     wing: str | None = None,
     room: str | None = None,
 ) -> MemorySearchResponse:
-    records = await search_all_wings_mcp_style(
-        backend,
-        settings,
-        query=query,
-        user_id=user_id,
-        top_k=top_k,
-        wing=wing,
-        room=room,
-    )
-    return MemorySearchResponse(records=[wire_record_to_public_dict(r) for r in records])
+    args: dict[str, object] = {
+        "query": query,
+        "user_id": user_id,
+        "top_k": top_k,
+        "wing": wing,
+        "room": room,
+    }
+    try:
+        payload = await call_tool_json(mcp, "eidolon_memory_search", args)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=502, detail="unexpected MCP search payload")
+    return MemorySearchResponse(records=payload)
 
 
 @router.get("", response_model=MemoryListResponse)
 async def list_memories(
     _: AdminAuth,
-    backend: BackendDep,
+    mcp: McpSessionDep,
     tenant_id: str | None = Query(
         None,
         description=(
@@ -63,47 +57,74 @@ async def list_memories(
     include_private: bool = Query(False),
 ) -> MemoryListResponse:
     tid = (tenant_id or "").strip()
-    rows = await backend.get_all(tid, limit=limit, offset=offset)
-    filtered = [r for r in rows if _admin_row_visible(r, include_private=include_private)]
+    args = {
+        "tenant_id": tid,
+        "limit": limit,
+        "offset": offset,
+        "include_private": include_private,
+    }
+    try:
+        payload = await call_tool_json(mcp, "eidolon_memory_list", args)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="unexpected MCP list payload")
+    records = payload.get("records")
+    hint = payload.get("total_hint")
+    if not isinstance(records, list):
+        raise HTTPException(status_code=502, detail="invalid MCP list records")
     return MemoryListResponse(
-        records=[wire_record_to_public_dict(r) for r in filtered],
-        total_hint=len(filtered),
+        records=records,
+        total_hint=int(hint) if isinstance(hint, int) else len(records),
     )
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=202)
 async def create_memory(
     _: AdminAuth,
-    backend: BackendDep,
+    publisher: TurnPublisherDep,
+    settings: SettingsDep,
     body: MemoryCreateRequest,
 ) -> dict[str, str]:
     meta = dict(body.metadata or {})
+    meta.setdefault("source", "eidolon-memory-admin")
+    payload = ConversationTurnPayload(
+        turn_id=str(uuid.uuid4()),
+        user_text=body.text,
+        assistant_text="",
+        timestamp=datetime.now(UTC).replace(microsecond=0).isoformat(),
+        session_id=body.room,
+        user_id=body.wing,
+        metadata=meta,
+    )
     try:
-        await ingest_fragment(
-            backend,
-            wing=body.wing,
-            room=body.room,
-            text=body.text,
-            metadata=meta,
-            serialize_lock=get_serialize_lock(),
-        )
+        await publisher.publish_turn(payload)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"status": "ok"}
+
+    detail = "JetStream envelope published; memory worker will persist."
+    if settings.steward.mode.strip().lower() != "noop":
+        detail += (
+            " Steward is not noop: the worker may extract/restructure fragments rather than "
+            "store this text verbatim."
+        )
+    return {"status": "accepted", "detail": detail}
 
 
 @router.delete("/{key}")
 async def delete_memory(
     _: AdminAuth,
-    backend: BackendDep,
+    mcp: McpSessionDep,
     key: str,
-    user_id: str = Query("", description="Reserved for backends that scope delete by tenant."),
+    user_id: str = Query("", description="Ignored; kept for backwards-compatible query URLs."),
 ) -> dict[str, str]:
     del user_id
     if not key.startswith("drawer_"):
         raise HTTPException(status_code=400, detail="key must be a MemPalace drawer_* id")
     try:
-        await backend.delete("", key)
-    except Exception as exc:
+        await call_tool_json(mcp, "eidolon_memory_delete", {"key": key})
+    except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"status": "deleted", "key": key}

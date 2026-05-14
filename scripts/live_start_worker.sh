@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Start the real JetStream memory worker using the project .venv and YAML config.
+# 启动 JetStream memory worker（与 deploy/dev/run_all.sh 使用同一入口，不依赖 pip install -e）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-exec .venv/bin/eidolon-memory-worker "$@"
+unset VIRTUAL_ENV
+exec uv run python -m eidolon.memory.entrypoints.worker "$@"

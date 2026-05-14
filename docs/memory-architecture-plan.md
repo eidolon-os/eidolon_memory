@@ -155,6 +155,10 @@ LLM steward 输入为一轮完整对话 `ConversationTurnPayload`，输出为 `S
 - Backend 写入 MemPalace。
 - 成功 ACK，backend 写失败 NAK，坏 payload ACK 并记录错误。
 
+## 外部调用（宿主 / Agent 接入）
+
+宿主进程如何挂载 MCP、JetStream、NATS MemoryService、进程内 Python API 与本机 Admin，见姊妹文档 **[external-integration.md](external-integration.md)**。
+
 ## Acceptance Criteria
 
 - 完整测试通过：`uv run pytest tests -q`。

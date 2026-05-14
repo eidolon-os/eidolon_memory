@@ -71,8 +71,8 @@ export async function postMemory(body: {
   room: string
   text: string
   metadata?: Record<string, unknown> | null
-}): Promise<void> {
-  await fetchApi(`/memories`, {
+}): Promise<{ status: string; detail: string }> {
+  return fetchApi(`/memories`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
