@@ -43,16 +43,18 @@ Drawer = 一条可召回的具体记忆片段
 
 - `~/eidolon/mempalace`
 
-默认 wings：
+默认 wings（以 `memory.bundled.yaml` 为准，可本地用 `memory.default.yaml` 覆盖）：
 
-- `Wing_Profile`：用户身份、长期偏好、稳定习惯、个人背景。
-- `Wing_Relationship`：家人、伴侣、朋友、宠物、重要关系与关系变化。
-- `Wing_Emotion`：情绪峰值、持续压力、脆弱时刻、安全感、长期情绪趋势。
-- `Wing_Event`：重要经历、纪念日、冲突、旅行、家庭事件。
-- `Wing_Work`：项目、任务、职业压力、学习计划、成就、协作关系。
-- `Wing_Life`：饮食、作息、兴趣、消费偏好、居家设备、日常习惯。
-- `Wing_Health`：身体状态、睡眠、运动、疾病、用药、健康目标。
-- `Wing_Privacy`：禁记、删除、封存和不召回规则，普通召回默认过滤。
+- `Wing_Profile`：个人画像与价值观（静态身份、观点）。
+- `Wing_Interaction`：人机羁绊与交互偏好。
+- `Wing_Relationship`：人际关系与长期关系状态。
+- `Wing_Emotion`：情绪与心理压力趋势。
+- `Wing_Future`：愿景与未来目标。
+- `Wing_Event`：带时间戳的情景记忆节点。
+- `Wing_Work`：工作与学习产出与压力。
+- `Wing_Life`：生活方式与财务等日常动态。
+- `Wing_Health`：生理与医学心理健康记录。
+- `Wing_Privacy`：禁记与封存规则，普通召回过滤。
 
 Room 命名规范：
 

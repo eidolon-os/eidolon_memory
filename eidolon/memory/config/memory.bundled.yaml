@@ -2,36 +2,44 @@
 # (gitignored) to override; or set EIDOLON_MEMORY_SETTINGS_YAML.
 wings:
   - id: Wing_Profile
-    display_name: "个人画像"
-    description: "用户身份、长期偏好、稳定习惯、个人背景。"
+    display_name: "个人画像与价值观"
+    description: "客观背景、身份认同、MBTI、核心价值观、信仰、政治/社会观点。（偏静态的身份属性）"
     sort_order: 1
+  - id: Wing_Interaction
+    display_name: "人机羁绊与交互偏好"
+    description: "用户与AI的专属梗、昵称、用户对AI的语气偏好、希望AI扮演的角色、被表扬或批评过的回复方式。"
+    sort_order: 2
   - id: Wing_Relationship
     display_name: "关系与情感连接"
-    description: "家人、伴侣、朋友、宠物、重要人际关系与关系变化。"
-    sort_order: 2
+    description: "家人、伴侣、朋友、宠物、职场人际等重要人物关系图谱及长期的关系状态（如：与父亲疏远）。"
+    sort_order: 3
   - id: Wing_Emotion
     display_name: "情绪与心理状态"
-    description: "情绪峰值、持续压力、脆弱时刻、安全感、长期情绪趋势。"
-    sort_order: 3
+    description: "情绪峰值、持续的压力源、脆弱时刻、安全感来源、长期的依恋模式与心理情绪趋势。"
+    sort_order: 4
+  - id: Wing_Future
+    display_name: "愿景与未来目标"
+    description: "人生梦想、新年决心、遗愿清单(Bucket List)、近长期的财务/自我提升目标及期待发生的事。"
+    sort_order: 5
   - id: Wing_Event
     display_name: "事件与人生片段"
-    description: "重要经历、纪念日、冲突、旅行、家庭事件、值得未来提起的节点。"
-    sort_order: 4
+    description: "带有明确时间戳的节点：重要经历、纪念日、具体冲突事件、旅行记忆、值得未来提起的里程碑。"
+    sort_order: 6
   - id: Wing_Work
     display_name: "工作与学习"
-    description: "项目、任务、职业压力、学习计划、成就、协作关系。"
-    sort_order: 5
+    description: "当前项目、任务进展、职业压力、学习计划、专业成就、协作状态。（偏向社会功能与产出）"
+    sort_order: 7
   - id: Wing_Life
-    display_name: "生活方式与兴趣"
-    description: "饮食、作息、兴趣、消费偏好、居家设备、日常习惯。"
-    sort_order: 6
+    display_name: "生活方式与财务"
+    description: "动态的日常：饮食偏好、作息规律、兴趣爱好、内容消费(书影音)、居家设备、日常消费与财务状况。"
+    sort_order: 8
   - id: Wing_Health
     display_name: "身体与健康"
-    description: "身体状态、睡眠、运动、疾病、用药、健康目标。"
-    sort_order: 7
+    description: "生理状态、睡眠质量、运动数据、疾病史、用药记录、医学心理诊断及健康管理目标。"
+    sort_order: 9
   - id: Wing_Privacy
     display_name: "隐私与禁记规则"
-    description: "用户要求不要记住、不要再提、删除或封存的话题。普通召回默认过滤。"
+    description: "用户明确要求不要记住、不要再提、删除或封存的话题，以及创伤禁忌。普通召回默认过滤。"
     sort_order: 99
 
 recall:
