@@ -1,7 +1,8 @@
 """Load and validate memory service settings from YAML.
 
-进程内对「默认 YAML 路径」（``EIDOLON_MEMORY_SETTINGS_YAML`` 或包内
-``memory.default.yaml``）的解析结果做缓存；请通过 :func:`get_memory_settings` 获取。
+进程内对默认配置路径的解析结果做缓存；请通过 :func:`get_memory_settings` 获取。
+未设置 ``EIDOLON_MEMORY_SETTINGS_YAML`` 时，优先读取同目录下的 ``memory.default.yaml``
+（本地可选，已被 gitignore）；若不存在则回退到包内已提交的 ``memory.bundled.yaml``。
 返回的 ``MemorySettings`` 视为只读；若需修改请使用 ``model_copy``，或先调用
 :func:`reset_memory_settings_cache` 再改磁盘上的 YAML。显式传入路径的
 :func:`load_memory_settings` 不使用该缓存。
@@ -19,7 +20,7 @@ from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
-_BUNDLED_SETTINGS_PATH = Path(__file__).resolve().parent / "memory.default.yaml"
+_BUNDLED_SETTINGS_PATH = Path(__file__).resolve().parent / "memory.bundled.yaml"
 
 
 class WingDefinition(BaseModel):

@@ -1,4 +1,5 @@
-# Default memory service settings (override path via EIDOLON_MEMORY_SETTINGS_YAML).
+# Shipped default memory settings (tracked in git). Copy to memory.default.yaml locally
+# (gitignored) to override; or set EIDOLON_MEMORY_SETTINGS_YAML.
 wings:
   - id: Wing_Profile
     display_name: "个人画像"

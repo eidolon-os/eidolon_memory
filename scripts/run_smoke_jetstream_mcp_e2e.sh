@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # End-to-end: NATS JetStream → worker → MemPalace write, then MCP-equivalent search.
-# Uses EIDOLON_MEMORY_SETTINGS_YAML (defaults to bundled memory.default.yaml).
+# Uses EIDOLON_MEMORY_SETTINGS_YAML (prefers local memory.default.yaml, else memory.bundled.yaml).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT}"
 
-export EIDOLON_MEMORY_SETTINGS_YAML="${EIDOLON_MEMORY_SETTINGS_YAML:-${ROOT}/eidolon/memory/config/memory.default.yaml}"
+_CFG="${ROOT}/eidolon/memory/config"
+export EIDOLON_MEMORY_SETTINGS_YAML="${EIDOLON_MEMORY_SETTINGS_YAML:-${_CFG}/memory.default.yaml}"
 if [[ ! -f "${EIDOLON_MEMORY_SETTINGS_YAML}" ]]; then
-  echo "missing settings yaml: ${EIDOLON_MEMORY_SETTINGS_YAML}" >&2
-  exit 1
+  export EIDOLON_MEMORY_SETTINGS_YAML="${_CFG}/memory.bundled.yaml"
 fi
 
 VENV_PY="${ROOT}/.venv/bin/python"
@@ -43,7 +43,7 @@ else
   echo "NATS already listening on ${NATS_PORT}"
 fi
 
-# Default memory.default.yaml uses ~/eidolon/mempalace when runtime.palace_path is empty
+# Bundled defaults use ~/eidolon/mempalace when runtime.palace_path is empty
 mkdir -p "${HOME}/eidolon/mempalace"
 "${MEMPALACE}" init --yes --no-llm --auto-mine "${HOME}/eidolon/mempalace" 2>/dev/null || true
 

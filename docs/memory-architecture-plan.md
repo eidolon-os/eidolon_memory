@@ -157,6 +157,6 @@ LLM steward 输入为一轮完整对话 `ConversationTurnPayload`，输出为 `S
 - `get/get_all` 不再在 MemPalace adapter 中伪成功。
 - worker 默认不再直接使用 `NoOpSteward`。
 - LLM steward 有完整 prompt、schema 校验和 fallback。
-- 默认 `memory.default.yaml` 中的 wings 与召回策略适合个人陪伴记忆。
+- 默认 `memory.bundled.yaml`（及可选本地 `memory.default.yaml`）中的 wings 与召回策略适合个人陪伴记忆。
 - README 链接本文档，并和实际运行方式一致。
 - MemPalace Python API 细节不泄露给智能体主系统。

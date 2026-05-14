@@ -19,7 +19,7 @@ MemPalace 通过 Python 包直接集成，不再需要配置 MemPalace MCP 子�
 
 | 变量 | 说明 |
 |------|------|
-| `EIDOLON_MEMORY_SETTINGS_YAML` | 记忆服务**唯一**主配置文件路径；不设则使用包内 `memory.default.yaml` |
+| `EIDOLON_MEMORY_SETTINGS_YAML` | 记忆服务**唯一**主配置文件路径；不设则优先同目录 `memory.default.yaml`（本地、gitignore），否则使用包内 `memory.bundled.yaml` |
 | `EIDOLON_MEMORY_LLM_API_KEY` | 可选：当 YAML 中 `llm.api_key` 为空时，从该环境变量读取密钥（名称可由 YAML 的 `llm.api_key_env` 修改） |
 | `EIDOLON_MEMORY_RUN_LIVE` | 仅集成测试：设为 `1` 时运行真实 MemPalace 用例 |
 | `EIDOLON_MEMORY_TEST_PALACE` | 仅测试：指向已 `mempalace init` 的目录 |
@@ -41,7 +41,7 @@ uv run eidolon-memory-worker
 uv run eidolon-memory-mcp
 ```
 
-开发阶段可把运行配置集中写进 `eidolon/memory/config/memory.default.yaml`：
+开发阶段：在同目录放置 **gitignore 的** `memory.default.yaml`（可从 `memory.bundled.yaml` 复制）；或设置 `EIDOLON_MEMORY_SETTINGS_YAML` 指向任意路径。
 
 ```yaml
 runtime:
@@ -97,4 +97,4 @@ uv run pytest tests -q
 | Application | `application/` | ingest、`MemoryService`、recall、steward |
 | Entrypoints | `entrypoints/`、`server/` | server / worker |
 
-默认配置与管家模板见 `eidolon/memory/config/memory.default.yaml`、`config/prompts/memory_steward.md`。
+默认配置模板见 `eidolon/memory/config/memory.bundled.yaml`（仓库内）；本地覆盖用同目录 `memory.default.yaml`（不提交）。管家模板见 `config/prompts/memory_steward.md`。

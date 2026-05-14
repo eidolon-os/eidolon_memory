@@ -8,3 +8,6 @@ __pycache__/
 .ruff_cache/
 dist/
 build/
+
+# Local memory settings (never commit)
+**/memory.default.yaml

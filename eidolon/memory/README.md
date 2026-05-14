@@ -11,7 +11,7 @@
 | 层级 | 目录 / 模块 | 职责 |
 |------|----------------|------|
 | **Domain** | `domain/` | `MemoryWireRecord`、`MEMORY_*` / JetStream 载荷（`payloads.py`）、后端端口 `MemoryBackend`（`ports.py`）。无 IO。 |
-| **Config** | `config/` | `memory_settings.py` + `memory.default.yaml`、`palace_directory.py`、管家模板 `config/prompts/`。 |
+| **Config** | `config/` | `memory_settings.py` + `memory.bundled.yaml`（模板）、可选本地 `memory.default.yaml`（gitignore）、`palace_directory.py`、管家模板 `config/prompts/`。 |
 | **Infrastructure** | `infrastructure/nats/` | JetStream `publish`。 |
 | **Adapters** | `adapters/` | `MemPalacePythonBackend`、`FakeMemoryBackend`。 |
 | **Application** | `application/` | `ingest.ingest_fragment`（**唯一**归一写入口）、`MemoryService`、`McpRecallClient`、`steward/`。 |
@@ -28,7 +28,7 @@
 
 | 变量 | 说明 |
 |------|------|
-| `EIDOLON_MEMORY_SETTINGS_YAML` | 主配置文件路径；不设则用包内 `memory.default.yaml` |
+| `EIDOLON_MEMORY_SETTINGS_YAML` | 主配置文件路径；不设则优先 `memory.default.yaml`（本地），否则 `memory.bundled.yaml` |
 | `EIDOLON_MEMORY_LLM_API_KEY` | 可选：YAML 中 `llm.api_key` 为空时，从该名读取密钥（可由 `llm.api_key_env` 改名） |
 | `EIDOLON_MEMORY_RUN_LIVE` / `EIDOLON_MEMORY_TEST_PALACE` | 仅 MemPalace 集成测试用 |
 
@@ -63,4 +63,4 @@ uv run pytest tests -q
 
 ## 记忆主配置
 
-见 [`config/memory.default.yaml`](config/memory.default.yaml)；管家默认模板在 [`config/prompts/memory_steward.md`](config/prompts/memory_steward.md)。可复制后由 `EIDOLON_MEMORY_SETTINGS_YAML` 指向自定义文件。
+见 [`config/memory.bundled.yaml`](config/memory.bundled.yaml)（可拷为本地 `memory.default.yaml`）；管家默认模板在 [`config/prompts/memory_steward.md`](config/prompts/memory_steward.md)。`EIDOLON_MEMORY_SETTINGS_YAML` 可指向自定义文件。
