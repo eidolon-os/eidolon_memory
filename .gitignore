@@ -11,3 +11,4 @@ build/
 
 # Local memory settings (never commit)
 **/memory.default.yaml
+logs/*
