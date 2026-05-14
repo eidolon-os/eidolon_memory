@@ -86,12 +86,37 @@ class FakeMemoryBackend:
         did = self._doc_id(user_id, key)
         return self.docs.get(did)
 
-    async def get_all(self, user_id: str) -> list[MemoryWireRecord]:
-        return [
+    async def get_all(
+        self,
+        user_id: str,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[MemoryWireRecord]:
+        if not user_id.strip():
+            items = sorted(
+                self.docs.values(),
+                key=lambda r: (
+                    str(r.metadata.get("wing", r.user_id)),
+                    str(r.key),
+                ),
+            )
+            sliced = items[offset or 0 :]
+            if limit is not None:
+                sliced = sliced[:limit]
+            return sliced
+
+        filtered = [
             r
             for r in self.docs.values()
-            if r.user_id == user_id or r.metadata.get("wing") == user_id
+            if r.metadata.get("user_id") == user_id
+            or r.user_id == user_id
+            or r.metadata.get("wing") == user_id
         ]
+        sliced = filtered[offset or 0 :]
+        if limit is not None:
+            sliced = sliced[:limit]
+        return sliced
 
     async def delete(self, user_id: str, key: str) -> None:
         did = self._doc_id(user_id, key)

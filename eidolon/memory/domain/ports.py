@@ -49,8 +49,18 @@ class MemoryAdmin(Protocol):
     async def get(self, user_id: str, key: str) -> MemoryWireRecord | None:
         """Exact id lookup when the backend supports stable doc ids."""
 
-    async def get_all(self, user_id: str) -> list[MemoryWireRecord]:
-        """List records for a wing/user."""
+    async def get_all(
+        self,
+        user_id: str,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[MemoryWireRecord]:
+        """Tenant filter: matches metadata ``user_id`` or ``wing``.
+
+        If ``user_id`` is blank (after stripping), adapters may enumerate the whole palace
+        (paginated via ``limit`` / ``offset``) for administrative listing.
+        """
 
     async def delete(self, user_id: str, key: str) -> None:
         """Delete by logical user_id + key when supported."""

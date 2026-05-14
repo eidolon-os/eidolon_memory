@@ -130,18 +130,67 @@ class MemPalacePythonBackend(MemoryBackend):
             return None
         return _record_from_get_result(result, 0, drawer_id=key)
 
-    async def get_all(self, user_id: str) -> list[MemoryWireRecord]:
+    async def get_all(
+        self,
+        user_id: str,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[MemoryWireRecord]:
+        """List drawers filtered by tenant, or enumerate the palace when tenant is blank.
+
+        Non-blank tenant: Steward puts companion id in metadata ``user_id`` and semantic
+        wing in ``wing``; legacy NATS ``MEMORY_STORE`` often only sets metadata ``wing`` to
+        the tenant slug (see :meth:`MemoryService._on_store`). Both are queried via
+        ``$or``.
+
+        Blank ``user_id``: return a page of all drawers in the collection (no ``where``
+        clause; order is backend-defined).
+        """
         try:
             collection = _get_collection(self._palace, create=False)
-            result = collection.get(where={"user_id": user_id}, include=["documents", "metadatas"])
         except ImportError as exc:
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
-        except Exception as exc:
-            raise MemoryBackendUnavailable(str(exc)) from exc
-        return [
-            _record_from_get_result(result, index, drawer_id=drawer_id)
-            for index, drawer_id in enumerate(_ids(result))
-        ]
+
+        tenant = user_id.strip()
+        if not tenant:
+            try:
+                result = collection.get(
+                    include=["documents", "metadatas"],
+                    limit=limit,
+                    offset=offset or 0,
+                )
+                return [
+                    _record_from_get_result(result, idx, drawer_id=drawer_id)
+                    for idx, drawer_id in enumerate(_ids(result))
+                ]
+            except Exception as exc:
+                raise MemoryBackendUnavailable(str(exc)) from exc
+
+        tenant_where: dict[str, Any] = {
+            "$or": [
+                {"user_id": tenant},
+                {"wing": tenant},
+            ]
+        }
+
+        try:
+            result = collection.get(
+                where=tenant_where,
+                include=["documents", "metadatas"],
+                limit=limit,
+                offset=offset or 0,
+            )
+            return [
+                _record_from_get_result(result, idx, drawer_id=drawer_id)
+                for idx, drawer_id in enumerate(_ids(result))
+            ]
+        except Exception:
+            merged = _merge_tenant_queries(collection, tenant_id=tenant)
+            sliced = merged[offset or 0 :]
+            if limit is not None:
+                sliced = sliced[:limit]
+            return sliced
 
     async def delete(self, user_id: str, key: str) -> None:
         del user_id
@@ -155,6 +204,34 @@ class MemPalacePythonBackend(MemoryBackend):
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
         except Exception as exc:
             raise MemoryBackendWriteFailed(str(exc)) from exc
+
+
+def _merge_tenant_queries(collection: Any, *, tenant_id: str) -> list[MemoryWireRecord]:
+    """Combine ``user_id`` and ``wing`` filters when compound ``where`` is unsupported."""
+    by_id: dict[str, MemoryWireRecord] = {}
+
+    try:
+        u = collection.get(
+            where={"user_id": tenant_id},
+            include=["documents", "metadatas"],
+        )
+        for idx, drawer_id in enumerate(_ids(u)):
+            by_id[drawer_id] = _record_from_get_result(u, idx, drawer_id=drawer_id)
+    except Exception:
+        pass
+
+    try:
+        w = collection.get(
+            where={"wing": tenant_id},
+            include=["documents", "metadatas"],
+        )
+        for idx, drawer_id in enumerate(_ids(w)):
+            if drawer_id not in by_id:
+                by_id[drawer_id] = _record_from_get_result(w, idx, drawer_id=drawer_id)
+    except Exception:
+        pass
+
+    return list(by_id.values())
 
 
 def apply_recall_policy(
