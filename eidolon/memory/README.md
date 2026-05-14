@@ -1,47 +1,48 @@
 # Eidolon memory module (`eidolon.memory`)
 
-**语义检索与查询（读）**：仅通过 **本进程 MCP**（`McpRecallClient` → `McpMemPalaceBackend` → MemPalace MCP Server），**不在本模块内**经 NATS 提供读 RPC。`MemoryService` / `MemoryClient` 只承载 **写入与 CRUD**（`MEMORY_STORE`、`MEMORY_GET` 等）及 JetStream 回合投递。
+**语义检索与查询（读）**：推荐通过 **Eidolon 自有 MCP read server**（`eidolon-memory-mcp` → `MemPalacePythonBackend` → MemPalace Python API），不直接向智能体暴露 MemPalace 内部 API。`MemoryService` / `MemoryClient` 只保留 legacy NATS RPC 兼容；推荐写入路径是 JetStream worker。
 
-情感伴侣规范拓扑：**读 = 主进程 MCP**；**写** 两条可选路径——**同步**经 NATS `MEMORY_STORE` → `MemoryService`，或 **异步**经 JetStream → `eidolon-memory-worker`；二者落到存储时均调用同一 **`application.ingest.ingest_fragment`**，再进入 `McpMemPalaceBackend.ingest_text`（同一 MCP 写实现）。
+情感伴侣规范拓扑：**读 = 自有 MCP read server**；**写 = JetStream → `eidolon-memory-worker` → LLM/rules steward → `MemoryFragment[]` → `MemPalacePythonBackend`**。同步 NATS `MEMORY_STORE` 仍可用于兼容和本地测试，但不是推荐热路径。
+
+完整架构见仓库根目录 [`docs/memory-architecture-plan.md`](../../docs/memory-architecture-plan.md)。
 
 ## 代码分层（阅读入口）
 
 | 层级 | 目录 / 模块 | 职责 |
 |------|----------------|------|
 | **Domain** | `domain/` | `MemoryWireRecord`、`MEMORY_*` / JetStream 载荷（`payloads.py`）、后端端口 `MemoryBackend`（`ports.py`）。无 IO。 |
-| **Config** | `config/` | `ontology.py` + `ontology.default.yaml`、`palace_path.py`、管家模板 `config/prompts/`。 |
-| **Infrastructure** | `infrastructure/mcp/`、`infrastructure/nats/` | MCP stdio 会话、JetStream `publish`。 |
-| **Adapters** | `adapters/` | MCP JSON 解析、`McpMemPalaceBackend`、`FakeMemoryBackend`。 |
+| **Config** | `config/` | `memory_settings.py` + `memory.default.yaml`、`palace_directory.py`、管家模板 `config/prompts/`。 |
+| **Infrastructure** | `infrastructure/nats/` | JetStream `publish`。 |
+| **Adapters** | `adapters/` | `MemPalacePythonBackend`、`FakeMemoryBackend`。 |
 | **Application** | `application/` | `ingest.ingest_fragment`（**唯一**归一写入口）、`MemoryService`、`McpRecallClient`、`steward/`。 |
 | **Entrypoints** | `entrypoints/server.py`、`entrypoints/worker.py`、`server/`（`__main__` → `-m eidolon.memory.server`） | 进程实现与 CLI 入口包。 |
 | **Support** | `support/` | `logging`。 |
 
 ## 依赖
 
-- 默认安装已包含 `faststream[nats]`、`pydantic`、`pyyaml`。
+- 默认安装已包含 `faststream[nats]`、`pydantic`、`pyyaml`、`mempalace`。
 - MCP 客户端：`uv sync --extra mcp`（安装 `mcp`）。
-- MemPalace 本体由 **MCP Server 子进程** 提供（不在此包内 `import mempalace` 写库）。
+- MemPalace 本体通过 Python API 直接调用。
 
 ## 环境变量（节选）
 
 | 变量 | 说明 |
 |------|------|
-| `EIDOLON_MEMORY_MCP_COMMAND` | 启动 MemPalace MCP 的可执行文件（必填，worker / 推荐 server） |
-| `EIDOLON_MEMORY_MCP_ARGS` | 空格分隔参数 |
-| `EIDOLON_MEMORY_PALACE_PATH` | 宫殿目录（覆盖 YAML `shared.mempalace.palace_path`） |
-| `EIDOLON_MEMORY_ONTOLOGY_YAML` | 本体论 + 工具名映射 YAML 路径 |
-| `EIDOLON_MEMORY_JS_STREAM` | JetStream stream 名（设置后 `MemoryClient.publish_conversation_turn` 生效） |
-| `EIDOLON_MEMORY_JS_SUBJECT` | subject（默认 `agent.memory.conversation.turn`） |
-| `EIDOLON_MEMORY_JS_DURABLE` | Worker consumer durable 名 |
-| `EIDOLON_MEMORY_FAKE_BACKEND` | `1` 时 `memory.server` 使用内存假后端（单测/本地无 MCP） |
+| `EIDOLON_MEMORY_SETTINGS_YAML` | 主配置文件路径；不设则用包内 `memory.default.yaml` |
+| `EIDOLON_MEMORY_LLM_API_KEY` | 可选：YAML 中 `llm.api_key` 为空时，从该名读取密钥（可由 `llm.api_key_env` 改名） |
+| `EIDOLON_MEMORY_RUN_LIVE` / `EIDOLON_MEMORY_TEST_PALACE` | 仅 MemPalace 集成测试用 |
+
+业务项（NATS、palace、`runtime.fake_backend`、管家、LLM 等）均在 YAML 中。`python -m eidolon.memory.server` 可传第一个参数覆盖 NATS URL，省略则用 `nats.url`。
 
 ## 进程入口
 
 ```bash
-# Legacy NATS RPC MemoryService（仅写/CRUD；需 NATS + MCP 或 FAKE_BACKEND）
-EIDOLON_MEMORY_FAKE_BACKEND=1 python -m eidolon.memory.server nats://127.0.0.1:4222
+# NATS MemoryService：无 MemPalace 时在 YAML 设 runtime.fake_backend: true
+export EIDOLON_MEMORY_SETTINGS_YAML=/path/to/dev-memory.yaml
+python -m eidolon.memory.server
+# 或：python -m eidolon.memory.server nats://127.0.0.1:4222
 
-# JetStream 消费 Worker（需 NATS JetStream + MCP）
+# JetStream 消费 Worker（需 NATS JetStream + mempalace 包）
 eidolon-memory-worker
 ```
 
@@ -51,16 +52,15 @@ eidolon-memory-worker
 uv run pytest tests -q
 ```
 
-连接 **真实 MemPalace MCP** 的用例打 `mempalace` 标记；未设置 `EIDOLON_MEMORY_MCP_COMMAND` 时会在 fixture 中 skip。本地请在 **仓库根目录**（`eidolon_memory/`）执行：
+连接 **真实 MemPalace Python 包** 的用例打 `mempalace` 标记；本地请在 **仓库根目录**（`eidolon_memory/`）执行：
 
 ```bash
-export EIDOLON_MEMORY_MCP_COMMAND=...   # MemPalace MCP 启动命令
 ./scripts/run_live_memory_tests.sh
 # 等价: uv run pytest tests -m mempalace -v
 ```
 
 可选：`EIDOLON_MEMORY_TEST_PALACE` 指向已 `mempalace init` 的目录；不设则用临时目录并尝试自动 `init`。
 
-## 本体论配置
+## 记忆主配置
 
-见 [`config/ontology.default.yaml`](config/ontology.default.yaml)；管家默认模板在 [`config/prompts/memory_steward.md`](config/prompts/memory_steward.md)。可复制后由 `EIDOLON_MEMORY_ONTOLOGY_YAML` 指向自定义文件。
+见 [`config/memory.default.yaml`](config/memory.default.yaml)；管家默认模板在 [`config/prompts/memory_steward.md`](config/prompts/memory_steward.md)。可复制后由 `EIDOLON_MEMORY_SETTINGS_YAML` 指向自定义文件。

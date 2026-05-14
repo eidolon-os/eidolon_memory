@@ -1,25 +1,33 @@
-"""Configuration: ontology YAML, palace path, steward templates."""
+"""Configuration: memory settings YAML, palace directory resolution, steward templates."""
 
-from eidolon.memory.config.ontology import (
+from eidolon.memory.config.memory_settings import (
     FilterConfig,
-    McpToolNames,
-    OntologyConfig,
+    LlmConfig,
+    MemorySettings,
+    NatsConfig,
     RecallPolicy,
+    RuntimeConfig,
     StewardConfig,
     WingDefinition,
-    default_ontology_path,
-    load_ontology,
+    default_memory_settings_path,
+    get_memory_settings,
+    load_memory_settings,
+    reset_memory_settings_cache,
 )
-from eidolon.memory.config.palace_path import resolve_palace_path
+from eidolon.memory.config.palace_directory import resolve_palace_directory
 
 __all__ = [
     "FilterConfig",
-    "McpToolNames",
-    "OntologyConfig",
+    "LlmConfig",
+    "MemorySettings",
+    "NatsConfig",
     "RecallPolicy",
+    "RuntimeConfig",
     "StewardConfig",
     "WingDefinition",
-    "default_ontology_path",
-    "load_ontology",
-    "resolve_palace_path",
+    "default_memory_settings_path",
+    "get_memory_settings",
+    "load_memory_settings",
+    "reset_memory_settings_cache",
+    "resolve_palace_directory",
 ]

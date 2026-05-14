@@ -1,0 +1,69 @@
+# Default memory service settings (override path via EIDOLON_MEMORY_SETTINGS_YAML).
+wings:
+  - id: Wing_Profile
+    display_name: "个人画像"
+    description: "用户身份、长期偏好、稳定习惯、个人背景。"
+    sort_order: 1
+  - id: Wing_Relationship
+    display_name: "关系与情感连接"
+    description: "家人、伴侣、朋友、宠物、重要人际关系与关系变化。"
+    sort_order: 2
+  - id: Wing_Emotion
+    display_name: "情绪与心理状态"
+    description: "情绪峰值、持续压力、脆弱时刻、安全感、长期情绪趋势。"
+    sort_order: 3
+  - id: Wing_Event
+    display_name: "事件与人生片段"
+    description: "重要经历、纪念日、冲突、旅行、家庭事件、值得未来提起的节点。"
+    sort_order: 4
+  - id: Wing_Work
+    display_name: "工作与学习"
+    description: "项目、任务、职业压力、学习计划、成就、协作关系。"
+    sort_order: 5
+  - id: Wing_Life
+    display_name: "生活方式与兴趣"
+    description: "饮食、作息、兴趣、消费偏好、居家设备、日常习惯。"
+    sort_order: 6
+  - id: Wing_Health
+    display_name: "身体与健康"
+    description: "身体状态、睡眠、运动、疾病、用药、健康目标。"
+    sort_order: 7
+  - id: Wing_Privacy
+    display_name: "隐私与禁记规则"
+    description: "用户要求不要记住、不要再提、删除或封存的话题。普通召回默认过滤。"
+    sort_order: 99
+
+recall:
+  top_k: 5
+  timeout_seconds: 1.5
+  recency_weight: 0.35
+  filter_taboo_statuses: ["taboo", "archived"]
+
+steward:
+  mode: "llm"
+  prompt_template_path: ""
+  fallback_to_rules: true
+  max_fragments_per_turn: 6
+  min_importance_to_write: 3
+
+llm:
+  model: "openai/deepseek-v4-flash"
+  base_url: "http://mopai.geni.dyxnet.com.cn/v1"
+  api_key: ""
+  api_key_env: "EIDOLON_MEMORY_LLM_API_KEY"
+  timeout_seconds: 30
+  temperature: 0.7
+
+runtime:
+  palace_path: ""
+  fake_backend: false
+
+nats:
+  url: "nats://127.0.0.1:4222"
+  stream: "MEMORY_TURNS"
+  subject: "agent.memory.conversation.turn"
+  durable: "eidolon-memory-worker"
+  stream_max_age_seconds: 1209600
+
+filters:
+  ignore_smalltalk_regex: ""

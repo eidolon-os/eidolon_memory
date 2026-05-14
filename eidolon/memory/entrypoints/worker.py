@@ -1,40 +1,28 @@
-"""Memory Worker — JetStream consumer → steward → MCP ``MemoryBackend``."""
+"""Memory Worker — JetStream consumer → steward → MemPalace Python backend."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import signal
 from typing import Any
 
 import nats
 from nats.js.api import RetentionPolicy, StorageType, StreamConfig
+from pydantic import ValidationError
 
-from eidolon.memory.infrastructure.bus.subjects import SharedSubjects
-from eidolon.memory.adapters.mempalace_backend import McpMemPalaceBackend
-from eidolon.memory.application.steward.noop import NoOpSteward
-from eidolon.memory.config.ontology import load_ontology
-from eidolon.memory.config.palace_path import resolve_palace_path
+from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
+from eidolon.memory.application.steward import create_steward
+from eidolon.memory.config.memory_settings import get_memory_settings
+from eidolon.memory.config.palace_directory import resolve_palace_directory
 from eidolon.memory.domain.payloads import ConversationTurnPayload
-from eidolon.memory.infrastructure.mcp.config import McpServerLaunchConfig
-from eidolon.memory.infrastructure.mcp.runtime import MemPalaceMcpRuntime
+from eidolon.memory.infrastructure.bus.subjects import SharedSubjects
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
 
-def _stream_subject_durable() -> tuple[str, str, str]:
-    stream = os.environ.get("EIDOLON_MEMORY_JS_STREAM", "MEMORY_TURNS").strip()
-    subject = os.environ.get(
-        "EIDOLON_MEMORY_JS_SUBJECT",
-        SharedSubjects.MEMORY_CONVERSATION_TURN,
-    ).strip()
-    durable = os.environ.get("EIDOLON_MEMORY_JS_DURABLE", "eidolon-memory-worker").strip()
-    return stream, subject, durable
-
-
-async def _ensure_stream(js: Any, stream: str, subject: str) -> None:
+async def _ensure_stream(js: Any, stream: str, subject: str, max_age: int) -> None:
     try:
         await js.stream_info(stream)
     except Exception:
@@ -44,7 +32,7 @@ async def _ensure_stream(js: Any, stream: str, subject: str) -> None:
                 subjects=[subject],
                 retention=RetentionPolicy.LIMITS,
                 storage=StorageType.FILE,
-                max_age=86400 * 14,
+                max_age=max_age,
             )
         )
         log.info("worker_stream_created", stream=stream, subject=subject)
@@ -56,24 +44,19 @@ async def run_memory_worker(
     steward: Any | None = None,
 ) -> None:
     """Consume ``ConversationTurnPayload`` messages and ACK after successful MCP writes."""
-    url = nats_url or os.environ.get("NATS_URL", "nats://localhost:4222")
-    stream, subject, durable = _stream_subject_durable()
+    settings = get_memory_settings()
+    url = nats_url or settings.nats.url
+    stream = settings.nats.stream
+    subject = settings.nats.subject or SharedSubjects.MEMORY_CONVERSATION_TURN
+    durable = settings.nats.durable
 
-    launch = McpServerLaunchConfig.from_environ()
-    if not launch.is_configured():
-        msg = "EIDOLON_MEMORY_MCP_COMMAND must be set for memory worker"
-        raise RuntimeError(msg)
-
-    runtime = MemPalaceMcpRuntime(launch)
-    await runtime.start()
-    ontology = load_ontology()
-    palace = str(resolve_palace_path())
-    backend = McpMemPalaceBackend(runtime, ontology, palace)
-    steward_runner = steward or NoOpSteward()
+    palace = str(resolve_palace_directory(settings))
+    backend = MemPalacePythonBackend(settings, palace)
+    steward_runner = steward or create_steward(settings)
 
     nc = await nats.connect(url)
     js = nc.jetstream()
-    await _ensure_stream(js, stream, subject)
+    await _ensure_stream(js, stream, subject, settings.nats.stream_max_age_seconds)
     psub = await js.pull_subscribe(subject, durable=durable, stream=stream)
 
     stop = asyncio.Event()
@@ -100,13 +83,17 @@ async def run_memory_worker(
                 try:
                     raw = json.loads(msg.data.decode("utf-8"))
                     turn = ConversationTurnPayload.model_validate(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
+                    log.error("memory_worker_bad_payload", error=str(exc))
+                    await msg.ack()
+                    continue
+                try:
                     await steward_runner.handle_turn(turn, backend)
                     await msg.ack()
                 except Exception as exc:
                     log.error("memory_worker_turn_failed", error=str(exc))
                     await msg.nak()
     finally:
-        await runtime.stop()
         await nc.drain()
         log.info("memory_worker_stopped")
 

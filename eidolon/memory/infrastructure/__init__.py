@@ -1,6 +1,3 @@
-"""Infrastructure: MCP stdio client."""
+"""Infrastructure adapters: NATS and bus clients."""
 
-from eidolon.memory.infrastructure.mcp.config import McpServerLaunchConfig
-from eidolon.memory.infrastructure.mcp.runtime import MemPalaceMcpRuntime
-
-__all__ = ["McpServerLaunchConfig", "MemPalaceMcpRuntime"]
+__all__: list[str] = []

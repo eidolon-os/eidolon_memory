@@ -9,6 +9,7 @@ import nats
 from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 
 from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -29,6 +30,15 @@ class JetStreamTurnPublisher:
         self._subject = subject
         self._nc: nats.NATS | None = None
         self._js: Any = None
+
+    @classmethod
+    def from_memory_settings(cls, settings: MemorySettings) -> JetStreamTurnPublisher:
+        """Create a publisher from loaded memory settings YAML."""
+        return cls(
+            nats_url=settings.nats.url,
+            stream_name=settings.nats.stream,
+            subject=settings.nats.subject,
+        )
 
     async def connect(self) -> None:
         if self._nc is not None:

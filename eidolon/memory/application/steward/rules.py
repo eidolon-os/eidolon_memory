@@ -1,0 +1,158 @@
+"""Rule-based memory steward used as local fallback."""
+
+from __future__ import annotations
+
+import re
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+from eidolon.memory.application.ingest import ingest_memory_fragment
+from eidolon.memory.application.steward.common import (
+    apply_privacy_actions,
+    finalize_fragments,
+    safe_room_token,
+)
+from eidolon.memory.domain.fragments import MemoryFragment
+from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
+
+from eidolon.memory.config.memory_settings import MemorySettings
+
+if TYPE_CHECKING:
+    from eidolon.memory.domain.ports import MemoryBackend
+
+SMALLTALK_RE = re.compile(r"^(你好|嗨|哈喽|hello|hi|早安|晚安|谢谢|嗯嗯|好的|ok)[。！!.\s]*$", re.I)
+
+PRIVACY_RE = re.compile(r"(不要记住|别记|别记录|不用记|忘掉|删掉|删除|抹掉|不要再提|以后别提|别再说)")
+RELATION_RE = re.compile(r"(妈妈|爸爸|母亲|父亲|伴侣|老婆|老公|男朋友|女朋友|朋友|同事|孩子|宠物|猫|狗)")
+EMOTION_RE = re.compile(r"(难过|焦虑|崩溃|开心|压力|孤独|害怕|委屈|失落|抑郁|兴奋|安心)")
+WORK_RE = re.compile(r"(项目|会议|任务|deadline|同事|客户|老板|工作|学习|考试|论文|需求|bug)", re.I)
+HEALTH_RE = re.compile(r"(睡眠|失眠|生病|头痛|胃痛|运动|用药|医院|健康|疲惫)")
+PREFERENCE_RE = re.compile(r"(我喜欢|我讨厌|我习惯|我希望|我偏好|不喜欢|爱吃|喜欢吃)")
+
+
+class RuleBasedSteward:
+    """Deterministic steward for privacy safety and LLM fallback."""
+
+    def __init__(self, settings: MemorySettings) -> None:
+        self._settings = settings
+
+    async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
+        text = f"{turn.user_text}\n{turn.assistant_text}".strip()
+        user_id = turn.user_id or "default"
+        timestamp = turn.timestamp or datetime.now(timezone.utc).isoformat()
+        privacy_actions = self._privacy_actions(turn.user_text)
+        if privacy_actions:
+            return StewardDecision(
+                should_write=False,
+                reason="用户表达了禁记、删除或不要再提的隐私要求。",
+                fragments=[],
+                privacy_actions=privacy_actions,
+            )
+        if not text or SMALLTALK_RE.match(turn.user_text.strip()):
+            return StewardDecision(
+                should_write=False,
+                reason="对话主要是寒暄或没有长期记忆价值。",
+            )
+
+        fragment = self._build_fragment(turn, user_id=user_id, timestamp=timestamp)
+        if fragment.importance < self._settings.steward.min_importance_to_write:
+            return StewardDecision(
+                should_write=False,
+                reason="内容信号较弱，低于最小写入重要性阈值。",
+            )
+        fragments = finalize_fragments([fragment], steward="rules")
+        return StewardDecision(
+            should_write=True,
+            reason="规则管家识别到可用于未来陪伴的个人记忆。",
+            fragments=fragments,
+        )
+
+    async def handle_turn(self, turn: ConversationTurnPayload, backend: MemoryBackend) -> None:
+        decision = await self.decide(turn)
+        await apply_privacy_actions(
+            backend,
+            user_id=turn.user_id or "default",
+            actions=decision.privacy_actions,
+        )
+        if not decision.should_write:
+            return
+        for fragment in decision.fragments:
+            await ingest_memory_fragment(backend, fragment)
+
+    def _privacy_actions(self, user_text: str) -> list[PrivacyAction]:
+        if not PRIVACY_RE.search(user_text):
+            return []
+        if re.search(r"(忘掉|删掉|删除|抹掉)", user_text):
+            action = "delete_request"
+        elif re.search(r"(不要再提|以后别提|别再说)", user_text):
+            action = "archive_topic"
+        else:
+            action = "do_not_store"
+        target = user_text.strip()[:80] or "未命名隐私话题"
+        return [
+            PrivacyAction(
+                action=action,
+                target=target,
+                reason="用户在对话中明确表达了隐私或记忆控制意图。",
+            )
+        ]
+
+    def _build_fragment(
+        self,
+        turn: ConversationTurnPayload,
+        *,
+        user_id: str,
+        timestamp: str,
+    ) -> MemoryFragment:
+        text = turn.user_text.strip()
+        if RELATION_RE.search(text):
+            wing = "Wing_Relationship"
+            memory_type = "relationship"
+            room = safe_room_token(_first_match(RELATION_RE, text), prefix="person")
+            importance = 4
+        elif EMOTION_RE.search(text):
+            wing = "Wing_Emotion"
+            memory_type = "emotion"
+            theme = _first_match(EMOTION_RE, text)
+            room = safe_room_token(f"{theme}_{timestamp[:7]}", prefix="emotion")
+            importance = 4
+        elif WORK_RE.search(text):
+            wing = "Wing_Work"
+            memory_type = "work"
+            room = safe_room_token(_first_match(WORK_RE, text), prefix="project")
+            importance = 4
+        elif HEALTH_RE.search(text):
+            wing = "Wing_Health"
+            memory_type = "health"
+            room = safe_room_token(_first_match(HEALTH_RE, text), prefix="health")
+            importance = 4
+        elif PREFERENCE_RE.search(text):
+            wing = "Wing_Profile"
+            memory_type = "preference"
+            room = "profile_core"
+            importance = 4
+        else:
+            wing = "Wing_Life"
+            memory_type = "life"
+            room = "event_general"
+            importance = 3
+        return MemoryFragment(
+            user_id=user_id,
+            wing=wing,
+            room=room,
+            content=f"用户提到：{text}",
+            memory_type=memory_type,
+            importance=importance,
+            confidence=0.65,
+            occurred_at=timestamp,
+            source_turn_id=turn.turn_id,
+            session_id=turn.session_id,
+            tags=[memory_type],
+            metadata=turn.metadata or {},
+        )
+
+
+def _first_match(pattern: re.Pattern[str], text: str) -> str:
+    match = pattern.search(text)
+    return match.group(0) if match else "general"

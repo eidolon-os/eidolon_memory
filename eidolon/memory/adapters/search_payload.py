@@ -1,4 +1,4 @@
-"""Normalize MemPalace MCP JSON into ``MemoryWireRecord``."""
+"""Normalize MemPalace search payloads into ``MemoryWireRecord``."""
 
 from __future__ import annotations
 
@@ -36,13 +36,17 @@ def parse_search_tool_payload(data: Any) -> list[MemoryWireRecord]:
                 value = json.loads(str(text)) if text else ""
             except (json.JSONDecodeError, TypeError):
                 value = text if text is not None else ""
-        score = r.get("distance", r.get("score"))
-        meta: dict[str, Any] = {
+        score = r.get("distance", r.get("score", r.get("similarity")))
+        raw_meta = r.get("metadata")
+        meta: dict[str, Any] = raw_meta.copy() if isinstance(raw_meta, dict) else {}
+        meta.update(
+            {
             "wing": wing,
             "room": room,
             "source": "mcp",
             "source_file": str(r.get("source_file", "")),
-        }
+            }
+        )
         if score is not None:
             try:
                 meta["score"] = float(score)

@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from eidolon.memory.domain.fragments import MemoryFragment
     from eidolon.memory.domain.wire import MemoryWireRecord
 
 
 @runtime_checkable
-class MemoryBackend(Protocol):
-    """Async storage/search surface used by MemoryService (legacy RPC) and Worker."""
+class MemoryReader(Protocol):
+    """Async read surface used by recall clients and MCP read tools."""
 
     async def search(
         self,
@@ -22,6 +23,11 @@ class MemoryBackend(Protocol):
     ) -> list[MemoryWireRecord]:
         """Semantic search scoped to a wing (user / palace id)."""
 
+
+@runtime_checkable
+class MemoryWriter(Protocol):
+    """Async write surface used by steward pipelines."""
+
     async def ingest_text(
         self,
         *,
@@ -32,6 +38,14 @@ class MemoryBackend(Protocol):
     ) -> None:
         """Append/index a verbatim text fragment (drawer semantics)."""
 
+    async def ingest_fragment(self, fragment: MemoryFragment) -> None:
+        """Append/index a structured steward fragment."""
+
+
+@runtime_checkable
+class MemoryAdmin(Protocol):
+    """Optional administrative surface; not every backend supports it."""
+
     async def get(self, user_id: str, key: str) -> MemoryWireRecord | None:
         """Exact id lookup when the backend supports stable doc ids."""
 
@@ -40,3 +54,8 @@ class MemoryBackend(Protocol):
 
     async def delete(self, user_id: str, key: str) -> None:
         """Delete by logical user_id + key when supported."""
+
+
+@runtime_checkable
+class MemoryBackend(MemoryReader, MemoryWriter, MemoryAdmin, Protocol):
+    """Combined backend surface kept for compatibility with existing callers."""

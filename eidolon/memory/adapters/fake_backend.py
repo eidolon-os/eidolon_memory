@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 
@@ -55,6 +56,29 @@ class FakeMemoryBackend:
             user_id=wing,
             key=room,
             value=text,
+            metadata=meta,
+        )
+
+    async def ingest_fragment(self, fragment: MemoryFragment) -> None:
+        meta = {
+            **fragment.metadata,
+            "fragment_id": fragment.fragment_id,
+            "user_id": fragment.user_id,
+            "source_turn_id": fragment.source_turn_id,
+            "schema_version": "1",
+            "session_id": fragment.session_id,
+            "importance": fragment.importance,
+            "confidence": fragment.confidence,
+            "memory_type": fragment.memory_type,
+            "privacy": fragment.privacy,
+            "tags": fragment.tags,
+        }
+        if fragment.occurred_at:
+            meta["occurred_at"] = fragment.occurred_at
+        await self.ingest_text(
+            wing=fragment.wing,
+            room=fragment.room,
+            text=fragment.content,
             metadata=meta,
         )
 

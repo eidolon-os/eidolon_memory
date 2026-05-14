@@ -1,8 +1,8 @@
 """Legacy NATS RPC MemoryService — writes and CRUD only (no semantic read RPC).
 
-Semantic **search / recall** is performed in-process via MCP
-(``McpRecallClient`` + ``McpMemPalaceBackend``); this service does not subscribe
-to ``MEMORY_QUERY``.
+Semantic **search / recall** is performed through the owned MCP read server
+or ``McpRecallClient`` over the Python MemPalace backend; this service does
+not subscribe to ``MEMORY_QUERY``.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from eidolon.memory.domain.payloads import (
     MemoryResultPayload,
     MemoryStorePayload,
 )
+from eidolon.memory.domain.errors import MemoryBackendUnsupported
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.support.logging import get_logger
 
@@ -39,7 +40,7 @@ class MemoryService:
     Semantic search is **not** handled over NATS; use MCP recall in the agent process.
 
     Instantiate with an already-started ``MemoryBackend`` (typically
-    :class:`eidolon.memory.adapters.McpMemPalaceBackend` wrapping a live MCP session).
+        :class:`eidolon.memory.adapters.MemPalacePythonBackend`).
     """
 
     def __init__(
@@ -118,11 +119,17 @@ class MemoryService:
         try:
             record = await self._backend.get(payload.user_id, payload.key)
             records = [record] if record else []
+            error: str | None = None
+        except MemoryBackendUnsupported as exc:
+            log.warning("memory_get_unsupported", error=str(exc))
+            records = []
+            error = str(exc)
         except Exception as exc:
             log.error("memory_get_error", error=str(exc))
             records = []
+            error = str(exc)
 
-        self._publish_result(reply_to, payload.correlation_id, records)
+        self._publish_result(reply_to, payload.correlation_id, records, error)
 
     async def _on_get_all(self, body: dict, reply_to: str | None = None) -> None:
         try:
@@ -134,11 +141,17 @@ class MemoryService:
 
         try:
             records = await self._backend.get_all(payload.user_id)
+            error: str | None = None
+        except MemoryBackendUnsupported as exc:
+            log.warning("memory_get_all_unsupported", error=str(exc))
+            records = []
+            error = str(exc)
         except Exception as exc:
             log.error("memory_get_all_error", error=str(exc))
             records = []
+            error = str(exc)
 
-        self._publish_result(reply_to, payload.correlation_id, records)
+        self._publish_result(reply_to, payload.correlation_id, records, error)
 
     async def _on_delete(self, body: dict, reply_to: str | None = None) -> None:
         try:
@@ -151,6 +164,9 @@ class MemoryService:
         try:
             await self._backend.delete(payload.user_id, payload.key)
             error: str | None = None
+        except MemoryBackendUnsupported as exc:
+            log.warning("memory_delete_unsupported", error=str(exc))
+            error = str(exc)
         except Exception as exc:
             log.error("memory_delete_error", error=str(exc))
             error = str(exc)
