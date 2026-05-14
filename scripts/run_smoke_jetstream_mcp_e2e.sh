@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end: NATS JetStream → worker → MemPalace write, then MCP-equivalent search.
-# Uses EIDOLON_MEMORY_SETTINGS_YAML (prefers local memory.default.yaml, else memory.bundled.yaml).
+# Uses EIDOLON_MEMORY_SETTINGS_YAML, or local memory.default.yaml if present, else .example template.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,9 +8,10 @@ ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT}"
 
 _CFG="${ROOT}/eidolon/memory/config"
-export EIDOLON_MEMORY_SETTINGS_YAML="${EIDOLON_MEMORY_SETTINGS_YAML:-${_CFG}/memory.default.yaml}"
-if [[ ! -f "${EIDOLON_MEMORY_SETTINGS_YAML}" ]]; then
-  export EIDOLON_MEMORY_SETTINGS_YAML="${_CFG}/memory.bundled.yaml"
+if [[ -f "${_CFG}/memory.default.yaml" ]]; then
+  export EIDOLON_MEMORY_SETTINGS_YAML="${EIDOLON_MEMORY_SETTINGS_YAML:-${_CFG}/memory.default.yaml}"
+else
+  export EIDOLON_MEMORY_SETTINGS_YAML="${EIDOLON_MEMORY_SETTINGS_YAML:-${_CFG}/memory.default.yaml.example}"
 fi
 
 VENV_PY="${ROOT}/.venv/bin/python"

@@ -43,7 +43,7 @@ Drawer = 一条可召回的具体记忆片段
 
 - `~/eidolon/mempalace`
 
-默认 wings（以 `memory.bundled.yaml` 为准，可本地用 `memory.default.yaml` 覆盖）：
+默认 wings 以 **`memory.default.yaml`**（本地）为准；若无该文件则使用已提交的 **`memory.default.yaml.example`**：
 
 - `Wing_Profile`：个人画像与价值观（静态身份、观点）。
 - `Wing_Interaction`：人机羁绊与交互偏好。
@@ -159,6 +159,6 @@ LLM steward 输入为一轮完整对话 `ConversationTurnPayload`，输出为 `S
 - `get/get_all` 不再在 MemPalace adapter 中伪成功。
 - worker 默认不再直接使用 `NoOpSteward`。
 - LLM steward 有完整 prompt、schema 校验和 fallback。
-- 默认 `memory.bundled.yaml`（及可选本地 `memory.default.yaml`）中的 wings 与召回策略适合个人陪伴记忆。
+- 默认 `memory.default.yaml` / `memory.default.yaml.example` 中的 wings 与召回策略适合个人陪伴记忆。
 - README 链接本文档，并和实际运行方式一致。
 - MemPalace Python API 细节不泄露给智能体主系统。

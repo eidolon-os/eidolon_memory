@@ -1,5 +1,6 @@
-# Shipped default memory settings (tracked in git). Copy to memory.default.yaml locally
-# (gitignored) to override; or set EIDOLON_MEMORY_SETTINGS_YAML.
+# 提交到 git 的默认模板。本地请复制为同目录下的 memory.default.yaml 再改（该文件被 gitignore）。
+#   cp eidolon/memory/config/memory.default.yaml.example eidolon/memory/config/memory.default.yaml
+# 也可通过 EIDOLON_MEMORY_SETTINGS_YAML 指向任意路径。
 wings:
   - id: Wing_Profile
     display_name: "个人画像与价值观"

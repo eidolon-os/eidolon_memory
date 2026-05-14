@@ -1,8 +1,8 @@
 """Load and validate memory service settings from YAML.
 
 进程内对默认配置路径的解析结果做缓存；请通过 :func:`get_memory_settings` 获取。
-未设置 ``EIDOLON_MEMORY_SETTINGS_YAML`` 时，优先读取同目录下的 ``memory.default.yaml``
-（本地可选，已被 gitignore）；若不存在则回退到包内已提交的 ``memory.bundled.yaml``。
+未设置 ``EIDOLON_MEMORY_SETTINGS_YAML`` 时，只认**本地一份** ``memory.default.yaml``（gitignore，
+不提交）。若该文件尚不存在，则读取同目录已提交的 ``memory.default.yaml.example`` 作为模板。
 返回的 ``MemorySettings`` 视为只读；若需修改请使用 ``model_copy``，或先调用
 :func:`reset_memory_settings_cache` 再改磁盘上的 YAML。显式传入路径的
 :func:`load_memory_settings` 不使用该缓存。
@@ -20,7 +20,8 @@ from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
-_BUNDLED_SETTINGS_PATH = Path(__file__).resolve().parent / "memory.bundled.yaml"
+_DEFAULT_LOCAL_SETTINGS_PATH = Path(__file__).resolve().parent / "memory.default.yaml"
+_SHIPPED_EXAMPLE_SETTINGS_PATH = Path(__file__).resolve().parent / "memory.default.yaml.example"
 
 
 class WingDefinition(BaseModel):
@@ -128,7 +129,7 @@ def default_memory_settings_path() -> Path:
     env = os.environ.get("EIDOLON_MEMORY_SETTINGS_YAML", "").strip()
     if env:
         return Path(env).expanduser().resolve()
-    return Path(__file__).resolve().parent / "memory.default.yaml"
+    return _DEFAULT_LOCAL_SETTINGS_PATH
 
 
 _default_settings_cache: MemorySettings | None = None
@@ -145,8 +146,8 @@ def reset_memory_settings_cache() -> None:
 def _effective_default_settings_file() -> Path:
     p = default_memory_settings_path()
     if not p.is_file():
-        log.warning("memory_settings_missing_using_bundled_default", path=str(p))
-        return _BUNDLED_SETTINGS_PATH
+        log.warning("memory_settings_local_missing_using_example", path=str(p))
+        return _SHIPPED_EXAMPLE_SETTINGS_PATH
     return p.resolve()
 
 
@@ -182,6 +183,6 @@ def load_memory_settings(path: Path | None = None) -> MemorySettings:
         return get_memory_settings()
     p = path
     if not p.is_file():
-        log.warning("memory_settings_missing_using_bundled_default", path=str(p))
-        p = _BUNDLED_SETTINGS_PATH
+        log.warning("memory_settings_path_missing_using_example", path=str(p))
+        p = _SHIPPED_EXAMPLE_SETTINGS_PATH
     return _read_settings_file(p)

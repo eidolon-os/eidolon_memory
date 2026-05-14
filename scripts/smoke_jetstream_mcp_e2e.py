@@ -86,7 +86,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
 def main() -> None:
     if not os.environ.get("EIDOLON_MEMORY_SETTINGS_YAML", "").strip():
-        print("set EIDOLON_MEMORY_SETTINGS_YAML to an absolute path, or rely on memory.default.yaml / memory.bundled.yaml")
+        print("set EIDOLON_MEMORY_SETTINGS_YAML, or create memory.default.yaml next to memory.default.yaml.example")
         raise SystemExit(2)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--marker", default="", help="Unique substring to search for")
