@@ -2,12 +2,12 @@
 # 启动 / 停止：JetStream memory worker + MCP read server（均后台）。
 # 均使用 uv run python -m ...，不要求 pip install -e .。
 #
+#   ./deploy/dev/init.sh             # 首次：依赖 + MemPalace 宫殿 + NATS 自检
 #   ./deploy/dev/run_all.sh
 #   ./deploy/dev/run_all.sh stop
 #   ./deploy/dev/run_all.sh status
 #
-# Worker:  uv sync --extra dev
-# MCP:     需 additionally  uv sync --extra mcp  （否则会跳过 MCP 并告警）
+# Worker / MCP:  uv sync --extra dev  （mcp 已在主依赖中）；宫殿请先 init.sh
 #
 # MCP 为 stdio 协议，常见用法仍是由 Cursor/宿主进程单独 spawn；
 # 本脚本里的 MCP nohup 便于本机冒烟；若stdin无连接也可能很快退出，请看 logs。
@@ -98,7 +98,7 @@ do_start() {
     nohup "${MCP_CMD[@]}" >>"$MCP_LOG" 2>&1 &
     echo "mcp=$!" >>"$tmp"
   else
-    warn "未检测到 mcp 包（请执行: cd $REPO_ROOT && uv sync --extra mcp）。仅启动 worker。"
+    warn "未检测到 mcp 包（请执行: cd $REPO_ROOT && uv sync）。仅启动 worker。"
   fi
 
   mv "$tmp" "$PID_FILE"
