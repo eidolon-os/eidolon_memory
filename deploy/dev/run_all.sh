@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 启动 / 停止：JetStream memory worker + MCP read server（均后台）。
+# 启动 / 停止：JetStream memory worker + MCP Streamable HTTP read server（均后台）。
 # 均使用 uv run python -m ...，不要求 pip install -e .。
 #
 #   ./deploy/dev/init.sh             # 首次：依赖 + MemPalace 宫殿 + NATS 自检
@@ -7,10 +7,8 @@
 #   ./deploy/dev/run_all.sh stop
 #   ./deploy/dev/run_all.sh status
 #
-# Worker / MCP:  uv sync --extra dev  （mcp 已在主依赖中）；宫殿请先 init.sh
+# Worker / MCP HTTP:  uv sync --extra dev；宫殿请先 init.sh
 #
-# MCP 为 stdio 协议，常见用法仍是由 Cursor/宿主进程单独 spawn；
-# 本脚本里的 MCP nohup 便于本机冒烟；若stdin无连接也可能很快退出，请看 logs。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -28,9 +26,9 @@ mkdir -p "$LOG_DIR"
 unset VIRTUAL_ENV
 
 WORKER_LOG="${LOG_DIR}/eidolon_memory_worker.log"
-MCP_LOG="${LOG_DIR}/eidolon_memory_mcp.log"
+MCP_HTTP_LOG="${LOG_DIR}/eidolon_memory_mcp_http.log"
 WORKER_CMD=(uv run python -m eidolon.memory.entrypoints.worker)
-MCP_CMD=(uv run python -m eidolon.memory.entrypoints.mcp_server)
+MCP_HTTP_CMD=(uv run eidolon-memory-mcp)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,8 +40,8 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-mcp_optional_deps_ok() {
-  (cd "$REPO_ROOT" && uv run python -c "import mcp" >/dev/null 2>&1)
+mcp_http_url() {
+  (cd "$REPO_ROOT" && uv run python -c "from eidolon.memory.config.memory_settings import get_memory_settings as g; print(g().mcp_http.base_url())")
 }
 
 any_alive() {
@@ -82,23 +80,29 @@ do_start() {
   fi
   clear_stale_pid_file || true
 
-  local tmp
+  local tmp mcp_url
   tmp="$(mktemp)"
+  mcp_url="$(mcp_http_url)"
 
   info "启动 worker: ${WORKER_CMD[*]}"
   info "worker 日志: $WORKER_LOG"
   nohup "${WORKER_CMD[@]}" >>"$WORKER_LOG" 2>&1 &
   echo "worker=$!" >>"$tmp"
 
-  if [[ "${SKIP_MCP:-}" == "1" ]]; then
-    warn "已设 SKIP_MCP=1，跳过 MCP。"
-  elif mcp_optional_deps_ok; then
-    info "启动 MCP: ${MCP_CMD[*]}"
-    info "mcp 日志: $MCP_LOG"
-    nohup "${MCP_CMD[@]}" >>"$MCP_LOG" 2>&1 &
-    echo "mcp=$!" >>"$tmp"
+  if [[ "${SKIP_MCP_HTTP:-}" == "1" ]]; then
+    warn "已设 SKIP_MCP_HTTP=1，跳过 MCP HTTP。"
   else
-    warn "未检测到 mcp 包（请执行: cd $REPO_ROOT && uv sync）。仅启动 worker。"
+    info "启动 MCP HTTP: ${MCP_HTTP_CMD[*]}"
+    info "MCP URL: ${mcp_url}"
+    info "mcp 日志: $MCP_HTTP_LOG"
+    nohup "${MCP_HTTP_CMD[@]}" >>"$MCP_HTTP_LOG" 2>&1 &
+    echo "mcp_http=$!" >>"$tmp"
+    sleep 1
+    if command -v curl >/dev/null 2>&1; then
+      if curl -sf -o /dev/null -X POST "${mcp_url}" -H "Content-Type: application/json" -d '{}' 2>/dev/null; then
+        : # endpoint may reject empty body; process up if port responds
+      fi
+    fi
   fi
 
   mv "$tmp" "$PID_FILE"
@@ -115,7 +119,7 @@ do_stop() {
     return 0
   fi
 
-  info "停止 worker / MCP…"
+  info "停止 worker / MCP HTTP…"
   local line pid key
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" || "$line" == \#* ]] && continue
@@ -144,7 +148,9 @@ do_stop() {
 }
 
 do_status() {
-  echo -e "${CYAN}==== eidolon-memory (worker + MCP) ====${NC}"
+  echo -e "${CYAN}==== eidolon-memory (worker + MCP HTTP) ====${NC}"
+  local mcp_url
+  mcp_url="$(mcp_http_url 2>/dev/null || echo "http://127.0.0.1:8030/mcp")"
   if [[ -f "$PID_FILE" ]] && any_alive; then
     info "运行中:"
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -163,8 +169,8 @@ do_status() {
   fi
   echo ""
   printf '  worker 等价命令: uv run python -m eidolon.memory.entrypoints.worker\n'
-  printf '  MCP   等价命令: uv run python -m eidolon.memory.entrypoints.mcp_server\n'
-  echo "  日志: $WORKER_LOG , $MCP_LOG"
+  printf '  MCP HTTP:        uv run eidolon-memory-mcp  →  %s\n' "$mcp_url"
+  echo "  日志: $WORKER_LOG , $MCP_HTTP_LOG"
 }
 
 case "${1:-start}" in

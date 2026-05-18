@@ -10,10 +10,13 @@
 
 ```bash
 cd /path/to/eidolon_memory
-uv sync --extra dev --extra mcp   # MCP 可选；无 MCP 可只 sync
+uv sync --extra dev
+
+./deploy/dev/init.sh              # 首次：宫殿 + 依赖
+./deploy/dev/run_all.sh start     # worker + MCP HTTP（默认 http://127.0.0.1:8030/mcp）
 ```
 
-MemPalace 通过 Python 包直接集成，不再需要配置 MemPalace MCP 子进程。
+MemPalace 通过 Python 包直接集成；MCP 读服务使用 **Streamable HTTP**（非 stdio）。
 
 ## 环境变量（节选）
 
@@ -37,8 +40,9 @@ uv run python -m eidolon.memory.server
 # JetStream Worker
 uv run eidolon-memory-worker
 
-# 自有 MCP read server
+# MCP read server (Streamable HTTP, 见 YAML mcp_http)
 uv run eidolon-memory-mcp
+# 或: ./deploy/dev/run_all.sh start
 ```
 
 开发阶段：在同目录执行 `cp eidolon/memory/config/memory.default.yaml.example eidolon/memory/config/memory.default.yaml`，再编辑后者（**仅此文件承载你的真实配置，且不提交 git**）。也可用 `EIDOLON_MEMORY_SETTINGS_YAML` 指向任意路径。
@@ -52,6 +56,10 @@ nats:
   stream: "MEMORY_TURNS"
   subject: "agent.memory.conversation.turn"
   durable: "eidolon-memory-worker"
+mcp_http:
+  host: "127.0.0.1"
+  port: 8030
+  path: "/mcp"
 steward:
   mode: "llm"
 llm:

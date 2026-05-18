@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end: NATS JetStream → worker → MemPalace write, then MCP-equivalent search.
+# End-to-end: NATS JetStream → worker → MemPalace write, then MCP HTTP search.
+# Requires deploy/dev/run_all.sh (or eidolon-memory-mcp) for the HTTP MCP server.
 # Uses EIDOLON_MEMORY_SETTINGS_YAML, or local memory.default.yaml if present, else .example template.
 set -euo pipefail
 

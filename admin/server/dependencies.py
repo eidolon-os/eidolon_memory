@@ -1,4 +1,4 @@
-"""FastAPI deps: MCP stdio session, JetStream publisher, optional Bearer auth."""
+"""FastAPI deps: MCP HTTP session, JetStream publisher, optional Bearer auth."""
 
 from __future__ import annotations
 
@@ -35,7 +35,10 @@ async def verify_admin_optional(
 def get_mcp_session(request: Request) -> ClientSession:
     session = getattr(request.app.state, "mcp_session", None)
     if session is None:
-        raise HTTPException(status_code=503, detail="MCP client session is not ready")
+        raise HTTPException(
+            status_code=503,
+            detail="MCP HTTP session is not ready; start deploy/dev/run_all.sh first",
+        )
     return session
 
 

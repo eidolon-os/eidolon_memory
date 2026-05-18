@@ -6,7 +6,7 @@ from dependencies import AdminAuth, McpSessionDep
 from fastapi import APIRouter, HTTPException, Query
 from schemas import MemPalaceHierarchyResponse
 
-from eidolon.memory.infrastructure.admin_mcp_client import call_tool_json
+from eidolon.memory.infrastructure.mcp_http_client import call_tool_json
 
 router = APIRouter(prefix="/hierarchy", tags=["hierarchy"])
 

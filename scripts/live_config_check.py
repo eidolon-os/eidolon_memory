@@ -17,6 +17,7 @@ def main() -> None:
     print("nats.stream:", settings.nats.stream)
     print("nats.subject:", settings.nats.subject)
     print("nats.durable:", settings.nats.durable)
+    print("mcp_http.url:", settings.mcp_http.base_url())
     print("steward.mode:", settings.steward.mode)
     print("llm.model:", settings.llm.model or "<missing>")
     print("llm.base_url:", settings.llm.base_url or "<missing>")

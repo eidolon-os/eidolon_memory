@@ -8,7 +8,7 @@
 
 | 场景 | 推荐方式 | 需要运行的进程 |
 |------|----------|----------------|
-| Agent / IDE 语义检索回忆 | **MCP**：`eidolon-memory-mcp` | MCP 服务端 + （通常）已通过 `python -m eidolon.memory.server` 打开的 MemPalace 写入面；语义读可走 MCP 单机进程 |
+| Agent / IDE 语义检索回忆 | **MCP Streamable HTTP**：`eidolon-memory-mcp` | **`deploy/dev/run_all.sh`** 或单独启动 MCP HTTP；写入仍靠 worker |
 | 对话结束后结构化写入（热路径） | **JetStream**：往 YAML 配置的 subject 发 `ConversationTurnPayload` JSON | **`eidolon-memory-worker`** + NATS JetStream |
 | 简单同步写入 / 按 drawer 读写删 | **NATS Core**：`MEMORY_STORE` / `GET` / … | **`python -m eidolon.memory.server`** |
 | 同进程嵌入式 | **Python API**：`McpRecallClient` / `ingest_fragment` 等 | 仅依赖导入 `eidolon.memory` |
@@ -22,7 +22,9 @@
 
 ```bash
 cd /path/to/eidolon_memory
-uv sync --extra dev --extra mcp   # 仅 MCP 需加 --extra mcp
+uv sync --extra dev
+./deploy/dev/init.sh
+./deploy/dev/run_all.sh start   # worker + MCP HTTP
 ```
 
 典型环境变量与子进程说明见仓库根目录 [README.md](../README.md)。配置优先级简要回顾：
@@ -42,9 +44,10 @@ uv sync --extra dev --extra mcp   # 仅 MCP 需加 --extra mcp
 ```bash
 export EIDOLON_MEMORY_SETTINGS_YAML=/optional/path/to/memory.yaml   # 可选
 uv run eidolon-memory-mcp
+# 默认监听 memory.default.yaml 中 mcp_http（如 http://127.0.0.1:8030/mcp）
 ```
 
-宿主（如 Cursor / Claude Desktop / 自研网关）将该进程注册为标准 **MCP stdio**，使用包名 `eidolon-memory`（实现见 `eidolon/memory/entrypoints/mcp_server.py`）。
+宿主（如 Cursor / Claude Desktop / 自研网关）配置 **Streamable HTTP** URL，指向上述地址（实现见 `eidolon/memory/entrypoints/mcp_server.py`）。Admin 通过 HTTP MCP 客户端调用同一服务（`eidolon.memory.infrastructure.mcp_http_client`）。
 
 ### 提供的 Tools（摘要）
 

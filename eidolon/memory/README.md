@@ -20,8 +20,8 @@
 
 ## 依赖
 
-- 默认安装已包含 `faststream[nats]`、`pydantic`、`pyyaml`、`mempalace`。
-- MCP 客户端：`uv sync --extra mcp`（安装 `mcp`）。
+- 默认安装已包含 `faststream[nats]`、`pydantic`、`pyyaml`、`mempalace`、`mcp`、`uvicorn`。
+- MCP 读服务为 **Streamable HTTP**（`mcp_http` in YAML）；由 `eidolon-memory-mcp` 或 `deploy/dev/run_all.sh` 启动。
 - MemPalace 本体通过 Python API 直接调用。
 
 ## 环境变量（节选）
@@ -44,6 +44,9 @@ python -m eidolon.memory.server
 
 # JetStream 消费 Worker（需 NATS JetStream + mempalace 包）
 eidolon-memory-worker
+
+# MCP read server（Streamable HTTP，默认 http://127.0.0.1:8030/mcp）
+eidolon-memory-mcp
 ```
 
 ## 单测

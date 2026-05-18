@@ -1,4 +1,4 @@
-"""Eidolon-owned MCP read server for companion agents."""
+"""Eidolon-owned MCP read server for companion agents (Streamable HTTP)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from eidolon.memory.application.public_recall import (
     search_all_wings_mcp_style,
     wire_record_to_public_dict,
 )
-from eidolon.memory.config.memory_settings import get_memory_settings
+from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
 from eidolon.memory.config.palace_directory import resolve_palace_directory
 
 _backend: MemPalacePythonBackend | None = None
@@ -28,11 +28,24 @@ async def _get_backend() -> MemPalacePythonBackend:
     return _backend
 
 
-def build_server():
+def reset_backend_cache() -> None:
+    """Clear the process-local backend singleton (tests / smoke)."""
+    global _backend
+    _backend = None
+
+
+def build_server(settings: MemorySettings | None = None):
     """Build the MCP server lazily so importing this module does not require mcp."""
     from mcp.server.fastmcp import FastMCP
 
-    mcp = FastMCP("eidolon-memory")
+    cfg = (settings or get_memory_settings()).mcp_http
+    mcp = FastMCP(
+        "eidolon-memory",
+        host=cfg.host,
+        port=cfg.port,
+        streamable_http_path=cfg.path if cfg.path.startswith("/") else f"/{cfg.path}",
+        stateless_http=cfg.stateless_http,
+    )
 
     @mcp.tool()
     async def eidolon_memory_search(
@@ -44,10 +57,10 @@ def build_server():
     ) -> list[dict[str, Any]]:
         """Search Eidolon memory without exposing MemPalace tool details."""
         backend = await _get_backend()
-        settings = get_memory_settings()
+        mem_settings = get_memory_settings()
         records = await search_all_wings_mcp_style(
             backend,
-            settings,
+            mem_settings,
             query=query,
             user_id=user_id or "default",
             top_k=top_k,
@@ -64,10 +77,10 @@ def build_server():
     ) -> dict[str, Any]:
         """Return both structured records and a compact context block."""
         backend = await _get_backend()
-        settings = get_memory_settings()
+        mem_settings = get_memory_settings()
         records = await search_all_wings_mcp_style(
             backend,
-            settings,
+            mem_settings,
             query=query,
             user_id=user_id or "default",
             top_k=top_k,
@@ -82,13 +95,15 @@ def build_server():
     @mcp.tool()
     async def eidolon_memory_status() -> dict[str, Any]:
         """Report memory server configuration."""
-        settings = get_memory_settings()
+        mem_settings = get_memory_settings()
         return {
             "backend": "mempalace-python",
             "backend_configured": True,
-            "palace_path": str(resolve_palace_directory(settings)),
-            "steward_mode": settings.steward.mode,
-            "wings": [w.model_dump() for w in settings.wings],
+            "palace_path": str(resolve_palace_directory(mem_settings)),
+            "steward_mode": mem_settings.steward.mode,
+            "mcp_transport": "streamable-http",
+            "mcp_http_url": mem_settings.mcp_http.base_url(),
+            "wings": [w.model_dump() for w in mem_settings.wings],
         }
 
     @mcp.tool()
@@ -128,12 +143,12 @@ def build_server():
     ) -> dict[str, Any]:
         """Return wing→room→drawer tree snapshot (bounded scan) matching Admin hierarchy."""
         backend = await _get_backend()
-        settings = get_memory_settings()
+        mem_settings = get_memory_settings()
         mr = max(50, min(max_records, 50_000))
         md = max(4, min(max_drawers_per_room, 400))
         return await build_mempalace_hierarchy_snapshot(
             backend,
-            settings,
+            mem_settings,
             max_records=mr,
             max_drawers_per_room=md,
         )
@@ -142,7 +157,7 @@ def build_server():
 
 
 def main() -> None:
-    build_server().run()
+    build_server().run(transport="streamable-http")
 
 
 if __name__ == "__main__":

@@ -95,5 +95,13 @@ nats:
   durable: "eidolon-memory-worker"
   stream_max_age_seconds: 1209600
 
+mcp_http:
+  host: "127.0.0.1"
+  port: 8030
+  path: "/mcp"
+  stateless_http: false
+  bearer_token: ""
+  bearer_token_env: "EIDOLON_MEMORY_MCP_TOKEN"
+
 filters:
   ignore_smalltalk_regex: ""

@@ -74,6 +74,33 @@ class FilterConfig(BaseModel):
     ignore_smalltalk_regex: str = ""
 
 
+class McpHttpConfig(BaseModel):
+    """Streamable HTTP transport for the MCP read server (``transport=streamable-http``)."""
+
+    host: str = "127.0.0.1"
+    port: int = 8030
+    path: str = "/mcp"
+    stateless_http: bool = False
+    bearer_token: str = ""
+    bearer_token_env: str = "EIDOLON_MEMORY_MCP_TOKEN"
+
+    def base_url(self) -> str:
+        path = self.path if self.path.startswith("/") else f"/{self.path}"
+        return f"http://{self.host}:{self.port}{path}"
+
+    def resolve_bearer_token(self) -> str:
+        token = (self.bearer_token or "").strip()
+        if token:
+            return token
+        return os.environ.get(self.bearer_token_env, "").strip()
+
+    def auth_headers(self) -> dict[str, str]:
+        token = self.resolve_bearer_token()
+        if not token:
+            return {}
+        return {"Authorization": f"Bearer {token}"}
+
+
 class MemorySettings(BaseModel):
     """All tunable memory-service parameters: wings, recall, steward, LLM, NATS, paths."""
 
@@ -83,6 +110,7 @@ class MemorySettings(BaseModel):
     llm: LlmConfig = Field(default_factory=LlmConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     nats: NatsConfig = Field(default_factory=NatsConfig)
+    mcp_http: McpHttpConfig = Field(default_factory=McpHttpConfig)
     filters: FilterConfig = Field(default_factory=FilterConfig)
 
     @field_validator("wings")

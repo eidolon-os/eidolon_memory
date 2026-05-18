@@ -46,8 +46,9 @@ async function submit() {
     <h2>写入记忆（JetStream → Worker）</h2>
     <p class="muted">
       通过 JetStream 投递 <code>ConversationTurnPayload</code>，由
-      <code>eidolon-memory-worker</code> 消费后落盘；列表/搜索仍走 MCP子进程读路径。需本机 NATS 可达且
-      worker 在跑；非 <code>noop</code> steward 时正文可能被提炼而非原样存储。
+      <code>eidolon-memory-worker</code> 消费后落盘；列表/搜索走 MCP HTTP（需
+      <code>deploy/dev/run_all.sh</code>）。需本机 NATS 可达且 worker 在跑；非
+      <code>noop</code> steward 时正文可能被提炼而非原样存储。
     </p>
     <div class="grid">
       <label>wing<input v-model="wing" /></label>

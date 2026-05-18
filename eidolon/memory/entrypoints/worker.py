@@ -43,7 +43,7 @@ async def run_memory_worker(
     nats_url: str | None = None,
     steward: Any | None = None,
 ) -> None:
-    """Consume ``ConversationTurnPayload`` messages and ACK after successful MCP writes."""
+    """Consume ``ConversationTurnPayload`` messages and ACK after successful MemPalace writes."""
     settings = get_memory_settings()
     url = nats_url or settings.nats.url
     stream = settings.nats.stream

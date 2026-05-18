@@ -173,5 +173,5 @@ fi
 
 echo ""
 info "初始化完成。下一步:"
-echo "  ./deploy/dev/run_all.sh start    # worker (+ MCP 冒烟)"
+echo "  ./deploy/dev/run_all.sh start    # worker + MCP HTTP"
 echo "  ./admin/run_all.sh               # Admin UI（可选，需 Node）"
