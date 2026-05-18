@@ -11,6 +11,8 @@
 #
 set -euo pipefail
 
+# OMP/MKL 线程数由 eidolon.memory.infrastructure.cpu_env 按角色自动设置（若未手动 export）
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

@@ -6,10 +6,9 @@ import json
 from typing import Any
 
 import nats
-from nats.js.api import RetentionPolicy, StorageType, StreamConfig
-
 from eidolon.memory.domain.payloads import ConversationTurnPayload
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -45,19 +44,9 @@ class JetStreamTurnPublisher:
             return
         self._nc = await nats.connect(self._url)
         self._js = self._nc.jetstream()
-        try:
-            await self._js.stream_info(self._stream)
-        except Exception:
-            await self._js.add_stream(
-                StreamConfig(
-                    name=self._stream,
-                    subjects=[self._subject],
-                    retention=RetentionPolicy.LIMITS,
-                    storage=StorageType.FILE,
-                    max_age=86400 * 14,
-                )
-            )
-            log.info("jetstream_stream_created", stream=self._stream, subject=self._subject)
+        from eidolon.memory.config.memory_settings import get_memory_settings
+
+        await ensure_memory_stream(self._js, get_memory_settings())
 
     async def close(self) -> None:
         if self._nc is not None:

@@ -34,10 +34,14 @@ class WingDefinition(BaseModel):
 class RecallPolicy(BaseModel):
     top_k: int = 5
     timeout_seconds: float = 1.5
+    livekit_timeout_seconds: float = 0.6
     recency_weight: float = 0.35
     filter_taboo_statuses: list[str] = Field(
         default_factory=lambda: ["taboo", "archived"]
     )
+    voice_wings: list[str] = Field(default_factory=list)
+    exclude_recent_minutes: int = 10
+    exclude_current_session: bool = True
 
 
 class StewardConfig(BaseModel):
@@ -57,9 +61,22 @@ class LlmConfig(BaseModel):
     temperature: float = 0.1
 
 
+class ReadRuntimeConfig(BaseModel):
+    max_wing_parallel: int = 0  # 0 = auto (see cpu_env.recommend_max_wing_parallel)
+    search_executor_threads: int = 0  # 0 = auto from omp + cores
+    omp_num_threads: int = 0  # 0 = auto from CPU + role
+    generation_path: str = ""
+    hierarchy_cache_seconds: int = 0
+    background_reconcile: bool = True
+    double_buffer_staging: bool = True
+    shared_query_embedding: bool = True
+    voice_skip_closets: bool = True
+
+
 class RuntimeConfig(BaseModel):
     palace_path: str = ""
     fake_backend: bool = False
+    read: ReadRuntimeConfig = Field(default_factory=ReadRuntimeConfig)
 
 
 class NatsConfig(BaseModel):
@@ -68,6 +85,10 @@ class NatsConfig(BaseModel):
     subject: str = "agent.memory.conversation.turn"
     durable: str = "eidolon-memory-worker"
     stream_max_age_seconds: int = 86400 * 14
+    stream_max_msgs: int = 5000
+    stream_max_bytes: int = 536_870_912
+    worker_max_deliveries: int = 3
+    dlq_log_path: str = "logs/memory_dlq.jsonl"
 
 
 class FilterConfig(BaseModel):

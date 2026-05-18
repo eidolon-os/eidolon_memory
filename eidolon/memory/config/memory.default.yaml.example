@@ -66,8 +66,16 @@ wings:
 recall:
   top_k: 5
   timeout_seconds: 1.5
+  livekit_timeout_seconds: 0.6
   recency_weight: 0.35
   filter_taboo_statuses: ["taboo", "archived"]
+  exclude_recent_minutes: 10
+  exclude_current_session: true
+  voice_wings:
+    - Wing_Profile
+    - Wing_Interaction
+    - Wing_Emotion
+    - Wing_Life
 
 steward:
   mode: "llm"
@@ -87,6 +95,16 @@ llm:
 runtime:
   palace_path: ""
   fake_backend: false
+  read:
+    max_wing_parallel: 0          # 0=按 CPU/角色自动（LiveKit 约 2~3）
+    search_executor_threads: 0    # 0=自动
+    omp_num_threads: 0            # 0=自动；手动覆盖可写 2/4
+    generation_path: ""
+    hierarchy_cache_seconds: 0
+    background_reconcile: true
+    double_buffer_staging: true
+    shared_query_embedding: true  # 每轮只 embed 一次 query（多 wing）
+    voice_skip_closets: true      # 语音快路径跳过 closets 二次向量查询
 
 nats:
   url: "nats://127.0.0.1:4222"
@@ -94,6 +112,10 @@ nats:
   subject: "agent.memory.conversation.turn"
   durable: "eidolon-memory-worker"
   stream_max_age_seconds: 1209600
+  stream_max_msgs: 5000
+  stream_max_bytes: 536870912
+  worker_max_deliveries: 3
+  dlq_log_path: "logs/memory_dlq.jsonl"
 
 mcp_http:
   host: "127.0.0.1"

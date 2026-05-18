@@ -27,7 +27,7 @@ def test_mcp_http_base_url_from_yaml(tmp_path):
 
 def test_build_server_registers_tools(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
-    mcp_server.reset_backend_cache()
+    mcp_server.reset_read_session()
     server = mcp_server.build_server()
     tool_names = {t.name for t in server._tool_manager.list_tools()}
     assert "eidolon_memory_search" in tool_names

@@ -1,4 +1,4 @@
-"""Synchronous-style MCP recall for the LiveKit hot path (companion default)."""
+"""Single-wing recall facade. For LiveKit voice use :class:`LiveKitRecallService`."""
 
 from __future__ import annotations
 

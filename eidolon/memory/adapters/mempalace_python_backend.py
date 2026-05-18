@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import datetime
@@ -27,6 +28,22 @@ class MemPalacePythonBackend(MemoryBackend):
         self._palace = palace_path
 
     async def search(
+        self,
+        query: str,
+        *,
+        wing: str,
+        n_results: int = 5,
+        room: str | None = None,
+    ) -> list[MemoryWireRecord]:
+        return await asyncio.to_thread(
+            self.search_sync,
+            query,
+            wing=wing,
+            n_results=n_results,
+            room=room,
+        )
+
+    def search_sync(
         self,
         query: str,
         *,

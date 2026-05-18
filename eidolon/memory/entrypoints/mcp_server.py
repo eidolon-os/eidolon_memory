@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from typing import Any
 
-from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.application.admin_visibility import admin_row_visible
 from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hierarchy_snapshot
 from eidolon.memory.application.public_recall import (
@@ -12,39 +13,112 @@ from eidolon.memory.application.public_recall import (
     search_all_wings_mcp_style,
     wire_record_to_public_dict,
 )
+from eidolon.memory.application.runtime_warm import warm_palace_read_path
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
 from eidolon.memory.config.palace_directory import resolve_palace_directory
+from eidolon.memory.domain.errors import MemoryBackendUnavailable
+from eidolon.memory.infrastructure.chroma_refresh import (
+    close_mempalace_palace,
+    is_transient_index_error,
+)
+from eidolon.memory.infrastructure.palace_read_session import PalaceReadSession
+from eidolon.memory.support.logging import get_logger
 
-_backend: MemPalacePythonBackend | None = None
+log = get_logger(__name__)
+
+_read_session: PalaceReadSession | None = None
 
 
-async def _get_backend() -> MemPalacePythonBackend:
-    global _backend
-    if _backend is not None:
-        return _backend
+def _palace_path(settings: MemorySettings | None = None) -> str:
+    return str(resolve_palace_directory(settings or get_memory_settings()))
+
+
+def get_read_session(settings: MemorySettings | None = None) -> PalaceReadSession:
+    global _read_session
+    if _read_session is None:
+        mem = settings or get_memory_settings()
+        _read_session = PalaceReadSession(mem, _palace_path(mem))
+    return _read_session
+
+
+def reset_read_session() -> None:
+    """Clear process-local read session (tests / smoke)."""
+    global _read_session
+    if _read_session is not None:
+        _read_session.close()
+    _read_session = None
+
+
+async def _mcp_search(
+    *,
+    query: str,
+    user_id: str,
+    top_k: int,
+    wing: str | None,
+    room: str | None,
+) -> list:
     settings = get_memory_settings()
-    palace = str(resolve_palace_directory(settings))
-    _backend = MemPalacePythonBackend(settings, palace)
-    return _backend
+    palace = _palace_path(settings)
+    session = get_read_session(settings)
+    last_exc: BaseException | None = None
 
+    for attempt in range(2):
+        await session.ensure_fresh()
+        backend = await session.active_backend()
+        try:
+            return await search_all_wings_mcp_style(
+                backend,
+                settings,
+                query=query,
+                user_id=user_id or "default",
+                top_k=top_k,
+                wing=wing,
+                room=room,
+                for_voice=False,
+                palace_path=palace,
+            )
+        except MemoryBackendUnavailable as exc:
+            last_exc = exc
+            if attempt == 0 and is_transient_index_error(exc):
+                close_mempalace_palace(palace)
+                reset_read_session()
+                await asyncio.sleep(1.5)
+                continue
+            raise
 
-def reset_backend_cache() -> None:
-    """Clear the process-local backend singleton (tests / smoke)."""
-    global _backend
-    _backend = None
+    if last_exc is not None:
+        raise last_exc
+    return []
 
 
 def build_server(settings: MemorySettings | None = None):
     """Build the MCP server lazily so importing this module does not require mcp."""
     from mcp.server.fastmcp import FastMCP
 
-    cfg = (settings or get_memory_settings()).mcp_http
+    mem_settings = settings or get_memory_settings()
+    cfg = mem_settings.mcp_http
+
+    @asynccontextmanager
+    async def _lifespan(_app: object):
+        from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
+
+        apply_cpu_thread_env(mem_settings, role="mcp")
+        palace = _palace_path(mem_settings)
+        log.info("mcp_runtime_warm_start", palace=palace)
+        try:
+            await warm_palace_read_path(mem_settings, palace, role="mcp")
+        except Exception as exc:
+            log.warning("mcp_runtime_warm_failed", error=str(exc))
+        yield
+        reset_read_session()
+
     mcp = FastMCP(
         "eidolon-memory",
         host=cfg.host,
         port=cfg.port,
         streamable_http_path=cfg.path if cfg.path.startswith("/") else f"/{cfg.path}",
         stateless_http=cfg.stateless_http,
+        lifespan=_lifespan,
     )
 
     @mcp.tool()
@@ -56,13 +130,9 @@ def build_server(settings: MemorySettings | None = None):
         room: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search Eidolon memory without exposing MemPalace tool details."""
-        backend = await _get_backend()
-        mem_settings = get_memory_settings()
-        records = await search_all_wings_mcp_style(
-            backend,
-            mem_settings,
+        records = await _mcp_search(
             query=query,
-            user_id=user_id or "default",
+            user_id=user_id,
             top_k=top_k,
             wing=wing,
             room=room,
@@ -76,13 +146,9 @@ def build_server(settings: MemorySettings | None = None):
         top_k: int = 5,
     ) -> dict[str, Any]:
         """Return both structured records and a compact context block."""
-        backend = await _get_backend()
-        mem_settings = get_memory_settings()
-        records = await search_all_wings_mcp_style(
-            backend,
-            mem_settings,
+        records = await _mcp_search(
             query=query,
-            user_id=user_id or "default",
+            user_id=user_id,
             top_k=top_k,
             wing=None,
             room=None,
@@ -96,14 +162,16 @@ def build_server(settings: MemorySettings | None = None):
     async def eidolon_memory_status() -> dict[str, Any]:
         """Report memory server configuration."""
         mem_settings = get_memory_settings()
+        session = get_read_session(mem_settings)
         return {
             "backend": "mempalace-python",
             "backend_configured": True,
-            "palace_path": str(resolve_palace_directory(mem_settings)),
+            "palace_path": _palace_path(mem_settings),
             "steward_mode": mem_settings.steward.mode,
             "mcp_transport": "streamable-http",
             "mcp_http_url": mem_settings.mcp_http.base_url(),
             "wings": [w.model_dump() for w in mem_settings.wings],
+            "palace_generation": session.current_generation(),
         }
 
     @mcp.tool()
@@ -114,7 +182,7 @@ def build_server(settings: MemorySettings | None = None):
         include_private: bool = False,
     ) -> dict[str, Any]:
         """Paginated listing aligned with Admin scan (omit tenant for full palace)."""
-        backend = await _get_backend()
+        backend = await get_read_session().active_backend()
         tid = tenant_id.strip()
         lim = max(1, min(limit, 5000))
         off = max(0, offset)
@@ -127,12 +195,12 @@ def build_server(settings: MemorySettings | None = None):
 
     @mcp.tool()
     async def eidolon_memory_delete(key: str, user_id: str = "") -> dict[str, Any]:
-        """Delete a drawer by MemPalace id (expects ``drawer_*`` prefix)."""
+        """Delete a drawer by MemPalace id (dev/ops only; production writes go via Worker)."""
         del user_id
         if not key.startswith("drawer_"):
             msg = "key must be a MemPalace drawer_* id"
             raise ValueError(msg)
-        backend = await _get_backend()
+        backend = await get_read_session().active_backend()
         await backend.delete("", key)
         return {"status": "deleted", "key": key}
 
@@ -142,7 +210,7 @@ def build_server(settings: MemorySettings | None = None):
         max_drawers_per_room: int = 48,
     ) -> dict[str, Any]:
         """Return wing→room→drawer tree snapshot (bounded scan) matching Admin hierarchy."""
-        backend = await _get_backend()
+        backend = await get_read_session().active_backend()
         mem_settings = get_memory_settings()
         mr = max(50, min(max_records, 50_000))
         md = max(4, min(max_drawers_per_room, 400))

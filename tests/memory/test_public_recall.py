@@ -89,3 +89,41 @@ async def test_group_recall_context_non_empty_when_hits():
     ]
     ctx = group_recall_context(hits)
     assert "事件" in ctx or "生活" in ctx
+
+
+@pytest.mark.asyncio
+async def test_single_wing_voice_uses_shared_embedding_path(monkeypatch):
+    """Single wing + palace_path should use fast path when for_voice=True."""
+    settings = get_memory_settings()
+    backend = FakeMemoryBackend()
+    calls: list[list[str]] = []
+
+    async def _fake_shared(
+        palace_path: str,
+        _settings,
+        *,
+        query: str,
+        wings: list[str],
+        room: str | None,
+        top_k: int,
+        user_id: str,
+    ):
+        calls.append(list(wings))
+        return []
+
+    monkeypatch.setattr(
+        "eidolon.memory.application.public_recall._search_voice_shared_embedding",
+        _fake_shared,
+    )
+    await search_all_wings_mcp_style(
+        backend,
+        settings,
+        query="test",
+        user_id="alice",
+        top_k=3,
+        wing="Wing_Profile",
+        room=None,
+        for_voice=True,
+        palace_path="/tmp/fake-palace",
+    )
+    assert calls == [["Wing_Profile"]]

@@ -7,6 +7,8 @@
 #   ./deploy/dev/init.sh --full           # 完整 mempalace init（默认）
 #   ./deploy/dev/init.sh --skip-sync      # 不跑 uv sync
 #   ./deploy/dev/init.sh --with-admin     # 额外 uv sync --extra admin
+#   ./deploy/dev/init.sh --skip-warm      # 跳过 ONNX 模型 / closets / 搜索预热
+#   ./deploy/dev/init.sh --warm-all-wings # 对每个 wing 做一次搜索 dry-run
 #
 set -euo pipefail
 
@@ -24,6 +26,8 @@ EXAMPLE_YAML="${CFG_DIR}/memory.default.yaml.example"
 MODE="full"
 DO_SYNC=1
 WITH_ADMIN=0
+DO_WARM=1
+WARM_ALL_WINGS=0
 
 usage() {
   sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
@@ -33,6 +37,8 @@ usage() {
   echo "  --full         完整 mempalace init（默认）"
   echo "  --skip-sync    跳过 uv sync"
   echo "  --with-admin   同步安装 admin 可选依赖（Admin UI）"
+  echo "  --skip-warm    跳过 Chroma ONNX / closets / 搜索预热"
+  echo "  --warm-all-wings  预热时对每个 wing 做搜索 dry-run（较慢）"
   echo "  -h, --help     显示帮助"
 }
 
@@ -42,6 +48,8 @@ while [[ $# -gt 0 ]]; do
     --full) MODE="full" ;;
     --skip-sync) DO_SYNC=0 ;;
     --with-admin) WITH_ADMIN=1 ;;
+    --skip-warm) DO_WARM=0 ;;
+    --warm-all-wings) WARM_ALL_WINGS=1 ;;
     -h | --help)
       usage
       exit 0
@@ -154,6 +162,21 @@ print(get_collection('${PALACE}', create=False).count())
 else
   error "初始化后仍未找到 mempalace_drawers。"
   exit 1
+fi
+
+if [[ "$DO_WARM" == 1 ]]; then
+  info "预热运行时资源（Chroma ONNX ~79MB、mempalace_closets、搜索路径）…"
+  if [[ "$WARM_ALL_WINGS" == 1 ]]; then
+    warm_cmd=(uv run python "${REPO_ROOT}/scripts/warm_dev_runtime.py" --all-wings)
+  else
+    warm_cmd=(uv run python "${REPO_ROOT}/scripts/warm_dev_runtime.py")
+  fi
+  if ! "${warm_cmd[@]}"; then
+    error "运行时预热失败。可稍后重试，或使用: $0 --skip-warm"
+    exit 1
+  fi
+else
+  warn "已跳过运行时预热（--skip-warm）。首次搜索可能仍需下载 ~/.cache/chroma/onnx_models/。"
 fi
 
 info "检查 NATS JetStream（${PALACE} 不依赖此项，但 worker 需要）…"
