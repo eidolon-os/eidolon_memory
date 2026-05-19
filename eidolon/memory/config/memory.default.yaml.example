@@ -74,6 +74,13 @@ recall:
     - Wing_Interaction
     - Wing_Emotion
     - Wing_Life
+  # KG fusion (T3) — recall_context queries the per-user KG in parallel with vector.
+  kg_in_recall: true                # master switch; false = vector-only
+  kg_timeout_seconds: 0.05          # KG hard timeout; over → degrade to vector-only
+  kg_window_days: 30                # timeline window for `as_of` queries
+  kg_max_entities: 3                # cap entities matched per query
+  kg_max_triples_per_entity: 8      # cap triples returned per entity
+  kg_entity_cache_ttl_seconds: 60.0 # entity-name cache TTL for routing heuristic
 
 steward:
   mode: "llm"

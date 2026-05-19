@@ -40,6 +40,13 @@ class RecallPolicy(BaseModel):
     voice_wings: list[str] = Field(default_factory=list)
     exclude_recent_minutes: int = 10
     exclude_current_session: bool = True
+    # KG plan §5.6
+    kg_in_recall: bool = True
+    kg_timeout_seconds: float = 0.05
+    kg_window_days: int = 30
+    kg_max_entities: int = 3
+    kg_max_triples_per_entity: int = 8
+    kg_entity_cache_ttl_seconds: float = 60.0
 
 
 class StewardConfig(BaseModel):

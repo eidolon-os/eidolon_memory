@@ -15,6 +15,7 @@ from eidolon.memory.application.admin_visibility import admin_row_visible
 from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hierarchy_snapshot
 from eidolon.memory.application.public_recall import (
     group_recall_context,
+    recall_with_kg_fusion,
     search_all_wings_mcp_style,
     wire_record_to_public_dict,
 )
@@ -91,26 +92,34 @@ def build_control_plane_mcp(
         query: str,
         top_k: int = 5,
         voice: bool = False,
+        include_kg: bool | None = None,
+        include_sensitive_kg: bool = False,
     ) -> dict[str, Any]:
-        """Return both structured records and a grouped context block.
+        """Aggregated recall: vector + (optional) KG triples in parallel.
 
         ``voice=True`` enables the LiveKit hot-path optimizations
         (shared query embedding across wings, skip closets); the LiveKit
         pipeline calls the same code via ``LiveKitRecallService.recall_context``.
+        ``include_kg`` defaults to settings.recall.kg_in_recall.
+        ``include_sensitive_kg`` opt-in for health predicates.
         """
-        records = await search_all_wings_mcp_style(
+        want_kg = settings.recall.kg_in_recall if include_kg is None else include_kg
+        fused = await recall_with_kg_fusion(
             backend,
             settings,
             query=query,
             user_id=user_id,
             top_k=top_k,
-            wing=None,
-            room=None,
+            kg=kg if want_kg else None,
             for_voice=voice,
             palace_path=palace_path,
+            include_sensitive_kg=include_sensitive_kg,
         )
+        records = fused["vector"]
+        kg_records = fused["kg"]
         return {
-            "context": group_recall_context(records),
+            "context": group_recall_context(records, kg_triples=kg_records),
+            "kg_triples": [t.model_dump(mode="json") for t in kg_records],
             "records": [wire_record_to_public_dict(r) for r in records],
         }
 

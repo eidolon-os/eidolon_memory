@@ -12,6 +12,7 @@ from typing import Any
 
 from eidolon.memory.application.public_recall import (
     group_recall_context,
+    recall_with_kg_fusion,
     search_all_wings_mcp_style,
     wire_record_to_public_dict,
 )
@@ -32,10 +33,12 @@ class LiveKitRecallService:
         settings: MemorySettings,
         *,
         palace_path: str,
+        kg: Any = None,
     ) -> None:
         self._backend = backend
         self._settings = settings
         self._palace_path = palace_path
+        self._kg = kg
 
     async def recall_context(
         self,
@@ -65,45 +68,32 @@ class LiveKitRecallService:
         k = top_k if top_k is not None else self._settings.recall.top_k
         timeout = self._settings.recall.livekit_timeout_seconds
         try:
-            records = await asyncio.wait_for(
-                self._recall_records(
-                    query,
+            fused = await asyncio.wait_for(
+                recall_with_kg_fusion(
+                    self._backend,
+                    self._settings,
+                    query=query,
                     user_id=user_id,
-                    session_id=session_id,
                     top_k=k,
+                    kg=self._kg,
+                    for_voice=True,
+                    session_id=session_id,
+                    user_utterance=query,
+                    palace_path=self._palace_path,
                 ),
                 timeout=timeout,
             )
+            vector_records = fused["vector"]
+            kg_records = fused["kg"]
             return {
-                "context": group_recall_context(records),
-                "records": [wire_record_to_public_dict(r) for r in records],
+                "context": group_recall_context(vector_records, kg_triples=kg_records),
+                "records": [wire_record_to_public_dict(r) for r in vector_records],
+                "kg_triples": [t.model_dump(mode="json") for t in kg_records],
                 "degraded": False,
             }
         except TimeoutError:
             log.warning("livekit_recall_degraded", reason="timeout", query_len=len(query))
-            return {"context": "", "records": [], "degraded": True}
+            return {"context": "", "records": [], "kg_triples": [], "degraded": True}
         except Exception as exc:
             log.warning("livekit_recall_degraded", reason="error", error=str(exc))
-            return {"context": "", "records": [], "degraded": True}
-
-    async def _recall_records(
-        self,
-        query: str,
-        *,
-        user_id: str,
-        session_id: str,
-        top_k: int,
-    ) -> list[MemoryWireRecord]:
-        return await search_all_wings_mcp_style(
-            self._backend,
-            self._settings,
-            query=query,
-            user_id=user_id,
-            top_k=top_k,
-            wing=None,
-            room=None,
-            for_voice=True,
-            session_id=session_id,
-            user_utterance=query,
-            palace_path=self._palace_path,
-        )
+            return {"context": "", "records": [], "kg_triples": [], "degraded": True}

@@ -53,7 +53,7 @@ def _extract_records(call_result) -> list[dict]:
     return data.get("records") or []
 
 
-async def _run(url: str, *, count: int, queries: list[str], voice: bool) -> dict:
+async def _run(url: str, *, count: int, queries: list[str], voice: bool, with_kg: bool) -> dict:
     latencies_ms: list[float] = []
     errors = 0
     hit_count = 0
@@ -69,7 +69,7 @@ async def _run(url: str, *, count: int, queries: list[str], voice: bool) -> dict
             warm_q = rng.choice(queries)
             await sess.call_tool(
                 "eidolon_memory_recall_context",
-                arguments={"query": warm_q, "top_k": 5, "voice": voice},
+                arguments={"query": warm_q, "top_k": 5, "voice": voice, "include_kg": with_kg},
             )
 
             for i in range(count):
@@ -78,7 +78,7 @@ async def _run(url: str, *, count: int, queries: list[str], voice: bool) -> dict
                 try:
                     res = await sess.call_tool(
                         "eidolon_memory_recall_context",
-                        arguments={"query": q, "top_k": 5, "voice": voice},
+                        arguments={"query": q, "top_k": 5, "voice": voice, "include_kg": with_kg},
                     )
                 except Exception:
                     errors += 1
@@ -127,6 +127,11 @@ def main() -> int:
         help="Use the LiveKit hot path (shared query embedding across wings).",
     )
     parser.add_argument(
+        "--with-kg",
+        action="store_true",
+        help="Pass include_kg=true to recall_context (KG plan §5.7 KG-V7 bench).",
+    )
+    parser.add_argument(
         "--out",
         default="",
         help="Optional JSON output path",
@@ -135,9 +140,14 @@ def main() -> int:
 
     queries = args.query if args.query else _DEFAULT_QUERIES
     row = asyncio.run(
-        _run(args.url, count=args.count, queries=queries, voice=args.voice)
+        _run(
+            args.url, count=args.count, queries=queries,
+            voice=args.voice, with_kg=args.with_kg,
+        )
     )
-    row["mode"] = "voice" if args.voice else "non-voice"
+    row["mode"] = ("voice" if args.voice else "non-voice") + (
+        "+kg" if args.with_kg else ""
+    )
     print(json.dumps(row, indent=2, ensure_ascii=False))
 
     if args.out:

@@ -10,6 +10,9 @@ from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import MemoryReader
 from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.support.logging import get_logger
+
+log = get_logger(__name__)
 
 
 def wire_record_to_public_dict(rec: MemoryWireRecord) -> dict[str, Any]:
@@ -28,7 +31,15 @@ def recall_record_visible_for_user(rec: MemoryWireRecord, user_id: str) -> bool:
     return not meta_user or meta_user == user_id
 
 
-def group_recall_context(records: list[MemoryWireRecord]) -> str:
+def group_recall_context(
+    records: list[MemoryWireRecord],
+    *,
+    kg_triples: list | None = None,
+) -> str:
+    """Compose context block. Vector fragments grouped by memory_type;
+    KG triples (if any) appear as a separate section so the LLM can treat
+    structured facts differently from semantic memories.
+    """
     groups: dict[str, list[str]] = {
         "个人画像与健康": [],
         "人机互动": [],
@@ -62,6 +73,13 @@ def group_recall_context(records: list[MemoryWireRecord]) -> str:
         if items:
             lines.append(f"{title}:")
             lines.extend(f"- {item}" for item in items[:4])
+
+    if kg_triples:
+        from eidolon.memory.application.kg_recall import transcribe_triples
+
+        if lines:
+            lines.append("")
+        lines.append(transcribe_triples(kg_triples))
     return "\n".join(lines)
 
 
@@ -87,6 +105,117 @@ def _effective_wing_parallel(settings: MemorySettings, *, for_voice: bool) -> in
     if explicit > 0:
         return explicit
     return max(1, min(4, __import__("os").cpu_count() or 4 // 2))
+
+
+async def recall_with_kg_fusion(
+    backend: MemoryReader,
+    settings: MemorySettings,
+    *,
+    query: str,
+    user_id: str,
+    top_k: int,
+    kg: object | None,
+    for_voice: bool = False,
+    session_id: str = "",
+    user_utterance: str = "",
+    palace_path: str | None = None,
+    include_sensitive_kg: bool = False,
+) -> dict[str, list]:
+    """KG plan §5: parallel vector + KG via ``asyncio.gather``.
+
+    Returns ``{"vector": [MemoryWireRecord], "kg": [KgTripleRecord]}``. The KG
+    side honors :data:`RecallPolicy.kg_timeout_seconds` (default 0.05s);
+    timeout silently degrades to vector-only — never raises into the caller so
+    LiveKit's 300ms budget stays intact.
+    """
+    from eidolon.memory.application.kg_recall import (
+        cached_entity_names,
+        extract_entity_candidates,
+        query_kg_for_recall,
+    )
+
+    vector_task = asyncio.create_task(
+        search_all_wings_mcp_style(
+            backend,
+            settings,
+            query=query,
+            user_id=user_id,
+            top_k=top_k,
+            wing=None,
+            room=None,
+            for_voice=for_voice,
+            session_id=session_id,
+            user_utterance=user_utterance,
+            palace_path=palace_path,
+        )
+    )
+
+    kg_task: asyncio.Task | None = None
+    if kg is not None and settings.recall.kg_in_recall:
+        # voice path keeps the hard 50ms (LiveKit 300ms budget); non-voice gets
+        # a more generous window because admin/IDE callers don't share the
+        # LiveKit deadline and the vector path may saturate the to_thread
+        # executor with ONNX work for many seconds on a cold first call.
+        kg_timeout = (
+            settings.recall.kg_timeout_seconds if for_voice else 1.0
+        )
+        kg_task = asyncio.create_task(
+            _kg_path_with_timeout(
+                kg,
+                query=query,
+                ttl_seconds=settings.recall.kg_entity_cache_ttl_seconds,
+                max_entities=settings.recall.kg_max_entities,
+                window_days=settings.recall.kg_window_days,
+                max_triples_per_entity=settings.recall.kg_max_triples_per_entity,
+                timeout_s=kg_timeout,
+                include_sensitive=include_sensitive_kg,
+            )
+        )
+
+    vector_records = await vector_task
+    kg_records = await kg_task if kg_task is not None else []
+    return {"vector": vector_records, "kg": kg_records}
+
+
+async def _kg_path_with_timeout(
+    kg,
+    *,
+    query: str,
+    ttl_seconds: float,
+    max_entities: int,
+    window_days: int,
+    max_triples_per_entity: int,
+    timeout_s: float,
+    include_sensitive: bool,
+) -> list:
+    """One combined SQL for all candidate entities; degrade silently on timeout."""
+    from eidolon.memory.application.kg_recall import (
+        cached_entity_names,
+        extract_entity_candidates,
+        query_kg_for_recall,
+    )
+
+    try:
+        async def _inner():
+            names = await cached_entity_names(kg, ttl_seconds=ttl_seconds)
+            candidates = extract_entity_candidates(query, names, cap=max_entities)
+            if not candidates:
+                return []
+            return await query_kg_for_recall(
+                kg,
+                entity_names=candidates,
+                window_days=window_days,
+                max_triples_per_entity=max_triples_per_entity,
+                include_sensitive=include_sensitive,
+            )
+
+        return await asyncio.wait_for(_inner(), timeout=timeout_s)
+    except (TimeoutError, asyncio.TimeoutError):
+        log.warning("kg_recall_timeout", timeout_s=timeout_s)
+        return []
+    except Exception as exc:
+        log.warning("kg_recall_failed", error=str(exc))
+        return []
 
 
 async def search_all_wings_mcp_style(
