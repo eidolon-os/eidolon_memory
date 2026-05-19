@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 
 
 class MemoryCreateRequest(BaseModel):
-    wing: str = Field(description="Semantic wing id (matches NATS MEMORY_STORE / ingest wing).")
+    user_id: str = Field(description="Agent runner user (NATS + palace routing).")
+    wing: str = Field(description="Semantic wing id for steward ingest.")
     room: str = Field(description="Room id within the wing.")
     text: str
     metadata: dict[str, Any] | None = None
@@ -22,19 +23,29 @@ class MemoryListResponse(BaseModel):
     records: list[dict[str, Any]]
     total_hint: int | None = Field(
         default=None,
-        description="Row count for this page; full collection size may be larger when paginating.",
+        description="Row count for this page.",
     )
+
+
+class UserStatusOut(BaseModel):
+    user_id: str
+    port: int
+    enabled: bool = True
+    palace_path: str
+    mcp_http_url: str
+    agent_reachable: bool = False
+    runner_status: dict[str, Any] | None = None
+    runner_status_error: str | None = None
 
 
 class HealthResponse(BaseModel):
     ok: bool = True
-    palace_path: str
     steward_mode: str
+    default_user_id: str
+    users: list[UserStatusOut]
 
 
 class MemPalaceLayerInfo(BaseModel):
-    """One level in the palace hierarchy (conceptual tier)."""
-
     level: str = Field(description="Machine id: palace | wing | room | drawer.")
     title: str = Field(description="Chinese short title for UI.")
     description: str

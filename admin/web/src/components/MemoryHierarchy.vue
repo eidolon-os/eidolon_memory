@@ -2,7 +2,9 @@
 import { ref, watch } from 'vue'
 import type { HierarchyWingOut, MemPalaceHierarchyResponse } from '../api/client'
 import { fetchHierarchy } from '../api/client'
+import { useAdminUserId } from '../composables/useAdminUser'
 
+const userId = useAdminUserId()
 const maxRecords = ref(8000)
 const maxDrawersPreview = ref(48)
 const data = ref<MemPalaceHierarchyResponse | null>(null)
@@ -18,7 +20,7 @@ async function load() {
       max_records: String(maxRecords.value),
       max_drawers_per_room: String(maxDrawersPreview.value),
     })
-    data.value = await fetchHierarchy(p)
+    data.value = await fetchHierarchy(userId.value, p)
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -26,7 +28,7 @@ async function load() {
   }
 }
 
-watch([maxRecords, maxDrawersPreview], load, { immediate: true })
+watch([userId, maxRecords, maxDrawersPreview], load, { immediate: true })
 
 function wingTitle(w: HierarchyWingOut): string {
   if (w.display_name) {
@@ -40,8 +42,7 @@ function wingTitle(w: HierarchyWingOut): string {
   <section class="panel hierarchy-page">
     <h2>MemPalace 层级总览</h2>
     <p class="muted">
-      自上而下四层：<strong>宫殿 → 翼 → 阁 → 抽屉</strong>。下方「已配置翼」来自当前载入的 YAML；树中数据是对底层存储的一次扫描聚合（大批量宫殿可调高
-      max_records）。
+      用户 <code>{{ userId }}</code> 的宫殿 · 自上而下四层：<strong>宫殿 → 翼 → 阁 → 抽屉</strong>。
     </p>
 
     <div class="row gap knobs">
@@ -115,9 +116,7 @@ function wingTitle(w: HierarchyWingOut): string {
 
       <article v-if="data.extra_wings.length">
         <h3>数据中多出的翼（未出现在 YAML）</h3>
-        <p class="muted">
-          例如历史 NATS 把租户写在 <code>wing</code> 字段、或与旧模板混用时可在此出现。
-        </p>
+        <p class="muted">例如历史数据把租户写在 <code>wing</code> 字段时可在此出现。</p>
         <div v-for="w in data.extra_wings" :key="w.wing_id" class="wing-block extra">
           <details>
             <summary>

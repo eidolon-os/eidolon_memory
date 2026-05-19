@@ -1,4 +1,4 @@
-"""Eidolon memory admin HTTP API."""
+"""Eidolon memory admin HTTP API (D1: per-user agent_runner control-plane)."""
 
 from __future__ import annotations
 
@@ -6,28 +6,33 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from mcp_sessions import UserMcpSessionManager
 from routers.health import router as health_router
 from routers.hierarchy import router as hierarchy_router
 from routers.memories import router as memories_router
 
-from eidolon.memory.infrastructure.mcp_http_client import eidolon_memory_mcp_http_session
+from eidolon.memory.config.memory_settings import get_memory_settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Keep one Streamable HTTP MCP session for the lifetime of the Admin API."""
-    async with eidolon_memory_mcp_http_session() as session:
-        app.state.mcp_session = session
+    settings = get_memory_settings()
+    manager = UserMcpSessionManager(settings)
+    await manager.open()
+    app.state.mcp_manager = manager
+    try:
         yield
+    finally:
+        await manager.close()
 
 
 app = FastAPI(
     title="Eidolon Memory Admin",
-    version="0.1.0",
+    version="0.2.0",
     description=(
-        "Read memories via MCP Streamable HTTP tools; enqueue writes on JetStream for the "
-        "memory worker. Start deploy/dev/run_all.sh before Admin. "
-        "Set EIDOLON_MEMORY_ADMIN_TOKEN to require Bearer auth."
+        "D1: reads call each user's agent_runner MCP (users.yaml port); writes publish "
+        "ConversationTurnPayload to agent.memory.conversation.turn.<user_id>. "
+        "Start eidolon-memory-supervisor or eidolon-memory-agent before Admin."
     ),
     lifespan=lifespan,
 )

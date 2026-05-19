@@ -1,14 +1,18 @@
-"""FastAPI deps: MCP HTTP session, JetStream publisher, optional Bearer auth."""
+"""FastAPI deps: per-user MCP sessions, JetStream publisher, optional Bearer auth."""
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Query, Request
 from mcp.client.session import ClientSession
 
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
+from eidolon.memory.config.users import UserEntry
 from eidolon.memory.infrastructure.nats.turns import JetStreamTurnPublisher
+
+from mcp_sessions import UserMcpSessionManager
+from user_registry import resolve_user_entry
 
 _publisher: JetStreamTurnPublisher | None = None
 
@@ -32,18 +36,43 @@ async def verify_admin_optional(
         raise HTTPException(status_code=403, detail="invalid token")
 
 
-def get_mcp_session(request: Request) -> ClientSession:
-    session = getattr(request.app.state, "mcp_session", None)
-    if session is None:
+def get_mcp_manager(request: Request) -> UserMcpSessionManager:
+    manager = getattr(request.app.state, "mcp_manager", None)
+    if manager is None:
         raise HTTPException(
             status_code=503,
-            detail="MCP HTTP session is not ready; start deploy/dev/run_all.sh first",
+            detail="MCP session manager not ready; start eidolon-memory-agent / supervisor first",
         )
-    return session
+    return manager
+
+
+def resolve_user(
+    settings: MemorySettings,
+    user_id: str | None,
+) -> UserEntry:
+    return resolve_user_entry(settings, user_id)
+
+
+async def get_mcp_session(
+    request: Request,
+    settings: Annotated[MemorySettings, Depends(get_memory_settings_cached)],
+    user_id: Annotated[str, Query(description="users.yaml id; selects agent_runner MCP port")],
+    manager: Annotated[UserMcpSessionManager, Depends(get_mcp_manager)],
+) -> ClientSession:
+    entry = resolve_user(settings, user_id)
+    try:
+        return await manager.get_session(entry)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"cannot connect to agent_runner for user {entry.id!r} "
+                f"on port {entry.port}: {exc}"
+            ),
+        ) from exc
 
 
 async def get_turn_publisher() -> JetStreamTurnPublisher:
-    """Lazily connect a JetStream publisher (Admin writes go through the worker pipeline)."""
     global _publisher
     if _publisher is None:
         _publisher = JetStreamTurnPublisher.from_memory_settings(get_memory_settings())

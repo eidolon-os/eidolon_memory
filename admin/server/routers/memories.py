@@ -1,4 +1,4 @@
-"""Memory HTTP surface: reads via MCP tools, writes via JetStream (worker)."""
+"""Memory HTTP: reads via per-user MCP; writes via per-user JetStream subject."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ from datetime import UTC, datetime
 
 from dependencies import AdminAuth, McpSessionDep, SettingsDep, TurnPublisherDep
 from fastapi import APIRouter, HTTPException, Query
+from mcp_client import call_tool_json
 from schemas import MemoryCreateRequest, MemoryListResponse, MemorySearchResponse
+from user_registry import resolve_user_entry
 
 from eidolon.memory.domain.payloads import ConversationTurnPayload
-from eidolon.memory.infrastructure.mcp_http_client import call_tool_json
 
 router = APIRouter(prefix="/memories", tags=["memories"])
 
@@ -20,14 +21,13 @@ async def search_memories(
     _: AdminAuth,
     mcp: McpSessionDep,
     query: str = Query(..., min_length=1),
-    user_id: str = Query("default"),
+    user_id: str = Query(..., description="users.yaml agent id"),
     top_k: int = Query(5, ge=1, le=100),
     wing: str | None = None,
     room: str | None = None,
 ) -> MemorySearchResponse:
     args: dict[str, object] = {
         "query": query,
-        "user_id": user_id,
         "top_k": top_k,
         "wing": wing,
         "room": room,
@@ -45,20 +45,12 @@ async def search_memories(
 async def list_memories(
     _: AdminAuth,
     mcp: McpSessionDep,
-    tenant_id: str | None = Query(
-        None,
-        description=(
-            "Omit or leave empty to paginate across all drawers in this palace. "
-            "Otherwise filter rows whose metadata matches this ``user_id`` or ``wing``."
-        ),
-    ),
+    user_id: str = Query(..., description="users.yaml agent id"),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     include_private: bool = Query(False),
 ) -> MemoryListResponse:
-    tid = (tenant_id or "").strip()
     args = {
-        "tenant_id": tid,
         "limit": limit,
         "offset": offset,
         "include_private": include_private,
@@ -86,15 +78,23 @@ async def create_memory(
     settings: SettingsDep,
     body: MemoryCreateRequest,
 ) -> dict[str, str]:
+    uid = body.user_id.strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    resolve_user_entry(settings, uid)
+
     meta = dict(body.metadata or {})
     meta.setdefault("source", "eidolon-memory-admin")
+    meta.setdefault("wing", body.wing.strip())
+    meta.setdefault("room", body.room.strip())
+
     payload = ConversationTurnPayload(
         turn_id=str(uuid.uuid4()),
         user_text=body.text,
         assistant_text="",
         timestamp=datetime.now(UTC).replace(microsecond=0).isoformat(),
-        session_id=body.room,
-        user_id=body.wing,
+        session_id=body.room.strip(),
+        user_id=uid,
         metadata=meta,
     )
     try:
@@ -102,29 +102,26 @@ async def create_memory(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    detail = "JetStream envelope published; memory worker will persist."
+    detail = (
+        f"Published to agent.memory.conversation.turn.{uid}; "
+        "agent_runner will steward + persist in-process."
+    )
     if settings.steward.mode.strip().lower() != "noop":
-        detail += (
-            " Steward is not noop: the worker may extract/restructure fragments rather than "
-            "store this text verbatim."
-        )
+        detail += " Non-noop steward may restructure fragments rather than store verbatim text."
     return {"status": "accepted", "detail": detail}
 
 
 @router.delete("/{key}")
 async def delete_memory(
     _: AdminAuth,
-    mcp: McpSessionDep,
     key: str,
-    user_id: str = Query("", description="Ignored; kept for backwards-compatible query URLs."),
+    user_id: str = Query("", description="Ignored; delete removed in D1 control-plane."),
 ) -> dict[str, str]:
     del user_id
-    if not key.startswith("drawer_"):
-        raise HTTPException(status_code=400, detail="key must be a MemPalace drawer_* id")
-    try:
-        await call_tool_json(mcp, "eidolon_memory_delete", {"key": key})
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"status": "deleted", "key": key}
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Delete is not available on the D1 control-plane MCP. "
+            "Remove drawers via MemPalace tooling or a future admin write path."
+        ),
+    )

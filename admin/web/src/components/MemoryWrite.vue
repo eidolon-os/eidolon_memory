@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { postMemory } from '../api/client'
+import { useAdminUserId } from '../composables/useAdminUser'
 
+const userId = useAdminUserId()
 const wing = ref('Wing_Profile')
 const room = ref('profile_core')
 const text = ref('')
@@ -26,6 +28,7 @@ async function submit() {
   loading.value = true
   try {
     const res = await postMemory({
+      user_id: userId.value,
       wing: wing.value.trim(),
       room: room.value.trim(),
       text: text.value.trim(),
@@ -43,19 +46,19 @@ async function submit() {
 
 <template>
   <section class="panel">
-    <h2>写入记忆（JetStream → Worker）</h2>
+    <h2>写入记忆（NATS → agent_runner）</h2>
     <p class="muted">
-      通过 JetStream 投递 <code>ConversationTurnPayload</code>，由
-      <code>eidolon-memory-worker</code> 消费后落盘；列表/搜索走 MCP HTTP（需
-      <code>deploy/dev/run_all.sh</code>）。需本机 NATS 可达且 worker 在跑；非
-      <code>noop</code> steward 时正文可能被提炼而非原样存储。
+      投递到 <code>agent.memory.conversation.turn.{{ userId }}</code>，由该用户的
+      <code>eidolon-memory-agent</code> 进程内 steward 落盘；列表/搜索走同进程 MCP HTTP。需 NATS 与对应
+      agent 在跑；非 <code>noop</code> steward 时正文可能被提炼而非原样存储。
     </p>
     <div class="grid">
+      <label>用户<code>{{ userId }}</code></label>
       <label>wing<input v-model="wing" /></label>
       <label>room<input v-model="room" /></label>
     </div>
     <label class="block">正文<textarea v-model="text" rows="5"></textarea></label>
-    <label class="block">metadata（JSON，可选）<textarea v-model="metaJson" rows="3" placeholder="{&quot;user_id&quot;: &quot;alice&quot;}"></textarea></label>
+    <label class="block">metadata（JSON，可选）<textarea v-model="metaJson" rows="3" placeholder="{&quot;source&quot;: &quot;admin&quot;}"></textarea></label>
     <button type="button" :disabled="loading || !wing.trim() || !room.trim() || !text.trim()" @click="submit">
       提交
     </button>

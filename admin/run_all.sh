@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 启动 / 停止 FastAPI Admin（默认 8010）与 Vue dev（默认 5280）。
-# 依赖：uv（含 --extra admin）、Node/npm。读路径需 deploy/dev/run_all.sh 已起 MCP HTTP。
+# 依赖：uv（含 --extra admin）、Node/npm。读路径需 supervisor / eidolon-memory-agent 已起（users.yaml 端口）。
 #
 #   ./admin/run_all.sh          # 前台启动（Ctrl+C 结束）
 #   ./admin/run_all.sh start    # 后台启动
@@ -70,7 +70,7 @@ clear_stale_pid_file() {
 
 do_foreground() {
   if ! mcp_http_ready; then
-    error "MCP HTTP 不可用。请先: cd $ROOT && ./deploy/dev/run_all.sh start"
+    error "agent MCP HTTP 不可用。请先启动 supervisor 或 eidolon-memory-agent（见 users.yaml 端口）。"
     exit 1
   fi
 
@@ -106,14 +106,23 @@ do_foreground() {
 }
 
 mcp_http_ready() {
-  local url
-  url="$(cd "$ROOT" && uv run python -c "from eidolon.memory.config.memory_settings import get_memory_settings as g; print(g().mcp_http.base_url())" 2>/dev/null)" || return 1
   cd "$ROOT"
-  MCP_HTTP_URL="$url" uv run python -c "
-from eidolon.memory.infrastructure.mcp_http_client import probe_mcp_http
-import asyncio, os, sys
-ok = asyncio.run(probe_mcp_http(os.environ['MCP_HTTP_URL']))
-sys.exit(0 if ok else 1)
+  PYTHONPATH="${ROOT}/admin/server" uv run python -c "
+import asyncio, sys
+from eidolon.memory.config.memory_settings import get_memory_settings
+from mcp_client import mcp_http_url, probe_mcp_http
+from user_registry import list_enabled_users
+
+async def main() -> bool:
+    settings = get_memory_settings()
+    users = list_enabled_users(settings)
+    if not users:
+        return False
+    entry = users[0]
+    url = mcp_http_url(settings, port=entry.port)
+    return await probe_mcp_http(url, settings=settings)
+
+sys.exit(0 if asyncio.run(main()) else 1)
 " 2>/dev/null
 }
 
@@ -125,8 +134,8 @@ do_start() {
   clear_stale_pid_file || true
 
   if ! mcp_http_ready; then
-    error "MCP HTTP 不可用。请先: cd $ROOT && ./deploy/dev/run_all.sh start"
-    error "若已启动仍失败，检查是否设了 HTTP_PROXY 且未排除 localhost（客户端已 trust_env=False）。"
+    error "agent MCP HTTP 不可用。请先启动 supervisor 或 eidolon-memory-agent（users.yaml 首个 enabled 用户端口）。"
+    error "若已启动仍失败，检查 HTTP_PROXY 是否未排除 localhost（MCP 客户端 trust_env=False）。"
     exit 1
   fi
 

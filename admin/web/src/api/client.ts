@@ -36,10 +36,22 @@ export async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> 
   return (await res.json()) as T
 }
 
+export interface UserStatusOut {
+  user_id: string
+  port: number
+  enabled: boolean
+  palace_path: string
+  mcp_http_url: string
+  agent_reachable: boolean
+  runner_status?: Record<string, unknown> | null
+  runner_status_error?: string | null
+}
+
 export interface HealthResponse {
   ok: boolean
-  palace_path: string
   steward_mode: string
+  default_user_id: string
+  users: UserStatusOut[]
 }
 
 export interface MemoryRecord {
@@ -51,22 +63,43 @@ export interface MemoryRecord {
   updated_at?: string | null
 }
 
+export function recordSimilarity(r: MemoryRecord): number | null {
+  const sim = r.metadata?.similarity
+  if (typeof sim === 'number') return sim
+  if (typeof sim === 'string') {
+    const n = Number(sim)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
 export async function fetchHealth(): Promise<HealthResponse> {
   return fetchApi<HealthResponse>('/health')
 }
 
-export async function fetchMemoryList(params: URLSearchParams): Promise<{
+export async function fetchMemoryList(
+  userId: string,
+  params: URLSearchParams,
+): Promise<{
   records: MemoryRecord[]
   total_hint?: number | null
 }> {
-  return fetchApi(`/memories?${params.toString()}`)
+  const p = new URLSearchParams(params)
+  p.set('user_id', userId)
+  return fetchApi(`/memories?${p.toString()}`)
 }
 
-export async function fetchMemorySearch(params: URLSearchParams): Promise<{ records: MemoryRecord[] }> {
-  return fetchApi(`/memories/search?${params.toString()}`)
+export async function fetchMemorySearch(
+  userId: string,
+  params: URLSearchParams,
+): Promise<{ records: MemoryRecord[] }> {
+  const p = new URLSearchParams(params)
+  p.set('user_id', userId)
+  return fetchApi(`/memories/search?${p.toString()}`)
 }
 
 export async function postMemory(body: {
+  user_id: string
   wing: string
   room: string
   text: string
@@ -77,10 +110,6 @@ export async function postMemory(body: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-}
-
-export async function deleteMemoryKey(key: string): Promise<void> {
-  await fetchApi(`/memories/${encodeURIComponent(key)}`, { method: 'DELETE' })
 }
 
 export interface MemPalaceLayerInfo {
@@ -123,7 +152,12 @@ export interface MemPalaceHierarchyResponse {
   extra_wings: HierarchyWingOut[]
 }
 
-export async function fetchHierarchy(params: URLSearchParams): Promise<MemPalaceHierarchyResponse> {
-  const q = params.toString()
+export async function fetchHierarchy(
+  userId: string,
+  params: URLSearchParams,
+): Promise<MemPalaceHierarchyResponse> {
+  const p = new URLSearchParams(params)
+  p.set('user_id', userId)
+  const q = p.toString()
   return fetchApi<MemPalaceHierarchyResponse>(`/hierarchy${q ? `?${q}` : ''}`)
 }
