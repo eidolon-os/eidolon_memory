@@ -94,6 +94,13 @@ class WorkerConfig(BaseModel):
     sync_every_n_turns: int = 5  # PASSIVE checkpoint cadence (D3)
 
 
+class KgConfig(BaseModel):
+    """Knowledge graph runtime tuning (T2/T3)."""
+
+    min_confidence_to_write: float = 0.6
+    """Steward-extracted triples below this confidence get dropped before write."""
+
+
 class SupervisorConfig(BaseModel):
     """Multi-user agent_runner process supervisor."""
 
@@ -160,6 +167,7 @@ class MemorySettings(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     chromadb: ChromadbConfig = Field(default_factory=ChromadbConfig)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
+    kg: KgConfig = Field(default_factory=KgConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     nats: NatsConfig = Field(default_factory=NatsConfig)
     mcp_http: McpHttpConfig = Field(default_factory=McpHttpConfig)

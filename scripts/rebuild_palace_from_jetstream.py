@@ -69,27 +69,59 @@ async def _replay(
     consumer_name: str,
     dry_run: bool,
 ) -> int:
+    """Rebuild both chroma drawers AND KG triples from JetStream history.
+
+    Subscribes to **both** turn and command subjects so admin-issued KG edits
+    (which also live in JetStream by design) are recovered identically to
+    chat-derived facts. Uses the same ``process_turn_message`` /
+    ``process_command_message`` paths the live agent_runner uses.
+    """
+    import asyncio
+
+    from mempalace.knowledge_graph import KnowledgeGraph
+
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+    from eidolon.memory.application.turn_processor import (
+        process_command_message,
+        process_turn_message,
+    )
+    from eidolon.memory.infrastructure.bus.subjects import memory_command_subject
+
     backend = LockedBackend(MemPalacePythonBackend(settings, str(palace_path)))
+    kg = LockedKnowledgeGraph(
+        KnowledgeGraph(db_path=str(palace_path / "knowledge_graph.sqlite3")),
+        backend.lock,
+    )
     steward = create_steward(settings)
-    subject = conversation_turn_subject(user_id)
+    turn_subject = conversation_turn_subject(user_id)
+    cmd_subject = memory_command_subject(user_id)
 
     nc = await nats.connect(settings.nats.url)
     js = nc.jetstream()
     await ensure_memory_stream(js, settings)
 
-    psub = await js.pull_subscribe(
-        subject,
-        durable=consumer_name,
+    psub_turn = await js.pull_subscribe(
+        turn_subject,
+        durable=f"{consumer_name}-turn",
         stream=settings.nats.stream,
         config=ConsumerConfig(
             deliver_policy=DeliverPolicy.ALL,
-            durable_name=consumer_name,
+            durable_name=f"{consumer_name}-turn",
+        ),
+    )
+    psub_cmd = await js.pull_subscribe(
+        cmd_subject,
+        durable=f"{consumer_name}-cmd",
+        stream=settings.nats.stream,
+        config=ConsumerConfig(
+            deliver_policy=DeliverPolicy.ALL,
+            durable_name=f"{consumer_name}-cmd",
         ),
     )
 
     print(
         f"[rebuild] subscribed: stream={settings.nats.stream} "
-        f"subject={subject} consumer={consumer_name}"
+        f"turn_subject={turn_subject} cmd_subject={cmd_subject}"
     )
 
     processed = 0
@@ -97,53 +129,76 @@ async def _replay(
     invalid = 0
     last_msg_at = time.monotonic()
 
+    async def _replay_turn(msg):
+        nonlocal processed, invalid
+        if dry_run:
+            await msg.ack()
+            processed += 1
+            return
+        try:
+            await process_turn_message(
+                msg,
+                steward=steward,
+                backend=backend,
+                kg=kg,
+                settings=settings,
+                max_deliveries=settings.nats.worker_max_deliveries,
+                expected_user_id=user_id,
+            )
+            processed += 1
+        except Exception as exc:
+            invalid += 1
+            print(f"[rebuild][ERROR] turn apply failed: {exc}")
+
+    async def _replay_cmd(msg):
+        nonlocal processed
+        if dry_run:
+            await msg.ack()
+            processed += 1
+            return
+        await process_command_message(
+            msg,
+            backend=backend,
+            kg=kg,
+            settings=settings,
+            expected_user_id=user_id,
+        )
+        processed += 1
+
     try:
         while True:
             try:
-                msgs = await psub.fetch(16, timeout=2.0)
+                msgs_turn = await psub_turn.fetch(16, timeout=1.0)
             except TimeoutError:
-                msgs = []
+                msgs_turn = []
+            try:
+                msgs_cmd = await psub_cmd.fetch(16, timeout=1.0)
+            except TimeoutError:
+                msgs_cmd = []
 
-            if msgs:
+            any_progress = False
+            if msgs_turn:
                 last_msg_at = time.monotonic()
-                for msg in msgs:
-                    try:
-                        raw = json.loads(msg.data.decode("utf-8"))
-                        turn = ConversationTurnPayload.model_validate(raw)
-                    except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
-                        invalid += 1
-                        print(f"[rebuild][WARN] invalid payload skipped: {exc}")
-                        await msg.ack()
-                        continue
+                any_progress = True
+                for msg in msgs_turn:
+                    await _replay_turn(msg)
+            if msgs_cmd:
+                last_msg_at = time.monotonic()
+                any_progress = True
+                for msg in msgs_cmd:
+                    await _replay_cmd(msg)
 
-                    if turn.user_id and turn.user_id != user_id:
-                        # subject filter should have prevented this; defensive
-                        skipped += 1
-                        await msg.ack()
-                        continue
-
-                    if dry_run:
-                        processed += 1
-                        await msg.ack()
-                        continue
-
-                    try:
-                        await steward.handle_turn(turn, backend)
-                        processed += 1
-                    except Exception as exc:
-                        print(
-                            f"[rebuild][ERROR] steward failed on turn "
-                            f"{turn.turn_id!r}: {exc}"
-                        )
-                        # don't ack — let JetStream redeliver on the next pass
-                        continue
-                    await msg.ack()
-            else:
+            if not any_progress:
                 if time.monotonic() - last_msg_at > idle_timeout:
                     break
+                continue
     finally:
         try:
             await nc.drain()
+        except Exception:
+            pass
+        try:
+            kg.close()
         except Exception:
             pass
 

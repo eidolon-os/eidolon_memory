@@ -1,7 +1,9 @@
 """Process JetStream messages: ConversationTurn + MemoryCommand (KG plan §4.4).
 
-Used by ``agent_runner``'s in-process NATS subscriber. Steward runs in-process;
-backend writes go through the same ``LockedBackend`` as reads.
+Used by ``agent_runner``'s in-process NATS subscriber. Steward runs in-process
+returning a ``StewardDecision``; this module is responsible for applying that
+decision to chroma drawers + KG triples + privacy actions, with the right
+fail-mode for each (G7 KG failure does not block chat ack).
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.kg import (
     KgAddTripleCommand,
@@ -20,14 +23,14 @@ from eidolon.memory.domain.kg import (
     MemoryCommandPayload,
 )
 from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
 
 class StewardProtocol(Protocol):
-    async def handle_turn(self, turn: ConversationTurnPayload, backend: Any) -> None:
-        ...
+    async def decide(self, turn: ConversationTurnPayload) -> StewardDecision: ...
 
 
 def append_dlq(settings: MemorySettings, payload: bytes, error: str, deliveries: int) -> None:
@@ -51,6 +54,15 @@ def delivery_count(msg: Any) -> int:
     return int(getattr(meta, "num_delivered", None) or 1)
 
 
+async def _apply_privacy(backend: Any, user_id: str, actions: list) -> None:
+    """Wrapper for the steward's privacy-action handler (delete / archive)."""
+    if not actions:
+        return
+    from eidolon.memory.application.steward.common import apply_privacy_actions
+
+    await apply_privacy_actions(backend, user_id=user_id, actions=actions)
+
+
 async def process_turn_message(
     msg: Any,
     *,
@@ -61,17 +73,13 @@ async def process_turn_message(
     max_deliveries: int,
     expected_user_id: str | None = None,
 ) -> None:
-    """Decode + validate one JetStream message, run steward, ack / nak / DLQ.
+    """Decode + validate one turn, run steward, apply fragments + KG, ack / nak / DLQ.
 
-    ``kg`` is the per-runner :class:`LockedKnowledgeGraph`; in T1 it's accepted
-    but not yet written to here (Steward returns triples in T2). The signature
-    is forward-compatible so we don't churn callers later.
-
-    No generation bumping (D1: same process owns reads, no cross-process notify needed).
-    ``expected_user_id`` lets the caller reject messages whose payload user_id
-    doesn't match the agent runner's bound user (defense-in-depth on top of subject filter).
+    Failure model (G7 from KG plan §4.4):
+      * fragment write fails → NAK / DLQ (chroma is source of truth for chat)
+      * KG write fails → log + ack (KG is incremental; chat conversation must not stall)
+      * privacy-action fails → log + ack (don't redeliver delete requests)
     """
-    del kg  # T1 placeholder — wired but unused; T2 consumes decision.triples
     deliveries = delivery_count(msg)
     try:
         raw = json.loads(msg.data.decode("utf-8"))
@@ -91,16 +99,15 @@ async def process_turn_message(
         await msg.ack()
         return
 
+    # ── decide ─────────────────────────────────────────────────────────────
     try:
-        await steward.handle_turn(turn, backend)
-        await msg.ack()
-        log.debug("turn_processor_acked", turn_id=turn.turn_id)
+        decision = await steward.decide(turn)
     except Exception as exc:
         log.error(
-            "turn_processor_failed",
+            "turn_processor_steward_failed",
             error=str(exc),
             deliveries=deliveries,
-            turn_id=getattr(turn, "turn_id", ""),
+            turn_id=turn.turn_id,
         )
         if deliveries >= max_deliveries:
             append_dlq(settings, msg.data, str(exc), deliveries)
@@ -108,6 +115,102 @@ async def process_turn_message(
             log.error("turn_processor_dlq_ack", deliveries=deliveries)
         else:
             await msg.nak()
+        return
+
+    fallback_user = turn.user_id or "default"
+    turn_ts = turn.timestamp  # used as default valid_from / ended for triples
+
+    # ── fragments + privacy (failure here NAKs — chroma is source of truth) ─
+    fragments_written = 0
+    try:
+        # Privacy actions first; they may purge before we attempt new writes.
+        await _apply_privacy(backend, fallback_user, decision.privacy_actions)
+        if decision.should_write:
+            for fragment in decision.fragments:
+                await ingest_memory_fragment(backend, fragment)
+                fragments_written += 1
+    except Exception as exc:
+        log.error(
+            "turn_processor_fragment_failed",
+            error=str(exc),
+            deliveries=deliveries,
+            turn_id=turn.turn_id,
+        )
+        if deliveries >= max_deliveries:
+            append_dlq(settings, msg.data, str(exc), deliveries)
+            await msg.ack()
+            log.error("turn_processor_dlq_ack", deliveries=deliveries)
+        else:
+            await msg.nak()
+        return
+
+    # ── KG writes (G7: failure logged, never NAK) ──────────────────────────
+    kg_triples_added = 0
+    kg_invalidations_applied = 0
+    kg_skipped_low_confidence = 0
+    kg_failures: list[str] = []
+    min_conf = settings.kg.min_confidence_to_write if kg is not None else 1.0
+
+    if kg is not None:
+        # Invalidations first so a "change of mind" turn always ends the old
+        # fact before any new one referencing the same (s,p,o) shape lands.
+        for inv in decision.invalidations:
+            try:
+                rows = await kg.invalidate(
+                    subject=inv.subject,
+                    predicate=inv.predicate,
+                    object=inv.object,
+                    ended=inv.ended or turn_ts,
+                )
+                if rows > 0:
+                    kg_invalidations_applied += 1
+                else:
+                    log.info(
+                        "kg_invalidate_no_match",
+                        subject=inv.subject,
+                        predicate=inv.predicate,
+                        object=inv.object,
+                    )
+            except Exception as exc:
+                kg_failures.append(f"inv:{exc}")
+                log.warning("kg_invalidate_failed", error=str(exc))
+
+        for t in decision.triples:
+            if t.confidence < min_conf:
+                kg_skipped_low_confidence += 1
+                continue
+            try:
+                await kg.add_triple(
+                    subject=t.subject,
+                    predicate=t.predicate,
+                    object=t.object,
+                    valid_from=t.valid_from or turn_ts,
+                    valid_to=t.valid_to,
+                    confidence=t.confidence,
+                    source_turn_id=turn.turn_id,
+                    adapter_name="steward-llm",
+                )
+                kg_triples_added += 1
+            except Exception as exc:
+                kg_failures.append(f"add:{exc}")
+                log.warning("kg_add_triple_failed", error=str(exc))
+
+    # G8: one structured line per turn — operators can grep this without
+    # parsing the whole log stream.
+    log.info(
+        "turn_processed",
+        turn_id=turn.turn_id,
+        user_id=turn.user_id,
+        should_write=decision.should_write,
+        fragments=fragments_written,
+        triples=kg_triples_added,
+        invalidations=kg_invalidations_applied,
+        kg_skipped_lowconf=kg_skipped_low_confidence,
+        kg_failures=len(kg_failures),
+        kg_failure_sample=kg_failures[:2],
+        privacy_actions=len(decision.privacy_actions),
+    )
+    await msg.ack()
 
 
 async def process_command_message(
@@ -129,7 +232,6 @@ async def process_command_message(
     del backend, settings  # not used yet; reserved for future delete / privacy cmds
     try:
         raw = json.loads(msg.data.decode("utf-8"))
-        # Discriminate on `kind` field
         kind = raw.get("kind")
         if kind == "kg_add_triple":
             cmd: MemoryCommandPayload = KgAddTripleCommand.model_validate(raw)
@@ -147,7 +249,9 @@ async def process_command_message(
     if expected_user_id is not None and cmd.user_id and cmd.user_id != expected_user_id:
         log.error(
             "cmd_user_id_mismatch",
-            expected=expected_user_id, got=cmd.user_id, request_id=cmd.request_id,
+            expected=expected_user_id,
+            got=cmd.user_id,
+            request_id=cmd.request_id,
         )
         await msg.ack()
         return
@@ -166,8 +270,11 @@ async def process_command_message(
             )
             log.info(
                 "cmd_kg_add_ok",
-                request_id=cmd.request_id, triple_id=triple_id,
-                subject=cmd.subject, predicate=cmd.predicate, object=cmd.object,
+                request_id=cmd.request_id,
+                triple_id=triple_id,
+                subject=cmd.subject,
+                predicate=cmd.predicate,
+                object=cmd.object,
             )
         elif isinstance(cmd, KgInvalidateCommand):
             rows = await kg.invalidate(
@@ -178,8 +285,11 @@ async def process_command_message(
             )
             log.info(
                 "cmd_kg_invalidate_ok",
-                request_id=cmd.request_id, rows=rows,
-                subject=cmd.subject, predicate=cmd.predicate, object=cmd.object,
+                request_id=cmd.request_id,
+                rows=rows,
+                subject=cmd.subject,
+                predicate=cmd.predicate,
+                object=cmd.object,
             )
     except Exception as exc:
         log.error("cmd_apply_failed", request_id=cmd.request_id, error=str(exc))

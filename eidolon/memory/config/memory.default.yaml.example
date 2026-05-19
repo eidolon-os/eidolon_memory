@@ -107,6 +107,9 @@ chromadb:
 worker:
   sync_every_n_turns: 5             # PASSIVE wal_checkpoint every N turns
 
+kg:
+  min_confidence_to_write: 0.6      # T2: steward triples below this dropped before write
+
 supervisor:
   # users.yaml lists per-user agent_runner ports; env override: EIDOLON_MEMORY_USERS_YAML.
   # Path is relative to the repo root (or absolute). On first start the supervisor
