@@ -1,0 +1,421 @@
+"""asyncio.Lock-wrapped mempalace KnowledgeGraph (D1 + plan §3.0).
+
+Adds three things on top of the bundled ``mempalace.KnowledgeGraph``:
+
+1. **Shared lock** with ``LockedBackend`` so chroma and KG reads/writes stay
+   coherent inside one agent_runner process.
+2. **Source-id idempotency** for ``add_triple`` — mempalace's own ``add_triple``
+   already short-circuits when a still-valid identical triple exists, but it
+   misses the "added → invalidated → original turn replayed" edge case
+   (NAK retry, JetStream rebuild). Our wrapper also checks the
+   ``source_drawer_id`` (used as ``source_turn_id``) so the same turn can
+   never produce two triples.
+3. **Sensitive-predicate filter** for the public read tools so health-related
+   predicates only surface with explicit opt-in (plan §3.3 G2).
+
+Schema reference (mempalace/knowledge_graph.py, paraphrased)::
+
+    entities(id PK, name, type, properties, created_at)
+    triples(id PK, subject FK, predicate, object FK,
+            valid_from, valid_to, confidence,
+            source_closet, source_file, source_drawer_id, adapter_name,
+            extracted_at)
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from typing import Any
+
+from eidolon.memory.domain.kg import (
+    SENSITIVE_PREDICATES,
+    KgEntityRecord,
+    KgTripleRecord,
+)
+from eidolon.memory.support.logging import get_logger
+
+log = get_logger(__name__)
+
+
+def _now_iso() -> str:
+    """ISO-8601 timestamp accepted by ``mempalace.config.sanitize_iso_temporal``.
+
+    mempalace requires ``YYYY-MM-DDTHH:MM:SSZ`` (no microseconds, ``Z`` suffix
+    rather than ``+00:00``). Be strict so every callsite produces the same
+    canonical form — KG queries compare timestamps as strings.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class LockedKnowledgeGraph:
+    """Single-process lock-guarded wrapper over ``mempalace.KnowledgeGraph``."""
+
+    def __init__(self, inner: Any, lock: asyncio.Lock) -> None:
+        self._inner = inner  # mempalace.knowledge_graph.KnowledgeGraph
+        self._lock = lock
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        return self._lock
+
+    @property
+    def inner(self) -> Any:
+        return self._inner
+
+    # ── Write path ──────────────────────────────────────────────────────────
+
+    async def add_triple(
+        self,
+        *,
+        subject: str,
+        predicate: str,
+        object: str,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        confidence: float = 1.0,
+        source_turn_id: str | None = None,
+        adapter_name: str | None = None,
+    ) -> str:
+        """Idempotent add. Returns the triple id (existing or newly created).
+
+        Idempotency contract:
+          - Same ``source_turn_id`` + ``(subject, predicate, object)`` → no-op,
+            returns the previously-recorded id.
+          - mempalace itself dedups by ``valid_to IS NULL`` equality on
+            ``(subject, predicate, object)``.
+          - Combined: replay-after-invalidation does **not** re-add the same
+            fact, because the source_turn_id check fires first.
+        """
+        vf = valid_from or _now_iso()
+
+        async with self._lock:
+            # 1) source-id dedup (handles invalidate-then-replay edge case)
+            if source_turn_id:
+                existing = await asyncio.to_thread(
+                    self._find_by_source_and_triple,
+                    subject, predicate, object, source_turn_id,
+                )
+                if existing:
+                    return existing
+
+            # 2) delegate to mempalace (which handles "still-valid duplicate")
+            return await asyncio.to_thread(
+                self._inner.add_triple,
+                subject, predicate, object,
+                vf, valid_to, confidence,
+                None,         # source_closet
+                None,         # source_file
+                source_turn_id,
+                adapter_name,
+            )
+
+    async def invalidate(
+        self,
+        *,
+        subject: str,
+        predicate: str,
+        object: str,
+        ended: str | None = None,
+    ) -> int:
+        """End a triple's validity. Idempotent (no-op when already ended).
+
+        Returns number of rows updated (0 = no matching active triple).
+        """
+        ended_iso = ended or _now_iso()
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._invalidate_count, subject, predicate, object, ended_iso
+            )
+
+    # ── Read path ───────────────────────────────────────────────────────────
+
+    async def query_entity(
+        self,
+        name: str,
+        *,
+        as_of: str | None = None,
+        direction: str = "outgoing",
+        include_sensitive: bool = False,
+    ) -> list[KgTripleRecord]:
+        """Return triples connected to entity ``name`` at point ``as_of``."""
+        if direction not in {"outgoing", "incoming", "both"}:
+            msg = f"direction must be outgoing|incoming|both, got {direction!r}"
+            raise ValueError(msg)
+        as_of_iso = as_of or _now_iso()
+        async with self._lock:
+            rows = await asyncio.to_thread(
+                self._query_entity_rows, name, as_of_iso, direction
+            )
+        return _filter_sensitive(rows, include_sensitive)
+
+    async def query_entity_combined(
+        self,
+        names: list[str],
+        *,
+        as_of: str | None = None,
+        include_sensitive: bool = False,
+        limit_per_entity: int = 8,
+    ) -> list[KgTripleRecord]:
+        """T3 recall hot path: one SQL with ``subject IN (?,?,?)``.
+
+        Faster than calling :meth:`query_entity` N times because it's a single
+        SQLite round-trip + single index seek.
+        """
+        if not names:
+            return []
+        as_of_iso = as_of or _now_iso()
+        async with self._lock:
+            rows = await asyncio.to_thread(
+                self._query_combined_rows, names, as_of_iso, limit_per_entity
+            )
+        return _filter_sensitive(rows, include_sensitive)
+
+    async def timeline(
+        self,
+        entity_name: str | None = None,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 100,
+        include_sensitive: bool = False,
+    ) -> list[KgTripleRecord]:
+        """Chronological events; entity-scoped if name given, else global."""
+        async with self._lock:
+            rows = await asyncio.to_thread(
+                self._timeline_rows, entity_name, since, until, limit
+            )
+        return _filter_sensitive(rows, include_sensitive)
+
+    async def stats(self) -> dict[str, Any]:
+        async with self._lock:
+            return await asyncio.to_thread(self._stats)
+
+    async def list_entity_names(self) -> list[str]:
+        """Used by T3 recall path to seed the candidate-extraction cache."""
+        async with self._lock:
+            return await asyncio.to_thread(self._entity_names)
+
+    async def has_triple(self, triple_id: str) -> bool:
+        """Used by MCP admin tools to poll for write visibility."""
+        async with self._lock:
+            row = await asyncio.to_thread(
+                lambda: self._inner._conn().execute(
+                    "SELECT 1 FROM triples WHERE id = ?", (triple_id,)
+                ).fetchone()
+            )
+        return row is not None
+
+    async def find_pending_triple_id(
+        self, source_turn_id: str, subject: str, predicate: str, object: str
+    ) -> str | None:
+        """Return the triple id created for this command (for MCP polling)."""
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._find_by_source_and_triple,
+                subject, predicate, object, source_turn_id,
+            )
+
+    async def find_invalidation_applied(
+        self,
+        subject: str,
+        predicate: str,
+        object: str,
+        ended_at_or_before: str,
+    ) -> bool:
+        """True iff at least one triple with these (s,p,o) has valid_to ≤ given."""
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._invalidation_applied,
+                subject, predicate, object, ended_at_or_before,
+            )
+
+    # ── Lifecycle ───────────────────────────────────────────────────────────
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection (call on shutdown)."""
+        try:
+            self._inner.close()
+        except Exception as exc:
+            log.warning("locked_kg_close_failed", error=str(exc))
+
+    # ── Thread-pool helpers (sync; called via asyncio.to_thread) ────────────
+
+    def _find_by_source_and_triple(
+        self, subject: str, predicate: str, object: str, source_turn_id: str
+    ) -> str | None:
+        sub_id = self._inner._entity_id(subject)
+        obj_id = self._inner._entity_id(object)
+        pred = predicate.lower().replace(" ", "_")
+        row = self._inner._conn().execute(
+            "SELECT id FROM triples "
+            "WHERE source_drawer_id = ? AND subject = ? AND predicate = ? AND object = ?",
+            (source_turn_id, sub_id, pred, obj_id),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def _invalidate_count(
+        self, subject: str, predicate: str, object: str, ended_iso: str
+    ) -> int:
+        sub_id = self._inner._entity_id(subject)
+        obj_id = self._inner._entity_id(object)
+        pred = predicate.lower().replace(" ", "_")
+        conn = self._inner._conn()
+        with conn:
+            cursor = conn.execute(
+                "UPDATE triples SET valid_to = ? "
+                "WHERE subject = ? AND predicate = ? AND object = ? "
+                "AND valid_to IS NULL",
+                (ended_iso, sub_id, pred, obj_id),
+            )
+            return cursor.rowcount
+
+    def _invalidation_applied(
+        self, subject: str, predicate: str, object: str, ended_at_or_before: str
+    ) -> bool:
+        sub_id = self._inner._entity_id(subject)
+        obj_id = self._inner._entity_id(object)
+        pred = predicate.lower().replace(" ", "_")
+        row = self._inner._conn().execute(
+            "SELECT 1 FROM triples "
+            "WHERE subject = ? AND predicate = ? AND object = ? "
+            "AND valid_to IS NOT NULL AND valid_to <= ? "
+            "LIMIT 1",
+            (sub_id, pred, obj_id, ended_at_or_before),
+        ).fetchone()
+        return row is not None
+
+    def _query_entity_rows(
+        self, name: str, as_of_iso: str, direction: str
+    ) -> list[KgTripleRecord]:
+        ent_id = self._inner._entity_id(name)
+        conn = self._inner._conn()
+        results: list[KgTripleRecord] = []
+        bases = []
+        if direction in {"outgoing", "both"}:
+            bases.append(("subject", ent_id))
+        if direction in {"incoming", "both"}:
+            bases.append(("object", ent_id))
+        for col, val in bases:
+            rows = conn.execute(
+                f"SELECT t.id, e_sub.name AS subject_name, t.predicate, "
+                f"       e_obj.name AS object_name, t.valid_from, t.valid_to, "
+                f"       t.confidence, t.source_drawer_id, t.adapter_name "
+                f"FROM triples t "
+                f"JOIN entities e_sub ON e_sub.id = t.subject "
+                f"JOIN entities e_obj ON e_obj.id = t.object "
+                f"WHERE t.{col} = ? "
+                f"  AND (t.valid_from IS NULL OR t.valid_from <= ?) "
+                f"  AND (t.valid_to   IS NULL OR t.valid_to   >  ?)",
+                (val, as_of_iso, as_of_iso),
+            ).fetchall()
+            for r in rows:
+                results.append(_row_to_record(r))
+        return results
+
+    def _query_combined_rows(
+        self, names: list[str], as_of_iso: str, limit_per_entity: int
+    ) -> list[KgTripleRecord]:
+        if not names:
+            return []
+        ent_ids = [self._inner._entity_id(n) for n in names]
+        placeholders = ",".join("?" * len(ent_ids))
+        rows = self._inner._conn().execute(
+            f"SELECT t.id, e_sub.name AS subject_name, t.predicate, "
+            f"       e_obj.name AS object_name, t.valid_from, t.valid_to, "
+            f"       t.confidence, t.source_drawer_id, t.adapter_name "
+            f"FROM triples t "
+            f"JOIN entities e_sub ON e_sub.id = t.subject "
+            f"JOIN entities e_obj ON e_obj.id = t.object "
+            f"WHERE (t.subject IN ({placeholders}) OR t.object IN ({placeholders})) "
+            f"  AND (t.valid_from IS NULL OR t.valid_from <= ?) "
+            f"  AND (t.valid_to   IS NULL OR t.valid_to   >  ?)",
+            (*ent_ids, *ent_ids, as_of_iso, as_of_iso),
+        ).fetchall()
+
+        # Cap per entity (subject)
+        by_subj: dict[str, list[KgTripleRecord]] = {}
+        for r in rows:
+            rec = _row_to_record(r)
+            by_subj.setdefault(rec.subject, []).append(rec)
+        out: list[KgTripleRecord] = []
+        for _name, recs in by_subj.items():
+            out.extend(recs[:limit_per_entity])
+        return out
+
+    def _timeline_rows(
+        self,
+        entity_name: str | None,
+        since: str | None,
+        until: str | None,
+        limit: int,
+    ) -> list[KgTripleRecord]:
+        clauses: list[str] = ["1=1"]
+        params: list[Any] = []
+        if entity_name:
+            ent_id = self._inner._entity_id(entity_name)
+            clauses.append("(t.subject = ? OR t.object = ?)")
+            params.extend([ent_id, ent_id])
+        if since:
+            clauses.append("(t.valid_from IS NULL OR t.valid_from >= ?)")
+            params.append(since)
+        if until:
+            clauses.append("(t.valid_from IS NULL OR t.valid_from <= ?)")
+            params.append(until)
+        sql = (
+            "SELECT t.id, e_sub.name AS subject_name, t.predicate, "
+            "       e_obj.name AS object_name, t.valid_from, t.valid_to, "
+            "       t.confidence, t.source_drawer_id, t.adapter_name "
+            "FROM triples t "
+            "JOIN entities e_sub ON e_sub.id = t.subject "
+            "JOIN entities e_obj ON e_obj.id = t.object "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY t.valid_from DESC NULLS LAST, t.extracted_at DESC "
+            "LIMIT ?"
+        )
+        params.append(limit)
+        rows = self._inner._conn().execute(sql, tuple(params)).fetchall()
+        return [_row_to_record(r) for r in rows]
+
+    def _stats(self) -> dict[str, Any]:
+        conn = self._inner._conn()
+        entity_count = conn.execute("SELECT COUNT(*) AS c FROM entities").fetchone()["c"]
+        triple_count = conn.execute("SELECT COUNT(*) AS c FROM triples").fetchone()["c"]
+        active_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM triples WHERE valid_to IS NULL"
+        ).fetchone()["c"]
+        return {
+            "entities": int(entity_count),
+            "triples_total": int(triple_count),
+            "triples_active": int(active_count),
+            "triples_invalidated": int(triple_count) - int(active_count),
+        }
+
+    def _entity_names(self) -> list[str]:
+        rows = self._inner._conn().execute("SELECT name FROM entities").fetchall()
+        return [r["name"] for r in rows]
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _row_to_record(row: Any) -> KgTripleRecord:
+    return KgTripleRecord(
+        id=row["id"],
+        subject=row["subject_name"],
+        predicate=row["predicate"],
+        object=row["object_name"],
+        valid_from=row["valid_from"],
+        valid_to=row["valid_to"],
+        confidence=row["confidence"],
+        source_turn_id=row["source_drawer_id"],
+        adapter_name=row["adapter_name"],
+    )
+
+
+def _filter_sensitive(
+    rows: list[KgTripleRecord], include_sensitive: bool
+) -> list[KgTripleRecord]:
+    if include_sensitive:
+        return rows
+    return [r for r in rows if r.predicate not in SENSITIVE_PREDICATES]

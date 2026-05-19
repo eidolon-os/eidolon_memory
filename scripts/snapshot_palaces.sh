@@ -34,21 +34,26 @@ fi
 for palace in "${palaces[@]}"; do
   uid="$(basename "$palace")"
   sqlite="$palace/chroma.sqlite3"
+  kg_sqlite="$palace/knowledge_graph.sqlite3"
   if [[ ! -f "$sqlite" ]]; then
     echo "[snapshot] $uid: no chroma.sqlite3, skipping"
     continue
   fi
 
-  echo "[snapshot] $uid: wal_checkpoint(TRUNCATE)"
+  echo "[snapshot] $uid: wal_checkpoint(TRUNCATE) on chroma + KG"
   /usr/bin/env python3 -c "
 import sqlite3, sys
-conn = sqlite3.connect(sys.argv[1], timeout=10.0)
-try:
-    conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-    conn.commit()
-finally:
-    conn.close()
-" "$sqlite" || {
+for path in sys.argv[1:]:
+    try:
+        conn = sqlite3.connect(path, timeout=10.0)
+        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        conn.commit()
+        conn.close()
+    except sqlite3.OperationalError as exc:
+        # KG file may not yet exist on a fresh palace; treat as benign.
+        if 'unable to open database file' not in str(exc):
+            raise
+" "$sqlite" "$kg_sqlite" || {
     echo "[snapshot][WARN] $uid: wal_checkpoint failed; snapshot may miss recent writes"
   }
 

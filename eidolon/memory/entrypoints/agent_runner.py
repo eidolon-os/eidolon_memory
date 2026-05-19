@@ -49,62 +49,112 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 
+def _materialize_kg_file(kg_sqlite_path: Path) -> None:
+    """Ensure ``knowledge_graph.sqlite3`` exists with the schema committed.
+
+    mempalace.KnowledgeGraph() creates the file + tables on first ``__init__``;
+    we explicitly open + close so the file is present *before* integrity_check
+    runs. fsync the parent directory so the new file survives a sudden poweroff.
+    """
+    from mempalace.knowledge_graph import KnowledgeGraph
+
+    kg_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    kg = KnowledgeGraph(db_path=str(kg_sqlite_path))
+    try:
+        kg.close()
+    except Exception as exc:
+        log.warning("kg_materialize_close_failed", error=str(exc))
+    fsync_directory(kg_sqlite_path.parent)
+
+
 async def _nats_subscriber_loop(
     *,
     user_id: str,
     settings: MemorySettings,
     backend: Any,
+    kg: Any,
     palace_sqlite: str,
+    kg_sqlite: str,
     stop: asyncio.Event,
 ) -> None:
-    """In-process JetStream pull-subscriber bound to one user_id."""
+    """In-process JetStream pull-subscriber for both turn + command subjects."""
     import nats
 
-    durable = f"{settings.nats.durable_prefix}-{user_id}"
-    subject = conversation_turn_subject(user_id)
+    from eidolon.memory.infrastructure.bus.subjects import memory_command_subject
+
+    durable_turn = f"{settings.nats.durable_prefix}-{user_id}"
+    durable_cmd = f"{settings.nats.durable_prefix}-cmd-{user_id}"
+    turn_subject = conversation_turn_subject(user_id)
+    cmd_subject = memory_command_subject(user_id)
 
     nc = await nats.connect(settings.nats.url)
     js = nc.jetstream()
     try:
         await ensure_memory_stream(js, settings)
-        psub = await js.pull_subscribe(subject, durable=durable, stream=settings.nats.stream)
+        psub_turn = await js.pull_subscribe(
+            turn_subject, durable=durable_turn, stream=settings.nats.stream
+        )
+        psub_cmd = await js.pull_subscribe(
+            cmd_subject, durable=durable_cmd, stream=settings.nats.stream
+        )
         log.info(
             "agent_runner_nats_pull_subscribe",
             user_id=user_id,
-            subject=subject,
-            durable=durable,
+            turn_subject=turn_subject,
+            cmd_subject=cmd_subject,
             stream=settings.nats.stream,
         )
         steward = create_steward(settings)
         sync_every = max(1, settings.worker.sync_every_n_turns)
-        turns_since_checkpoint = 0
-        while not stop.is_set():
+        writes_since_checkpoint = 0
+
+        from eidolon.memory.application.turn_processor import process_command_message
+
+        async def _drain(psub, handler):
+            nonlocal writes_since_checkpoint
             try:
-                msgs = await psub.fetch(8, timeout=2.0)
+                msgs = await psub.fetch(8, timeout=0.5)
             except TimeoutError:
-                continue
+                return
             except Exception as exc:
                 log.warning("agent_runner_nats_fetch_error", error=str(exc))
-                await asyncio.sleep(1.0)
-                continue
+                await asyncio.sleep(0.5)
+                return
             for msg in msgs:
-                await process_turn_message(
-                    msg,
+                await handler(msg)
+                writes_since_checkpoint += 1
+
+        while not stop.is_set():
+            await _drain(
+                psub_turn,
+                lambda m: process_turn_message(
+                    m,
                     steward=steward,
                     backend=backend,
+                    kg=kg,
                     settings=settings,
                     max_deliveries=settings.nats.worker_max_deliveries,
                     expected_user_id=user_id,
+                ),
+            )
+            await _drain(
+                psub_cmd,
+                lambda m: process_command_message(
+                    m, backend=backend, kg=kg, expected_user_id=user_id, settings=settings
+                ),
+            )
+            if writes_since_checkpoint >= sync_every:
+                # G4: both chroma and KG are WAL — checkpoint both
+                await asyncio.to_thread(
+                    checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
                 )
-                turns_since_checkpoint += 1
-                if turns_since_checkpoint >= sync_every:
-                    await asyncio.to_thread(
-                        checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
-                    )
-                    await asyncio.to_thread(
-                        fsync_directory, Path(palace_sqlite).parent
-                    )
-                    turns_since_checkpoint = 0
+                await asyncio.to_thread(
+                    checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE"
+                )
+                await asyncio.to_thread(
+                    fsync_directory, Path(palace_sqlite).parent
+                )
+                writes_since_checkpoint = 0
     finally:
         try:
             await nc.drain()
@@ -119,19 +169,15 @@ def _compose_starlette_lifespan(
     user_id: str,
     settings: MemorySettings,
     backend: Any,
+    kg: Any,
+    command_publisher: Any,
     palace_path: str,
 ):
-    """Compose FastMCP's session-manager lifespan with our startup hooks.
-
-    FastMCP wires the user-supplied ``lifespan`` to the MCP protocol session
-    (per-connection); the *Starlette* ASGI lifespan it installs is hard-coded
-    to ``session_manager.run()``. So we replace Starlette's lifespan with a
-    composite that runs our warm + NATS subscriber FIRST, then enters
-    ``session_manager.run()``.
-    """
+    """Compose FastMCP's session-manager lifespan with our startup hooks."""
     from pathlib import Path
 
     palace_sqlite = str(Path(palace_path) / "chroma.sqlite3")
+    kg_sqlite = str(Path(palace_path) / "knowledge_graph.sqlite3")
     stop_event = asyncio.Event()
     session_manager = mcp.session_manager
 
@@ -149,7 +195,9 @@ def _compose_starlette_lifespan(
                 user_id=user_id,
                 settings=settings,
                 backend=backend,
+                kg=kg,
                 palace_sqlite=palace_sqlite,
+                kg_sqlite=kg_sqlite,
                 stop=stop_event,
             ),
             name=f"nats-sub-{user_id}",
@@ -161,6 +209,8 @@ def _compose_starlette_lifespan(
             stop_event.set()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(sub_task, timeout=5.0)
+            with contextlib.suppress(Exception):
+                await command_publisher.close()
             log.info("agent_runner_shutdown_complete", user_id=user_id)
 
     return _lifespan
@@ -216,24 +266,46 @@ def main(argv: list[str] | None = None) -> None:
 
     ensure_palace_initialized(user_id, palace_path)
 
-    # D2: integrity check — refuse to come up on a malformed palace
-    sqlite_path = palace_path / "chroma.sqlite3"
-    report = run_integrity_check(str(sqlite_path), quick=False)
-    if not report.ok:
-        msg = (
-            f"agent_runner refusing to start: palace integrity_check failed "
-            f"({report.detail!r}); investigate and restore from snapshot"
-        )
-        log.error(
-            "agent_runner_integrity_failed",
-            user_id=user_id,
-            palace=str(palace_path),
-            detail=report.detail,
-        )
-        raise IntegrityCheckFailed(msg)
+    # KG plan §3.2 G3: explicitly create the KG SQLite so integrity_check sees a
+    # committed file (mempalace KnowledgeGraph initializes tables on first open).
+    kg_sqlite_path = palace_path / "knowledge_graph.sqlite3"
+    _materialize_kg_file(kg_sqlite_path)
+
+    # D2 + KG G3: integrity check — refuse to come up on a malformed palace OR KG.
+    for label, db_path in (("chroma", palace_path / "chroma.sqlite3"), ("kg", kg_sqlite_path)):
+        report = run_integrity_check(str(db_path), quick=False)
+        if not report.ok:
+            msg = (
+                f"agent_runner refusing to start: {label} integrity_check failed "
+                f"({report.detail!r}); investigate and restore from snapshot"
+            )
+            log.error(
+                "agent_runner_integrity_failed",
+                user_id=user_id,
+                db=label,
+                palace=str(palace_path),
+                detail=report.detail,
+            )
+            raise IntegrityCheckFailed(msg)
 
     inner = MemPalacePythonBackend(settings, str(palace_path))
     backend = LockedBackend(inner)
+
+    # KG plan §3.0: LockedKnowledgeGraph shares backend.lock so chroma + KG
+    # reads/writes stay coherent inside one agent_runner process.
+    from mempalace.knowledge_graph import KnowledgeGraph
+
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+    from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
+
+    kg = LockedKnowledgeGraph(
+        KnowledgeGraph(db_path=str(kg_sqlite_path)),
+        backend.lock,
+    )
+
+    # KG plan §3.3: write tools publish through the same JetStream stream
+    # that handles chat turns; admin is just another "agent" client.
+    command_publisher = JetStreamCommandPublisher.from_memory_settings(settings)
 
     host = (args.host or settings.mcp_http.host).strip() or "127.0.0.1"
     port = args.port if args.port else settings.mcp_http.port
@@ -246,6 +318,8 @@ def main(argv: list[str] | None = None) -> None:
         host=host,
         port=port,
         lifespan=None,
+        kg=kg,
+        command_publisher=command_publisher,
     )
 
     log.info(
@@ -276,6 +350,8 @@ def main(argv: list[str] | None = None) -> None:
         user_id=user_id,
         settings=settings,
         backend=backend,
+        kg=kg,
+        command_publisher=command_publisher,
         palace_path=str(palace_path),
     )
 
