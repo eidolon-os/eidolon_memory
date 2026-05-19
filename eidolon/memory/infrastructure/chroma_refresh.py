@@ -13,6 +13,20 @@ def is_database_locked_error(exc: BaseException) -> bool:
     return "database is locked" in text or "database is locked" in repr(exc).lower()
 
 
+def is_disk_io_error(exc: BaseException) -> bool:
+    text = f"{exc} {exc!r}".lower()
+    return "disk i/o error" in text or "(code: 522)" in text
+
+
+def is_recoverable_db_error(exc: BaseException) -> bool:
+    """Chroma/SQLite errors worth one cache-close + retry (MCP read path)."""
+    return (
+        is_transient_index_error(exc)
+        or is_database_locked_error(exc)
+        or is_disk_io_error(exc)
+    )
+
+
 def pop_mempalace_client_cache(palace_path: str) -> None:
     """Drop per-palace backend cache without closing PersistentClient (lighter than close)."""
     try:
@@ -56,7 +70,27 @@ def ensure_sqlite_wal(chroma_sqlite: str) -> dict[str, str]:
     try:
         mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.commit()
         return {"journal_mode": str(mode[0]) if mode else "unknown"}
     finally:
         conn.close()
+
+
+def checkpoint_sqlite_wal(chroma_sqlite: str) -> None:
+    """Passive WAL checkpoint after writes (best-effort, ignore failures)."""
+    import sqlite3
+    from pathlib import Path
+
+    p = Path(chroma_sqlite)
+    if not p.is_file():
+        return
+    try:
+        conn = sqlite3.connect(str(p), timeout=5.0)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass

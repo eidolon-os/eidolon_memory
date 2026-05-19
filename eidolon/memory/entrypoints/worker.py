@@ -19,6 +19,10 @@ from eidolon.memory.config.palace_directory import resolve_palace_directory
 from eidolon.memory.domain.payloads import ConversationTurnPayload
 from eidolon.memory.infrastructure.bus.subjects import SharedSubjects
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
+from eidolon.memory.infrastructure.chroma_refresh import (
+    checkpoint_sqlite_wal,
+    ensure_sqlite_wal,
+)
 from eidolon.memory.infrastructure.palace_generation import (
     bump_generation,
     resolve_generation_path,
@@ -49,6 +53,9 @@ async def process_turn_message(
     try:
         await steward.handle_turn(turn, backend)
         info = bump_generation(gen_path, writer="eidolon-memory-worker")
+        sqlite = gen_path.parent / "chroma.sqlite3"
+        if sqlite.is_file():
+            checkpoint_sqlite_wal(str(sqlite))
         await msg.ack()
         log.debug(
             "memory_worker_turn_acked",
@@ -104,6 +111,10 @@ async def run_memory_worker(
 
     palace = str(resolve_palace_directory(settings))
     gen_path = resolve_generation_path(palace, settings.runtime.read.generation_path)
+    sqlite = gen_path.parent / "chroma.sqlite3"
+    if sqlite.is_file():
+        wal = ensure_sqlite_wal(str(sqlite))
+        log.info("worker_chroma_sqlite_pragma", **wal)
     backend = MemPalacePythonBackend(settings, palace)
     steward_runner = steward or create_steward(settings)
 

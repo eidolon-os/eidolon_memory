@@ -14,6 +14,7 @@ from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.chroma_refresh import (
     is_database_locked_error,
+    is_disk_io_error,
     is_transient_index_error,
 )
 from eidolon.memory.infrastructure.palace_read_session import PalaceReadSession
@@ -79,8 +80,10 @@ class LiveKitRecallService:
             await self._session.background_reconcile()
             return {"context": "", "records": [], "degraded": True}
         except Exception as exc:
-            reason = "database_locked" if is_database_locked_error(exc) else "error"
-            if is_transient_index_error(exc):
+            reason = "error"
+            if is_database_locked_error(exc) or is_disk_io_error(exc):
+                reason = "database_locked"
+            elif is_transient_index_error(exc):
                 reason = "transient_index"
             log.warning(
                 "livekit_recall_degraded",

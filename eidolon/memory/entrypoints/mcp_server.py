@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Awaitable, Callable, TypeVar
 
 from eidolon.memory.application.admin_visibility import admin_row_visible
 from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hierarchy_snapshot
@@ -19,7 +19,7 @@ from eidolon.memory.config.palace_directory import resolve_palace_directory
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
 from eidolon.memory.infrastructure.chroma_refresh import (
     close_mempalace_palace,
-    is_transient_index_error,
+    is_recoverable_db_error,
 )
 from eidolon.memory.infrastructure.palace_read_session import PalaceReadSession
 from eidolon.memory.support.logging import get_logger
@@ -27,6 +27,8 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 _read_session: PalaceReadSession | None = None
+
+_T = TypeVar("_T")
 
 
 def _palace_path(settings: MemorySettings | None = None) -> str:
@@ -49,6 +51,44 @@ def reset_read_session() -> None:
     _read_session = None
 
 
+async def _mcp_with_backend(
+    op: Callable[[Any], Awaitable[_T]],
+    *,
+    settings: MemorySettings | None = None,
+) -> _T:
+    """Run a backend operation with generation refresh and one DB recovery retry."""
+    mem = settings or get_memory_settings()
+    palace = _palace_path(mem)
+    session = get_read_session(mem)
+    last_exc: BaseException | None = None
+
+    for attempt in range(2):
+        await session.ensure_fresh()
+        backend = await session.active_backend()
+        try:
+            return await op(backend)
+        except MemoryBackendUnavailable as exc:
+            last_exc = exc
+            if attempt == 0 and is_recoverable_db_error(exc):
+                log.warning(
+                    "mcp_db_recoverable_retry",
+                    error=str(exc),
+                    palace=palace,
+                    attempt=attempt,
+                )
+                close_mempalace_palace(palace)
+                reset_read_session()
+                await asyncio.sleep(1.5)
+                session = get_read_session(mem)
+                continue
+            raise
+
+    if last_exc is not None:
+        raise last_exc
+    msg = "mcp backend operation failed without exception"
+    raise MemoryBackendUnavailable(msg)
+
+
 async def _mcp_search(
     *,
     query: str,
@@ -58,37 +98,21 @@ async def _mcp_search(
     room: str | None,
 ) -> list:
     settings = get_memory_settings()
-    palace = _palace_path(settings)
-    session = get_read_session(settings)
-    last_exc: BaseException | None = None
 
-    for attempt in range(2):
-        await session.ensure_fresh()
-        backend = await session.active_backend()
-        try:
-            return await search_all_wings_mcp_style(
-                backend,
-                settings,
-                query=query,
-                user_id=user_id or "default",
-                top_k=top_k,
-                wing=wing,
-                room=room,
-                for_voice=False,
-                palace_path=palace,
-            )
-        except MemoryBackendUnavailable as exc:
-            last_exc = exc
-            if attempt == 0 and is_transient_index_error(exc):
-                close_mempalace_palace(palace)
-                reset_read_session()
-                await asyncio.sleep(1.5)
-                continue
-            raise
+    async def _run(backend: Any) -> list:
+        return await search_all_wings_mcp_style(
+            backend,
+            settings,
+            query=query,
+            user_id=user_id or "default",
+            top_k=top_k,
+            wing=wing,
+            room=room,
+            for_voice=False,
+            palace_path=_palace_path(settings),
+        )
 
-    if last_exc is not None:
-        raise last_exc
-    return []
+    return await _mcp_with_backend(_run, settings=settings)
 
 
 def build_server(settings: MemorySettings | None = None):
@@ -182,16 +206,19 @@ def build_server(settings: MemorySettings | None = None):
         include_private: bool = False,
     ) -> dict[str, Any]:
         """Paginated listing aligned with Admin scan (omit tenant for full palace)."""
-        backend = await get_read_session().active_backend()
         tid = tenant_id.strip()
         lim = max(1, min(limit, 5000))
         off = max(0, offset)
-        rows = await backend.get_all(tid, limit=lim, offset=off)
-        filtered = [r for r in rows if admin_row_visible(r, include_private=include_private)]
-        return {
-            "records": [wire_record_to_public_dict(r) for r in filtered],
-            "total_hint": len(filtered),
-        }
+
+        async def _run(backend: Any) -> dict[str, Any]:
+            rows = await backend.get_all(tid, limit=lim, offset=off)
+            filtered = [r for r in rows if admin_row_visible(r, include_private=include_private)]
+            return {
+                "records": [wire_record_to_public_dict(r) for r in filtered],
+                "total_hint": len(filtered),
+            }
+
+        return await _mcp_with_backend(_run, settings=mem_settings)
 
     @mcp.tool()
     async def eidolon_memory_delete(key: str, user_id: str = "") -> dict[str, Any]:
@@ -200,9 +227,12 @@ def build_server(settings: MemorySettings | None = None):
         if not key.startswith("drawer_"):
             msg = "key must be a MemPalace drawer_* id"
             raise ValueError(msg)
-        backend = await get_read_session().active_backend()
-        await backend.delete("", key)
-        return {"status": "deleted", "key": key}
+
+        async def _run(backend: Any) -> dict[str, Any]:
+            await backend.delete("", key)
+            return {"status": "deleted", "key": key}
+
+        return await _mcp_with_backend(_run, settings=mem_settings)
 
     @mcp.tool()
     async def eidolon_memory_hierarchy_snapshot(
@@ -210,16 +240,18 @@ def build_server(settings: MemorySettings | None = None):
         max_drawers_per_room: int = 48,
     ) -> dict[str, Any]:
         """Return wing→room→drawer tree snapshot (bounded scan) matching Admin hierarchy."""
-        backend = await get_read_session().active_backend()
-        mem_settings = get_memory_settings()
         mr = max(50, min(max_records, 50_000))
         md = max(4, min(max_drawers_per_room, 400))
-        return await build_mempalace_hierarchy_snapshot(
-            backend,
-            mem_settings,
-            max_records=mr,
-            max_drawers_per_room=md,
-        )
+
+        async def _run(backend: Any) -> dict[str, Any]:
+            return await build_mempalace_hierarchy_snapshot(
+                backend,
+                mem_settings,
+                max_records=mr,
+                max_drawers_per_room=md,
+            )
+
+        return await _mcp_with_backend(_run, settings=mem_settings)
 
     return mcp
 
