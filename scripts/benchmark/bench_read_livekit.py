@@ -1,83 +1,149 @@
 #!/usr/bin/env python3
-"""LiveKit-style in-process recall benchmarks (R-01..R-05)."""
+"""R-01: end-to-end recall latency through a running agent_runner (D1).
+
+The benchmark targets the same code path LiveKit voice pipelines use in
+production: an MCP ``streamable-http`` client calls
+``eidolon_memory_recall_context`` on a single-user agent_runner; each call is
+gated by the user's ``asyncio.Lock`` and hits the same chromadb
+PersistentClient.
+
+The caller is responsible for starting and tearing down the agent_runner
+subprocess; this script is a pure load generator.
+"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import random
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
 from scripts.benchmark.report import percentiles, sla_pass  # noqa: E402
 
+_DEFAULT_QUERIES = [
+    "用户最近的情绪状态",
+    "用户喜欢什么音乐",
+    "工作压力",
+    "和家人的关系",
+    "最近的健康状况",
+    "兴趣爱好",
+    "重要的事件",
+    "生活习惯和偏好",
+]
 
-async def _run(settings, palace: str, *, duration: float, qps: float) -> dict[str, Any]:
-    from eidolon.memory.application.livekit_recall import LiveKitRecallService
-    from eidolon.memory.application.runtime_warm import warm_palace_read_path
-    from eidolon.memory.infrastructure.palace_read_session import PalaceReadSession
 
-    await warm_palace_read_path(settings, palace)
-    session = PalaceReadSession(settings, palace)
-    svc = LiveKitRecallService(session, settings)
+def _extract_records(call_result) -> list[dict]:
+    if not call_result.content:
+        return []
+    text = call_result.content[0].text or "{}"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    return data.get("records") or []
 
-    interval = 1.0 / qps if qps > 0 else 0.5
-    end = time.monotonic() + duration
-    latencies: list[float] = []
-    timeouts = 0
-    degraded = 0
-    n = 0
 
-    while time.monotonic() < end:
-        t0 = time.perf_counter()
-        result = await svc.recall_context_with_records(
-            "用户最近情绪如何",
-            user_id="bench",
-            session_id="bench-session",
-        )
-        ms = (time.perf_counter() - t0) * 1000.0
-        latencies.append(ms)
-        n += 1
-        if result.get("degraded"):
-            degraded += 1
-        if ms > settings.recall.livekit_timeout_seconds * 1000:
-            timeouts += 1
-        await asyncio.sleep(max(0, interval - ms / 1000.0))
+async def _run(url: str, *, count: int, queries: list[str], voice: bool) -> dict:
+    latencies_ms: list[float] = []
+    errors = 0
+    hit_count = 0
+    rng = random.Random(0xC0FFEE)
 
-    stats = percentiles(latencies)
-    p50 = stats["p50"]
-    p95 = stats["p95"]
+    # Warm up: first session creates the MCP session, which is dominated by
+    # one-time handshake costs; skip its sample.
+    async with streamablehttp_client(url) as (read, write, _):
+        async with ClientSession(read, write) as sess:
+            await sess.initialize()
+            # Re-use a single session to avoid HTTP/MCP setup cost per call;
+            # this mirrors how a LiveKit pipeline keeps an MCP client alive.
+            warm_q = rng.choice(queries)
+            await sess.call_tool(
+                "eidolon_memory_recall_context",
+                arguments={"query": warm_q, "top_k": 5, "voice": voice},
+            )
+
+            for i in range(count):
+                q = rng.choice(queries)
+                t0 = time.perf_counter()
+                try:
+                    res = await sess.call_tool(
+                        "eidolon_memory_recall_context",
+                        arguments={"query": q, "top_k": 5, "voice": voice},
+                    )
+                except Exception:
+                    errors += 1
+                    continue
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                latencies_ms.append(elapsed_ms)
+                if _extract_records(res):
+                    hit_count += 1
+
+    stats = percentiles(latencies_ms)
     return {
         "id": "R-01",
-        "n": n,
-        "stats": stats,
-        "timeouts": timeouts,
-        "degraded": degraded,
+        "n": count,
+        "errors": errors,
+        "hit_rate_pct": (
+            round(hit_count / max(1, len(latencies_ms)) * 100.0, 1)
+            if latencies_ms
+            else 0.0
+        ),
+        "latency_ms": stats,
+        "sla_p95_ms": 300,
+        "sla_p99_ms": 350,
         "sla": "PASS"
-        if sla_pass(p50, p95, p50_max=150, p95_max=400)
+        if sla_pass(stats.get("p50", 9e9), stats.get("p95", 9e9), p50_max=200, p95_max=300)
         else "FAIL",
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--duration", type=float, default=30.0)
-    parser.add_argument("--qps", type=float, default=2.0)
-    parser.add_argument("--palace")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--url",
+        default="http://127.0.0.1:8030/mcp",
+        help="agent_runner control-plane MCP URL (default localhost:8030)",
+    )
+    parser.add_argument("--count", type=int, default=50)
+    parser.add_argument(
+        "--query",
+        action="append",
+        default=None,
+        help="Override query corpus; pass multiple times. Defaults to a built-in 8-query mix.",
+    )
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        help="Use the LiveKit hot path (shared query embedding across wings).",
+    )
+    parser.add_argument(
+        "--out",
+        default="",
+        help="Optional JSON output path",
+    )
     args = parser.parse_args()
 
-    from eidolon.memory.config.memory_settings import get_memory_settings
-    from eidolon.memory.config.palace_directory import resolve_palace_directory
+    queries = args.query if args.query else _DEFAULT_QUERIES
+    row = asyncio.run(
+        _run(args.url, count=args.count, queries=queries, voice=args.voice)
+    )
+    row["mode"] = "voice" if args.voice else "non-voice"
+    print(json.dumps(row, indent=2, ensure_ascii=False))
 
-    settings = get_memory_settings()
-    palace = args.palace or str(resolve_palace_directory(settings))
-    row = asyncio.run(_run(settings, palace, duration=args.duration, qps=args.qps))
-    print(row)
+    if args.out:
+        p = Path(args.out)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding="utf-8")
     return 0 if row["sla"] == "PASS" else 1
 
 

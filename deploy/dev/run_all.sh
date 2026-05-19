@@ -1,192 +1,176 @@
 #!/usr/bin/env bash
-# 启动 / 停止：JetStream memory worker + MCP Streamable HTTP read server（均后台）。
-# 均使用 uv run python -m ...，不要求 pip install -e .。
+# Start / stop / reload / status for ``eidolon-memory-supervisor`` (D1).
 #
-#   ./deploy/dev/init.sh             # 首次：依赖 + MemPalace 宫殿 + NATS 自检
-#   ./deploy/dev/run_all.sh
+# 入口语义：supervisor 读 users.yaml，自己 spawn N 个 agent_runner。本脚本只是
+# 把 supervisor 后台跑起来并管理它的 PID。要调试单个 agent，用
+# ``./deploy/dev/run_single_agent.sh``，不要往这里塞单 agent 模式。
+#
+# 运行期路径由 memory.default.yaml 的 runtime.log_dir / runtime.run_dir 决定
+# （默认 ~/eidolon/logs 与 ~/eidolon/run），可通过环境变量
+# ``EIDOLON_MEMORY_LOG_DIR`` / ``EIDOLON_MEMORY_RUN_DIR`` 覆盖。
+# 主配置文件位置由 ``EIDOLON_MEMORY_SETTINGS_YAML`` 决定（不设则用仓库默认）。
+#
+#   ./deploy/dev/run_all.sh           # = start
+#   ./deploy/dev/run_all.sh start
 #   ./deploy/dev/run_all.sh stop
+#   ./deploy/dev/run_all.sh reload    # SIGHUP supervisor → 重读 users.yaml
 #   ./deploy/dev/run_all.sh status
-#
-# Worker / MCP HTTP:  uv sync --extra dev；宫殿请先 init.sh
 #
 set -euo pipefail
 
-# OMP/MKL 线程数由 eidolon.memory.infrastructure.cpu_env 按角色自动设置（若未手动 export）
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 [[ -f "$REPO_ROOT/pyproject.toml" ]] || {
-  echo "[ERROR] 无法解析仓库根目录（预期本脚本位于 <repo>/deploy/dev/run_all.sh）。" >&2
+  echo "[ERROR] cannot resolve repo root from $0" >&2
   exit 1
 }
-
-LOG_DIR="$REPO_ROOT/logs"
-PID_FILE="$LOG_DIR/eidolon_memory_services.pids"
-mkdir -p "$LOG_DIR"
+cd "$REPO_ROOT"
 
 unset VIRTUAL_ENV
 
-WORKER_LOG="${LOG_DIR}/eidolon_memory_worker.log"
-MCP_HTTP_LOG="${LOG_DIR}/eidolon_memory_mcp_http.log"
-WORKER_CMD=(uv run python -m eidolon.memory.entrypoints.worker)
-MCP_HTTP_CMD=(uv run eidolon-memory-mcp)
+if ! command -v uv >/dev/null 2>&1; then
+  echo "[ERROR] uv not on PATH (https://docs.astral.sh/uv/)" >&2
+  exit 1
+fi
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# Read runtime dirs and user count from the active settings YAML (single uv
+# invocation = a fixed startup cost).
+read_runtime_meta() {
+  uv run python <<'PY'
+import json, sys
+from eidolon.memory.config.memory_settings import (
+    get_memory_settings, resolve_log_dir, resolve_run_dir,
+)
+from eidolon.memory.config.users import (
+    load_users_config, resolve_users_file_path,
+)
+s = get_memory_settings()
+users_path = resolve_users_file_path(s)
+try:
+    cfg = load_users_config(s)
+    enabled = [u.id for u in cfg.enabled_users()]
+except Exception as exc:
+    enabled = []
+    sys.stderr.write(f"[warn] users.yaml parse failed: {exc}\n")
+print(json.dumps({
+    "log_dir": str(resolve_log_dir(s)),
+    "run_dir": str(resolve_run_dir(s)),
+    "users_file": str(users_path),
+    "enabled_users": enabled,
+}))
+PY
+}
 
+META_JSON="$(read_runtime_meta)"
+LOG_DIR="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(json.load(sys.stdin)["log_dir"])')"
+RUN_DIR="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(json.load(sys.stdin)["run_dir"])')"
+USERS_FILE="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(json.load(sys.stdin)["users_file"])')"
+ENABLED_USERS="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(",".join(json.load(sys.stdin)["enabled_users"]) or "(none)")')"
+
+mkdir -p "$LOG_DIR" "$RUN_DIR"
+
+SUP_LOG="${LOG_DIR}/supervisor.log"
+SUP_PID="${RUN_DIR}/eidolon-memory-supervisor.pid"
+SUP_CMD=(uv run eidolon-memory-supervisor)
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-mcp_http_url() {
-  (cd "$REPO_ROOT" && uv run python -c "from eidolon.memory.config.memory_settings import get_memory_settings as g; print(g().mcp_http.base_url())")
-}
-
-any_alive() {
-  [[ -f "$PID_FILE" ]] || return 1
-  local line pid
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    pid="${line#*=}"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      return 0
-    fi
-  done <"$PID_FILE"
-  return 1
-}
-
-clear_stale_pid_file() {
-  [[ -f "$PID_FILE" ]] || return 0
-  if any_alive; then
-    return 1
-  fi
-  rm -f "$PID_FILE"
-  return 0
-}
+read_pid() { [[ -f "$SUP_PID" ]] && cat "$SUP_PID" 2>/dev/null || true; }
+pid_alive() { local p; p="$(read_pid)"; [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; }
 
 do_start() {
-  cd "$REPO_ROOT"
-
-  if ! command -v uv >/dev/null 2>&1; then
-    error "未找到 uv，请先安装: https://docs.astral.sh/uv/"
+  if pid_alive; then
+    error "supervisor already running (PID $(read_pid), see $SUP_PID). Use: $0 stop"
     exit 1
   fi
+  [[ -f "$SUP_PID" ]] && rm -f "$SUP_PID"
 
-  if [[ -f "$PID_FILE" ]] && any_alive; then
-    error "进程已在运行（见 $PID_FILE）。先执行: $0 stop"
+  info "users.yaml: $USERS_FILE"
+  info "enabled users: $ENABLED_USERS"
+  info "log_dir: $LOG_DIR"
+  info "run_dir: $RUN_DIR"
+  info "launching: ${SUP_CMD[*]}"
+
+  nohup "${SUP_CMD[@]}" >>"$SUP_LOG" 2>&1 &
+  local sup_pid=$!
+  echo "$sup_pid" >"$SUP_PID"
+  sleep 1
+  if ! kill -0 "$sup_pid" 2>/dev/null; then
+    error "supervisor died immediately; tail of log:"
+    tail -30 "$SUP_LOG" >&2 || true
+    rm -f "$SUP_PID"
     exit 1
   fi
-  clear_stale_pid_file || true
-
-  local tmp mcp_url
-  tmp="$(mktemp)"
-  mcp_url="$(mcp_http_url)"
-
-  info "启动 worker: ${WORKER_CMD[*]}"
-  info "worker 日志: $WORKER_LOG"
-  nohup "${WORKER_CMD[@]}" >>"$WORKER_LOG" 2>&1 &
-  echo "worker=$!" >>"$tmp"
-
-  if [[ "${SKIP_MCP_HTTP:-}" == "1" ]]; then
-    warn "已设 SKIP_MCP_HTTP=1，跳过 MCP HTTP。"
-  else
-    info "启动 MCP HTTP: ${MCP_HTTP_CMD[*]}"
-    info "MCP URL: ${mcp_url}"
-    info "mcp 日志: $MCP_HTTP_LOG"
-    nohup "${MCP_HTTP_CMD[@]}" >>"$MCP_HTTP_LOG" 2>&1 &
-    echo "mcp_http=$!" >>"$tmp"
-    sleep 1
-    if command -v curl >/dev/null 2>&1; then
-      if curl -sf -o /dev/null -X POST "${mcp_url}" -H "Content-Type: application/json" -d '{}' 2>/dev/null; then
-        : # endpoint may reject empty body; process up if port responds
-      fi
-    fi
-  fi
-
-  mv "$tmp" "$PID_FILE"
-
-  info "已后台启动。PID 文件: $PID_FILE"
-  info "停止: $0 stop"
+  info "supervisor PID=$sup_pid (pid=$SUP_PID, log=$SUP_LOG)"
 }
 
 do_stop() {
-  cd "$REPO_ROOT"
-
-  if [[ ! -f "$PID_FILE" ]]; then
-    info "无 PID 文件（未由此脚本启动）。"
+  if ! pid_alive; then
+    info "supervisor not running."
+    [[ -f "$SUP_PID" ]] && rm -f "$SUP_PID"
     return 0
   fi
+  local pid; pid="$(read_pid)"
+  info "SIGTERM supervisor PID=$pid"
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 30); do
+    sleep 1
+    kill -0 "$pid" 2>/dev/null || break
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    warn "supervisor still alive after 30s; SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  rm -f "$SUP_PID"
+  info "stopped."
+}
 
-  info "停止 worker / MCP HTTP…"
-  local line pid key
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    key="${line%%=*}"
-    pid="${line#*=}"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      info "  SIGTERM $key (PID $pid)"
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-  done <"$PID_FILE"
-
-  sleep 2
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    key="${line%%=*}"
-    pid="${line#*=}"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      warn "  SIGKILL $key (PID $pid)"
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-  done <"$PID_FILE"
-
-  rm -f "$PID_FILE"
-  info "已停止。"
+do_reload() {
+  if ! pid_alive; then
+    error "supervisor not running; cannot SIGHUP."
+    exit 1
+  fi
+  local pid; pid="$(read_pid)"
+  info "SIGHUP supervisor PID=$pid (re-read users.yaml)"
+  kill -HUP "$pid"
 }
 
 do_status() {
-  echo -e "${CYAN}==== eidolon-memory (worker + MCP HTTP) ====${NC}"
-  local mcp_url
-  mcp_url="$(mcp_http_url 2>/dev/null || echo "http://127.0.0.1:8030/mcp")"
-  if [[ -f "$PID_FILE" ]] && any_alive; then
-    info "运行中:"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ -z "$line" || "$line" == \#* ]] && continue
-      key="${line%%=*}"
-      pid="${line#*=}"
-      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-        echo "  ✓ ${key}: PID $pid"
-      else
-        echo "  ✗ ${key}: PID $pid (已失效)"
-      fi
-    done <"$PID_FILE"
+  echo -e "${CYAN}==== eidolon-memory-supervisor ====${NC}"
+  echo "  users.yaml:    $USERS_FILE"
+  echo "  enabled:       $ENABLED_USERS"
+  echo "  log_dir:       $LOG_DIR"
+  echo "  run_dir:       $RUN_DIR"
+  if pid_alive; then
+    local pid; pid="$(read_pid)"
+    info "running: PID $pid"
+    echo "  agent children (pgrep eidolon-memory-agent):"
+    pgrep -fl 'eidolon-memory-agent' || echo "    (none)"
   else
-    info "未运行或未由本脚本启动。"
-    [[ -f "$PID_FILE" ]] && rm -f "$PID_FILE"
+    info "not running."
+    [[ -f "$SUP_PID" ]] && rm -f "$SUP_PID"
   fi
   echo ""
-  printf '  worker 等价命令: uv run python -m eidolon.memory.entrypoints.worker\n'
-  printf '  MCP HTTP:        uv run eidolon-memory-mcp  →  %s\n' "$mcp_url"
-  echo "  日志: $WORKER_LOG , $MCP_HTTP_LOG"
+  echo "  log tail:"
+  if [[ -f "$SUP_LOG" ]]; then
+    tail -10 "$SUP_LOG" | sed 's/^/    /'
+  else
+    echo "    (no supervisor.log yet)"
+  fi
 }
 
 case "${1:-start}" in
-  start|"")
-    do_start
-    ;;
-  stop)
-    do_stop
-    ;;
-  status)
-    do_status
-    ;;
+  start|"") do_start ;;
+  stop)    do_stop ;;
+  reload)  do_reload ;;
+  status)  do_status ;;
+  restart) do_stop; do_start ;;
   *)
-    echo "用法: $0 [start|stop|status]" >&2
+    echo "usage: $0 [start|stop|reload|status|restart]" >&2
     exit 1
     ;;
 esac

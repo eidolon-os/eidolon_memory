@@ -116,6 +116,7 @@ async def search_all_wings_mcp_style(
         hits = await _search_voice_shared_embedding(
             palace_path,
             settings,
+            backend=backend,
             query=query,
             wings=wings,
             room=room,
@@ -153,14 +154,23 @@ async def _search_voice_shared_embedding(
     palace_path: str,
     settings: MemorySettings,
     *,
+    backend: MemoryReader,
     query: str,
     wings: list[str],
     room: str | None,
     top_k: int,
     user_id: str,
 ) -> list[MemoryWireRecord]:
+    """Voice fast-path: one ONNX embed, parallel ``collection.query`` per wing.
+
+    D1: chroma calls bypass ``MemoryBackend.search`` for the shared-embedding
+    optimization, so we must acquire ``LockedBackend.lock`` here to keep the
+    single-writer-single-reader contract. Non-locked backends (tests) fall back
+    to running unlocked.
+    """
     import asyncio
 
+    from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
     from eidolon.memory.adapters.search_payload import parse_search_tool_payload
 
@@ -175,5 +185,9 @@ async def _search_voice_shared_embedding(
         )
         return parse_search_tool_payload({"results": raw})
 
-    records = await asyncio.to_thread(_run)
+    if isinstance(backend, LockedBackend):
+        async with backend.lock:
+            records = await asyncio.to_thread(_run)
+    else:
+        records = await asyncio.to_thread(_run)
     return [r for r in records if recall_record_visible_for_user(r, user_id)]

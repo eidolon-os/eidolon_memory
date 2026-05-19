@@ -33,9 +33,7 @@ class WingDefinition(BaseModel):
 
 class RecallPolicy(BaseModel):
     top_k: int = 5
-    timeout_seconds: float = 1.5
-    livekit_timeout_seconds: float = 0.6
-    recency_weight: float = 0.35
+    livekit_timeout_seconds: float = 0.3
     filter_taboo_statuses: list[str] = Field(
         default_factory=lambda: ["taboo", "archived"]
     )
@@ -62,28 +60,57 @@ class LlmConfig(BaseModel):
 
 
 class ReadRuntimeConfig(BaseModel):
+    """D1: simplified — no cross-process double-buffering (single process per palace)."""
+
     max_wing_parallel: int = 0  # 0 = auto (see cpu_env.recommend_max_wing_parallel)
-    search_executor_threads: int = 0  # 0 = auto from omp + cores
-    omp_num_threads: int = 0  # 0 = auto from CPU + role
-    generation_path: str = ""
-    hierarchy_cache_seconds: int = 0
-    background_reconcile: bool = True
-    double_buffer_staging: bool = True
+    omp_num_threads: int = 0  # 0 = auto from CPU
     shared_query_embedding: bool = True
     voice_skip_closets: bool = True
 
 
 class RuntimeConfig(BaseModel):
-    palace_path: str = ""
-    fake_backend: bool = False
+    """D1: per-user palace path resolves via ``resolve_palace_for_user(user_id)``.
+
+    Runtime artefacts (palaces, logs, PID files) live under directories that
+    can be relocated via these settings or overridden by environment variables
+    so the repo only ships code.
+    """
+
+    palaces_root: str = ""  # default ~/eidolon/palaces; env EIDOLON_MEMORY_PALACES_ROOT
+    log_dir: str = ""       # default ~/eidolon/logs;   env EIDOLON_MEMORY_LOG_DIR
+    run_dir: str = ""       # default ~/eidolon/run;    env EIDOLON_MEMORY_RUN_DIR
     read: ReadRuntimeConfig = Field(default_factory=ReadRuntimeConfig)
+
+
+class ChromadbConfig(BaseModel):
+    """SQLite/Chroma persistence tuning (D3 半写防护)."""
+
+    synchronous: str = "FULL"  # FULL = fsync each commit; chroma write +30% latency, safer
+
+
+class WorkerConfig(BaseModel):
+    """In-process NATS subscriber + steward (no longer a standalone process in D1)."""
+
+    sync_every_n_turns: int = 5  # PASSIVE checkpoint cadence (D3)
+
+
+class SupervisorConfig(BaseModel):
+    """Multi-user agent_runner process supervisor."""
+
+    users_file: str = ""  # path to users.yaml; env override: EIDOLON_MEMORY_USERS_YAML
+    eager_init: bool = True  # on startup, mempalace init each enabled user (parallel<=4)
+    restart_backoff_seconds: list[int] = Field(
+        default_factory=lambda: [1, 2, 4, 8, 30]
+    )
+    max_failures_per_minute: int = 5  # disable user beyond this rate
 
 
 class NatsConfig(BaseModel):
     url: str = "nats://localhost:4222"
     stream: str = "MEMORY_TURNS"
-    subject: str = "agent.memory.conversation.turn"
-    durable: str = "eidolon-memory-worker"
+    # D1: NATS subject = <base>.<user_id>; ``conversation_turn_subject_base`` is the prefix
+    conversation_turn_subject_base: str = "agent.memory.conversation.turn"
+    durable_prefix: str = "eidolon-memory-agent"  # per-user durable = <prefix>-<user_id>
     stream_max_age_seconds: int = 86400 * 14
     stream_max_msgs: int = 5000
     stream_max_bytes: int = 536_870_912
@@ -91,23 +118,24 @@ class NatsConfig(BaseModel):
     dlq_log_path: str = "logs/memory_dlq.jsonl"
 
 
-class FilterConfig(BaseModel):
-    ignore_smalltalk_regex: str = ""
-
-
 class McpHttpConfig(BaseModel):
-    """Streamable HTTP transport for the MCP read server (``transport=streamable-http``)."""
+    """Control-plane MCP transport per agent runner.
+
+    D1: each user has their own port; agent_runner CLI ``--port`` always wins.
+    Fields here are defaults / dev-mode single-user convenience.
+    """
 
     host: str = "127.0.0.1"
-    port: int = 8030
+    port: int = 8030  # only used if CLI --port unset
     path: str = "/mcp"
     stateless_http: bool = False
     bearer_token: str = ""
     bearer_token_env: str = "EIDOLON_MEMORY_MCP_TOKEN"
 
-    def base_url(self) -> str:
+    def base_url(self, *, port: int | None = None) -> str:
         path = self.path if self.path.startswith("/") else f"/{self.path}"
-        return f"http://{self.host}:{self.port}{path}"
+        effective_port = port if port is not None else self.port
+        return f"http://{self.host}:{effective_port}{path}"
 
     def resolve_bearer_token(self) -> str:
         token = (self.bearer_token or "").strip()
@@ -130,9 +158,11 @@ class MemorySettings(BaseModel):
     steward: StewardConfig = Field(default_factory=StewardConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    chromadb: ChromadbConfig = Field(default_factory=ChromadbConfig)
+    worker: WorkerConfig = Field(default_factory=WorkerConfig)
+    supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     nats: NatsConfig = Field(default_factory=NatsConfig)
     mcp_http: McpHttpConfig = Field(default_factory=McpHttpConfig)
-    filters: FilterConfig = Field(default_factory=FilterConfig)
 
     @field_validator("wings")
     @classmethod
@@ -172,6 +202,28 @@ class MemorySettings(BaseModel):
             template.replace("{{ wings_block }}", self.wings_prompt_block())
             .replace("{{ locale }}", locale)
         )
+
+
+def resolve_log_dir(settings: MemorySettings) -> Path:
+    """Resolve runtime log directory. Env > config > ``~/eidolon/logs``."""
+    env = os.environ.get("EIDOLON_MEMORY_LOG_DIR", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    configured = (settings.runtime.log_dir or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.home() / "eidolon" / "logs").resolve()
+
+
+def resolve_run_dir(settings: MemorySettings) -> Path:
+    """Resolve PID / lockfile directory. Env > config > ``~/eidolon/run``."""
+    env = os.environ.get("EIDOLON_MEMORY_RUN_DIR", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    configured = (settings.runtime.run_dir or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.home() / "eidolon" / "run").resolve()
 
 
 def default_memory_settings_path() -> Path:

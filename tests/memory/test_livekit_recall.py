@@ -1,14 +1,18 @@
-"""Tests for LiveKit recall fail-fast and session filters."""
+"""LiveKit recall fail-fast and voice filter (D1: direct backend, no PalaceReadSession)."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from eidolon.memory.application.livekit_recall import LiveKitRecallService
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
-from eidolon.memory.config.memory_settings import MemorySettings, RecallPolicy, WingDefinition
+from eidolon.memory.config.memory_settings import (
+    MemorySettings,
+    RecallPolicy,
+    WingDefinition,
+)
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
 from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -30,24 +34,42 @@ def _settings() -> MemorySettings:
 
 @pytest.mark.asyncio
 async def test_livekit_recall_fail_fast_on_error() -> None:
-    session = MagicMock()
-    session.ensure_fresh = AsyncMock()
-    session.background_reconcile = AsyncMock()
     backend = MagicMock()
-    session.active_backend = AsyncMock(return_value=backend)
+    import eidolon.memory.application.livekit_recall as mod
 
     async def _boom(*_a, **_k):
         raise MemoryBackendUnavailable("Error finding id")
 
-    import eidolon.memory.application.livekit_recall as mod
-
     original = mod.search_all_wings_mcp_style
     mod.search_all_wings_mcp_style = _boom
     try:
-        svc = LiveKitRecallService(session, _settings())
+        svc = LiveKitRecallService(backend, _settings(), palace_path="/tmp/fake")
         out = await svc.recall_context_with_records("hello", session_id="s1")
         assert out["context"] == ""
         assert out["degraded"] is True
+    finally:
+        mod.search_all_wings_mcp_style = original
+
+
+@pytest.mark.asyncio
+async def test_livekit_recall_fail_fast_on_timeout() -> None:
+    """``asyncio.wait_for`` should expire and degrade rather than hang."""
+    import asyncio
+
+    backend = MagicMock()
+    import eidolon.memory.application.livekit_recall as mod
+
+    async def _slow(*_a, **_k):
+        await asyncio.sleep(5)
+        return []
+
+    original = mod.search_all_wings_mcp_style
+    mod.search_all_wings_mcp_style = _slow
+    try:
+        svc = LiveKitRecallService(backend, _settings(), palace_path="/tmp/fake")
+        out = await svc.recall_context_with_records("hello")
+        assert out["degraded"] is True
+        assert out["context"] == ""
     finally:
         mod.search_all_wings_mcp_style = original
 

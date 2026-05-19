@@ -63,10 +63,8 @@ def warm_search(palace_path: str, *, all_wings: bool) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--palace",
-        help="MemPalace root (default: resolve from memory settings YAML)",
-    )
+    parser.add_argument("--palace", help="Absolute MemPalace dir (overrides --user-id).")
+    parser.add_argument("--user-id", help="Resolve palace via memory settings.")
     parser.add_argument(
         "--skip-search",
         action="store_true",
@@ -78,12 +76,17 @@ def main() -> int:
         help="Dry-run search on every configured wing (default: first wing only)",
     )
     args = parser.parse_args()
+    if not args.palace and not args.user_id:
+        parser.error("either --palace <abs> or --user-id <id> is required")
 
-    from eidolon.memory.config.memory_settings import get_memory_settings
-    from eidolon.memory.config.palace_directory import resolve_palace_directory
+    if args.palace:
+        palace = args.palace
+    else:
+        from eidolon.memory.config.memory_settings import get_memory_settings
+        from eidolon.memory.config.palace_directory import resolve_palace_for_user
 
-    settings = get_memory_settings()
-    palace = args.palace or str(resolve_palace_directory(settings))
+        settings = get_memory_settings()
+        palace = str(resolve_palace_for_user(settings, args.user_id))
     print("palace_path:", palace)
 
     warm_embedding()

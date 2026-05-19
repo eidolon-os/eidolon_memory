@@ -23,7 +23,8 @@ SEED_BENCH_MARKER = "benchmark drawer"
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--palace", help="Palace directory (default: from memory settings)")
+    parser.add_argument("--palace", help="Absolute palace directory (overrides --user-id).")
+    parser.add_argument("--user-id", help="Resolve palace via memory settings.")
     parser.add_argument("--dry-run", action="store_true", help="List ids only, do not delete")
     parser.add_argument(
         "--include-seed-bench",
@@ -31,16 +32,21 @@ def main() -> int:
         help=f"Also delete documents containing {SEED_BENCH_MARKER!r}",
     )
     args = parser.parse_args()
+    if not args.palace and not args.user_id:
+        parser.error("either --palace <abs> or --user-id <id> is required")
 
     markers = SOAK_MARKERS
     if args.include_seed_bench:
         markers = (*SOAK_MARKERS, SEED_BENCH_MARKER)
 
-    from eidolon.memory.config.memory_settings import get_memory_settings
-    from eidolon.memory.config.palace_directory import resolve_palace_directory
+    if args.palace:
+        palace = args.palace
+    else:
+        from eidolon.memory.config.memory_settings import get_memory_settings
+        from eidolon.memory.config.palace_directory import resolve_palace_for_user
 
-    settings = get_memory_settings()
-    palace = str(args.palace or resolve_palace_directory(settings))
+        settings = get_memory_settings()
+        palace = str(resolve_palace_for_user(settings, args.user_id))
     from mempalace.palace import get_collection
 
     col = get_collection(palace, create=False)

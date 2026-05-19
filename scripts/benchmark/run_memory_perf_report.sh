@@ -1,88 +1,213 @@
 #!/usr/bin/env bash
-# Orchestrate PoC gates, pytest, and memory performance benchmarks.
+# Orchestrate D1 memory benchmarks: pytest + R-01 (recall) + W-01 (write→visible).
+#
+#   ./scripts/benchmark/run_memory_perf_report.sh
+#   ./scripts/benchmark/run_memory_perf_report.sh --user-id bench --port 18030 --read-count 100
+#
+# Brings up a single agent_runner subprocess for ``--user-id``, runs the read
+# load generator + the publish→recall-visible bench, then tears the agent down.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-cd "$REPO_ROOT"
+cd "${REPO_ROOT}"
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 
-PALACE_SIZE="M"
-DURATION_READ=30
-DURATION_WRITE=60
-DURATION_MIXED=120
-RUN_POC=1
-RUN_PYTEST=1
-FULL=0
+USER_ID="bench"
+PORT="18030"
+READ_COUNT="50"
+WRITE_COUNT="5"
+RUN_PYTEST="1"
+RUN_WRITE="1"
+SEED_SIZE=""   # "" = skip seed; S/M/L = seed N drawers
+VOICE_FLAG=""
+
+usage() {
+  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  echo ""
+  echo "Options:"
+  echo "  --user-id <id>     (default: bench)"
+  echo "  --port <port>      (default: 18030)"
+  echo "  --read-count <n>   R-01 sample count (default: 50)"
+  echo "  --write-count <n>  W-01 sample count (default: 5)"
+  echo "  --skip-pytest      do not run pytest"
+  echo "  --skip-write       do not run W-01 (publish→visible)"
+  echo "  --voice            run R-01 with LiveKit shared-embedding hot path"
+  echo "  --seed S|M|L       seed palace with 100/1000/5000 drawers before R-01"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --palace-size) PALACE_SIZE="$2"; shift 2 ;;
-    --duration-read) DURATION_READ="$2"; shift 2 ;;
-    --duration-write) DURATION_WRITE="$2"; shift 2 ;;
-    --duration-mixed) DURATION_MIXED="$2"; shift 2 ;;
-    --skip-poc) RUN_POC=0; shift ;;
+    --user-id) USER_ID="$2"; shift 2 ;;
+    --port) PORT="$2"; shift 2 ;;
+    --read-count) READ_COUNT="$2"; shift 2 ;;
+    --write-count) WRITE_COUNT="$2"; shift 2 ;;
     --skip-pytest) RUN_PYTEST=0; shift ;;
-    --full) FULL=1; shift ;;
-    -h|--help)
-      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
-      exit 0
-      ;;
-    *) echo "unknown arg: $1" >&2; exit 1 ;;
+    --skip-write) RUN_WRITE=0; shift ;;
+    --voice) VOICE_FLAG="--voice"; shift ;;
+    --seed) SEED_SIZE="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "[ERROR] unknown arg: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
 
 STAMP="$(date +%Y%m%d_%H%M%S)"
 OUT_DIR="${REPO_ROOT}/reports/memory_perf_${STAMP}"
-mkdir -p "$OUT_DIR" "${REPO_ROOT}/reports"
-
+mkdir -p "$OUT_DIR"
 echo "[INFO] output: $OUT_DIR"
 
-if [[ "$RUN_POC" -eq 1 ]]; then
-  echo "[INFO] Phase 0 PoC: Chroma reload"
-  uv run python scripts/poc_chroma_reload_latency.py \
-    --out "${REPO_ROOT}/reports/poc_chroma_reload.json" || true
-  echo "[INFO] Phase 0 PoC: SQLite RW"
-  uv run python scripts/poc_sqlite_rw_concurrent.py \
-    --duration 30 \
-    --out "${REPO_ROOT}/reports/poc_sqlite_rw.json" || true
-fi
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo n/a)"
+GIT_STATUS="$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 
+# ----- pytest -----
+PYTEST_LOG="${OUT_DIR}/pytest.log"
+PYTEST_STATUS="skipped"
 if [[ "$RUN_PYTEST" -eq 1 ]]; then
-  echo "[INFO] pytest tests/memory"
-  uv run pytest tests/memory -q --tb=short 2>&1 | tee "${OUT_DIR}/pytest.log"
+  echo "[INFO] pytest tests/ -q"
+  if uv run pytest tests -q --tb=short 2>&1 | tee "$PYTEST_LOG"; then
+    PYTEST_STATUS="PASS"
+  else
+    PYTEST_STATUS="FAIL"
+  fi
 fi
 
-echo "[INFO] LiveKit read benchmark (R-01)"
-uv run python scripts/benchmark/bench_read_livekit.py \
-  --duration "$DURATION_READ" \
-  --qps 2 2>&1 | tee "${OUT_DIR}/R-01.log" || true
-
-if [[ "$FULL" -eq 1 ]]; then
-  echo "[INFO] JetStream write benchmark (W-01) — requires worker running"
-  uv run python scripts/benchmark/bench_write_jetstream.py \
-    --count 20 2>&1 | tee "${OUT_DIR}/W-01.log" || true
+# ----- seed palace (optional) -----
+if [[ -n "$SEED_SIZE" ]]; then
+  PALACE_DIR="$HOME/eidolon/palaces/${USER_ID}"
+  echo "[INFO] seeding palace ${PALACE_DIR} size=${SEED_SIZE}"
+  uv run python -c "
+from eidolon.memory.config.memory_settings import get_memory_settings
+from eidolon.memory.config.palace_directory import resolve_palace_for_user
+from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
+import sys
+settings = get_memory_settings()
+palace = resolve_palace_for_user(settings, sys.argv[1])
+ensure_palace_initialized(sys.argv[1], palace)
+print(palace)
+" "$USER_ID"
+  uv run python scripts/benchmark/seed_palace.py \
+    --palace "${PALACE_DIR}" --size "${SEED_SIZE}" 2>&1 | tee "${OUT_DIR}/seed.log"
 fi
 
-cp -f "${REPO_ROOT}/reports/poc_chroma_reload.json" "${OUT_DIR}/" 2>/dev/null || true
-cp -f "${REPO_ROOT}/reports/poc_sqlite_rw.json" "${OUT_DIR}/" 2>/dev/null || true
+# ----- bring up agent_runner -----
+AGENT_LOG="${OUT_DIR}/agent_runner.log"
+echo "[INFO] starting eidolon-memory-agent --user-id=${USER_ID} --port=${PORT}"
+uv run eidolon-memory-agent --user-id="${USER_ID}" --port="${PORT}" \
+  >"${AGENT_LOG}" 2>&1 &
+AGENT_PID=$!
+echo "[INFO] agent_runner PID=${AGENT_PID}, log=${AGENT_LOG}"
 
-cat > "${OUT_DIR}/summary.md" <<EOF
-# Eidolon Memory 性能报告
+cleanup() {
+  if kill -0 "${AGENT_PID}" 2>/dev/null; then
+    echo "[INFO] stopping agent_runner PID=${AGENT_PID}"
+    kill "${AGENT_PID}" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      sleep 1
+      kill -0 "${AGENT_PID}" 2>/dev/null || break
+    done
+    kill -9 "${AGENT_PID}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
 
-- 时间: ${STAMP}
-- 输出目录: ${OUT_DIR}
-- OMP_NUM_THREADS: ${OMP_NUM_THREADS}
+# Wait for control plane to bind
+for i in $(seq 1 30); do
+  if nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
+    echo "[INFO] control-plane up after ${i}s"
+    break
+  fi
+  sleep 1
+done
+nc -z 127.0.0.1 "${PORT}" 2>/dev/null || {
+  echo "[ERROR] agent_runner did not bind ${PORT} within 30s" >&2
+  tail -40 "${AGENT_LOG}" >&2 || true
+  exit 1
+}
 
-## 说明
+# Give warm (ONNX + closets + voice wing dry-run) a chance to finish.
+# `agent_runner_warm_complete` shows once warm path is fully primed.
+for i in $(seq 1 30); do
+  if grep -q "agent_runner_warm_complete" "${AGENT_LOG}" 2>/dev/null; then
+    echo "[INFO] warm complete after ~${i}s"
+    break
+  fi
+  sleep 1
+done
 
-- R-01: 见 \`R-01.log\`（LiveKit in-process recall）
-- PoC: \`poc_chroma_reload.json\`, \`poc_sqlite_rw.json\`
-- pytest: \`pytest.log\`
+# ----- R-01 -----
+R01_JSON="${OUT_DIR}/R-01.json"
+R01_LOG="${OUT_DIR}/R-01.log"
+echo "[INFO] R-01 read bench (n=${READ_COUNT}) ${VOICE_FLAG}"
+if uv run python scripts/benchmark/bench_read_livekit.py \
+  --url "http://127.0.0.1:${PORT}/mcp" \
+  --count "${READ_COUNT}" ${VOICE_FLAG} \
+  --out "${R01_JSON}" 2>&1 | tee "${R01_LOG}"; then
+  R01_STATUS="PASS"
+else
+  R01_STATUS="FAIL"
+fi
 
-完整自动化表格见后续 \`metrics.json\` 迭代。
-EOF
+# ----- W-01 -----
+W01_JSON="${OUT_DIR}/W-01.json"
+W01_LOG="${OUT_DIR}/W-01.log"
+W01_STATUS="skipped"
+if [[ "$RUN_WRITE" -eq 1 ]]; then
+  echo "[INFO] W-01 write→visible bench (n=${WRITE_COUNT})"
+  if uv run python scripts/benchmark/bench_write_jetstream.py \
+    --count "${WRITE_COUNT}" \
+    --user-id "${USER_ID}" \
+    --mcp-url "http://127.0.0.1:${PORT}/mcp" \
+    --out "${W01_JSON}" 2>&1 | tee "${W01_LOG}"; then
+    W01_STATUS="PASS"
+  else
+    W01_STATUS="FAIL"
+  fi
+fi
 
-echo "[INFO] done: ${OUT_DIR}/summary.md"
+cleanup
+trap - EXIT INT TERM
+
+# ----- assemble summary.md -----
+SUMMARY="${OUT_DIR}/summary.md"
+{
+  echo "# Eidolon Memory D1 perf report"
+  echo ""
+  echo "- timestamp: ${STAMP}"
+  echo "- git: ${GIT_SHA} (dirty=${GIT_STATUS})"
+  echo "- user_id: ${USER_ID}, port: ${PORT}"
+  echo "- OMP_NUM_THREADS=${OMP_NUM_THREADS} MKL_NUM_THREADS=${MKL_NUM_THREADS}"
+  echo ""
+  echo "| 阶段 | 状态 | log |"
+  echo "|------|------|------|"
+  echo "| pytest | ${PYTEST_STATUS} | [pytest.log](pytest.log) |"
+  echo "| R-01 (read) | ${R01_STATUS} | [R-01.log](R-01.log) / [R-01.json](R-01.json) |"
+  echo "| W-01 (write→visible) | ${W01_STATUS} | [W-01.log](W-01.log) / [W-01.json](W-01.json) |"
+  echo ""
+  if [[ -f "${R01_JSON}" ]]; then
+    echo "## R-01"
+    echo ""
+    echo '```json'
+    cat "${R01_JSON}"
+    echo ""
+    echo '```'
+    echo ""
+  fi
+  if [[ -f "${W01_JSON}" ]]; then
+    echo "## W-01"
+    echo ""
+    echo '```json'
+    cat "${W01_JSON}"
+    echo ""
+    echo '```'
+    echo ""
+  fi
+  echo "## agent_runner tail"
+  echo ""
+  echo '```'
+  tail -40 "${AGENT_LOG}" || true
+  echo '```'
+} > "${SUMMARY}"
+
+echo "[INFO] done: ${SUMMARY}"

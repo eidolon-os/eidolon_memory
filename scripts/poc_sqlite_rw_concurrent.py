@@ -53,17 +53,14 @@ def _writer(db_path: str, duration: float, ready: mp.Queue, errors: mp.Queue) ->
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--palace", help="Palace root (default from settings)")
+    parser.add_argument("--palace", required=True, help="Absolute palace path")
     parser.add_argument("--duration", type=float, default=60.0)
     parser.add_argument("--out", default="reports/poc_sqlite_rw.json")
     args = parser.parse_args()
 
-    from eidolon.memory.config.memory_settings import get_memory_settings
-    from eidolon.memory.config.palace_directory import resolve_palace_directory
     from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
 
-    settings = get_memory_settings()
-    palace = Path(args.palace or resolve_palace_directory(settings))
+    palace = Path(args.palace).expanduser().resolve()
     db = palace / "chroma.sqlite3"
     if not db.is_file():
         print(f"missing {db}", file=sys.stderr)

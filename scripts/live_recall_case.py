@@ -8,19 +8,21 @@ import asyncio
 
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.config.memory_settings import get_memory_settings
-from eidolon.memory.config.palace_directory import resolve_palace_directory
+from eidolon.memory.config.palace_directory import resolve_palace_for_user
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("query", help="Natural language recall query.")
+    parser.add_argument("--user-id", required=True, help="Per-user palace owner.")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--wing", default="", help="Optional single wing to search.")
     parser.add_argument("--room", default="", help="Optional MemPalace room.")
     args = parser.parse_args()
 
     settings = get_memory_settings()
-    backend = MemPalacePythonBackend(settings, str(resolve_palace_directory(settings)))
+    palace = resolve_palace_for_user(settings, args.user_id)
+    backend = MemPalacePythonBackend(settings, str(palace))
     wings = [args.wing] if args.wing else [w.id for w in settings.wings if w.id != "Wing_Privacy"]
     all_hits = []
     for wing in wings:

@@ -1,4 +1,9 @@
-"""LiveKit voice hot-path recall: in-process, hard timeout, fail-fast."""
+"""LiveKit voice hot-path recall (D1): in-process, hard timeout, fail-fast.
+
+In D1 the agent_runner process owns a single ``LockedBackend`` shared by both
+read and write paths; this service is a thin wrapper that adds the hard timeout
+and degraded-result envelope expected by the LiveKit pipeline.
+"""
 
 from __future__ import annotations
 
@@ -11,27 +16,26 @@ from eidolon.memory.application.public_recall import (
     wire_record_to_public_dict,
 )
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.wire import MemoryWireRecord
-from eidolon.memory.infrastructure.chroma_refresh import (
-    is_database_locked_error,
-    is_disk_io_error,
-    is_transient_index_error,
-)
-from eidolon.memory.infrastructure.palace_read_session import PalaceReadSession
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
 
 class LiveKitRecallService:
-    """Recall long-term memory for LLM prompt injection before TTS pipeline continues."""
+    """Recall long-term memory before TTS pipeline continues. Never raises."""
 
-    def __init__(self, session: PalaceReadSession, settings: MemorySettings) -> None:
-        from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
-
-        apply_cpu_thread_env(settings, role="livekit")
-        self._session = session
+    def __init__(
+        self,
+        backend: MemoryBackend,
+        settings: MemorySettings,
+        *,
+        palace_path: str,
+    ) -> None:
+        self._backend = backend
         self._settings = settings
+        self._palace_path = palace_path
 
     async def recall_context(
         self,
@@ -41,7 +45,7 @@ class LiveKitRecallService:
         session_id: str = "",
         top_k: int | None = None,
     ) -> str:
-        """Return grouped context text; never raises (fail-fast → empty string)."""
+        """Return grouped context text; fail-fast → empty string on timeout/error."""
         result = await self.recall_context_with_records(
             query,
             user_id=user_id,
@@ -77,20 +81,9 @@ class LiveKitRecallService:
             }
         except TimeoutError:
             log.warning("livekit_recall_degraded", reason="timeout", query_len=len(query))
-            await self._session.background_reconcile()
             return {"context": "", "records": [], "degraded": True}
         except Exception as exc:
-            reason = "error"
-            if is_database_locked_error(exc) or is_disk_io_error(exc):
-                reason = "database_locked"
-            elif is_transient_index_error(exc):
-                reason = "transient_index"
-            log.warning(
-                "livekit_recall_degraded",
-                reason=reason,
-                error=str(exc),
-            )
-            await self._session.background_reconcile()
+            log.warning("livekit_recall_degraded", reason="error", error=str(exc))
             return {"context": "", "records": [], "degraded": True}
 
     async def _recall_records(
@@ -101,10 +94,8 @@ class LiveKitRecallService:
         session_id: str,
         top_k: int,
     ) -> list[MemoryWireRecord]:
-        await self._session.ensure_fresh()
-        backend = await self._session.active_backend()
         return await search_all_wings_mcp_style(
-            backend,
+            self._backend,
             self._settings,
             query=query,
             user_id=user_id,
@@ -114,5 +105,5 @@ class LiveKitRecallService:
             for_voice=True,
             session_id=session_id,
             user_utterance=query,
-            palace_path=self._session.palace_path,
+            palace_path=self._palace_path,
         )

@@ -68,7 +68,7 @@ def bench_pop_cache(palace: str, *, rounds: int) -> dict[str, float]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--palace", help="Palace path (default from settings)")
+    parser.add_argument("--palace", required=True, help="Absolute palace path (required in D1)")
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument(
         "--out",
@@ -76,12 +76,9 @@ def main() -> int:
         help="JSON output path",
     )
     args = parser.parse_args()
-
-    from eidolon.memory.config.memory_settings import get_memory_settings
-    from eidolon.memory.config.palace_directory import resolve_palace_directory
-
-    settings = get_memory_settings()
-    palace = args.palace or str(resolve_palace_directory(settings))
+    palace = args.palace
+    # NOTE: this Phase-0 PoC is obsolete in D1 (single-process palace, no
+    # double-buffer); kept as historical baseline.
 
     close_stats = bench_close_reopen(palace, rounds=args.rounds)
     pop_stats = bench_pop_cache(palace, rounds=args.rounds)

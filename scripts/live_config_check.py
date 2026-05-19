@@ -3,21 +3,40 @@
 
 from __future__ import annotations
 
-from eidolon.memory.config.memory_settings import get_memory_settings
-from eidolon.memory.config.palace_directory import resolve_palace_directory
+from eidolon.memory.config.memory_settings import (
+    get_memory_settings,
+    resolve_log_dir,
+    resolve_run_dir,
+)
+from eidolon.memory.config.palace_directory import resolve_palaces_root
+from eidolon.memory.config.users import load_users_config, resolve_users_file_path
+from eidolon.memory.infrastructure.bus.subjects import (
+    conversation_turn_stream_pattern,
+)
 
 
 def main() -> None:
     settings = get_memory_settings()
-    resolved = resolve_palace_directory(settings)
-    print("palace_path (resolved):", resolved)
-    print("palace_path (yaml/runtime):", settings.runtime.palace_path or "<empty>")
+    print("palaces_root:", resolve_palaces_root(settings))
+    print("log_dir:", resolve_log_dir(settings))
+    print("run_dir:", resolve_run_dir(settings))
+    users_path = resolve_users_file_path(settings)
+    print("users.yaml:", users_path)
+    try:
+        ucfg = load_users_config(settings)
+        for u in ucfg.users:
+            print(f"  {u.id:14s} enabled={u.enabled} port={u.port}")
+    except Exception as exc:
+        print(f"  (users.yaml parse failed: {exc})")
     print("backend:", "mempalace-python")
     print("nats.url:", settings.nats.url)
     print("nats.stream:", settings.nats.stream)
-    print("nats.subject:", settings.nats.subject)
-    print("nats.durable:", settings.nats.durable)
-    print("mcp_http.url:", settings.mcp_http.base_url())
+    print("nats.subject_base:", settings.nats.conversation_turn_subject_base)
+    print("nats.stream_pattern:", conversation_turn_stream_pattern())
+    print("nats.durable_prefix:", settings.nats.durable_prefix)
+    print("mcp_http.default_url:", settings.mcp_http.base_url())
+    print("chromadb.synchronous:", settings.chromadb.synchronous)
+    print("supervisor.users_file:", settings.supervisor.users_file or "<default>")
     print("steward.mode:", settings.steward.mode)
     print("llm.model:", settings.llm.model or "<missing>")
     print("llm.base_url:", settings.llm.base_url or "<missing>")

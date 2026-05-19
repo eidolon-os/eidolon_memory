@@ -1,7 +1,6 @@
 """Configuration: memory settings YAML, palace directory resolution, steward templates."""
 
 from eidolon.memory.config.memory_settings import (
-    FilterConfig,
     LlmConfig,
     MemorySettings,
     NatsConfig,
@@ -13,11 +12,16 @@ from eidolon.memory.config.memory_settings import (
     get_memory_settings,
     load_memory_settings,
     reset_memory_settings_cache,
+    resolve_log_dir,
+    resolve_run_dir,
 )
-from eidolon.memory.config.palace_directory import resolve_palace_directory
+from eidolon.memory.config.palace_directory import (
+    resolve_palace_for_user,
+    resolve_palaces_root,
+    validate_user_id,
+)
 
 __all__ = [
-    "FilterConfig",
     "LlmConfig",
     "MemorySettings",
     "NatsConfig",
@@ -29,5 +33,9 @@ __all__ = [
     "get_memory_settings",
     "load_memory_settings",
     "reset_memory_settings_cache",
-    "resolve_palace_directory",
+    "resolve_log_dir",
+    "resolve_palace_for_user",
+    "resolve_palaces_root",
+    "resolve_run_dir",
+    "validate_user_id",
 ]

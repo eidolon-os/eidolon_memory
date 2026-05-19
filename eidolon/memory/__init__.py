@@ -1,6 +1,5 @@
-"""Memory package — MCP-only semantic reads; NATS/JetStream for writes and CRUD."""
+"""Memory package — D1: in-process MCP control plane + NATS JetStream writes per user."""
 
-from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.domain.payloads import (
     ConversationTurnPayload,
     MemoryDeletePayload,
@@ -12,12 +11,11 @@ from eidolon.memory.domain.payloads import (
 )
 
 __all__ = [
-    "MemoryService",
     "ConversationTurnPayload",
-    "MemoryQueryPayload",
-    "MemoryStorePayload",
-    "MemoryResultPayload",
-    "MemoryGetPayload",
-    "MemoryGetAllPayload",
     "MemoryDeletePayload",
+    "MemoryGetAllPayload",
+    "MemoryGetPayload",
+    "MemoryQueryPayload",
+    "MemoryResultPayload",
+    "MemoryStorePayload",
 ]

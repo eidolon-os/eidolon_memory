@@ -1,7 +1,13 @@
-"""In-process NATS bus types for MemoryService (standalone copy of agent.shared.bus subset)."""
+"""NATS bus types for memory writes (D1: only conversation turn publishing)."""
 
-from eidolon.memory.infrastructure.bus.client import BusClient
-from eidolon.memory.infrastructure.bus.schemas import BusEnvelope, BusHeader
-from eidolon.memory.infrastructure.bus.subjects import SharedSubjects
+from eidolon.memory.infrastructure.bus.subjects import (
+    SharedSubjects,
+    conversation_turn_stream_pattern,
+    conversation_turn_subject,
+)
 
-__all__ = ["BusClient", "BusEnvelope", "BusHeader", "SharedSubjects"]
+__all__ = [
+    "SharedSubjects",
+    "conversation_turn_stream_pattern",
+    "conversation_turn_subject",
+]

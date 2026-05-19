@@ -1,4 +1,4 @@
-"""JetStream stream configuration shared by worker and publisher."""
+"""JetStream stream configuration shared by agent_runner subscribers and publishers (D1)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,14 @@ from typing import Any
 from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
 
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.infrastructure.bus.subjects import conversation_turn_stream_pattern
 
 
 def stream_config_for_settings(settings: MemorySettings) -> StreamConfig:
     nats = settings.nats
     return StreamConfig(
         name=nats.stream,
-        subjects=[nats.subject],
+        subjects=[conversation_turn_stream_pattern()],
         retention=RetentionPolicy.LIMITS,
         storage=StorageType.FILE,
         max_age=nats.stream_max_age_seconds,

@@ -102,12 +102,14 @@ async def test_single_wing_voice_uses_shared_embedding_path(monkeypatch):
         palace_path: str,
         _settings,
         *,
+        backend,
         query: str,
         wings: list[str],
         room: str | None,
         top_k: int,
         user_id: str,
     ):
+        del backend
         calls.append(list(wings))
         return []
 

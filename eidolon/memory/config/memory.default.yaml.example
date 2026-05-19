@@ -65,9 +65,7 @@ wings:
 
 recall:
   top_k: 5
-  timeout_seconds: 1.5
-  livekit_timeout_seconds: 0.6
-  recency_weight: 0.35
+  livekit_timeout_seconds: 0.3      # D1: hard end-to-end budget for LiveKit recall
   filter_taboo_statuses: ["taboo", "archived"]
   exclude_recent_minutes: 10
   exclude_current_session: true
@@ -93,24 +91,37 @@ llm:
   temperature: 0.7
 
 runtime:
-  palace_path: ""
-  fake_backend: false
+  # D1: per-user palace at <palaces_root>/<user_id>/; agent_runner CLI binds the user.
+  palaces_root: ""                  # default ~/eidolon/palaces (env: EIDOLON_MEMORY_PALACES_ROOT)
+  log_dir: ""                       # default ~/eidolon/logs    (env: EIDOLON_MEMORY_LOG_DIR)
+  run_dir: ""                       # default ~/eidolon/run     (env: EIDOLON_MEMORY_RUN_DIR)
   read:
-    max_wing_parallel: 0          # 0=按 CPU/角色自动（LiveKit 约 2~3）
-    search_executor_threads: 0    # 0=自动
-    omp_num_threads: 0            # 0=自动；手动覆盖可写 2/4
-    generation_path: ""
-    hierarchy_cache_seconds: 0
-    background_reconcile: true
-    double_buffer_staging: true
-    shared_query_embedding: true  # 每轮只 embed 一次 query（多 wing）
-    voice_skip_closets: true      # 语音快路径跳过 closets 二次向量查询
+    max_wing_parallel: 0            # 0 = auto by CPU; LiveKit voice fans out ~2-3 wings
+    omp_num_threads: 0              # 0 = auto; manual override e.g. 2 / 4
+    shared_query_embedding: true    # one ONNX embed per recall round (voice)
+    voice_skip_closets: true        # skip closets index for voice latency
+
+chromadb:
+  synchronous: FULL                 # D3: fsync per chroma commit (writes +30%, async-safe)
+
+worker:
+  sync_every_n_turns: 5             # PASSIVE wal_checkpoint every N turns
+
+supervisor:
+  # users.yaml lists per-user agent_runner ports; env override: EIDOLON_MEMORY_USERS_YAML.
+  # Path is relative to the repo root (or absolute). On first start the supervisor
+  # auto-seeds this file from eidolon/memory/config/users.yaml.tpl when missing.
+  users_file: "eidolon/memory/config/users.yaml"
+  eager_init: true                  # mempalace init each enabled user before spawn (parallel<=4)
+  restart_backoff_seconds: [1, 2, 4, 8, 30]
+  max_failures_per_minute: 5
 
 nats:
   url: "nats://127.0.0.1:4222"
   stream: "MEMORY_TURNS"
-  subject: "agent.memory.conversation.turn"
-  durable: "eidolon-memory-worker"
+  # D1: per-user subject = <base>.<user_id>; stream binds <base>.>
+  conversation_turn_subject_base: "agent.memory.conversation.turn"
+  durable_prefix: "eidolon-memory-agent"
   stream_max_age_seconds: 1209600
   stream_max_msgs: 5000
   stream_max_bytes: 536870912
@@ -119,11 +130,8 @@ nats:
 
 mcp_http:
   host: "127.0.0.1"
-  port: 8030
+  port: 8030                         # default; agent_runner --port overrides per user
   path: "/mcp"
   stateless_http: false
   bearer_token: ""
   bearer_token_env: "EIDOLON_MEMORY_MCP_TOKEN"
-
-filters:
-  ignore_smalltalk_regex: ""

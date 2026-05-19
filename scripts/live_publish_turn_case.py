@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from eidolon.memory.config.memory_settings import get_memory_settings
 from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon.memory.infrastructure.bus.subjects import conversation_turn_subject
 from eidolon.memory.infrastructure.nats.turns import JetStreamTurnPublisher
 
 
@@ -63,7 +64,10 @@ async def main() -> None:
     await publisher.publish_turn(payload)
     await publisher.close()
     print(f"published case={args.case} turn_id={payload.turn_id}")
-    print(f"nats url={settings.nats.url} stream={settings.nats.stream} subject={settings.nats.subject}")
+    print(
+        f"nats url={settings.nats.url} stream={settings.nats.stream} "
+        f"subject={conversation_turn_subject(args.user_id)}"
+    )
 
 
 if __name__ == "__main__":

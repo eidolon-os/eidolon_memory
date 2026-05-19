@@ -7,7 +7,6 @@ from collections import defaultdict
 from typing import Any
 
 from eidolon.memory.config.memory_settings import MemorySettings, WingDefinition
-from eidolon.memory.config.palace_directory import resolve_palace_directory
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -142,10 +141,11 @@ async def build_mempalace_hierarchy_snapshot(
     backend: MemoryBackend,
     settings: MemorySettings,
     *,
+    palace_path: str,
     max_records: int,
     max_drawers_per_room: int,
 ) -> dict[str, Any]:
-    palace_path_str = str(resolve_palace_directory(settings))
+    palace_path_str = palace_path
     rows, capped = await scan_records(backend, max_records=max_records)
     raw_tree = _rollup(rows)
     remaining: dict[str, dict[str, list[tuple[str, str]]]] = {

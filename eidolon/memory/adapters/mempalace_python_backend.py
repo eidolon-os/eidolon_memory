@@ -21,11 +21,35 @@ from eidolon.memory.domain.wire import MemoryWireRecord
 
 
 class MemPalacePythonBackend(MemoryBackend):
-    """Maps Eidolon memory operations to MemPalace's Python package."""
+    """Maps Eidolon memory operations to MemPalace's Python package.
+
+    D1: applies ``synchronous=FULL`` (configurable via ``settings.chromadb``) on
+    construction so chroma's SQLite commits fsync — required for hard-kill
+    durability since writes are async (NATS-driven) and a 30% commit overhead is
+    cheap in this workload.
+    """
 
     def __init__(self, settings: MemorySettings, palace_path: str) -> None:
         self._settings = settings
         self._palace = palace_path
+        self._apply_chromadb_pragmas()
+
+    def _apply_chromadb_pragmas(self) -> None:
+        from pathlib import Path
+
+        from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
+        from eidolon.memory.support.logging import get_logger
+
+        log = get_logger(__name__)
+        sqlite_path = Path(self._palace) / "chroma.sqlite3"
+        if not sqlite_path.is_file():
+            return  # palace not yet initialized; agent_runner lazy-init will handle it
+        sync = (self._settings.chromadb.synchronous or "FULL").upper()
+        try:
+            info = ensure_sqlite_wal(str(sqlite_path), synchronous=sync)
+            log.info("mempalace_chroma_pragmas_applied", palace=self._palace, **info)
+        except Exception as exc:  # PRAGMA failures are non-fatal
+            log.warning("mempalace_chroma_pragmas_failed", palace=self._palace, error=str(exc))
 
     async def search(
         self,
@@ -157,9 +181,8 @@ class MemPalacePythonBackend(MemoryBackend):
         """List drawers filtered by tenant, or enumerate the palace when tenant is blank.
 
         Non-blank tenant: Steward puts companion id in metadata ``user_id`` and semantic
-        wing in ``wing``; legacy NATS ``MEMORY_STORE`` often only sets metadata ``wing`` to
-        the tenant slug (see :meth:`MemoryService._on_store`). Both are queried via
-        ``$or``.
+        wing in ``wing``. Both are queried via ``$or`` to cover legacy rows that only
+        set ``metadata.wing`` to the tenant slug.
 
         Blank ``user_id``: return a page of all drawers in the collection (no ``where``
         clause; order is backend-defined).

@@ -40,10 +40,10 @@ def _maybe_init_palace(palace: Path) -> None:
 
 @pytest.fixture
 def live_memory_settings(monkeypatch: pytest.MonkeyPatch):
-    """与默认 memory settings 一致，但放宽检索读超时（冷启动嵌入模型可能较慢）。"""
+    """与默认 memory settings 一致，但放宽 LiveKit 读超时（冷启动嵌入模型可能较慢）。"""
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
     settings = get_memory_settings().model_copy(deep=True)
-    settings.recall.timeout_seconds = 60.0
+    settings.recall.livekit_timeout_seconds = 60.0
     return settings
 
 
