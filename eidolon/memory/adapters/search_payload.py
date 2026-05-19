@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from eidolon.memory.adapters.recall_ranking import vector_fields_from_hit
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 
@@ -36,22 +37,19 @@ def parse_search_tool_payload(data: Any) -> list[MemoryWireRecord]:
                 value = json.loads(str(text)) if text else ""
             except (json.JSONDecodeError, TypeError):
                 value = text if text is not None else ""
-        score = r.get("distance", r.get("score", r.get("similarity")))
+        similarity, internal = vector_fields_from_hit(r)
         raw_meta = r.get("metadata")
         meta: dict[str, Any] = raw_meta.copy() if isinstance(raw_meta, dict) else {}
         meta.update(
             {
-            "wing": wing,
-            "room": room,
-            "source": "mcp",
-            "source_file": str(r.get("source_file", "")),
+                "wing": wing,
+                "room": room,
+                "source": "mcp",
+                "source_file": str(r.get("source_file", "")),
+                "similarity": round(similarity, 4),
             }
         )
-        if score is not None:
-            try:
-                meta["score"] = float(score)
-            except (TypeError, ValueError):
-                meta["score"] = score
+        meta.update(internal)
         status = r.get("status", r.get("room_status"))
         if status is not None:
             meta["room_status"] = status

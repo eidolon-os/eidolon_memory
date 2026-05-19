@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import MemoryReader
@@ -12,7 +13,9 @@ from eidolon.memory.domain.wire import MemoryWireRecord
 
 
 def wire_record_to_public_dict(rec: MemoryWireRecord) -> dict[str, Any]:
-    return rec.model_dump(mode="json")
+    payload = rec.model_dump(mode="json")
+    payload["metadata"] = public_metadata(rec.metadata)
+    return payload
 
 
 def recall_record_visible_for_user(rec: MemoryWireRecord, user_id: str) -> bool:
@@ -143,18 +146,7 @@ async def search_all_wings_mcp_style(
             user_utterance=user_utterance,
         )
 
-    def _score_for_sort(rec: MemoryWireRecord) -> float:
-        raw = rec.metadata.get("score", 1.0)
-        try:
-            return float(raw)
-        except (TypeError, ValueError):
-            return 1.0
-
-    hits.sort(
-        key=lambda r: (int(r.metadata.get("importance", 0) or 0), -_score_for_sort(r)),
-        reverse=True,
-    )
-    return hits[:top_k]
+    return rank_records_by_similarity(hits, top_k=top_k)
 
 
 async def _search_voice_shared_embedding(

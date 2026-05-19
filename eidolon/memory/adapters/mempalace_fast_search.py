@@ -55,7 +55,7 @@ def search_memories_shared_embedding(
             except Exception as exc:
                 raise MemoryBackendUnavailable(str(exc)) from exc
 
-    all_hits.sort(key=lambda h: float(h.get("distance", 1.0)))
+    all_hits.sort(key=lambda h: float(h.get("similarity", 0.0)), reverse=True)
     return all_hits[: max(n_results * len(wings), n_results)]
 
 
