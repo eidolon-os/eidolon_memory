@@ -1,17 +1,28 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import KnowledgeGraph from './components/KnowledgeGraph.vue'
+import McpToolsView from './components/McpToolsView.vue'
 import MemoryGraph from './components/MemoryGraph.vue'
 import MemoryHierarchy from './components/MemoryHierarchy.vue'
 import MemoryList from './components/MemoryList.vue'
 import MemorySearch from './components/MemorySearch.vue'
 import MemoryWrite from './components/MemoryWrite.vue'
 import RecallDebug from './components/RecallDebug.vue'
+import UsersPage from './components/UsersPage.vue'
 import type { HealthResponse } from './api/client'
 import { fetchHealth } from './api/client'
 import { provideAdminUser } from './composables/useAdminUser'
 
-type Tab = 'list' | 'search' | 'write' | 'hierarchy' | 'graph' | 'kg' | 'recall'
+type Tab =
+  | 'users'
+  | 'list'
+  | 'search'
+  | 'write'
+  | 'hierarchy'
+  | 'graph'
+  | 'kg'
+  | 'recall'
+  | 'mcp'
 
 interface TabSpec {
   key: Tab
@@ -20,6 +31,7 @@ interface TabSpec {
 }
 
 const TABS: TabSpec[] = [
+  { key: 'users', label: '用户管理', hint: '生命周期 · 新建 / 初始化 / 启停' },
   { key: 'list', label: '列表', hint: '宫殿/翼/房/抽屉浏览' },
   { key: 'search', label: '语义搜索', hint: 'vector 召回（不含 KG）' },
   { key: 'recall', label: '召回调试', hint: 'vector + KG 融合 (LiveKit 同源)' },
@@ -27,6 +39,7 @@ const TABS: TabSpec[] = [
   { key: 'hierarchy', label: '层级', hint: 'wing → room → drawer' },
   { key: 'graph', label: '关系图', hint: '宫殿 / KG 可视化' },
   { key: 'write', label: '写入对话', hint: '投递 ConversationTurn' },
+  { key: 'mcp', label: 'MCP 工具', hint: 'agent_runner 暴露的 control-plane 工具清单' },
 ]
 
 const tab = ref<Tab>('list')
@@ -105,7 +118,10 @@ const activeTabHint = computed(() => TABS.find((t) => t.key === tab.value)?.hint
     <p class="tab-hint muted">{{ activeTabHint }}</p>
   </header>
 
-  <main v-if="selectedUserId" class="shell">
+  <main v-if="tab === 'users'" class="shell">
+    <UsersPage />
+  </main>
+  <main v-else-if="selectedUserId" class="shell">
     <MemoryList v-if="tab === 'list'" />
     <MemorySearch v-else-if="tab === 'search'" />
     <RecallDebug v-else-if="tab === 'recall'" />
@@ -113,9 +129,10 @@ const activeTabHint = computed(() => TABS.find((t) => t.key === tab.value)?.hint
     <MemoryHierarchy v-else-if="tab === 'hierarchy'" />
     <MemoryGraph v-else-if="tab === 'graph'" />
     <MemoryWrite v-else-if="tab === 'write'" />
+    <McpToolsView v-else-if="tab === 'mcp'" />
   </main>
   <main v-else class="shell muted empty-state">
     <p>等待健康检查…</p>
-    <p class="small">如长时间无响应,确认 <code>eidolon-memory-supervisor</code> 与 admin API 都在跑。</p>
+    <p class="small">如长时间无响应,先去 <button type="button" class="link" @click="tab = 'users'">用户管理</button> 创建/启动一个 agent。</p>
   </main>
 </template>

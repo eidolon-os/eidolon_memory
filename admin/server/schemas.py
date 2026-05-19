@@ -213,3 +213,52 @@ class RecallResponse(BaseModel):
     context: str
     kg_triples: list[KgTripleOut]
     records: list[dict[str, Any]]
+
+
+# ─── MCP introspection ─────────────────────────────────────────────────
+
+
+class McpToolOut(BaseModel):
+    name: str
+    description: str = ""
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+class McpToolsResponse(BaseModel):
+    tools: list[McpToolOut]
+    count: int
+
+
+# ─── Users page (lifecycle) ────────────────────────────────────────────
+
+
+class UserDetail(BaseModel):
+    user_id: str
+    port: int
+    enabled: bool
+    palace_path: str
+    mcp_http_url: str
+    agent_reachable: bool
+    palace_initialized: bool
+    managed_by_admin: bool = False
+    pid: int | None = None
+    log_path: str | None = None
+
+
+class UsersListResponse(BaseModel):
+    users: list[UserDetail]
+    users_yaml: str
+
+
+class UserCreateRequest(BaseModel):
+    id: str
+    port: int = Field(ge=1, le=65535)
+    enabled: bool = True
+    palace_path: str = ""
+    init_palace: bool = True
+    auto_start: bool = True
+
+
+class UserMutateResponse(BaseModel):
+    user: UserDetail
+    message: str = ""

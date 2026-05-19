@@ -382,3 +382,90 @@ export async function postRecall(
     body: JSON.stringify(body),
   })
 }
+
+// ─── MCP tools ────────────────────────────────────────────────────────
+
+export interface McpTool {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+}
+
+export interface McpToolsResponse {
+  tools: McpTool[]
+  count: number
+}
+
+export async function fetchMcpTools(userId: string): Promise<McpToolsResponse> {
+  const p = new URLSearchParams({ user_id: userId })
+  return fetchApi<McpToolsResponse>(`/mcp/tools?${p.toString()}`)
+}
+
+// ─── Users lifecycle ─────────────────────────────────────────────────
+
+export interface UserDetail {
+  user_id: string
+  port: number
+  enabled: boolean
+  palace_path: string
+  mcp_http_url: string
+  agent_reachable: boolean
+  palace_initialized: boolean
+  managed_by_admin: boolean
+  pid?: number | null
+  log_path?: string | null
+}
+
+export interface UsersListResponse {
+  users: UserDetail[]
+  users_yaml: string
+}
+
+export interface UserCreateRequest {
+  id: string
+  port: number
+  enabled?: boolean
+  palace_path?: string
+  init_palace?: boolean
+  auto_start?: boolean
+}
+
+export interface UserMutateResponse {
+  user: UserDetail
+  message: string
+}
+
+export async function fetchUsersAll(): Promise<UsersListResponse> {
+  return fetchApi<UsersListResponse>('/users')
+}
+
+export async function createUser(body: UserCreateRequest): Promise<UserMutateResponse> {
+  return fetchApi<UserMutateResponse>('/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function initUserPalace(userId: string): Promise<UserMutateResponse> {
+  return fetchApi<UserMutateResponse>(`/users/${encodeURIComponent(userId)}/init`, { method: 'POST' })
+}
+
+export async function startUserAgent(userId: string): Promise<UserMutateResponse> {
+  return fetchApi<UserMutateResponse>(`/users/${encodeURIComponent(userId)}/start`, { method: 'POST' })
+}
+
+export async function stopUserAgent(userId: string): Promise<UserMutateResponse> {
+  return fetchApi<UserMutateResponse>(`/users/${encodeURIComponent(userId)}/stop`, { method: 'POST' })
+}
+
+export async function toggleUserEnabled(
+  userId: string,
+  enabled: boolean,
+): Promise<UserMutateResponse> {
+  const p = new URLSearchParams({ enabled: String(enabled) })
+  return fetchApi<UserMutateResponse>(
+    `/users/${encodeURIComponent(userId)}/enable?${p.toString()}`,
+    { method: 'POST' },
+  )
+}
