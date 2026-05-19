@@ -86,3 +86,130 @@ class MemPalaceHierarchyResponse(BaseModel):
     capped_by_max_records: bool
     configured_wings: list[HierarchyWingOut]
     extra_wings: list[HierarchyWingOut]
+
+
+class GraphNodeOut(BaseModel):
+    id: str
+    label: str
+    kind: str = Field(description="entity | room")
+    entity_type: str | None = None
+    wings: list[str] | None = None
+    halls: list[str] | None = None
+    count: int | None = None
+    is_tunnel: bool | None = None
+
+
+class GraphEdgeOut(BaseModel):
+    id: str
+    source: str
+    target: str
+    label: str = ""
+    valid_from: str | None = None
+    valid_to: str | None = None
+    current: bool | None = None
+    shared_wings: list[str] | None = None
+
+
+class KnowledgeGraphSnapshot(BaseModel):
+    available: bool
+    palace_path: str
+    kg_path: str
+    stats: dict[str, Any] | None = None
+    nodes: list[GraphNodeOut]
+    edges: list[GraphEdgeOut]
+    capped: bool = False
+    triple_count: int | None = None
+    reason: str | None = None
+
+
+class PalaceGraphSnapshot(BaseModel):
+    available: bool
+    palace_path: str
+    stats: dict[str, Any] | None = None
+    nodes: list[GraphNodeOut]
+    edges: list[GraphEdgeOut]
+    capped: bool = False
+    total_rooms: int | None = None
+    reason: str | None = None
+
+
+# ─── KG (T1+T2+T3 integration) ──────────────────────────────────────────
+
+
+class KgTripleAddRequest(BaseModel):
+    user_id: str = Field(description="Agent runner user id; routes to NATS subject")
+    subject: str
+    predicate: str = Field(description="Must be in canonical whitelist; see /api/kg/predicates")
+    object: str
+    valid_from: str | None = None
+    valid_to: str | None = None
+    confidence: float = Field(1.0, ge=0.0, le=1.0)
+    wait_visible_seconds: float = Field(2.0, ge=0.0, le=10.0)
+
+
+class KgInvalidateRequest(BaseModel):
+    user_id: str
+    subject: str
+    predicate: str
+    object: str
+    ended: str | None = Field(None, description="ISO8601; default NOW")
+    wait_visible_seconds: float = Field(2.0, ge=0.0, le=10.0)
+
+
+class KgWriteResult(BaseModel):
+    status: str = Field(description="applied | pending")
+    request_id: str
+    triple_id: str | None = None
+
+
+class KgTripleOut(BaseModel):
+    id: str | None = None
+    subject: str
+    predicate: str
+    object: str
+    valid_from: str | None = None
+    valid_to: str | None = None
+    confidence: float | None = None
+    source_drawer_id: str | None = None
+    adapter_name: str | None = None
+
+
+class KgEntityResponse(BaseModel):
+    entity: str
+    as_of: str | None = None
+    direction: str = "outgoing"
+    triples: list[KgTripleOut]
+
+
+class KgTimelineResponse(BaseModel):
+    entity_name: str | None = None
+    since: str | None = None
+    until: str | None = None
+    events: list[KgTripleOut]
+
+
+class KgStats(BaseModel):
+    entities: int = 0
+    triples_total: int = 0
+    triples_active: int = 0
+    triples_invalidated: int = 0
+
+
+class KgPredicates(BaseModel):
+    predicates: list[str]
+    sensitive: list[str]
+    count: int
+
+
+class RecallRequest(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int = Field(5, ge=1, le=50)
+    voice: bool = False
+    include_kg: bool | None = None
+    include_sensitive_kg: bool = False
+
+
+class RecallResponse(BaseModel):
+    context: str
+    kg_triples: list[KgTripleOut]
+    records: list[dict[str, Any]]

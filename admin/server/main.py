@@ -7,8 +7,10 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from mcp_sessions import UserMcpSessionManager
+from routers.graph import router as graph_router
 from routers.health import router as health_router
 from routers.hierarchy import router as hierarchy_router
+from routers.kg import recall_router, router as kg_router
 from routers.memories import router as memories_router
 
 from eidolon.memory.config.memory_settings import get_memory_settings
@@ -52,6 +54,9 @@ api = APIRouter(prefix="/api")
 api.include_router(health_router)
 api.include_router(memories_router)
 api.include_router(hierarchy_router)
+api.include_router(graph_router)
+api.include_router(kg_router)
+api.include_router(recall_router)
 app.include_router(api)
 
 

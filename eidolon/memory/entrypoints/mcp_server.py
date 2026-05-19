@@ -168,12 +168,136 @@ def build_control_plane_mcp(
             max_drawers_per_room=md,
         )
 
+    @mcp.tool()
+    async def eidolon_memory_palace_graph(
+        max_nodes: int = 120,
+        max_edges: int = 200,
+    ) -> dict[str, Any]:
+        """Cross-wing tunnel graph (rooms shared between wings).
+
+        Built inside the agent_runner so the chromadb PersistentClient stays
+        single-owner (D1). Admin must call this MCP tool rather than open a
+        second chromadb handle on the same palace.
+        """
+        mn = max(10, min(max_nodes, 800))
+        me = max(10, min(max_edges, 2000))
+        return await _build_palace_graph(
+            backend,
+            palace_path=palace_path,
+            max_nodes=mn,
+            max_edges=me,
+        )
+
     if kg is not None and command_publisher is not None:
         _register_kg_tools(
             mcp, kg=kg, command_publisher=command_publisher, user_id=user_id
         )
 
     return mcp
+
+
+async def _build_palace_graph(
+    backend: Any,
+    *,
+    palace_path: str,
+    max_nodes: int,
+    max_edges: int,
+) -> dict[str, Any]:
+    """Run mempalace.palace_graph.build_graph against the agent_runner's collection.
+
+    Uses ``LockedBackend.lock`` to serialize with reads/writes — chroma's
+    sqlite-backed cursor must not race the write path. Non-locked backends
+    (tests) execute unlocked.
+    """
+    from eidolon.memory.adapters.locked_backend import LockedBackend
+
+    def _run() -> dict[str, Any]:
+        from mempalace.palace import get_collection
+        from mempalace.palace_graph import build_graph, graph_stats
+
+        col = get_collection(palace_path, create=False)
+        if col is None:
+            return {
+                "available": False,
+                "reason": "palace collection missing",
+                "stats": None,
+                "nodes": [],
+                "edges": [],
+                "capped": False,
+                "total_rooms": 0,
+            }
+        raw_nodes, _raw_edges = build_graph(col=col)
+        stats = graph_stats(col=col)
+
+        if not raw_nodes:
+            return {
+                "available": True,
+                "reason": "palace graph is empty",
+                "stats": stats,
+                "nodes": [],
+                "edges": [],
+                "capped": False,
+                "total_rooms": 0,
+            }
+
+        ranked = sorted(
+            raw_nodes.items(),
+            key=lambda item: (len(item[1]["wings"]) >= 2, item[1]["count"]),
+            reverse=True,
+        )
+        picked = ranked[:max_nodes]
+        node_ids = {room for room, _ in picked}
+
+        nodes = [
+            {
+                "id": room,
+                "label": room,
+                "kind": "room",
+                "wings": list(data["wings"]),
+                "halls": list(data.get("halls") or []),
+                "count": int(data.get("count") or 0),
+                "is_tunnel": len(data.get("wings") or []) >= 2,
+            }
+            for room, data in picked
+        ]
+
+        edges: list[dict[str, Any]] = []
+        rooms_list = list(node_ids)
+        for i, ra in enumerate(rooms_list):
+            wa = set(raw_nodes[ra]["wings"])
+            for rb in rooms_list[i + 1 :]:
+                wb = set(raw_nodes[rb]["wings"])
+                shared = sorted(wa & wb)
+                if not shared:
+                    continue
+                edges.append(
+                    {
+                        "id": f"{ra}--{rb}",
+                        "source": ra,
+                        "target": rb,
+                        "label": shared[0] if len(shared) == 1 else f"{len(shared)} wings",
+                        "shared_wings": shared,
+                    }
+                )
+                if len(edges) >= max_edges:
+                    break
+            if len(edges) >= max_edges:
+                break
+
+        return {
+            "available": True,
+            "reason": None,
+            "stats": stats,
+            "nodes": nodes,
+            "edges": edges,
+            "capped": len(ranked) > len(picked) or len(edges) >= max_edges,
+            "total_rooms": len(raw_nodes),
+        }
+
+    if isinstance(backend, LockedBackend):
+        async with backend.lock:
+            return await asyncio.to_thread(_run)
+    return await asyncio.to_thread(_run)
 
 
 def _register_kg_tools(mcp: Any, *, kg: Any, command_publisher: Any, user_id: str) -> None:
@@ -321,6 +445,35 @@ def _register_kg_tools(mcp: Any, *, kg: Any, command_publisher: Any, user_id: st
     async def eidolon_memory_kg_stats() -> dict[str, Any]:
         """Entity/triple counts + active/invalidated split."""
         return await kg.stats()
+
+    @mcp.tool()
+    async def eidolon_memory_kg_snapshot(
+        max_triples: int = 400,
+        current_only: bool = True,
+        entity: str | None = None,
+        include_sensitive: bool = False,
+    ) -> dict[str, Any]:
+        """Bounded triple snapshot for graph visualization.
+
+        One round-trip returning ``stats`` + a capped triple list — wraps
+        :meth:`LockedKnowledgeGraph.timeline` (which already runs under the
+        backend lock and filters sensitive predicates).
+        """
+        limit = max(10, min(max_triples, 5000))
+        records = await kg.timeline(
+            entity_name=entity if entity else None,
+            limit=limit,
+            include_sensitive=include_sensitive,
+        )
+        if current_only:
+            records = [r for r in records if r.valid_to is None]
+        s = await kg.stats()
+        return {
+            "stats": s,
+            "triples": [r.model_dump(mode="json") for r in records],
+            "capped": len(records) >= limit,
+            "triple_count": len(records),
+        }
 
     @mcp.tool()
     async def eidolon_memory_kg_predicates() -> dict[str, Any]:
