@@ -150,11 +150,17 @@ async def _main(args):
     inner = MemPalacePythonBackend(settings, str(palace_path))
     backend = LockedBackend(inner)
 
+    # Main-thread warm of chromadb so the threadpool inside
+    # mempalace_fast_search doesn't see an uninitialized RustBindingsAPI on
+    # its first hit. We DON'T reset the LRU embedding cache here yet.
+    print(f"[probe] palace={palace_path}")
+    print("[probe] warming chromadb client + ONNX embedder on main thread…")
+    await inner.search("warmup", wing="Wing_Profile", n_results=1)
+
     if args.clear_cache:
         clear_embedding_cache()
-        print("[probe] cleared embedding LRU cache")
+        print("[probe] cleared embedding LRU cache (post-warm)")
 
-    print(f"[probe] palace={palace_path}")
     print(f"[probe] count={args.count} cold_rounds={args.cold_rounds}")
 
     all_stages: list[dict] = []
