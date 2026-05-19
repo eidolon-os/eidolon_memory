@@ -1,108 +1,497 @@
 # eidolon-memory
 
-独立仓库中的 **Eidolon 语义记忆** 包，导入路径仍为 `eidolon.memory`（可与主仓 `eidolon` 并存安装）。
+陪伴智能体的语义记忆服务。提供向量召回 + bi-temporal 知识图谱融合,300ms 硬预算,
+以 MCP / NATS / 同进程 三条契约对外暴露。
 
-**语义读**：推荐使用本项目自有 MCP read server（`eidolon-memory-mcp` → `MemPalacePythonBackend`），对外不暴露 MemPalace 内部 API。**写入**：推荐 JetStream 异步 worker；legacy NATS RPC `MEMORY_*` 仅保留兼容。
+> 完整设计:[`docs/memory-architecture-plan.md`](docs/memory-architecture-plan.md)(架构基线)、
+> [`docs/architecture-d1-readwrite-split.md`](docs/architecture-d1-readwrite-split.md)(D1 进程拓扑)、
+> [`docs/plan-kg-integration.md`](docs/plan-kg-integration.md)(KG 集成)。
+> 本 README 是**外部集成方**的快速入口。
 
-完整架构基线见 [`docs/memory-architecture-plan.md`](docs/memory-architecture-plan.md)。**外部如何调用 MCP / NATS / Admin 等**：[`docs/external-integration.md`](docs/external-integration.md)。
+---
 
-## 本地安装
+## 1. 这是什么 / 给谁用
 
-```bash
-cd /path/to/eidolon_memory
-uv sync --extra dev
+| 你是 | 走哪条 |
+|------|--------|
+| LiveKit voice 主进程 / 同 monorepo 的 Python | **同进程 API**(import,零开销,300ms 含 ONNX) |
+| 外部 Python / Node / Cursor / Claude IDE | **MCP Streamable HTTP**(默认 `http://127.0.0.1:8030/mcp`) |
+| 写一条对话后异步落盘(steward 后台抽取) | **NATS JetStream**(发 `ConversationTurnPayload`) |
+| Admin / 运维网页 / 多用户管理 | **Admin HTTP**(`http://127.0.0.1:8010/api`) — 见 `admin/` |
 
-./deploy/dev/init.sh              # 首次：宫殿 + 依赖
-./deploy/dev/run_all.sh start     # worker + MCP HTTP（默认 http://127.0.0.1:8030/mcp）
+读写都最终经同一个 `LockedBackend` + `LockedKnowledgeGraph`(单个 `asyncio.Lock` 串行 chromadb + KG SQLite 调用),保证 D1 single-owner-per-palace 不变量。
+
+---
+
+## 2. 架构一图
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│ eidolon-memory-supervisor  (Python,纯进程经理,subprocess.Popen)  │
+│   │                                                                │
+│   ├─ eidolon-memory-agent --user-id=alice --port=8030 ────────────┤
+│   │     ├─ LiveKit pipeline (in-process recall)                    │
+│   │     ├─ MCP Streamable HTTP @ 127.0.0.1:8030/mcp               │
+│   │     ├─ NATS subscriber  agent.memory.conversation.turn.alice   │
+│   │     │                   agent.memory.cmd.alice                 │
+│   │     ├─ MemPalacePythonBackend × 1 (LockedBackend)             │
+│   │     │   └─ chroma.sqlite3            (单 PersistentClient)    │
+│   │     └─ LockedKnowledgeGraph                                    │
+│   │         └─ knowledge_graph.sqlite3   (bi-temporal triples)     │
+│   │                                                                │
+│   ├─ eidolon-memory-agent --user-id=bob --port=8031   …            │
+│   └─ eidolon-memory-agent --user-id=charlie --port=8032 …          │
+│                                                                    │
+│  palace 物理隔离: ~/eidolon/memory/mempalaces/<user_id>/          │
+└────────────────────────────────────────────────────────────────────┘
+                              ▲             ▲
+                              │             │
+        NATS JetStream (写 + KG cmd)        MCP HTTP (读 + KG admin)
+                              │             │
+                       任何外部消费者(本节后面说明)
 ```
 
-MemPalace 通过 Python 包直接集成；MCP 读服务使用 **Streamable HTTP**（非 stdio）。
+**关键**:每份 palace 文件只被**一个进程**持有(D1 铁律,避免 chromadb 多进程 corruption)。
+外部访问**必须**通过 MCP / NATS / Admin,**不要**自己开 `mempalace.knowledge_graph.KnowledgeGraph`
+或 `chromadb.PersistentClient` 去碰 palace 目录。
 
-## 环境变量（节选）
+---
 
-| 变量 | 说明 |
-|------|------|
-| `EIDOLON_MEMORY_SETTINGS_YAML` | 主配置文件路径；不设则读本地 **`memory.default.yaml`**（gitignore）；若不存在则读包内 **`memory.default.yaml.example`** |
-| `EIDOLON_MEMORY_LLM_API_KEY` | 可选：当 YAML 中 `llm.api_key` 为空时，从该环境变量读取密钥（名称可由 YAML 的 `llm.api_key_env` 修改） |
-| `EIDOLON_MEMORY_RUN_LIVE` | 仅集成测试：设为 `1` 时运行真实 MemPalace 用例 |
-| `EIDOLON_MEMORY_TEST_PALACE` | 仅测试：指向已 `mempalace init` 的目录 |
-
-NATS、palace 路径、管家模式、LLM 端点、`runtime.fake_backend` 等均在 YAML 中配置。`python -m eidolon.memory.server` 可选第一个命令行参数覆盖 NATS 地址；省略时使用 YAML 的 `nats.url`。
-
-## 进程入口
+## 3. 快速启动
 
 ```bash
-# NATS MemoryService：无 MemPalace 时把自定义 YAML 里 runtime.fake_backend 设为 true
-export EIDOLON_MEMORY_SETTINGS_YAML=/path/to/dev-memory.yaml
-uv run python -m eidolon.memory.server
-# 或显式指定 NATS：uv run python -m eidolon.memory.server nats://127.0.0.1:4222
+# 1. 安装(开发 + admin)
+uv sync --extra dev --extra admin
 
-# JetStream Worker
-uv run eidolon-memory-worker
+# 2. 起 NATS(任何方式都行)
+nats-server -js &
 
-# MCP read server (Streamable HTTP, 见 YAML mcp_http)
-uv run eidolon-memory-mcp
-# 或: ./deploy/dev/run_all.sh start
+# 3a. 生产形态 — supervisor 起 users.yaml 全部用户
+eidolon-memory-supervisor &
+# 或 SIGHUP 热加载,见第 7 节
+
+# 3b. 开发形态 — 单用户 ad-hoc
+eidolon-memory-agent --user-id default --port 8030 &
+
+# 4. (可选) Admin UI
+./admin/run_all.sh start   # api @ 8010, web @ 5280
 ```
 
-开发阶段：在同目录执行 `cp eidolon/memory/config/memory.default.yaml.example eidolon/memory/config/memory.default.yaml`，再编辑后者（**仅此文件承载你的真实配置，且不提交 git**）。也可用 `EIDOLON_MEMORY_SETTINGS_YAML` 指向任意路径。
+首次启动会自动 `mempalace init` 对应 palace。配置文件见第 8 节。
+
+---
+
+## 4. 集成路径一:MCP Streamable HTTP(对外主路径)
+
+每个 agent_runner 在自己的端口暴露一个 FastMCP HTTP server。用任意 MCP client(`mcp` Python SDK、Claude IDE、自研网关)连过来。
+
+### 4.1 连接
+
+```python
+from mcp.client.streamable_http import streamable_http_client
+from mcp.client.session import ClientSession
+
+URL = "http://127.0.0.1:8030/mcp"   # users.yaml 里 alice 的 port
+
+async with streamable_http_client(URL) as (read, write, _):
+    async with ClientSession(read, write) as s:
+        await s.initialize()
+        tools = await s.list_tools()
+        result = await s.call_tool("eidolon_memory_recall_context",
+                                    {"query": "我喜欢什么茶", "top_k": 5})
+```
+
+**user_id 是绑定到端口的**——不需要在每次工具调用里再传 user_id,agent_runner 启动时就锁定了。
+
+### 4.2 鉴权(可选)
+
+在 `memory.default.yaml` 设:
+```yaml
+mcp_http:
+  bearer_token: ""                     # 或留空走 env
+  bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN
+```
+设了之后 client 必须发 `Authorization: Bearer <token>` 头。
+
+### 4.3 工具清单(11 个,T1+T2+T3 全量)
+
+| 工具 | 用途 | 主要参数 |
+|------|------|---------|
+| `eidolon_memory_search` | 语义向量检索 | `query`, `top_k`, 可选 `wing` / `room` |
+| `eidolon_memory_recall_context` | **vector + KG 融合召回**(LiveKit 同源) | `query`, `top_k`, `voice` (LiveKit 50ms KG 预算 / non-voice 1s), `include_kg`, `include_sensitive_kg` |
+| `eidolon_memory_list` | 分页列举所有 drawer | `limit`, `offset`, `include_private` |
+| `eidolon_memory_status` | 当前 agent 状态(palace、wings、steward mode) | — |
+| `eidolon_memory_hierarchy_snapshot` | wing→room→drawer 树 | `max_records`, `max_drawers_per_room` |
+| `eidolon_memory_palace_graph` | 跨翼 tunnel room 图(可视化用) | `max_nodes`, `max_edges` |
+| `eidolon_memory_kg_add_triple` | **写**一条 bi-temporal 三元组(走 NATS,2s 内 sync-feel 返回) | `subject`, `predicate`, `object`, `confidence`, `valid_from?`, `valid_to?` |
+| `eidolon_memory_kg_invalidate` | **结束**一条三元组(填 `valid_to`) | `subject`, `predicate`, `object`, `ended?` |
+| `eidolon_memory_kg_query_entity` | 查某实体的所有当前三元组 | `name`, `direction`(outgoing/incoming/both), `include_sensitive` |
+| `eidolon_memory_kg_timeline` | 按时间线列三元组 | `entity_name?`, `since?`, `until?`, `limit`, `include_sensitive` |
+| `eidolon_memory_kg_snapshot` | 截断的三元组列表 + stats(图可视化用) | `max_triples`, `current_only`, `entity?`, `include_sensitive` |
+| `eidolon_memory_kg_stats` | 实体/三元组计数 + active/invalidated 拆分 | — |
+| `eidolon_memory_kg_predicates` | 27 个 canonical 谓词白名单 + sensitive 子集 | — |
+
+> KG 写工具(`kg_add_triple` / `kg_invalidate`) 内部会 publish 到 NATS,然后 polling KG 表 2s 等 worker 应用。状态 `applied` = 已落盘可读;`pending` = 已发到 JetStream,worker 滞后,**保留 request_id**,过会儿会到。
+
+### 4.4 调 `recall_context` 的典型 response
+
+```json
+{
+  "context": "知识图谱事实：\n- [KG] self 喜欢 乌龙茶（自 2026-05-19T12:44Z）\n…",
+  "kg_triples": [
+    {"subject":"self","predicate":"likes","object":"乌龙茶","valid_from":"…","valid_to":null}
+  ],
+  "records": [
+    {"user_id":"alice","key":"...","value":"我刚泡了乌龙","metadata":{"wing":"Wing_Life","similarity":0.78}}
+  ]
+}
+```
+
+`context` 是已格式化好可以直接喂给 LLM 的字符串;`records` + `kg_triples` 是原始结构供二次处理。
+
+---
+
+## 5. 集成路径二:NATS JetStream(对话写入热路径)
+
+**这是写入语义记忆的唯一标准路径**——发一条 `ConversationTurnPayload`,agent_runner 的同进程 steward 会异步抽取出 fragments(向量片段) + triples(KG 事实) + privacy_actions,然后落盘。
+
+### 5.1 Subject
+
+每个 user 一条 subject:
+
+```
+agent.memory.conversation.turn.<user_id>
+```
+
+Stream 名(供配 publisher / replay):
+```
+MEMORY_TURNS
+```
+
+(JetStream subjects 配在 `eidolon/memory/infrastructure/nats_stream.py:all_stream_patterns()`,
+你不需要自己管 stream creation——agent_runner 启动时会 ensure 。)
+
+### 5.2 Payload schema
+
+```json
+{
+  "turn_id":       "uuid4",                // 唯一,用于 G1 idempotency
+  "user_id":       "alice",                // 必须匹配端口绑定的 user
+  "session_id":    "session-abc",
+  "timestamp":     "2026-05-19T10:00:00Z", // ISO8601 UTC
+  "user_text":     "我妈最近失眠",
+  "assistant_text":"听起来你很担心她",
+  "metadata":      { "source": "livekit", "...": "..." }   // 可选
+}
+```
+
+### 5.3 发送示例 (`nats-py`)
+
+```python
+import json, uuid
+from datetime import datetime, timezone
+import nats
+
+nc = await nats.connect("nats://127.0.0.1:4222")
+js = nc.jetstream()
+
+await js.publish(
+    "agent.memory.conversation.turn.alice",
+    json.dumps({
+        "turn_id":        uuid.uuid4().hex,
+        "user_id":        "alice",
+        "session_id":     "s1",
+        "timestamp":      datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "user_text":      "我妈最近失眠",
+        "assistant_text": "听起来你很担心她",
+    }).encode(),
+)
+```
+
+发出去就走人,**不会阻塞对话**。worker 内 steward 抽取 + 同步写 chroma fragment + 同步写 KG triple,JetStream 是事实源(D5:14 天历史足以 replay 重建 palace)。
+
+### 5.4 命令路径(admin 写 KG)
+
+Admin / 外部工具想直接写 KG 三元组(绕过 steward 抽取),走另一条 subject:
+
+```
+agent.memory.cmd.<user_id>
+```
+
+Payload 是 `KgAddTripleCommand` / `KgInvalidateCommand`(见 `eidolon/memory/domain/kg.py`)。
+推荐用 MCP 工具 `eidolon_memory_kg_add_triple` 间接发——它已经把 publish + 2s polling 包好了。
+
+---
+
+## 6. 集成路径三:同进程 Python API(LiveKit / monorepo)
+
+当你和 agent_runner 在**同一个 Python 进程**里(典型:LiveKit pipeline 把记忆服务 embed 进自己的进程),直接 import 比 HTTP 省 5–20ms framing。
+
+### 6.1 LiveKit hot-path recall
+
+```python
+from eidolon.memory.application.livekit_recall import LiveKitRecallService
+
+svc = LiveKitRecallService(
+    backend=locked_backend,         # 同 agent_runner 持有的 LockedBackend 实例
+    settings=memory_settings,
+    palace_path="/Users/.../mempalaces/alice",
+    kg=locked_kg,                   # 可选,传则启用 KG 融合
+)
+result = await svc.recall_context_with_records(
+    query="我妈最近怎么样",
+    user_id="alice",
+    session_id="livekit-s1",
+)
+# result["context"]   → 喂给 LLM 的字符串(含 KG 转录)
+# result["degraded"]  → 300ms 超时退化标志
+```
+
+`recall_context_with_records` 内部已经 `asyncio.wait_for(timeout=settings.recall.livekit_timeout_seconds)`(默认 300ms),**永不抛**——超时/错误返回 `degraded: true` + 空 context。
+
+### 6.2 直接喂 MemoryFragment(绕过 steward)
+
+```python
+from eidolon.memory.application.ingest import ingest_memory_fragment
+from eidolon.memory.domain.fragments import MemoryFragment
+
+await ingest_memory_fragment(locked_backend, MemoryFragment(
+    fragment_id="f-...",
+    user_id="alice",
+    wing="Wing_Profile", room="profile_core",
+    content="用户喜欢乌龙茶",
+    memory_type="preference", importance=4, confidence=0.95,
+    source_turn_id="t-...", session_id="s1",
+))
+```
+
+仅限同进程,**外部进程千万不要**这么干(会绕开 D1 single-owner 不变量)。
+
+---
+
+## 7. 多用户 / 进程管理
+
+### 7.1 users.yaml
+
+每个 user 一条记录,声明端口和 enabled:
 
 ```yaml
-runtime:
-  palace_path: "/Users/manson/eidolon/mempalace"
-  fake_backend: false
+# 默认路径: ~/eidolon/memory/config/users.yaml
+# (可由 settings.supervisor.users_file 或 EIDOLON_MEMORY_USERS_YAML 覆盖)
+users:
+  - id: alice
+    port: 8030
+    enabled: true
+  - id: bob
+    port: 8031
+    enabled: true
+  - id: charlie
+    port: 8032
+    enabled: false      # 关停 — palace 数据保留,翻 true 后即恢复
+```
+
+约束(`UsersConfig` pydantic 验证):
+- `id` 唯一
+- `port` 在 enabled 之间不重复
+
+### 7.2 Supervisor(纯 Python,不是 supervisord)
+
+```bash
+eidolon-memory-supervisor       # 前台
+```
+
+行为:
+- 读 users.yaml,对每个 enabled user `subprocess.Popen` 起 `eidolon-memory-agent`
+- 5s poll 检查死掉的子进程,按 `[1, 2, 4, 8, 30]` s 退避重启,60s 内连续 5 次失败标记 degraded
+- `SIGHUP` → 重读 users.yaml,新增 user spawn / 删除 SIGTERM
+- `SIGTERM` → 给每个子进程 30s grace,超时 SIGKILL
+
+**不依赖 launchd / systemd / supervisord** — 自己一份 ~400 行 Python。
+
+### 7.3 单用户 ad-hoc(开发)
+
+```bash
+eidolon-memory-agent --user-id default --port 8030
+```
+
+完全独立于 supervisor;两者可以混跑(每个 palace 仍只一份进程持有)。
+
+### 7.4 Admin Web 也能管
+
+`admin/run_all.sh start` 起 Admin 后,**用户管理**页可以:
+- "+新建用户" — 写 users.yaml + init palace + spawn agent 一步到位
+- 启动 / 停止 / 启用 / 禁用 — 仅对 admin 自己 spawn 的有效;外部进程(supervisor / shell)显示 `external`,不可停。
+
+---
+
+## 8. 配置
+
+### 8.1 主配置文件
+
+```bash
+# 优先级:
+# 1. $EIDOLON_MEMORY_SETTINGS_YAML
+# 2. eidolon/memory/config/memory.default.yaml (gitignored)
+# 3. eidolon/memory/config/memory.default.yaml.example (打底)
+```
+
+关键字段(完整字段见 `memory.default.yaml.example`):
+
+```yaml
 nats:
   url: "nats://127.0.0.1:4222"
   stream: "MEMORY_TURNS"
-  subject: "agent.memory.conversation.turn"
-  durable: "eidolon-memory-worker"
+
 mcp_http:
   host: "127.0.0.1"
-  port: 8030
+  port: 8030                     # 仅用于 ad-hoc 单用户;多用户走 users.yaml
   path: "/mcp"
+  bearer_token: ""               # 启用后 client 必须发 Authorization
+  bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN
+
 steward:
-  mode: "llm"
+  mode: "llm"                    # llm | rule | noop
+
 llm:
   model: "openai/local-model"
   base_url: "http://127.0.0.1:1234/v1"
   api_key: ""
-  api_key_env: "EIDOLON_MEMORY_LLM_API_KEY"
+  api_key_env: EIDOLON_MEMORY_LLM_API_KEY
+
+recall:
+  livekit_timeout_seconds: 0.3   # LiveKit 整体 wait_for
+  kg_in_recall: true             # 默认启用 KG 融合
+  kg_timeout_seconds: 0.05       # voice 路径 KG 子超时
+  top_k: 5
+
+kg:
+  min_confidence_to_write: 0.6   # steward 输出低于此置信的 triple 丢弃 (G10)
+
+chromadb:
+  synchronous: FULL              # D3 hard-kill 持久性
+
+supervisor:
+  users_file: "eidolon/memory/config/users.yaml"
+  eager_init: true
 ```
 
-真实场景脚本：
+### 8.2 环境变量
 
-```bash
-.venv/bin/python scripts/live_config_check.py
-scripts/live_start_worker.sh
-.venv/bin/python scripts/live_publish_turn_case.py emotion_work
-.venv/bin/python scripts/live_recall_case.py "用户最近为什么焦虑，什么能让他放松？"
+| 变量 | 用途 |
+|------|------|
+| `EIDOLON_MEMORY_SETTINGS_YAML` | 主配置文件路径 |
+| `EIDOLON_MEMORY_USERS_YAML` | users.yaml 路径(覆盖 supervisor.users_file) |
+| `EIDOLON_MEMORY_PALACES_ROOT` | per-user palace 目录的父根 |
+| `EIDOLON_MEMORY_MCP_TOKEN` | MCP HTTP bearer token |
+| `EIDOLON_MEMORY_LLM_API_KEY` | steward LLM 密钥 |
+| `EIDOLON_MEMORY_ADMIN_TOKEN` | admin HTTP bearer token(空 = 不鉴权,localhost only) |
+
+### 8.3 Palace 目录布局
+
+```
+~/eidolon/memory/mempalaces/<user_id>/
+  ├─ chroma.sqlite3              # 向量 + 元数据 (chromadb, WAL)
+  ├─ chroma.sqlite3-wal
+  ├─ knowledge_graph.sqlite3     # bi-temporal KG (mempalace.KnowledgeGraph)
+  ├─ knowledge_graph.sqlite3-wal
+  └─ mempalace.yaml              # mempalace 自身配置
 ```
 
-本地 OpenAI-compatible LLM：把上表写入自定义 YAML，设置 `EIDOLON_MEMORY_SETTINGS_YAML` 指向该文件；密钥放在 `llm.api_key` 或 `EIDOLON_MEMORY_LLM_API_KEY`（与 `api_key_env` 一致即可）。
+**绝不要把 palace 目录放在 iCloud / Dropbox / OneDrive / NFS** — 启动时会拒绝。
 
-## 单测（本机）
+---
 
-```bash
-uv run pytest tests -q
-```
+## 9. Admin HTTP API
 
-带 `mempalace` 标记的用例需真实 MemPalace Python 包：`uv run pytest tests -m mempalace -v`，或 `./scripts/run_live_memory_tests.sh`。
+Admin 是一个**特殊的 agent client**,经 MCP+NATS 与 agent_runner 通讯;**自身不持 palace fd**。
+默认 `http://127.0.0.1:8010/api`。完整路由:
 
-## 与 eidolon_daemon 联用
-
-在 daemon 的 `pyproject.toml` 中加入依赖 `eidolon-memory`，并用 `tool.uv.sources` 指向本仓库路径（editable），删除 monorepo 内的 `eidolon/memory` 子树。
-
-因 daemon 以可编辑方式把 `eidolon` 指向源码根目录，需在 [`eidolon/__init__.py`](file:///Users/manson/ai/eidolon/eidolon_daemon/eidolon/__init__.py) 中加入 `pkgutil.extend_path(__path__, __name__)`，才能把已安装的 `eidolon-memory` 里的 `eidolon.memory` 合并进同一顶层包。
-
-## 代码分层
-
-| 层级 | 目录 | 职责 |
+| 路径 | 方法 | 用途 |
 |------|------|------|
-| Domain | `eidolon/memory/domain/` | 载荷、`MemoryBackend` 端口 |
-| Config | `eidolon/memory/config/` | `memory_settings`、`palace_directory`、管家模板 |
-| Infrastructure | `infrastructure/nats/`、`infrastructure/bus/` | JetStream、NATS 总线薄封装 |
-| Adapters | `adapters/` | MemPalace Python API、Fake |
-| Application | `application/` | ingest、`MemoryService`、recall、steward |
-| Entrypoints | `entrypoints/`、`server/` | server / worker |
+| `/health` | GET | 健康 + 当前 user 列表 + steward mode |
+| `/users` | GET/POST | 列出 users.yaml + 新建用户 |
+| `/users/{id}/init` | POST | `mempalace init` |
+| `/users/{id}/start` `/stop` | POST | spawn / SIGTERM(仅 admin 自己 spawn 的) |
+| `/users/{id}/enable?enabled=bool` | POST | 改 users.yaml |
+| `/memories` `?user_id=...` | GET/POST | 列表 / 写对话(经 NATS) |
+| `/memories/search` | GET | vector 搜索(原 `eidolon_memory_search`) |
+| `/recall` | POST | **融合召回**(vector + KG) |
+| `/kg/stats` `/predicates` `/timeline` `/entity/{name}` | GET | KG 读 |
+| `/kg/triples` `/invalidations` | POST | KG 写(经 NATS cmd) |
+| `/graph/knowledge` `/graph/palace` | GET | 图可视化数据 |
+| `/hierarchy` | GET | wing→room→drawer 树 |
+| `/mcp/tools` | GET | 列 agent_runner 的工具清单 |
 
-默认模板见 `eidolon/memory/config/memory.default.yaml.example`（仓库内）；本地在旁创建 **`memory.default.yaml`**（gitignore）作为你唯一要维护的配置。管家模板见 `config/prompts/memory_steward.md`。
+鉴权:`EIDOLON_MEMORY_ADMIN_TOKEN` 设了之后所有请求要 `Authorization: Bearer ...`。
+
+---
+
+## 10. 运维 / 灾备
+
+### 10.1 完整性检查
+
+agent_runner 启动时跑 `PRAGMA integrity_check` on 两个 SQLite,失败则**不订阅 NATS / 不监听端口**,需要运维介入。
+
+### 10.2 快照
+
+```bash
+scripts/snapshot_palaces.sh
+# 每 6h 跑(launchd / cron),tar.zst 全部 palace 到 ~/eidolon/snapshots/
+# 保留 24 份(6 天)
+```
+
+### 10.3 从 JetStream 重建 palace(D5)
+
+```bash
+scripts/rebuild_palace_from_jetstream.py --user-id alice
+# 从 stream 头部 replay 全部 ConversationTurnPayload + Kg*Command
+# drawer_id = sha256(...) 保证 replay 幂等
+# JetStream 14 天历史 = RPO 14 天
+```
+
+KG 写也走 JetStream(`agent.memory.cmd.*`),所以 admin 写过的三元组**也能 replay 回来**。
+
+---
+
+## 11. 测试
+
+```bash
+# 单元 + 集成 (T1+T2+T3 + 跨层闭环):
+uv run pytest tests -q                           # 145 passed, 2 skipped
+
+# 性能基线 (300ms SLA):
+.venv/bin/python scripts/benchmark/bench_read_livekit.py
+.venv/bin/python scripts/benchmark/bench_read_livekit.py --with-kg
+```
+
+`tests/memory/test_kg_fusion_integration.py` 是跨 T1/T2/T3 的闭环用例(对话 → steward → KG → 召回),
+作为外部集成方的**可执行规约**参考。
+
+---
+
+## 12. 不在范围(下一计划)
+
+- 跨用户共享记忆 — D1 物理隔离,陪伴场景永远不该跨用户(Alice 的 AI 不能知道 Bob 的事)
+- KG 清理 / consolidation — 现在 invalidate 只写 `valid_to` 不删行,3-5 年陪伴单用户量级毫无压力
+- Hybrid 召回(BM25+dense+RRF)、reranker、entity 规范化进化 — 见 `docs/plan-kg-integration.md`
+- 多模态 fragments(图像/音频片段) — 当前只有文本
+
+---
+
+## 13. 代码地图(供深读)
+
+| 层级 | 目录 | 角色 |
+|------|------|------|
+| Domain | `eidolon/memory/domain/` | `MemoryFragment` / `ConversationTurnPayload` / `Kg*` schema, `MemoryBackend` 端口 |
+| Config | `eidolon/memory/config/` | `MemorySettings`, `UsersConfig`, palace 解析, steward prompts |
+| Infrastructure | `eidolon/memory/infrastructure/` | NATS / JetStream / 完整性 / palace init |
+| Adapters | `eidolon/memory/adapters/` | `MemPalacePythonBackend`, `LockedBackend`, `LockedKnowledgeGraph`, `FakeMemoryBackend` |
+| Application | `eidolon/memory/application/` | `turn_processor`, `livekit_recall`, `public_recall` (融合), `kg_recall`, steward |
+| Entrypoints | `eidolon/memory/entrypoints/` | `agent_runner`(主进程)、`supervisor`、`mcp_server`(工具注册) |
+| Admin | `admin/server/` + `admin/web/` | FastAPI + Vue3,纯 MCP/NATS client |
+
+---
+
+## 14. License
+
+MIT(见 `pyproject.toml`)。
