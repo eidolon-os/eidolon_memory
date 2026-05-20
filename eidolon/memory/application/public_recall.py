@@ -128,12 +128,6 @@ async def recall_with_kg_fusion(
     timeout silently degrades to vector-only — never raises into the caller so
     LiveKit's 300ms budget stays intact.
     """
-    from eidolon.memory.application.kg_recall import (
-        cached_entity_names,
-        extract_entity_candidates,
-        query_kg_for_recall,
-    )
-
     vector_task = asyncio.create_task(
         search_all_wings_mcp_style(
             backend,
@@ -163,7 +157,6 @@ async def recall_with_kg_fusion(
             _kg_path_with_timeout(
                 kg,
                 query=query,
-                ttl_seconds=settings.recall.kg_entity_cache_ttl_seconds,
                 max_entities=settings.recall.kg_max_entities,
                 window_days=settings.recall.kg_window_days,
                 max_triples_per_entity=settings.recall.kg_max_triples_per_entity,
@@ -181,23 +174,26 @@ async def _kg_path_with_timeout(
     kg,
     *,
     query: str,
-    ttl_seconds: float,
     max_entities: int,
     window_days: int,
     max_triples_per_entity: int,
     timeout_s: float,
     include_sensitive: bool,
 ) -> list:
-    """One combined SQL for all candidate entities; degrade silently on timeout."""
+    """Route entity candidates → one combined SQL; degrade silently on timeout.
+
+    Reads ``kg.list_entity_names()`` directly — the KG facade is the sole
+    owner of any cache/consistency contract (D1: writes bust automatically
+    because the names list is recomputed each call from a fresh SELECT).
+    """
     from eidolon.memory.application.kg_recall import (
-        cached_entity_names,
         extract_entity_candidates,
         query_kg_for_recall,
     )
 
     try:
         async def _inner():
-            names = await cached_entity_names(kg, ttl_seconds=ttl_seconds)
+            names = await kg.list_entity_names()
             candidates = extract_entity_candidates(query, names, cap=max_entities)
             if not candidates:
                 return []

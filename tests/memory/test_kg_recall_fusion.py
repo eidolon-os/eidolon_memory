@@ -109,40 +109,34 @@ def test_transcribe_triple_current_state() -> None:
     assert "自 2026-04-01" in out
 
 
-# ─── cached_entity_names TTL ───────────────────────────────────────────────
+# ─── list_entity_names freshness (post-cache-deletion architecture) ───────
 
 
-async def test_cached_entity_names_caches_within_ttl() -> None:
-    from eidolon.memory.application.kg_recall import (
-        cached_entity_names,
-        invalidate_entity_cache,
-    )
+async def test_list_entity_names_reflects_write_immediately(tmp_path: Path) -> None:
+    """After cache deletion (D1 reflection):每次 recall 直读 entities 表,
+    写入后下一次读必须立刻看到新实体——不依赖任何 TTL / invalidate 调用。
+    """
+    pytest.importorskip("mempalace")
+    from mempalace.knowledge_graph import KnowledgeGraph
 
-    fake_kg = MagicMock()
-    fake_kg.list_entity_names = AsyncMock(side_effect=[["a", "b"], ["a", "b", "c"]])
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 
-    invalidate_entity_cache(fake_kg)
-    first = await cached_entity_names(fake_kg, ttl_seconds=60.0)
-    second = await cached_entity_names(fake_kg, ttl_seconds=60.0)
-    assert first == second == ["a", "b"]
-    assert fake_kg.list_entity_names.await_count == 1
+    inner = KnowledgeGraph(db_path=str(tmp_path / "freshness.sqlite3"))
+    lock = asyncio.Lock()
+    kg = LockedKnowledgeGraph(inner, lock)
+    try:
+        names0 = await kg.list_entity_names()
+        assert "self" not in names0
 
-
-async def test_cached_entity_names_refetches_after_invalidate() -> None:
-    from eidolon.memory.application.kg_recall import (
-        cached_entity_names,
-        invalidate_entity_cache,
-    )
-
-    fake_kg = MagicMock()
-    fake_kg.list_entity_names = AsyncMock(side_effect=[["a"], ["a", "b"]])
-
-    invalidate_entity_cache(fake_kg)
-    first = await cached_entity_names(fake_kg, ttl_seconds=60.0)
-    invalidate_entity_cache(fake_kg)
-    second = await cached_entity_names(fake_kg, ttl_seconds=60.0)
-    assert first == ["a"]
-    assert second == ["a", "b"]
+        await kg.add_triple(
+            subject="self", predicate="likes", object="tea",
+            confidence=0.95, source_turn_id="freshness", adapter_name="test",
+        )
+        # Immediately after write — NO sleep, NO invalidate — must see "self".
+        names1 = await kg.list_entity_names()
+        assert "self" in names1
+    finally:
+        kg.close()
 
 
 # ─── recall_with_kg_fusion (parallel gather, timeout, KG miss) ─────────────
@@ -156,14 +150,12 @@ def fusion_setup(tmp_path: Path):
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
     from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-    from eidolon.memory.application.kg_recall import invalidate_entity_cache
     from eidolon.memory.config.memory_settings import load_memory_settings
 
     backend = LockedBackend(FakeMemoryBackend())
     kg = LockedKnowledgeGraph(
         KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), backend.lock
     )
-    invalidate_entity_cache(kg)
     settings = load_memory_settings()
     yield backend, kg, settings
     kg.close()

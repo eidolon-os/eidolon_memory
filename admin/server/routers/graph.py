@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dependencies import AdminAuth, McpSessionDep, SettingsDep
+from dependencies import AdminAuth, SettingsDep
 from fastapi import APIRouter, HTTPException, Query
 from graph_service import knowledge_graph_snapshot, palace_graph_snapshot
 from schemas import KnowledgeGraphSnapshot, PalaceGraphSnapshot
@@ -15,7 +15,6 @@ router = APIRouter(prefix="/graph", tags=["graph"])
 async def get_knowledge_graph(
     _: AdminAuth,
     settings: SettingsDep,
-    mcp: McpSessionDep,
     user_id: str = Query(..., description="users.yaml agent id"),
     max_triples: int = Query(400, ge=10, le=2000),
     current_only: bool = Query(True, description="Only facts without valid_to"),
@@ -25,7 +24,8 @@ async def get_knowledge_graph(
     entry = resolve_user_entry(settings, user_id)
     palace = palace_path_for_user(settings, entry)
     payload = await knowledge_graph_snapshot(
-        mcp,
+        settings,
+        user_id,
         palace_path=palace,
         max_triples=max_triples,
         current_only=current_only,
@@ -39,7 +39,6 @@ async def get_knowledge_graph(
 async def get_palace_graph(
     _: AdminAuth,
     settings: SettingsDep,
-    mcp: McpSessionDep,
     user_id: str = Query(..., description="users.yaml agent id"),
     max_nodes: int = Query(120, ge=10, le=500),
     max_edges: int = Query(200, ge=10, le=1000),
@@ -47,7 +46,8 @@ async def get_palace_graph(
     entry = resolve_user_entry(settings, user_id)
     palace = palace_path_for_user(settings, entry)
     payload = await palace_graph_snapshot(
-        mcp,
+        settings,
+        user_id,
         palace_path=palace,
         max_nodes=max_nodes,
         max_edges=max_edges,

@@ -80,7 +80,6 @@ recall:
   kg_window_days: 30                # timeline window for `as_of` queries
   kg_max_entities: 3                # cap entities matched per query
   kg_max_triples_per_entity: 8      # cap triples returned per entity
-  kg_entity_cache_ttl_seconds: 60.0 # entity-name cache TTL for routing heuristic
 
 steward:
   mode: "llm"

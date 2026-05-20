@@ -46,7 +46,6 @@ class RecallPolicy(BaseModel):
     kg_window_days: int = 30
     kg_max_entities: int = 3
     kg_max_triples_per_entity: int = 8
-    kg_entity_cache_ttl_seconds: float = 60.0
 
 
 class StewardConfig(BaseModel):

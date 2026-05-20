@@ -28,7 +28,6 @@ def stack(tmp_path: Path):
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
     from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-    from eidolon.memory.application.kg_recall import invalidate_entity_cache
     from eidolon.memory.config.memory_settings import load_memory_settings
 
     backend = LockedBackend(FakeMemoryBackend())
@@ -36,7 +35,6 @@ def stack(tmp_path: Path):
         KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")),
         backend.lock,
     )
-    invalidate_entity_cache(kg)
     settings = load_memory_settings()
     yield backend, kg, settings
     kg.close()
@@ -91,7 +89,6 @@ async def test_turn_to_recall_closed_loop(stack) -> None:
     """A conversation turn whose steward extracts 'self likes tea' must
     surface as a KG triple in a subsequent ``recall_with_kg_fusion`` call.
     """
-    from eidolon.memory.application.kg_recall import invalidate_entity_cache
     from eidolon.memory.application.public_recall import (
         group_recall_context,
         recall_with_kg_fusion,
@@ -138,8 +135,6 @@ async def test_turn_to_recall_closed_loop(stack) -> None:
     assert msg.ack_calls == ["ack"]
 
     # entity cache must reflect the just-added "self"
-    invalidate_entity_cache(kg)
-
     fused = await recall_with_kg_fusion(
         backend,
         settings,
@@ -167,7 +162,6 @@ async def test_admin_command_to_recall_closed_loop(stack) -> None:
     """The admin / IDE path publishes ``KgAddTripleCommand`` (no steward).
     Worker applies it; subsequent recall picks it up identically.
     """
-    from eidolon.memory.application.kg_recall import invalidate_entity_cache
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.application.turn_processor import process_command_message
     from eidolon.memory.domain.kg import KgAddTripleCommand
@@ -196,8 +190,6 @@ async def test_admin_command_to_recall_closed_loop(stack) -> None:
         expected_user_id="alice",
     )
     assert msg.ack_calls == ["ack"]
-
-    invalidate_entity_cache(kg)
     fused = await recall_with_kg_fusion(
         backend, settings,
         query="self practices meditation",
@@ -217,7 +209,6 @@ async def test_change_of_mind_invalidation_visible_via_recall(stack) -> None:
     """Turn 1: 'self likes coffee'. Turn 2: 'changed mind, likes tea' with
     invalidation. Recall (as_of NOW, default) must surface only 'tea'.
     """
-    from eidolon.memory.application.kg_recall import invalidate_entity_cache
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.kg import KgInvalidationAction, KgTripleAction
@@ -256,8 +247,6 @@ async def test_change_of_mind_invalidation_visible_via_recall(stack) -> None:
         max_deliveries=3, expected_user_id="alice",
     )
     assert msg2.ack_calls == ["ack"]
-
-    invalidate_entity_cache(kg)
     fused = await recall_with_kg_fusion(
         backend, settings,
         query="self likes",
@@ -278,7 +267,6 @@ async def test_sensitive_predicate_hidden_from_default_recall(stack) -> None:
     """Steward output of a health predicate writes to KG, but the default
     recall fusion (include_sensitive_kg=False) must NOT surface it.
     """
-    from eidolon.memory.application.kg_recall import invalidate_entity_cache
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.kg import KgTripleAction
@@ -300,9 +288,6 @@ async def test_sensitive_predicate_hidden_from_default_recall(stack) -> None:
         max_deliveries=3, expected_user_id="alice",
     )
     assert msg.ack_calls == ["ack"]
-
-    invalidate_entity_cache(kg)
-
     # default — sensitive filtered
     fused = await recall_with_kg_fusion(
         backend, settings,
@@ -335,7 +320,6 @@ async def test_replay_does_not_duplicate_in_recall(stack) -> None:
     """Replay of the same turn (NATS at-least-once) → recall still surfaces
     one triple, never two.
     """
-    from eidolon.memory.application.kg_recall import invalidate_entity_cache
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.kg import KgTripleAction
@@ -358,8 +342,6 @@ async def test_replay_does_not_duplicate_in_recall(stack) -> None:
             max_deliveries=3, expected_user_id="alice",
         )
         assert msg.ack_calls == ["ack"]
-
-    invalidate_entity_cache(kg)
     fused = await recall_with_kg_fusion(
         backend, settings,
         query="self practices yoga",

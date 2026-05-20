@@ -2,16 +2,18 @@
 
 Writes (add / invalidate) hit MCP tools that themselves publish
 ``KgAddTripleCommand`` / ``KgInvalidateCommand`` to NATS → worker applies under
-``LockedKnowledgeGraph``. The admin process never touches the KG SQLite file.
+``LockedKnowledgeGraph``. The admin process never touches the KG SQLite file
+and never caches an MCP session — each endpoint opens a per-request session
+via :func:`mcp_call.call_user_mcp`.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from dependencies import AdminAuth, McpSessionDep, SettingsDep
+from dependencies import AdminAuth, SettingsDep
 from fastapi import APIRouter, HTTPException, Query
-from mcp_client import call_tool_json
+from mcp_call import call_user_mcp
 from schemas import (
     KgEntityResponse,
     KgInvalidateRequest,
@@ -43,18 +45,26 @@ def _triples_from(payload: dict[str, Any], key: str) -> list[KgTripleOut]:
 
 
 @router.get("/predicates", response_model=KgPredicates)
-async def get_predicates(_: AdminAuth, mcp: McpSessionDep) -> KgPredicates:
+async def get_predicates(
+    _: AdminAuth,
+    settings: SettingsDep,
+    user_id: str = Query(..., description="users.yaml agent id"),
+) -> KgPredicates:
     payload = _ensure_dict(
-        await call_tool_json(mcp, "eidolon_memory_kg_predicates", {}),
+        await call_user_mcp(settings, user_id, "eidolon_memory_kg_predicates"),
         "kg_predicates",
     )
     return KgPredicates.model_validate(payload)
 
 
 @router.get("/stats", response_model=KgStats)
-async def get_stats(_: AdminAuth, mcp: McpSessionDep) -> KgStats:
+async def get_stats(
+    _: AdminAuth,
+    settings: SettingsDep,
+    user_id: str = Query(..., description="users.yaml agent id"),
+) -> KgStats:
     payload = _ensure_dict(
-        await call_tool_json(mcp, "eidolon_memory_kg_stats", {}),
+        await call_user_mcp(settings, user_id, "eidolon_memory_kg_stats"),
         "kg_stats",
     )
     return KgStats.model_validate(payload)
@@ -64,7 +74,8 @@ async def get_stats(_: AdminAuth, mcp: McpSessionDep) -> KgStats:
 async def query_entity(
     name: str,
     _: AdminAuth,
-    mcp: McpSessionDep,
+    settings: SettingsDep,
+    user_id: str = Query(...),
     as_of: str | None = Query(None),
     direction: str = Query("outgoing", pattern="^(outgoing|incoming|both)$"),
     include_sensitive: bool = Query(False),
@@ -77,7 +88,7 @@ async def query_entity(
     if as_of:
         args["as_of"] = as_of
     payload = _ensure_dict(
-        await call_tool_json(mcp, "eidolon_memory_kg_query_entity", args),
+        await call_user_mcp(settings, user_id, "eidolon_memory_kg_query_entity", args),
         "kg_query_entity",
     )
     return KgEntityResponse(
@@ -91,7 +102,8 @@ async def query_entity(
 @router.get("/timeline", response_model=KgTimelineResponse)
 async def get_timeline(
     _: AdminAuth,
-    mcp: McpSessionDep,
+    settings: SettingsDep,
+    user_id: str = Query(...),
     entity_name: str | None = Query(None),
     since: str | None = Query(None),
     until: str | None = Query(None),
@@ -109,7 +121,7 @@ async def get_timeline(
     if until:
         args["until"] = until
     payload = _ensure_dict(
-        await call_tool_json(mcp, "eidolon_memory_kg_timeline", args),
+        await call_user_mcp(settings, user_id, "eidolon_memory_kg_timeline", args),
         "kg_timeline",
     )
     return KgTimelineResponse(
@@ -125,7 +137,6 @@ async def add_triple(
     body: KgTripleAddRequest,
     _: AdminAuth,
     settings: SettingsDep,
-    mcp: McpSessionDep,
 ) -> KgWriteResult:
     resolve_user_entry(settings, body.user_id)
     args: dict[str, Any] = {
@@ -139,10 +150,9 @@ async def add_triple(
         args["valid_from"] = body.valid_from
     if body.valid_to:
         args["valid_to"] = body.valid_to
-    try:
-        payload = await call_tool_json(mcp, "eidolon_memory_kg_add_triple", args)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    payload = await call_user_mcp(
+        settings, body.user_id, "eidolon_memory_kg_add_triple", args
+    )
     return KgWriteResult.model_validate(_ensure_dict(payload, "kg_add_triple"))
 
 
@@ -151,7 +161,6 @@ async def invalidate_triple(
     body: KgInvalidateRequest,
     _: AdminAuth,
     settings: SettingsDep,
-    mcp: McpSessionDep,
 ) -> KgWriteResult:
     resolve_user_entry(settings, body.user_id)
     args: dict[str, Any] = {
@@ -162,10 +171,9 @@ async def invalidate_triple(
     }
     if body.ended:
         args["ended"] = body.ended
-    try:
-        payload = await call_tool_json(mcp, "eidolon_memory_kg_invalidate", args)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    payload = await call_user_mcp(
+        settings, body.user_id, "eidolon_memory_kg_invalidate", args
+    )
     return KgWriteResult.model_validate(_ensure_dict(payload, "kg_invalidate"))
 
 
@@ -179,7 +187,8 @@ recall_router = APIRouter(prefix="/recall", tags=["recall"])
 async def recall_context(
     body: RecallRequest,
     _: AdminAuth,
-    mcp: McpSessionDep,
+    settings: SettingsDep,
+    user_id: str = Query(..., description="users.yaml agent id"),
 ) -> RecallResponse:
     args: dict[str, Any] = {
         "query": body.query,
@@ -189,10 +198,9 @@ async def recall_context(
     }
     if body.include_kg is not None:
         args["include_kg"] = body.include_kg
-    try:
-        payload = await call_tool_json(mcp, "eidolon_memory_recall_context", args)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    payload = await call_user_mcp(
+        settings, user_id, "eidolon_memory_recall_context", args
+    )
     data = _ensure_dict(payload, "recall_context")
     return RecallResponse(
         context=str(data.get("context") or ""),

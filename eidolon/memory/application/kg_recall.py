@@ -2,59 +2,28 @@
 
 Two roles:
 
-* **routing heuristic** — given a query string, pull the cached set of
-  ``entities.name`` from KG and string-match. Cheap (<2 ms warm) so we can
-  decide whether to fan out a KG read on the LiveKit hot path without an
-  extra LLM call.
+* **routing heuristic** — given a query string, ask the KG for its current
+  ``entities.name`` set and string-match. Cheap (~1ms, single index scan on
+  ``entities``) so we can decide whether to fan out a KG read on the
+  LiveKit hot path without an extra LLM call.
 * **transcription** — turn ``KgTripleRecord`` rows into one-line natural-language
   context entries so the LLM consuming the recall context can treat KG facts
   identically to drawer fragments.
 
-The lock on KG access is owned by ``LockedKnowledgeGraph``; this module is
-stateless apart from the entity-name cache.
+This module is stateless. The KG facade (``LockedKnowledgeGraph``) is the
+sole owner of any cache/consistency contract — readers always call
+``kg.list_entity_names()`` and trust the implementation for freshness.
 """
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from eidolon.memory.domain.kg import KgTripleRecord
 
 
-@dataclass
-class _EntityCache:
-    names: list[str]
-    ts: float
-
-
-_ENTITY_CACHE: dict[int, _EntityCache] = {}
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-async def cached_entity_names(kg, *, ttl_seconds: float = 60.0) -> list[str]:
-    """Cache ``KG.list_entity_names`` for ``ttl_seconds`` per KG instance.
-
-    Keyed on ``id(kg)`` rather than the SQLite path so concurrent agents in
-    one Python interpreter (e.g., bench harness) don't share caches.
-    """
-    key = id(kg)
-    now = time.monotonic()
-    cached = _ENTITY_CACHE.get(key)
-    if cached and now - cached.ts < ttl_seconds:
-        return cached.names
-    names = await kg.list_entity_names()
-    _ENTITY_CACHE[key] = _EntityCache(names=names, ts=now)
-    return names
-
-
-def invalidate_entity_cache(kg) -> None:
-    """Drop the cached list for one KG (call when a new entity is added)."""
-    _ENTITY_CACHE.pop(id(kg), None)
 
 
 def extract_entity_candidates(query: str, entity_names: list[str], *, cap: int) -> list[str]:

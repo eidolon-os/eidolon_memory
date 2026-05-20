@@ -5,9 +5,9 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from dependencies import AdminAuth, McpSessionDep, SettingsDep, TurnPublisherDep
+from dependencies import AdminAuth, SettingsDep, TurnPublisherDep
 from fastapi import APIRouter, HTTPException, Query
-from mcp_client import call_tool_json
+from mcp_call import call_user_mcp
 from schemas import MemoryCreateRequest, MemoryListResponse, MemorySearchResponse
 from user_registry import resolve_user_entry
 
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/memories", tags=["memories"])
 @router.get("/search", response_model=MemorySearchResponse)
 async def search_memories(
     _: AdminAuth,
-    mcp: McpSessionDep,
+    settings: SettingsDep,
     query: str = Query(..., min_length=1),
     user_id: str = Query(..., description="users.yaml agent id"),
     top_k: int = Query(5, ge=1, le=100),
@@ -32,10 +32,7 @@ async def search_memories(
         "wing": wing,
         "room": room,
     }
-    try:
-        payload = await call_tool_json(mcp, "eidolon_memory_search", args)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    payload = await call_user_mcp(settings, user_id, "eidolon_memory_search", args)
     if not isinstance(payload, list):
         raise HTTPException(status_code=502, detail="unexpected MCP search payload")
     return MemorySearchResponse(records=payload)
@@ -44,7 +41,7 @@ async def search_memories(
 @router.get("", response_model=MemoryListResponse)
 async def list_memories(
     _: AdminAuth,
-    mcp: McpSessionDep,
+    settings: SettingsDep,
     user_id: str = Query(..., description="users.yaml agent id"),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
@@ -55,10 +52,7 @@ async def list_memories(
         "offset": offset,
         "include_private": include_private,
     }
-    try:
-        payload = await call_tool_json(mcp, "eidolon_memory_list", args)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    payload = await call_user_mcp(settings, user_id, "eidolon_memory_list", args)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=502, detail="unexpected MCP list payload")
     records = payload.get("records")

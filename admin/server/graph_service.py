@@ -5,19 +5,23 @@ agent_runner is the single owner of those files. We call the MCP tools
 ``eidolon_memory_palace_graph`` and ``eidolon_memory_kg_snapshot`` instead,
 which run inside agent_runner under ``LockedBackend.lock`` /
 ``LockedKnowledgeGraph``.
+
+No MCP session is cached — each call opens a fresh per-request session via
+``mcp_call.call_user_mcp`` (see ``admin/server/mcp_call.py``).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from mcp.client.session import ClientSession
+from eidolon.memory.config.memory_settings import MemorySettings
 
-from mcp_client import call_tool_json
+from mcp_call import call_user_mcp
 
 
 async def knowledge_graph_snapshot(
-    mcp: ClientSession,
+    settings: MemorySettings,
+    user_id: str,
     *,
     palace_path: str,
     max_triples: int = 400,
@@ -44,7 +48,7 @@ async def knowledge_graph_snapshot(
     if entity and entity.strip():
         args["entity"] = entity.strip()
     try:
-        payload = await call_tool_json(mcp, "eidolon_memory_kg_snapshot", args)
+        payload = await call_user_mcp(settings, user_id, "eidolon_memory_kg_snapshot", args)
     except Exception as exc:
         base["reason"] = str(exc)
         return base
@@ -69,7 +73,8 @@ async def knowledge_graph_snapshot(
 
 
 async def palace_graph_snapshot(
-    mcp: ClientSession,
+    settings: MemorySettings,
+    user_id: str,
     *,
     palace_path: str,
     max_nodes: int = 120,
@@ -86,8 +91,9 @@ async def palace_graph_snapshot(
         "reason": None,
     }
     try:
-        payload = await call_tool_json(
-            mcp,
+        payload = await call_user_mcp(
+            settings,
+            user_id,
             "eidolon_memory_palace_graph",
             {"max_nodes": max_nodes, "max_edges": max_edges},
         )
