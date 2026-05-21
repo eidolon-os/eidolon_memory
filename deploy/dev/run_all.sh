@@ -13,6 +13,9 @@
 # Admin-only (used by ./admin/run_all.sh):
 #   ./deploy/dev/run_all.sh start-admin | stop-admin | restart-admin | status-admin
 #
+# Discovery-only:
+#   ./deploy/dev/run_all.sh start-discovery | stop-discovery | status-discovery
+#
 # Supervisor-only:
 #   ./deploy/dev/run_all.sh start-supervisor | stop-supervisor | status-supervisor
 #
@@ -55,6 +58,9 @@ print(json.dumps({
     "run_dir": str(resolve_run_dir(s)),
     "users_file": str(users_path),
     "enabled_users": enabled,
+    "discovery_host": s.discovery_http.host,
+    "discovery_port": s.discovery_http.port,
+    "discovery_path": s.discovery_http.path,
 }))
 PY
 }
@@ -64,12 +70,18 @@ LOG_DIR="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(json.load
 RUN_DIR="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(json.load(sys.stdin)["run_dir"])')"
 USERS_FILE="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(json.load(sys.stdin)["users_file"])')"
 ENABLED_USERS="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(",".join(json.load(sys.stdin)["enabled_users"]) or "(none)")')"
+DISCOVERY_HOST="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(json.load(sys.stdin)["discovery_host"])')"
+DISCOVERY_PORT="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(json.load(sys.stdin)["discovery_port"])')"
+DISCOVERY_PATH="$(echo "$META_JSON" | uv run python -c 'import json,sys;print(json.load(sys.stdin)["discovery_path"])')"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 
 SUP_LOG="${LOG_DIR}/supervisor.log"
 SUP_PID="${RUN_DIR}/eidolon-memory-supervisor.pid"
 SUP_CMD=(uv run eidolon-memory-supervisor)
+DISCOVERY_LOG="${LOG_DIR}/discovery.log"
+DISCOVERY_PID="${RUN_DIR}/eidolon-memory-discovery.pid"
+DISCOVERY_CMD=(uv run eidolon-memory-discovery --host "${DISCOVERY_HOST}" --port "${DISCOVERY_PORT}")
 
 export PYTHONPATH="${REPO_ROOT}/admin/server"
 ADMIN_BACK_PORT="${EIDOLON_MEMORY_ADMIN_PORT:-8010}"
@@ -85,6 +97,8 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 read_sup_pid() { [[ -f "$SUP_PID" ]] && cat "$SUP_PID" 2>/dev/null || true; }
 sup_alive() { local p; p="$(read_sup_pid)"; [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; }
+read_discovery_pid() { [[ -f "$DISCOVERY_PID" ]] && cat "$DISCOVERY_PID" 2>/dev/null || true; }
+discovery_alive() { local p; p="$(read_discovery_pid)"; [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; }
 
 admin_any_alive() {
   [[ -f "$ADMIN_PID" ]] || return 1
@@ -221,6 +235,69 @@ do_status_supervisor() {
   fi
 }
 
+do_start_discovery() {
+  if discovery_alive; then
+    error "discovery already running (PID $(read_discovery_pid), see $DISCOVERY_PID). Use: $0 stop-discovery"
+    exit 1
+  fi
+  [[ -f "$DISCOVERY_PID" ]] && rm -f "$DISCOVERY_PID"
+
+  info "starting Discovery HTTP: http://${DISCOVERY_HOST}:${DISCOVERY_PORT}${DISCOVERY_PATH}"
+  info "discovery log: $DISCOVERY_LOG"
+  nohup "${DISCOVERY_CMD[@]}" >>"$DISCOVERY_LOG" 2>&1 &
+  local discovery_pid=$!
+  echo "$discovery_pid" >"$DISCOVERY_PID"
+  sleep 1
+  if ! kill -0 "$discovery_pid" 2>/dev/null; then
+    error "discovery died immediately; tail of log:"
+    tail -30 "$DISCOVERY_LOG" >&2 || true
+    rm -f "$DISCOVERY_PID"
+    exit 1
+  fi
+  info "discovery PID=$discovery_pid (pid=$DISCOVERY_PID, log=$DISCOVERY_LOG)"
+}
+
+do_stop_discovery() {
+  if ! discovery_alive; then
+    info "discovery not running."
+    [[ -f "$DISCOVERY_PID" ]] && rm -f "$DISCOVERY_PID"
+    return 0
+  fi
+  local pid; pid="$(read_discovery_pid)"
+  info "SIGTERM discovery PID=$pid"
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    sleep 1
+    kill -0 "$pid" 2>/dev/null || break
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    warn "discovery still alive after 10s; SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  rm -f "$DISCOVERY_PID"
+  info "discovery stopped."
+}
+
+do_status_discovery() {
+  echo -e "${CYAN}==== eidolon-memory-discovery ====${NC}"
+  echo "  endpoint: http://${DISCOVERY_HOST}:${DISCOVERY_PORT}${DISCOVERY_PATH}"
+  if discovery_alive; then
+    local pid; pid="$(read_discovery_pid)"
+    info "running: PID $pid"
+  else
+    info "not running."
+    [[ -f "$DISCOVERY_PID" ]] && rm -f "$DISCOVERY_PID"
+  fi
+  echo ""
+  echo "  log tail:"
+  if [[ -f "$DISCOVERY_LOG" ]]; then
+    tail -10 "$DISCOVERY_LOG" | sed 's/^/    /'
+  else
+    echo "    (no discovery.log yet)"
+  fi
+}
+
 do_start_admin() {
   if ! command -v npm >/dev/null 2>&1; then
     error "npm not on PATH; cannot start Admin UI"
@@ -327,6 +404,7 @@ do_status_admin() {
 
 do_start() {
   do_start_supervisor
+  do_start_discovery
   if command -v npm >/dev/null 2>&1; then
     do_start_admin
   else
@@ -336,6 +414,7 @@ do_start() {
 
 do_stop() {
   do_stop_admin
+  do_stop_discovery
   do_stop_supervisor
 }
 
@@ -347,6 +426,8 @@ do_restart() {
 
 do_status() {
   do_status_supervisor
+  echo ""
+  do_status_discovery
   echo ""
   do_status_admin
 }
@@ -361,6 +442,9 @@ case "$CMD" in
   start-supervisor) do_start_supervisor ;;
   stop-supervisor) do_stop_supervisor ;;
   status-supervisor) do_status_supervisor ;;
+  start-discovery) do_start_discovery ;;
+  stop-discovery) do_stop_discovery ;;
+  status-discovery) do_status_discovery ;;
   start-admin) do_start_admin ;;
   stop-admin) do_stop_admin ;;
   restart-admin) do_stop_admin; sleep 1; do_start_admin ;;
@@ -369,7 +453,7 @@ case "$CMD" in
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
-    echo "usage: $0 [start|stop|restart|reload|status|start-admin|stop-admin|restart-admin|status-admin|start-supervisor|stop-supervisor|status-supervisor]" >&2
+    echo "usage: $0 [start|stop|restart|reload|status|start-admin|stop-admin|restart-admin|status-admin|start-discovery|stop-discovery|status-discovery|start-supervisor|stop-supervisor|status-supervisor]" >&2
     exit 1
     ;;
 esac

@@ -163,6 +163,14 @@ class McpHttpConfig(BaseModel):
         return {"Authorization": f"Bearer {token}"}
 
 
+class DiscoveryHttpConfig(BaseModel):
+    """Standalone HTTP discovery endpoint consumed by eidolon-agent."""
+
+    host: str = "127.0.0.1"
+    port: int = 8020
+    path: str = "/api/discovery/agent-routing"
+
+
 class MemorySettings(BaseModel):
     """All tunable memory-service parameters: wings, recall, steward, LLM, NATS, paths."""
 
@@ -177,6 +185,7 @@ class MemorySettings(BaseModel):
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     nats: NatsConfig = Field(default_factory=NatsConfig)
     mcp_http: McpHttpConfig = Field(default_factory=McpHttpConfig)
+    discovery_http: DiscoveryHttpConfig = Field(default_factory=DiscoveryHttpConfig)
 
     @field_validator("wings")
     @classmethod
@@ -252,7 +261,7 @@ _default_settings_cache_key: tuple[Path, float] | None = None
 
 
 def reset_memory_settings_cache() -> None:
-    """Clear the in-process cache used by :func:`get_memory_settings` / ``load_memory_settings()``."""
+    """Clear the in-process cache used by settings loader helpers."""
     global _default_settings_cache, _default_settings_cache_key
     _default_settings_cache = None
     _default_settings_cache_key = None

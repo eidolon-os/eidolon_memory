@@ -144,3 +144,8 @@ mcp_http:
   stateless_http: false
   bearer_token: ""
   bearer_token_env: "EIDOLON_MEMORY_MCP_TOKEN"
+
+discovery_http:
+  host: "127.0.0.1"
+  port: 8020
+  path: "/api/discovery/agent-routing"

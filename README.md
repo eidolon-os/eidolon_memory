@@ -17,6 +17,7 @@
 | LiveKit voice 主进程 / 同 monorepo 的 Python | **同进程 API**(import,零开销,300ms 含 ONNX) |
 | 外部 Python / Node / Cursor / Claude IDE | **MCP Streamable HTTP**(默认 `http://127.0.0.1:8030/mcp`) |
 | 写一条对话后异步落盘(steward 后台抽取) | **NATS JetStream**(发 `ConversationTurnPayload`) |
+| eidolon-agent 启动 / 周期刷新路由 | **Discovery HTTP**(`http://127.0.0.1:8020/api/discovery/agent-routing`) |
 | Admin / 运维网页 / 多用户管理 | **Admin HTTP**(`http://127.0.0.1:8010/api`) — 见 `admin/` |
 
 读写都最终经同一个 `LockedBackend` + `LockedKnowledgeGraph`(单个 `asyncio.Lock` 串行 chromadb + KG SQLite 调用),保证 D1 single-owner-per-palace 不变量。
@@ -72,6 +73,9 @@ eidolon-memory-supervisor &
 
 # 3b. 开发形态 — 单用户 ad-hoc
 eidolon-memory-agent --user-id default --port 8030 &
+
+# 3c. Agent 路由发现（给 eidolon-agent）
+eidolon-memory-discovery &
 
 # 4. (可选) Admin UI
 ./admin/run_all.sh start   # api @ 8010, web @ 5280
@@ -148,6 +152,41 @@ mcp_http:
 ```
 
 `context` 是已格式化好可以直接喂给 LLM 的字符串;`records` + `kg_triples` 是原始结构供二次处理。
+
+### 4.5 Discovery HTTP(agent-routing)
+
+eidolon-agent 启动时先拉取 Discovery，运行中按周期刷新；MCP 端口、NATS stream/subject
+模板和可用用户列表都以 memory 返回为准。Discovery 是独立核心服务，不挂在 Admin server 上。
+
+```bash
+eidolon-memory-discovery
+curl http://127.0.0.1:8020/api/discovery/agent-routing
+```
+
+响应只包含 agent 路由需要的稳定契约，不暴露 `users_yaml`、`palace_path`、`pid`、`log_path`
+等运维字段。开发阶段不做 token 鉴权，`mcp_auth` 固定为 `{"type":"none"}`。
+
+```json
+{
+  "version": 1,
+  "generated_at": "2026-05-21T10:00:00Z",
+  "nats": {
+    "url": "nats://127.0.0.1:4222",
+    "stream": "MEMORY_TURNS",
+    "turn_subject_template": "agent.memory.conversation.turn.{user_id}",
+    "cmd_subject_template": "agent.memory.cmd.{user_id}"
+  },
+  "users": [
+    {
+      "user_id": "default",
+      "enabled": true,
+      "mcp_http_url": "http://127.0.0.1:8030/mcp",
+      "mcp_auth": {"type": "none"},
+      "agent_reachable": true
+    }
+  ]
+}
+```
 
 ---
 
@@ -348,6 +387,11 @@ mcp_http:
   path: "/mcp"
   bearer_token: ""               # 启用后 client 必须发 Authorization
   bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN
+
+discovery_http:
+  host: "127.0.0.1"
+  port: 8020
+  path: "/api/discovery/agent-routing"
 
 steward:
   mode: "llm"                    # llm | rule | noop

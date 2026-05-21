@@ -29,6 +29,7 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
 [project.scripts]
 eidolon-memory-agent = "eidolon.memory.entrypoints.agent_runner:main"
 eidolon-memory-supervisor = "eidolon.memory.entrypoints.supervisor:main"
+eidolon-memory-discovery = "eidolon.memory.entrypoints.discovery_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["eidolon"]
