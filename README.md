@@ -78,7 +78,7 @@ eidolon-memory-agent --user-id default --port 8030 &
 eidolon-memory-discovery &
 
 # 4. (可选) Admin UI
-./admin/run_all.sh start   # api @ 8010, web @ 5280
+./deploy/dev/run_all.sh start-admin   # api @ 8010, web @ 5280
 ```
 
 首次启动会自动 `mempalace init` 对应 palace。配置文件见第 8 节。
@@ -357,7 +357,7 @@ eidolon-memory-agent --user-id default --port 8030
 
 ### 7.4 Admin Web 也能管
 
-`admin/run_all.sh start` 起 Admin 后,**用户管理**页可以:
+`deploy/dev/run_all.sh start-admin` 起 Admin 后,**用户管理**页可以:
 - "+新建用户" — 写 users.yaml + init palace + spawn agent 一步到位
 - 启动 / 停止 / 启用 / 禁用 — 仅对 admin 自己 spawn 的有效;外部进程(supervisor / shell)显示 `external`,不可停。
 

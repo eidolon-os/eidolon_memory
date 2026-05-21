@@ -12,7 +12,7 @@
 | 对话结束后结构化写入（热路径） | **JetStream**：往 YAML 配置的 subject 发 `ConversationTurnPayload` JSON | **`eidolon-memory-worker`** + NATS JetStream |
 | 简单同步写入 / 按 drawer 读写删 | **NATS Core**：`MEMORY_STORE` / `GET` / … | **`python -m eidolon.memory.server`** |
 | 同进程嵌入式 | **Python API**：`McpRecallClient` / `ingest_fragment` 等 | 仅依赖导入 `eidolon.memory` |
-| 本机可视化列表与层级浏览 | **Admin HTTP**（`admin/`） | `uvicorn` + `vite`（见 `admin/run_all.sh`）；**非**对外推荐的生产协议 |
+| 本机可视化列表与层级浏览 | **Admin HTTP**（`admin/`） | `deploy/dev/run_all.sh start-admin`（或 `foreground-admin`）；**非**对外推荐的生产协议 |
 
 语义检索**不推荐**再走已废弃或历史的 `MEMORY_QUERY` 思路；请以 MCP 或服务内 `McpRecallClient` + `MemoryBackend.search` 为准（与 MCP 对齐逻辑见 `eidolon.memory.application.public_recall`）。
 
@@ -153,7 +153,7 @@ hits = await client.recall("用户最近提到过什么？", wing="Wing_Profile"
 
 ## 7. Admin HTTP（本地运维）
 
-路径：`admin/server` + `admin/web`，脚本 **`admin/run_all.sh`**。默认 **`GET http://127.0.0.1:8010/docs`** OpenAPI。
+路径：`admin/server` + `admin/web`，由 **`deploy/dev/run_all.sh start-admin`** 启动。默认 **`GET http://127.0.0.1:8010/docs`** OpenAPI。
 
 主要前缀 **`/api`**：
 

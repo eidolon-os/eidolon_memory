@@ -10,8 +10,9 @@
 #   ./deploy/dev/run_all.sh reload       # SIGHUP supervisor → re-read users.yaml
 #   ./deploy/dev/run_all.sh status
 #
-# Admin-only (used by ./admin/run_all.sh):
+# Admin-only:
 #   ./deploy/dev/run_all.sh start-admin | stop-admin | restart-admin | status-admin
+#   ./deploy/dev/run_all.sh foreground-admin   # API + Vite in foreground (Ctrl+C)
 #
 # Discovery-only:
 #   ./deploy/dev/run_all.sh start-discovery | stop-discovery | status-discovery
@@ -378,6 +379,42 @@ do_stop_admin() {
   info "admin stopped."
 }
 
+do_foreground_admin() {
+  if ! command -v npm >/dev/null 2>&1; then
+    error "npm not on PATH; cannot start Admin UI"
+    exit 1
+  fi
+  if ! wait_mcp_http_ready; then
+    error "agent MCP HTTP not ready (run: $0 start-supervisor or $0 start)"
+    exit 1
+  fi
+
+  cleanup() {
+    [[ -n "${BACK_PID:-}" ]] && kill "${BACK_PID}" 2>/dev/null || true
+    [[ -n "${FRONT_PID:-}" ]] && kill "${FRONT_PID}" 2>/dev/null || true
+  }
+  trap cleanup EXIT INT TERM
+
+  uv sync --extra admin --extra dev >/dev/null
+  if [[ ! -d "${REPO_ROOT}/admin/web/node_modules" ]]; then
+    (cd "${REPO_ROOT}/admin/web" && npm install)
+  fi
+
+  uv run uvicorn main:app --app-dir "${REPO_ROOT}/admin/server" \
+    --host 127.0.0.1 --port "${ADMIN_BACK_PORT}" &
+  BACK_PID=$!
+  (cd "${REPO_ROOT}/admin/web" && npm run dev -- --port "${ADMIN_FRONT_PORT}" --strictPort) &
+  FRONT_PID=$!
+
+  echo ""
+  echo "Eidolon Memory Admin (foreground)"
+  echo "  API:       http://127.0.0.1:${ADMIN_BACK_PORT}/docs"
+  echo "  frontend:  http://127.0.0.1:${ADMIN_FRONT_PORT}/"
+  echo "Ctrl+C to stop. Background: $0 start-admin"
+  echo ""
+  wait "${BACK_PID}" "${FRONT_PID}" || true
+}
+
 do_status_admin() {
   echo -e "${CYAN}==== eidolon-memory-admin ====${NC}"
   if [[ -f "$ADMIN_PID" ]] && admin_any_alive; then
@@ -449,11 +486,12 @@ case "$CMD" in
   stop-admin) do_stop_admin ;;
   restart-admin) do_stop_admin; sleep 1; do_start_admin ;;
   status-admin) do_status_admin ;;
+  foreground-admin) do_foreground_admin ;;
   -h|--help|help)
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
-    echo "usage: $0 [start|stop|restart|reload|status|start-admin|stop-admin|restart-admin|status-admin|start-discovery|stop-discovery|status-discovery|start-supervisor|stop-supervisor|status-supervisor]" >&2
+    echo "usage: $0 [start|stop|restart|reload|status|start-admin|stop-admin|restart-admin|status-admin|foreground-admin|start-discovery|stop-discovery|status-discovery|start-supervisor|stop-supervisor|status-supervisor]" >&2
     exit 1
     ;;
 esac
