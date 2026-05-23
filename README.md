@@ -18,9 +18,11 @@
 | 外部 Python / Node / Cursor / Claude IDE | **MCP Streamable HTTP**(默认 `http://127.0.0.1:8030/mcp`) |
 | 写一条对话后异步落盘(steward 后台抽取) | **NATS JetStream**(发 `ConversationTurnPayload`) |
 | eidolon-agent 启动 / 周期刷新路由 | **Discovery HTTP**(`http://127.0.0.1:8020/api/discovery/agent-routing`) |
-| Admin / 运维网页 / 多用户管理 | **Admin HTTP**(`http://127.0.0.1:8010/api`) — 见 `admin/` |
 
 读写都最终经同一个 `LockedBackend` + `LockedKnowledgeGraph`(单个 `asyncio.Lock` 串行 chromadb + KG SQLite 调用),保证 D1 single-owner-per-palace 不变量。
+
+> 旧的 Admin Web UI 已移至 [`legacy/admin/`](legacy/admin/README.md),
+> 不再随 `deploy/dev/run_all.sh` 启动;`uv sync --extra admin` 可手动跑。
 
 ---
 
@@ -53,7 +55,7 @@
 ```
 
 **关键**:每份 palace 文件只被**一个进程**持有(D1 铁律,避免 chromadb 多进程 corruption)。
-外部访问**必须**通过 MCP / NATS / Admin,**不要**自己开 `mempalace.knowledge_graph.KnowledgeGraph`
+外部访问**必须**通过 MCP / NATS / Discovery,**不要**自己开 `mempalace.knowledge_graph.KnowledgeGraph`
 或 `chromadb.PersistentClient` 去碰 palace 目录。
 
 ---
@@ -61,24 +63,19 @@
 ## 3. 快速启动
 
 ```bash
-# 1. 安装(开发 + admin)
-uv sync --extra dev --extra admin
+# 1. 安装
+uv sync --extra dev
 
 # 2. 起 NATS(任何方式都行)
 nats-server -js &
 
-# 3a. 生产形态 — supervisor 起 users.yaml 全部用户
-eidolon-memory-supervisor &
-# 或 SIGHUP 热加载,见第 7 节
+# 3a. 生产形态 — supervisor 起 users.yaml 全部用户 + discovery
+./deploy/dev/run_all.sh start
+# 或 SIGHUP 热加载: ./deploy/dev/run_all.sh reload
 
 # 3b. 开发形态 — 单用户 ad-hoc
 eidolon-memory-agent --user-id default --port 8030 &
-
-# 3c. Agent 路由发现（给 eidolon-agent）
 eidolon-memory-discovery &
-
-# 4. (可选) Admin UI
-./deploy/dev/run_all.sh start-admin   # api @ 8010, web @ 5280
 ```
 
 首次启动会自动 `mempalace init` 对应 palace。配置文件见第 8 节。
@@ -355,11 +352,13 @@ eidolon-memory-agent --user-id default --port 8030
 
 完全独立于 supervisor;两者可以混跑(每个 palace 仍只一份进程持有)。
 
-### 7.4 Admin Web 也能管
+### 7.4 用户增删改
 
-`deploy/dev/run_all.sh start-admin` 起 Admin 后,**用户管理**页可以:
-- "+新建用户" — 写 users.yaml + init palace + spawn agent 一步到位
-- 启动 / 停止 / 启用 / 禁用 — 仅对 admin 自己 spawn 的有效;外部进程(supervisor / shell)显示 `external`,不可停。
+直接编辑 `users.yaml` 然后 `./deploy/dev/run_all.sh reload` (SIGHUP supervisor)。
+新增用户:加一行 `enabled: true` 后 reload,supervisor 会自动 init palace + spawn agent。
+
+> Web 控制台已下线,见 [`legacy/admin/`](legacy/admin/README.md);如果你仍想用,
+> 按 README 的步骤手动启。核心生命周期不再走 admin。
 
 ---
 
@@ -428,7 +427,7 @@ supervisor:
 | `EIDOLON_MEMORY_PALACES_ROOT` | per-user palace 目录的父根 |
 | `EIDOLON_MEMORY_MCP_TOKEN` | MCP HTTP bearer token |
 | `EIDOLON_MEMORY_LLM_API_KEY` | steward LLM 密钥 |
-| `EIDOLON_MEMORY_ADMIN_TOKEN` | admin HTTP bearer token(空 = 不鉴权,localhost only) |
+| `EIDOLON_MEMORY_ADMIN_TOKEN` | (legacy admin only)admin HTTP bearer token |
 
 ### 8.3 Palace 目录布局
 
@@ -445,26 +444,15 @@ supervisor:
 
 ---
 
-## 9. Admin HTTP API
+## 9. Admin HTTP API(已下线 / legacy)
 
-Admin 是一个**特殊的 agent client**,经 MCP+NATS 与 agent_runner 通讯;**自身不持 palace fd**。
-默认 `http://127.0.0.1:8010/api`。完整路由:
+旧 Admin FastAPI 服务连同 Vue 前端已移至 [`legacy/admin/`](legacy/admin/README.md),
+不再随核心服务发布。该服务**没有任何核心契约**:它能做的事(写 turn / 写 KG / 读
+召回 / 列工具)都已经通过 MCP 工具 + NATS subject 暴露;任何外部客户端都可以照
+样使用,不需要中间层。
 
-| 路径 | 方法 | 用途 |
-|------|------|------|
-| `/health` | GET | 健康 + 当前 user 列表 + steward mode |
-| `/users` | GET/POST | 列出 users.yaml + 新建用户 |
-| `/users/{id}/init` | POST | `mempalace init` |
-| `/users/{id}/start` `/stop` | POST | spawn / SIGTERM(仅 admin 自己 spawn 的) |
-| `/users/{id}/enable?enabled=bool` | POST | 改 users.yaml |
-| `/memories` `?user_id=...` | GET/POST | 列表 / 写对话(经 NATS) |
-| `/memories/search` | GET | vector 搜索(原 `eidolon_memory_search`) |
-| `/recall` | POST | **融合召回**(vector + KG) |
-| `/kg/stats` `/predicates` `/timeline` `/entity/{name}` | GET | KG 读 |
-| `/kg/triples` `/invalidations` | POST | KG 写(经 NATS cmd) |
-| `/graph/knowledge` `/graph/palace` | GET | 图可视化数据 |
-| `/hierarchy` | GET | wing→room→drawer 树 |
-| `/mcp/tools` | GET | 列 agent_runner 的工具清单 |
+如果你仍想跑它(本地调试 / 演示):见 `legacy/admin/README.md`,需要先
+`uv sync --extra admin`。
 
 鉴权:`EIDOLON_MEMORY_ADMIN_TOKEN` 设了之后所有请求要 `Authorization: Bearer ...`。
 
@@ -531,8 +519,8 @@ uv run pytest tests -q                           # 145 passed, 2 skipped
 | Infrastructure | `eidolon/memory/infrastructure/` | NATS / JetStream / 完整性 / palace init |
 | Adapters | `eidolon/memory/adapters/` | `MemPalacePythonBackend`, `LockedBackend`, `LockedKnowledgeGraph`, `FakeMemoryBackend` |
 | Application | `eidolon/memory/application/` | `turn_processor`, `livekit_recall`, `public_recall` (融合), `kg_recall`, steward |
-| Entrypoints | `eidolon/memory/entrypoints/` | `agent_runner`(主进程)、`supervisor`、`mcp_server`(工具注册) |
-| Admin | `admin/server/` + `admin/web/` | FastAPI + Vue3,纯 MCP/NATS client |
+| Entrypoints | `eidolon/memory/entrypoints/` | `agent_runner`(主进程)、`supervisor`、`mcp_server`(工具注册)、`discovery_server` |
+| Legacy | `legacy/admin/` | 旧 FastAPI + Vue3 控制台(已下线,见 `legacy/admin/README.md`) |
 
 ---
 

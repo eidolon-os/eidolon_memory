@@ -1,24 +1,21 @@
 #!/usr/bin/env bash
-# Start / stop / reload / status / restart for D1 dev stack:
+# Start / stop / reload / status / restart for the D1 dev stack:
 #   - eidolon-memory-supervisor (+ agent_runner children)
-#   - Eidolon Memory Admin (FastAPI + Vite dev)
+#   - eidolon-memory-discovery  (agent-routing HTTP)
 #
-#   ./deploy/dev/run_all.sh              # = start (supervisor + admin)
+# Admin UI lives in legacy/admin and is NOT managed by this script. To
+# run it manually if needed, see legacy/admin/README.md.
+#
+#   ./deploy/dev/run_all.sh              # = start (supervisor + discovery)
 #   ./deploy/dev/run_all.sh start
 #   ./deploy/dev/run_all.sh stop
 #   ./deploy/dev/run_all.sh restart      # stop all, then start all
 #   ./deploy/dev/run_all.sh reload       # SIGHUP supervisor → re-read users.yaml
 #   ./deploy/dev/run_all.sh status
 #
-# Admin-only:
-#   ./deploy/dev/run_all.sh start-admin | stop-admin | restart-admin | status-admin
-#   ./deploy/dev/run_all.sh foreground-admin   # API + Vite in foreground (Ctrl+C)
-#
-# Discovery-only:
-#   ./deploy/dev/run_all.sh start-discovery | stop-discovery | status-discovery
-#
-# Supervisor-only:
+# Single-component control:
 #   ./deploy/dev/run_all.sh start-supervisor | stop-supervisor | status-supervisor
+#   ./deploy/dev/run_all.sh start-discovery  | stop-discovery  | status-discovery
 #
 set -euo pipefail
 
@@ -84,13 +81,6 @@ DISCOVERY_LOG="${LOG_DIR}/discovery.log"
 DISCOVERY_PID="${RUN_DIR}/eidolon-memory-discovery.pid"
 DISCOVERY_CMD=(uv run eidolon-memory-discovery --host "${DISCOVERY_HOST}" --port "${DISCOVERY_PORT}")
 
-export PYTHONPATH="${REPO_ROOT}/admin/server"
-ADMIN_BACK_PORT="${EIDOLON_MEMORY_ADMIN_PORT:-8010}"
-ADMIN_FRONT_PORT="${VITE_FRONT_PORT:-5280}"
-ADMIN_PID="${RUN_DIR}/eidolon_admin_services.pids"
-ADMIN_BACK_LOG="${LOG_DIR}/eidolon_admin_api.log"
-ADMIN_FRONT_LOG="${LOG_DIR}/eidolon_admin_vite.log"
-
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
@@ -100,59 +90,6 @@ read_sup_pid() { [[ -f "$SUP_PID" ]] && cat "$SUP_PID" 2>/dev/null || true; }
 sup_alive() { local p; p="$(read_sup_pid)"; [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; }
 read_discovery_pid() { [[ -f "$DISCOVERY_PID" ]] && cat "$DISCOVERY_PID" 2>/dev/null || true; }
 discovery_alive() { local p; p="$(read_discovery_pid)"; [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; }
-
-admin_any_alive() {
-  [[ -f "$ADMIN_PID" ]] || return 1
-  local line pid
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    pid="${line#*=}"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      return 0
-    fi
-  done <"$ADMIN_PID"
-  return 1
-}
-
-admin_clear_stale_pid_file() {
-  [[ -f "$ADMIN_PID" ]] || return 0
-  if admin_any_alive; then
-    return 1
-  fi
-  rm -f "$ADMIN_PID"
-  return 0
-}
-
-mcp_http_ready() {
-  PYTHONPATH="${REPO_ROOT}/admin/server" uv run python -c "
-import asyncio, sys
-from eidolon.memory.config.memory_settings import get_memory_settings
-from mcp_client import mcp_http_url, probe_mcp_http
-from user_registry import list_enabled_users
-
-async def main() -> bool:
-    settings = get_memory_settings()
-    users = list_enabled_users(settings)
-    if not users:
-        return False
-    entry = users[0]
-    url = mcp_http_url(settings, port=entry.port)
-    return await probe_mcp_http(url, settings=settings)
-
-sys.exit(0 if asyncio.run(main()) else 1)
-" 2>/dev/null
-}
-
-wait_mcp_http_ready() {
-  local i
-  for i in $(seq 1 40); do
-    if mcp_http_ready; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
 
 do_start_supervisor() {
   if sup_alive; then
@@ -299,158 +236,12 @@ do_status_discovery() {
   fi
 }
 
-do_start_admin() {
-  if ! command -v npm >/dev/null 2>&1; then
-    error "npm not on PATH; cannot start Admin UI"
-    exit 1
-  fi
-
-  if [[ -f "$ADMIN_PID" ]] && admin_any_alive; then
-    error "admin already running (see $ADMIN_PID). Use: $0 stop-admin"
-    exit 1
-  fi
-  admin_clear_stale_pid_file || true
-
-  if ! wait_mcp_http_ready; then
-    error "agent MCP HTTP not ready (start supervisor first; check users.yaml ports)."
-    error "If already started, check HTTP_PROXY excludes localhost."
-    exit 1
-  fi
-
-  uv sync --extra admin --extra dev >/dev/null
-
-  if [[ ! -d "${REPO_ROOT}/admin/web/node_modules" ]]; then
-    (cd "${REPO_ROOT}/admin/web" && npm install)
-  fi
-
-  local tmp
-  tmp="$(mktemp)"
-
-  info "starting Admin API: uvicorn :${ADMIN_BACK_PORT}"
-  info "api log: $ADMIN_BACK_LOG"
-  nohup uv run uvicorn main:app --app-dir "${REPO_ROOT}/admin/server" \
-    --host 127.0.0.1 --port "${ADMIN_BACK_PORT}" >>"$ADMIN_BACK_LOG" 2>&1 &
-  echo "api=$!" >>"$tmp"
-
-  info "starting Vite: :${ADMIN_FRONT_PORT}"
-  info "vite log: $ADMIN_FRONT_LOG"
-  nohup bash -c "cd \"${REPO_ROOT}/admin/web\" && npm run dev -- --port \"${ADMIN_FRONT_PORT}\" --strictPort" \
-    >>"$ADMIN_FRONT_LOG" 2>&1 &
-  echo "vite=$!" >>"$tmp"
-
-  mv "$tmp" "$ADMIN_PID"
-
-  info "admin started (pid file: $ADMIN_PID)"
-  echo "  API:       http://127.0.0.1:${ADMIN_BACK_PORT}/docs"
-  echo "  frontend:  http://127.0.0.1:${ADMIN_FRONT_PORT}/"
-}
-
-do_stop_admin() {
-  if [[ ! -f "$ADMIN_PID" ]]; then
-    info "admin not running (no pid file)."
-    return 0
-  fi
-
-  info "stopping Admin API / Vite…"
-  local line pid key
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    key="${line%%=*}"
-    pid="${line#*=}"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      info "  SIGTERM $key (PID $pid)"
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-  done <"$ADMIN_PID"
-
-  sleep 2
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    key="${line%%=*}"
-    pid="${line#*=}"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      warn "  SIGKILL $key (PID $pid)"
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-  done <"$ADMIN_PID"
-
-  rm -f "$ADMIN_PID"
-  info "admin stopped."
-}
-
-do_foreground_admin() {
-  if ! command -v npm >/dev/null 2>&1; then
-    error "npm not on PATH; cannot start Admin UI"
-    exit 1
-  fi
-  if ! wait_mcp_http_ready; then
-    error "agent MCP HTTP not ready (run: $0 start-supervisor or $0 start)"
-    exit 1
-  fi
-
-  cleanup() {
-    [[ -n "${BACK_PID:-}" ]] && kill "${BACK_PID}" 2>/dev/null || true
-    [[ -n "${FRONT_PID:-}" ]] && kill "${FRONT_PID}" 2>/dev/null || true
-  }
-  trap cleanup EXIT INT TERM
-
-  uv sync --extra admin --extra dev >/dev/null
-  if [[ ! -d "${REPO_ROOT}/admin/web/node_modules" ]]; then
-    (cd "${REPO_ROOT}/admin/web" && npm install)
-  fi
-
-  uv run uvicorn main:app --app-dir "${REPO_ROOT}/admin/server" \
-    --host 127.0.0.1 --port "${ADMIN_BACK_PORT}" &
-  BACK_PID=$!
-  (cd "${REPO_ROOT}/admin/web" && npm run dev -- --port "${ADMIN_FRONT_PORT}" --strictPort) &
-  FRONT_PID=$!
-
-  echo ""
-  echo "Eidolon Memory Admin (foreground)"
-  echo "  API:       http://127.0.0.1:${ADMIN_BACK_PORT}/docs"
-  echo "  frontend:  http://127.0.0.1:${ADMIN_FRONT_PORT}/"
-  echo "Ctrl+C to stop. Background: $0 start-admin"
-  echo ""
-  wait "${BACK_PID}" "${FRONT_PID}" || true
-}
-
-do_status_admin() {
-  echo -e "${CYAN}==== eidolon-memory-admin ====${NC}"
-  if [[ -f "$ADMIN_PID" ]] && admin_any_alive; then
-    info "running:"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ -z "$line" || "$line" == \#* ]] && continue
-      key="${line%%=*}"
-      pid="${line#*=}"
-      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-        echo "  ✓ ${key}: PID $pid"
-      else
-        echo "  ✗ ${key}: PID $pid (stale)"
-      fi
-    done <"$ADMIN_PID"
-  else
-    info "not running."
-    [[ -f "$ADMIN_PID" ]] && rm -f "$ADMIN_PID"
-  fi
-  echo ""
-  echo "  API:       http://127.0.0.1:${ADMIN_BACK_PORT}/docs"
-  echo "  frontend:  http://127.0.0.1:${ADMIN_FRONT_PORT}/"
-  echo "  logs:      $ADMIN_BACK_LOG , $ADMIN_FRONT_LOG"
-}
-
 do_start() {
   do_start_supervisor
   do_start_discovery
-  if command -v npm >/dev/null 2>&1; then
-    do_start_admin
-  else
-    warn "npm not found; supervisor started without Admin UI"
-  fi
 }
 
 do_stop() {
-  do_stop_admin
   do_stop_discovery
   do_stop_supervisor
 }
@@ -465,8 +256,6 @@ do_status() {
   do_status_supervisor
   echo ""
   do_status_discovery
-  echo ""
-  do_status_admin
 }
 
 CMD="${1:-start}"
@@ -482,16 +271,9 @@ case "$CMD" in
   start-discovery) do_start_discovery ;;
   stop-discovery) do_stop_discovery ;;
   status-discovery) do_status_discovery ;;
-  start-admin) do_start_admin ;;
-  stop-admin) do_stop_admin ;;
-  restart-admin) do_stop_admin; sleep 1; do_start_admin ;;
-  status-admin) do_status_admin ;;
-  foreground-admin) do_foreground_admin ;;
-  -h|--help|help)
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
-    ;;
   *)
-    echo "usage: $0 [start|stop|restart|reload|status|start-admin|stop-admin|restart-admin|status-admin|foreground-admin|start-discovery|stop-discovery|status-discovery|start-supervisor|stop-supervisor|status-supervisor]" >&2
+    error "unknown command: $CMD"
+    echo "Usage: $0 {start|stop|restart|reload|status|start-supervisor|stop-supervisor|status-supervisor|start-discovery|stop-discovery|status-discovery}" >&2
     exit 1
     ;;
 esac

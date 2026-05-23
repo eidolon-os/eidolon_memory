@@ -7,7 +7,8 @@
 #   ./deploy/dev/init.sh --all                    # init every enabled user in users.yaml
 #   ./deploy/dev/init.sh --skip-sync              # do not run uv sync
 #   ./deploy/dev/init.sh --skip-warm              # skip ONNX warm after each init
-#   ./deploy/dev/init.sh --with-admin             # also install admin extras
+#
+# Admin UI is no longer wired into init / run_all (moved to legacy/admin).
 #
 set -euo pipefail
 
@@ -28,10 +29,9 @@ USER_IDS=""        # comma-separated
 DO_ALL=0
 DO_SYNC=1
 DO_WARM=1
-WITH_ADMIN=0
 
 usage() {
-  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -41,7 +41,6 @@ while [[ $# -gt 0 ]]; do
     --all) DO_ALL=1 ;;
     --skip-sync) DO_SYNC=0 ;;
     --skip-warm) DO_WARM=0 ;;
-    --with-admin) WITH_ADMIN=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[ERROR] unknown arg: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -87,10 +86,6 @@ fi
 if [[ "$DO_SYNC" == 1 ]]; then
   info "uv sync --extra dev…"
   uv sync --extra dev
-  if [[ "$WITH_ADMIN" == 1 ]]; then
-    info "uv sync --extra admin…"
-    uv sync --extra admin
-  fi
 fi
 
 # -------------------- user selection --------------------
