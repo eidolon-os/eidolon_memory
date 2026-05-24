@@ -182,19 +182,16 @@ async def _kg_path_with_timeout(
 ) -> list:
     """Route entity candidates → one combined SQL; degrade silently on timeout.
 
-    Reads ``kg.list_entity_names()`` directly — the KG facade is the sole
-    owner of any cache/consistency contract (D1: writes bust automatically
-    because the names list is recomputed each call from a fresh SELECT).
+    ``kg.match_entities_for_query`` owns the naming-convention bridge
+    (literal + prefix-strip), so this layer just asks "give me candidates"
+    without knowing about ``pet:`` / ``place:`` / ``mother:`` prefixes.
+    Future synonym / alias support extends that method, not this caller.
     """
-    from eidolon.memory.application.kg_recall import (
-        extract_entity_candidates,
-        query_kg_for_recall,
-    )
+    from eidolon.memory.application.kg_recall import query_kg_for_recall
 
     try:
         async def _inner():
-            names = await kg.list_entity_names()
-            candidates = extract_entity_candidates(query, names, cap=max_entities)
+            candidates = await kg.match_entities_for_query(query, cap=max_entities)
             if not candidates:
                 return []
             return await query_kg_for_recall(

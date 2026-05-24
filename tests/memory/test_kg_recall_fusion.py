@@ -13,46 +13,123 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
-# ─── Entity extraction (no LLM) ───────────────────────────────────────────
+# ─── Entity routing — KG facade owns the naming-convention bridge ────────
 
 
-def test_extract_entity_candidates_substring_match() -> None:
-    from eidolon.memory.application.kg_recall import extract_entity_candidates
+async def _seed_entities(kg, names_with_types: list[tuple[str, str]]) -> None:
+    """Helper: insert raw entities (no triples needed) into the KG fixture."""
+    import asyncio
 
-    names = ["self", "mother", "father", "project:OP-3091", "tea"]
-    hits = extract_entity_candidates("我妈最近怎么样？", names, cap=3)
-    # Chinese 我妈 doesn't contain "mother" substring — entity name match only.
-    # This is the documented behaviour (canonical names are used by steward).
-    assert hits == []
-
-
-def test_extract_entity_candidates_canonical_substring() -> None:
-    from eidolon.memory.application.kg_recall import extract_entity_candidates
-
-    names = ["self", "mother", "tea"]
-    hits = extract_entity_candidates("self likes tea", names, cap=3)
-    assert "self" in hits
-    assert "tea" in hits
+    def _insert() -> None:
+        conn = kg._inner._conn()
+        for name, etype in names_with_types:
+            conn.execute(
+                "INSERT OR IGNORE INTO entities(id, name, type, properties, created_at) "
+                "VALUES (?, ?, ?, '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                (name, name, etype),
+            )
+        conn.commit()
+    async with kg._lock:
+        await asyncio.to_thread(_insert)
 
 
-def test_extract_entity_candidates_cap_respected() -> None:
-    from eidolon.memory.application.kg_recall import extract_entity_candidates
+async def test_match_entities_bare_name_substring(tmp_path: Path) -> None:
+    pytest.importorskip("mempalace")
+    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 
-    names = ["a", "b", "c", "d", "e", "f"]
-    hits = extract_entity_candidates("a b c d e f g", names, cap=3)
-    assert len(hits) == 3
+    kg = LockedKnowledgeGraph(
+        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    )
+    try:
+        await _seed_entities(kg, [("self", "unknown"), ("mother", "unknown"), ("tea", "unknown")])
+        hits = await kg.match_entities_for_query("self likes tea", cap=3)
+        assert set(hits) == {"self", "tea"}
+    finally:
+        kg.close()
 
 
-def test_extract_entity_candidates_prefers_longer_first() -> None:
-    """A query containing 'mother:张丽' shouldn't also match plain 'mother'."""
-    from eidolon.memory.application.kg_recall import extract_entity_candidates
+async def test_match_entities_prefix_stripped(tmp_path: Path) -> None:
+    """ROOT-CAUSE regression for 铁锤 bug: query "铁锤是什么" must match
+    canonical entity ``pet:铁锤`` even though the type prefix isn't in the
+    query string. Steward writes prefixed names for disambiguation; users
+    speak in bare names. KG facade bridges the gap.
+    """
+    pytest.importorskip("mempalace")
+    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 
-    names = ["mother", "mother:张丽"]
-    hits = extract_entity_candidates("mother:张丽 has insomnia", names, cap=3)
-    # Both contain — but longer one wins, plain 'mother' still added (substring of query).
-    assert "mother:张丽" in hits
-    # We accept both; the de-dup logic is by string equality, not by overlap.
-    assert len(hits) <= 2
+    kg = LockedKnowledgeGraph(
+        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    )
+    try:
+        await _seed_entities(kg, [
+            ("self", "unknown"),
+            ("pet:铁锤", "pet"),
+            ("place:北京", "place"),
+            ("mother:张丽", "person"),
+        ])
+        # Each natural-language query reaches its prefixed canonical entity.
+        assert "pet:铁锤" in await kg.match_entities_for_query("铁锤是什么", cap=3)
+        assert "pet:铁锤" in await kg.match_entities_for_query("铁锤多大了", cap=3)
+        assert "place:北京" in await kg.match_entities_for_query("我住北京", cap=3)
+        # Literal containment still works (legacy callers).
+        assert "pet:铁锤" in await kg.match_entities_for_query("pet:铁锤 多大", cap=3)
+    finally:
+        kg.close()
+
+
+async def test_match_entities_cap_respected(tmp_path: Path) -> None:
+    pytest.importorskip("mempalace")
+    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+
+    kg = LockedKnowledgeGraph(
+        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    )
+    try:
+        await _seed_entities(kg, [(c, "unknown") for c in "abcdef"])
+        hits = await kg.match_entities_for_query("a b c d e f g", cap=3)
+        assert len(hits) == 3
+    finally:
+        kg.close()
+
+
+async def test_match_entities_prefers_longer(tmp_path: Path) -> None:
+    """When both ``mother`` and ``mother:张丽`` would match, prefer the
+    longer canonical so prefixed entities beat their bare tails.
+    """
+    pytest.importorskip("mempalace")
+    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+
+    kg = LockedKnowledgeGraph(
+        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    )
+    try:
+        await _seed_entities(kg, [("mother", "unknown"), ("mother:张丽", "person")])
+        hits = await kg.match_entities_for_query("mother:张丽 has insomnia", cap=3)
+        assert "mother:张丽" in hits
+        # Plain 'mother' is also a literal substring → also matches; both OK.
+        assert set(hits) <= {"mother:张丽", "mother"}
+    finally:
+        kg.close()
+
+
+async def test_match_entities_empty_query(tmp_path: Path) -> None:
+    pytest.importorskip("mempalace")
+    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+
+    kg = LockedKnowledgeGraph(
+        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    )
+    try:
+        await _seed_entities(kg, [("self", "unknown")])
+        assert await kg.match_entities_for_query("", cap=3) == []
+        assert await kg.match_entities_for_query("   ", cap=3) == []
+    finally:
+        kg.close()
 
 
 # ─── transcription ─────────────────────────────────────────────────────────
@@ -222,7 +299,12 @@ async def test_fusion_kg_disabled_via_settings(fusion_setup) -> None:
 
 
 async def test_fusion_kg_timeout_degrades_silently(fusion_setup) -> None:
-    """A slow KG must not raise into the caller; degrade to vector-only."""
+    """A slow KG must not raise into the caller; degrade to vector-only.
+
+    Mocks ``match_entities_for_query`` slow so the voice path hits the
+    50ms ``kg_timeout_seconds`` budget; recall returns empty kg side
+    without raising into the LiveKit caller.
+    """
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
 
     backend, _, settings = fusion_setup
@@ -232,11 +314,11 @@ async def test_fusion_kg_timeout_degrades_silently(fusion_setup) -> None:
     slow_kg = MagicMock()
     slow_kg.lock = backend.lock
 
-    async def _slow_list_names():
+    async def _slow_match(query, *, cap):
         await asyncio.sleep(0.5)
         return ["self"]
 
-    slow_kg.list_entity_names = AsyncMock(side_effect=_slow_list_names)
+    slow_kg.match_entities_for_query = AsyncMock(side_effect=_slow_match)
     slow_kg.query_entity_combined = AsyncMock(return_value=[])
 
     result = await recall_with_kg_fusion(
@@ -244,7 +326,7 @@ async def test_fusion_kg_timeout_degrades_silently(fusion_setup) -> None:
         query="self likes tea",
         user_id="alice", top_k=5,
         kg=slow_kg,
-        for_voice=False,
+        for_voice=True,  # voice path uses the strict kg_timeout_seconds
     )
     assert result["kg"] == []
     # Vector path still ran (returned empty for FakeMemoryBackend, but no error)

@@ -1,18 +1,15 @@
 """KG side of the hybrid recall path (KG plan §5).
 
-Two roles:
+One role:
 
-* **routing heuristic** — given a query string, ask the KG for its current
-  ``entities.name`` set and string-match. Cheap (~1ms, single index scan on
-  ``entities``) so we can decide whether to fan out a KG read on the
-  LiveKit hot path without an extra LLM call.
 * **transcription** — turn ``KgTripleRecord`` rows into one-line natural-language
   context entries so the LLM consuming the recall context can treat KG facts
   identically to drawer fragments.
 
-This module is stateless. The KG facade (``LockedKnowledgeGraph``) is the
-sole owner of any cache/consistency contract — readers always call
-``kg.list_entity_names()`` and trust the implementation for freshness.
+Entity routing(自然语言 query → canonical entity names)lives on the KG
+facade as :meth:`LockedKnowledgeGraph.match_entities_for_query`, because
+the naming convention(``pet:`` / ``place:`` / ``mother:`` 前缀)is KG's
+internal knowledge — the recall router shouldn't need to know about it.
 """
 
 from __future__ import annotations
@@ -24,31 +21,6 @@ from eidolon.memory.domain.kg import KgTripleRecord
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def extract_entity_candidates(query: str, entity_names: list[str], *, cap: int) -> list[str]:
-    """Return entities whose canonical name is a substring of ``query`` (cap N).
-
-    Uses simple substring containment — fast, language-agnostic, no jieba
-    required. Cap protects against pathological queries that mention every
-    entity in the palace.
-    """
-    if not entity_names or not query:
-        return []
-    q = query.strip()
-    if not q:
-        return []
-    # Order: longer names first to prefer "mother:张丽" over "mother".
-    sorted_names = sorted(set(entity_names), key=lambda n: -len(n))
-    hits: list[str] = []
-    seen: set[str] = set()
-    for name in sorted_names:
-        if name in q and name not in seen:
-            hits.append(name)
-            seen.add(name)
-            if len(hits) >= cap:
-                break
-    return hits
 
 
 async def query_kg_for_recall(

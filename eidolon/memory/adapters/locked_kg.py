@@ -192,9 +192,57 @@ class LockedKnowledgeGraph:
             return await asyncio.to_thread(self._stats)
 
     async def list_entity_names(self) -> list[str]:
-        """Used by T3 recall path to seed the candidate-extraction cache."""
+        """Return every canonical entity name. Prefer
+        :meth:`match_entities_for_query` for recall routing — this raw list
+        is only useful for diagnostics / admin tooling.
+        """
         async with self._lock:
             return await asyncio.to_thread(self._entity_names)
+
+    async def match_entities_for_query(
+        self, query: str, *, cap: int
+    ) -> list[str]:
+        """Return canonical entity names that "appear" in ``query``.
+
+        Owns the naming-convention bridge: steward writes entities with type
+        prefixes (``pet:铁锤``, ``place:北京``, ``mother:张丽``) for
+        disambiguation, but users ask naturally with bare names ("铁锤"
+        "北京" "妈妈"). The recall router is upstream of this layer and
+        shouldn't have to know about ``pet:`` vs ``铁锤`` — the KG facade
+        bridges it.
+
+        Matching rule (today):
+          1. literal containment      — ``name in query``
+          2. prefix-stripped tail     — ``name.split(':', 1)[1] in query``
+
+        Future extensions(同义词,LLM 抽取,alias 表)should live in this
+        method, keeping the recall router intact.
+
+        Longer canonical names are preferred over shorter ones so that
+        ``mother:张丽`` wins over ``mother`` for "妈妈 张丽" — same policy
+        as before.
+
+        ``cap`` truncates after sorting so pathological queries that mention
+        every entity in the palace don't blow up downstream SQL.
+        """
+        q = (query or "").strip()
+        if not q or cap <= 0:
+            return []
+        async with self._lock:
+            names = await asyncio.to_thread(self._entity_names)
+        # Longer canonical names first so prefixed forms beat their bare tails.
+        sorted_names = sorted(set(names), key=lambda n: -len(n))
+        hits: list[str] = []
+        seen: set[str] = set()
+        for name in sorted_names:
+            if name in seen:
+                continue
+            if _entity_name_in_query(name, q):
+                hits.append(name)
+                seen.add(name)
+                if len(hits) >= cap:
+                    break
+        return hits
 
     async def has_triple(self, triple_id: str) -> bool:
         """Used by MCP admin tools to poll for write visibility."""
@@ -419,3 +467,24 @@ def _filter_sensitive(
     if include_sensitive:
         return rows
     return [r for r in rows if r.predicate not in SENSITIVE_PREDICATES]
+
+
+def _entity_name_in_query(name: str, query: str) -> bool:
+    """Decide whether canonical ``name`` "appears" in ``query``.
+
+    1. literal substring containment(原始策略,无前缀实体走这里)
+    2. type-prefix stripping("pet:铁锤" → "铁锤",再次试匹)— bridges
+       the gap between steward's prefixed canonical names and natural-
+       language queries from users / agents.
+
+    Empty bare tails are guarded against (``pet:`` 这种破损名不该匹任何 query)。
+    """
+    if not name:
+        return False
+    if name in query:
+        return True
+    if ":" in name:
+        bare = name.split(":", 1)[1]
+        if bare and bare in query:
+            return True
+    return False
