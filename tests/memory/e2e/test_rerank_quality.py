@@ -20,12 +20,12 @@ Marker: ``@pytest.mark.e2e``
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
 from tests.memory.e2e.conftest import (
     load_companion_corpus,
+    mcp_tool_json,
     nats_publish_turn,
     wait_for_visible,
 )
@@ -35,15 +35,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 async def _list_fragment_count(session) -> int:
     result = await session.call_tool("eidolon_memory_list", {"limit": 1000})
-    if not result.content:
-        return 0
-    text = getattr(result.content[0], "text", "") or "{}"
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return 0
-    if isinstance(payload, dict) and set(payload) == {"result"}:
-        payload = payload["result"]
+    payload = mcp_tool_json(result)
     if not isinstance(payload, dict):
         return 0
     return len(payload.get("records") or [])
@@ -58,15 +50,7 @@ async def _recall_top_values(session, *, query: str, top_k: int = 3) -> list[str
         )
     except Exception:
         return []
-    if not result.content:
-        return []
-    text = getattr(result.content[0], "text", "") or "{}"
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return []
-    if isinstance(payload, dict) and set(payload) == {"result"}:
-        payload = payload["result"]
+    payload = mcp_tool_json(result)
     if not isinstance(payload, dict):
         return []
     records = payload.get("records") or []

@@ -19,13 +19,16 @@ Marker: ``@pytest.mark.e2e`` — gated; run via
 from __future__ import annotations
 
 import asyncio
-import json
-import time
 from pathlib import Path
 
 import pytest
 
-from tests.memory.e2e.conftest import load_companion_corpus, nats_publish_turn, wait_for_visible
+from tests.memory.e2e.conftest import (
+    load_companion_corpus,
+    mcp_tool_json,
+    nats_publish_turn,
+    wait_for_visible,
+)
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
@@ -34,21 +37,10 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 async def _list_record_count(session) -> int:
     """Count records via the MCP `eidolon_memory_list` tool."""
     result = await session.call_tool("eidolon_memory_list", {"limit": 1000})
-    if not result.content:
-        return 0
-    block = result.content[0]
-    text = getattr(block, "text", "") or "{}"
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return 0
-    # FastMCP wraps structured results in {"result": ...} sometimes
-    if isinstance(payload, dict) and set(payload) == {"result"}:
-        payload = payload["result"]
+    payload = mcp_tool_json(result)
     if not isinstance(payload, dict):
         return 0
-    records = payload.get("records") or []
-    return len(records)
+    return len(payload.get("records") or [])
 
 
 async def _recall_works(session, *, query: str = "self") -> bool:

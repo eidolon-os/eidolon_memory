@@ -295,7 +295,19 @@ async def mcp_session():
     yield _open
 
 
-# ─── NATS publish helper ───────────────────────────────────────────────────
+# ─── NATS publish helpers ──────────────────────────────────────────────────
+
+
+async def _nats_publish(nats_url: str, subject: str, payload: dict[str, Any]) -> None:
+    """Single-shot JetStream publish + close. All helpers funnel through here
+    so the connect/close discipline is in one place.
+    """
+    nc = await nats.connect(nats_url)
+    try:
+        js = nc.jetstream()
+        await js.publish(subject, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    finally:
+        await nc.close()
 
 
 async def nats_publish_turn(
@@ -312,7 +324,7 @@ async def nats_publish_turn(
 
     Returns the turn_id (caller can use it for later poll).
     """
-    payload = {
+    payload: dict[str, Any] = {
         "turn_id": turn_id or uuid.uuid4().hex,
         "user_id": user_id,
         "session_id": session_id,
@@ -322,14 +334,113 @@ async def nats_publish_turn(
     }
     if metadata is not None:
         payload["metadata"] = metadata
-    subject = f"agent.memory.conversation.turn.{user_id}"
-    nc = await nats.connect(nats_url)
-    try:
-        js = nc.jetstream()
-        await js.publish(subject, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-    finally:
-        await nc.close()
+    await _nats_publish(
+        nats_url, f"agent.memory.conversation.turn.{user_id}", payload
+    )
     return payload["turn_id"]
+
+
+def _now_iso_z() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _base_cmd(user_id: str, kind: str, request_id: str | None) -> dict[str, Any]:
+    """Shared scaffolding for ``MemoryCommandPayload`` JSON bodies."""
+    return {
+        "kind": kind,
+        "request_id": request_id or uuid.uuid4().hex,
+        "user_id": user_id,
+        "issued_at": _now_iso_z(),
+        "issuer": "admin",
+    }
+
+
+async def nats_publish_kg_add_triple(
+    nats_url: str,
+    *,
+    user_id: str,
+    subject: str,
+    predicate: str,
+    obj: str,
+    confidence: float = 1.0,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
+    adapter_name: str = "e2e",
+    request_id: str | None = None,
+) -> str:
+    """Publish a ``KgAddTripleCommand`` to ``agent.memory.cmd.<user_id>``.
+
+    Mirrors the admin / agent KG-write channel — the only durable way to add
+    a triple outside the steward (without bypassing JetStream, which would
+    violate the NATS-write contract).
+    """
+    payload = _base_cmd(user_id, "kg_add_triple", request_id)
+    payload.update({
+        "subject": subject,
+        "predicate": predicate,
+        "object": obj,
+        "confidence": confidence,
+        "adapter_name": adapter_name,
+    })
+    if valid_from is not None:
+        payload["valid_from"] = valid_from
+    if valid_to is not None:
+        payload["valid_to"] = valid_to
+    await _nats_publish(nats_url, f"agent.memory.cmd.{user_id}", payload)
+    return str(payload["request_id"])
+
+
+async def nats_publish_kg_invalidate(
+    nats_url: str,
+    *,
+    user_id: str,
+    subject: str,
+    predicate: str,
+    obj: str,
+    ended: str | None = None,
+    request_id: str | None = None,
+) -> str:
+    """Publish a ``KgInvalidateCommand`` to ``agent.memory.cmd.<user_id>``.
+
+    Mirrors the admin path that closes (``valid_to`` set) a triple — the
+    same cmd subject as adds, dispatched on ``kind="kg_invalidate"``.
+    """
+    payload = _base_cmd(user_id, "kg_invalidate", request_id)
+    payload.update({
+        "subject": subject,
+        "predicate": predicate,
+        "object": obj,
+    })
+    if ended is not None:
+        payload["ended"] = ended
+    await _nats_publish(nats_url, f"agent.memory.cmd.{user_id}", payload)
+    return str(payload["request_id"])
+
+
+# ─── MCP tool result unwrapping ────────────────────────────────────────────
+
+
+def mcp_tool_json(result: Any) -> Any:
+    """Unwrap a FastMCP ``CallToolResult`` into native Python.
+
+    FastMCP returns the JSON-serialised body inside ``result.content[0].text``
+    and *sometimes* wraps it as ``{"result": ...}``. Centralise the dance so
+    no test has to remember the dual shape.
+
+    Returns ``None`` if the payload is missing or not parseable.
+    """
+    if not getattr(result, "content", None):
+        return None
+    text = getattr(result.content[0], "text", "") or ""
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict) and set(payload) == {"result"}:
+        return payload["result"]
+    return payload
 
 
 # ─── Corpus loader ─────────────────────────────────────────────────────────
