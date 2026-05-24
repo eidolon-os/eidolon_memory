@@ -75,9 +75,8 @@ fi
 
 # ----- seed palace (optional) -----
 if [[ -n "$SEED_SIZE" ]]; then
-  PALACE_DIR="$HOME/eidolon/palaces/${USER_ID}"
-  echo "[INFO] seeding palace ${PALACE_DIR} size=${SEED_SIZE}"
-  uv run python -c "
+  # D1: resolve palace path via the same helper agent_runner uses; never hardcode.
+  PALACE_DIR=$(uv run python -c "
 from eidolon.memory.config.memory_settings import get_memory_settings
 from eidolon.memory.config.palace_directory import resolve_palace_for_user
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
@@ -86,7 +85,8 @@ settings = get_memory_settings()
 palace = resolve_palace_for_user(settings, sys.argv[1])
 ensure_palace_initialized(sys.argv[1], palace)
 print(palace)
-" "$USER_ID"
+" "$USER_ID")
+  echo "[INFO] seeding palace ${PALACE_DIR} size=${SEED_SIZE}"
   uv run python scripts/benchmark/seed_palace.py \
     --palace "${PALACE_DIR}" --size "${SEED_SIZE}" 2>&1 | tee "${OUT_DIR}/seed.log"
 fi

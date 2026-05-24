@@ -14,7 +14,8 @@ OUT_DIR="$5"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-PALACE="$HOME/eidolon/palaces/${USER_ID}"
+# D1 palace layout — must match config/palace_directory.resolve_palace_for_user.
+PALACE="${EIDOLON_MEMORY_PALACES_ROOT:-$HOME/eidolon/memory/mempalaces}/${USER_ID}"
 
 echo "[scale] ===== ${SIZE} on ${USER_ID}:${PORT} ====="
 pkill -9 -f "eidolon-memory-agent --user-id ${USER_ID}" 2>/dev/null || true
