@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from eidolon.memory.application.admin_visibility import admin_row_visible
+from eidolon.memory.application.privacy_filter import row_visible_to_listing
 from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hierarchy_snapshot
 from eidolon.memory.application.public_recall import (
     group_recall_context,
@@ -146,7 +146,9 @@ def build_control_plane_mcp(
         lim = max(1, min(limit, 5000))
         off = max(0, offset)
         rows = await backend.get_all(user_id, limit=lim, offset=off)
-        filtered = [r for r in rows if admin_row_visible(r, include_private=include_private)]
+        filtered = [
+            r for r in rows if row_visible_to_listing(r, include_private=include_private)
+        ]
         return {
             "records": [wire_record_to_public_dict(r) for r in filtered],
             "total_hint": len(filtered),

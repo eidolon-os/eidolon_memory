@@ -44,7 +44,10 @@ class MemoryWriter(Protocol):
 
 @runtime_checkable
 class MemoryAdmin(Protocol):
-    """Optional administrative surface; not every backend supports it."""
+    """Optional listing / by-key surface (``get`` / ``get_all`` / ``delete``);
+    not every backend supports it. Used by MCP listing tools and replay paths,
+    not by the hot recall path.
+    """
 
     async def get(self, user_id: str, key: str) -> MemoryWireRecord | None:
         """Exact id lookup when the backend supports stable doc ids."""
@@ -58,8 +61,8 @@ class MemoryAdmin(Protocol):
     ) -> list[MemoryWireRecord]:
         """Tenant filter: matches metadata ``user_id`` or ``wing``.
 
-        If ``user_id`` is blank (after stripping), adapters may enumerate the whole palace
-        (paginated via ``limit`` / ``offset``) for administrative listing.
+        If ``user_id`` is blank (after stripping), adapters may enumerate the
+        whole palace (paginated via ``limit`` / ``offset``) for operational listing.
         """
 
     async def delete(self, user_id: str, key: str) -> None:
