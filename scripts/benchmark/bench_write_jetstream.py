@@ -10,6 +10,18 @@ For each turn:
 
 End-to-end includes steward LLM time (large + variable). The benchmark reports
 publish-ack and e2e separately so both can be inspected.
+
+KNOWN LIMITATION (2026-05-24 review):
+   Steward in ``llm`` mode SUMMARIZES turns into semantic fragments — the
+   ``标记 <token>`` marker in user_text is typically stripped by the LLM
+   summarization step, so token-based search will time out even though the
+   fragment was correctly written. To observe true e2e visibility latency,
+   either:
+     1. run with steward.mode=rule or noop (preserves verbatim content)
+     2. search by metadata.iter / source instead of free-text token
+     3. accept that ``timeouts > 0`` does NOT mean writes failed; cross-check
+        with ``eidolon_memory_list`` to confirm fragment count.
+   This is a bench-script design issue, not a service-level failure.
 """
 
 from __future__ import annotations
