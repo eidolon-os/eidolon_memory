@@ -21,9 +21,6 @@
 
 读写都最终经同一个 `LockedBackend` + `LockedKnowledgeGraph`(单个 `asyncio.Lock` 串行 chromadb + KG SQLite 调用),保证 D1 single-owner-per-palace 不变量。
 
-> 旧的 Admin Web UI 已移至 [`legacy/admin/`](legacy/admin/README.md),
-> 不再随核心服务启动;`uv sync --extra admin` + 手动 uvicorn / vite 可跑。
-
 ---
 
 ## 2. 架构一图
@@ -364,8 +361,8 @@ kill -HUP $(pgrep -f eidolon-memory-supervisor)
 supervisor 收到 SIGHUP 会重读 yaml:新增 `enabled: true` 的行 → 自动 init palace
 + spawn agent;现有 user 切到 `enabled: false` → SIGTERM 该 agent(palace 数据保留)。
 
-> Web 控制台已下线,见 [`legacy/admin/`](legacy/admin/README.md);如果你仍想用,
-> 按 README 的步骤手动启。核心生命周期不再走 admin。
+如需脚本化批量管理,直接调 `eidolon.memory.config.users_io` 模块的
+`upsert_user` / `update_enabled` / `remove_user`(fcntl flock 跨进程安全)。
 
 ---
 
@@ -434,7 +431,6 @@ supervisor:
 | `EIDOLON_MEMORY_PALACES_ROOT` | per-user palace 目录的父根 |
 | `EIDOLON_MEMORY_MCP_TOKEN` | MCP HTTP bearer token |
 | `EIDOLON_MEMORY_LLM_API_KEY` | steward LLM 密钥 |
-| `EIDOLON_MEMORY_ADMIN_TOKEN` | (legacy admin only)admin HTTP bearer token |
 
 ### 8.3 Palace 目录布局
 
@@ -451,17 +447,14 @@ supervisor:
 
 ---
 
-## 9. Admin HTTP API(已下线 / legacy)
+## 9. 没有 Admin HTTP API
 
-旧 Admin FastAPI 服务连同 Vue 前端已移至 [`legacy/admin/`](legacy/admin/README.md),
-不再随核心服务发布。该服务**没有任何核心契约**:它能做的事(写 turn / 写 KG / 读
-召回 / 列工具)都已经通过 MCP 工具 + NATS subject 暴露;任何外部客户端都可以照
-样使用,不需要中间层。
+本项目不再提供 Admin/UI 层。所有运维/调试能力(写 turn / 写 KG / 读召回 /
+列 MCP 工具 / 列 users.yaml)都通过 **MCP 工具**(§4)和 **NATS subject**(§5)
+直接暴露,任何外部 gateway / 网关 / CLI 都可以照样消费,**不需要中间层**。
 
-如果你仍想跑它(本地调试 / 演示):见 `legacy/admin/README.md`,需要先
-`uv sync --extra admin`。
-
-鉴权:`EIDOLON_MEMORY_ADMIN_TOKEN` 设了之后所有请求要 `Authorization: Bearer ...`。
+需要自定义网关的话,从 `eidolon.memory.config.users_io` + MCP HTTP +
+`JetStreamTurnPublisher` 几块乐高直接拼,参考 `tests/memory/test_kg_*.py` 的用法。
 
 ---
 
@@ -527,7 +520,6 @@ uv run pytest tests -q                           # 145 passed, 2 skipped
 | Adapters | `eidolon/memory/adapters/` | `MemPalacePythonBackend`, `LockedBackend`, `LockedKnowledgeGraph`, `FakeMemoryBackend` |
 | Application | `eidolon/memory/application/` | `turn_processor`, `livekit_recall`, `public_recall` (融合), `kg_recall`, steward |
 | Entrypoints | `eidolon/memory/entrypoints/` | `agent_runner`(主进程)、`supervisor`、`mcp_server`(工具注册)、`discovery_server` |
-| Legacy | `legacy/admin/` | 旧 FastAPI + Vue3 控制台(已下线,见 `legacy/admin/README.md`) |
 
 ---
 

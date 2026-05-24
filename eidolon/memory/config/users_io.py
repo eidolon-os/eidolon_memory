@@ -1,6 +1,6 @@
 """Atomic, cross-process-safe writes to ``users.yaml``.
 
-Why this lives in core (not in legacy/admin):
+Why this lives in core:
 - The supervisor's SIGHUP path needs to compare a fresh read against running
   children. If two writers (e.g. supervisor's seed-from-tpl + an ops CLI
   + a human ``vim``) race, the file can end up with malformed yaml or

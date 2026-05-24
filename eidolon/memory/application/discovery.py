@@ -1,8 +1,8 @@
 """Agent routing discovery contract for eidolon-agent.
 
-This module intentionally lives in the core ``eidolon.memory`` package rather
-than alongside the (now-legacy) admin UI. Discovery is a runtime contract
-for agents, not an operations UI surface.
+Discovery is a runtime contract for agents (where do I send turns, which MCP
+port serves which user) — not an operations UI surface. Lives in core so
+the contract is owned by the memory package itself.
 """
 
 from __future__ import annotations
