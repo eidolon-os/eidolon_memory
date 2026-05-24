@@ -4,9 +4,9 @@ This directory holds the previous Admin UI (FastAPI + Vite/Vue3) that gave
 a web frontend for managing per-user agent_runners, browsing memory, writing
 KG triples, and running fused recall debug queries.
 
-**It is no longer part of the supported memory service.** `deploy/dev/run_all.sh`
-and `deploy/dev/init.sh` do not start or install it. Tests do not cover it.
-The core service is now just:
+**It is no longer part of the supported memory service.** The repo no
+longer ships any startup scripts at all — the three console-scripts below
+are the entire deployment surface, and this admin UI is not one of them:
 
 - `eidolon-memory-supervisor` — per-user agent_runner orchestration
 - `eidolon-memory-discovery` — `/api/discovery/agent-routing` for external agents

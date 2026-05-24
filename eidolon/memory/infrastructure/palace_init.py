@@ -1,4 +1,4 @@
-"""Shared `mempalace init` helper used by supervisor, agent_runner, init.sh.
+"""Shared `mempalace init` helper used by supervisor and agent_runner.
 
 Calling `mempalace init` via :func:`subprocess.run` (not in-process) is intentional:
 the supervisor process must never hold a chromadb PersistentClient (forking that

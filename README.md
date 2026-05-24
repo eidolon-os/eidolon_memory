@@ -22,7 +22,7 @@
 读写都最终经同一个 `LockedBackend` + `LockedKnowledgeGraph`(单个 `asyncio.Lock` 串行 chromadb + KG SQLite 调用),保证 D1 single-owner-per-palace 不变量。
 
 > 旧的 Admin Web UI 已移至 [`legacy/admin/`](legacy/admin/README.md),
-> 不再随 `deploy/dev/run_all.sh` 启动;`uv sync --extra admin` 可手动跑。
+> 不再随核心服务启动;`uv sync --extra admin` + 手动 uvicorn / vite 可跑。
 
 ---
 
@@ -66,19 +66,22 @@
 # 1. 安装
 uv sync --extra dev
 
-# 2. 起 NATS(任何方式都行)
+# 2. 起 NATS(任何方式都行 — 不在本仓库 scope)
 nats-server -js &
 
-# 3a. 生产形态 — supervisor 起 users.yaml 全部用户 + discovery
-./deploy/dev/run_all.sh start
-# 或 SIGHUP 热加载: ./deploy/dev/run_all.sh reload
+# 3a. 生产形态 — supervisor 读 users.yaml,自动 spawn 每个 enabled user 的 agent
+eidolon-memory-supervisor &
+eidolon-memory-discovery &
+# 配置改动后 SIGHUP supervisor: kill -HUP $(pgrep -f eidolon-memory-supervisor)
 
-# 3b. 开发形态 — 单用户 ad-hoc
+# 3b. 开发形态 — 单用户 ad-hoc(不走 supervisor)
 eidolon-memory-agent --user-id default --port 8030 &
 eidolon-memory-discovery &
 ```
 
-首次启动会自动 `mempalace init` 对应 palace。配置文件见第 8 节。
+首次启动会自动 `mempalace init` 对应 palace(lazy)。配置文件见第 8 节。
+本仓库**不再提供**启动脚本——三个 console-scripts (`eidolon-memory-{supervisor,agent,discovery}`)
+就是全部对外契约,直接 nohup / launchd / systemd / docker / pm2 任选。
 
 ---
 
@@ -354,8 +357,12 @@ eidolon-memory-agent --user-id default --port 8030
 
 ### 7.4 用户增删改
 
-直接编辑 `users.yaml` 然后 `./deploy/dev/run_all.sh reload` (SIGHUP supervisor)。
-新增用户:加一行 `enabled: true` 后 reload,supervisor 会自动 init palace + spawn agent。
+直接编辑 `users.yaml`,然后:
+```bash
+kill -HUP $(pgrep -f eidolon-memory-supervisor)
+```
+supervisor 收到 SIGHUP 会重读 yaml:新增 `enabled: true` 的行 → 自动 init palace
++ spawn agent;现有 user 切到 `enabled: false` → SIGTERM 该 agent(palace 数据保留)。
 
 > Web 控制台已下线,见 [`legacy/admin/`](legacy/admin/README.md);如果你仍想用,
 > 按 README 的步骤手动启。核心生命周期不再走 admin。

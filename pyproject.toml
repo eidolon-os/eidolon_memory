@@ -23,8 +23,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The legacy Admin UI lives in legacy/admin and is no longer wired into
-# deploy/dev. Kept so anyone who still wants to spin it up by hand can:
+# The legacy Admin UI lives in legacy/admin and is not part of the core
+# service. Kept so anyone who still wants to spin it up by hand can:
 #     uv sync --extra admin
 # (see legacy/admin/README.md)
 admin = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]
