@@ -1,151 +1,51 @@
-# 提交到 git 的默认模板。本地请复制为同目录下的 memory.default.yaml 再改（该文件被 gitignore）。
+# Default settings template (committed). Copy to memory.default.yaml (gitignore) and edit.
 #   cp eidolon/memory/config/memory.default.yaml.example eidolon/memory/config/memory.default.yaml
-# 也可通过 EIDOLON_MEMORY_SETTINGS_YAML 指向任意路径。
-wings:
-  - id: Wing_Profile
-    display_name: "个人画像与价值观"
-    description: >-
-      静态/核心的身份认同与客观背景：籍贯、原生家庭阶层、MBTI、核心价值观、宗教信仰、政治与社会观点、对婚姻/生育等议题的立场。
-      不包含「每天喝美式」这类动态日常偏好（归 Wing_Life）。
-    sort_order: 1
-  - id: Wing_Interaction
-    display_name: "人机羁绊与交互偏好"
-    description: >-
-      正向的人机关系：专属昵称与梗、希望 AI 扮演的语气与角色（如不要爹味说教、难过时先共情少讲理）、
-      对历史回复的点赞/批评。与 Wing_Privacy（负向「不要记/别提」清单）区分。
-    sort_order: 2
-  - id: Wing_Relationship
-    display_name: "关系与情感连接"
-    description: >-
-      重要他人的人物图谱与**长期关系状态**（如与父亲疏远、与伴侣的相处模式）。
-      「今天和父亲大吵一架」等带明确时间点的单次现场归 Wing_Event；此处存可跨时间概括的关系语义。
-    sort_order: 3
-  - id: Wing_Emotion
-    display_name: "情绪与心理状态"
-    description: >-
-      日常情绪起伏、持续压力源、脆弱与安全感、依恋模式与心理情绪趋势（未医学定性的主观感受）。
-      已确诊并进入治疗/用药管理的心理健康议题归 Wing_Health。
-    sort_order: 4
-  - id: Wing_Future
-    display_name: "愿景与未来目标"
-    description: >-
-      面向未来的语义记忆：新年决心、Bucket List、中长期自我提升与阶层/财务目标、想去尚未去的地方；
-      便于在用户迷茫时主动鼓励与对齐计划。
-    sort_order: 5
-  - id: Wing_Event
-    display_name: "事件与人生片段"
-    description: >-
-      **情景记忆 Episodic**：时间或场景锚定的一次性节点——纪念日、旅行片段、当场冲突、里程碑成就现场等。
-      与 Wing_Relationship / Wing_Work 中的「长期状态与角色」区分：此处记「发生了什么」，彼处记「关系/职业格局」。
-    sort_order: 6
-  - id: Wing_Work
-    display_name: "工作与学习"
-    description: >-
-      当前项目与任务进展、职业压力、学习计划、专业成就与协作状态；偏社会功能与产出。
-      与 Wing_Life 的消费/作息区分：此处偏职场与学业语境。
-    sort_order: 7
-  - id: Wing_Life
-    display_name: "生活方式与财务"
-    description: >-
-      动态日常：饮食作息、兴趣爱好、书影音与品牌偏好、居家设备、消费习惯。
-      房贷压力、投资偏好、大额支出计划、车房等资产与现金流焦虑等与「过日子」强相关的财务语义也可归此。
-    sort_order: 8
-  - id: Wing_Health
-    display_name: "身体与健康"
-    description: >-
-      生理状态、睡眠与运动数据、疾病史、用药与就诊记录；以及**医学框架下**的心理健康（确诊、治疗方案、心理咨询节律）。
-      日常情绪低落但未进入诊疗路径的叙述归 Wing_Emotion。
-    sort_order: 9
-  - id: Wing_Privacy
-    display_name: "隐私与禁记规则"
-    description: >-
-      用户明确要求不要记住、不要再提、删除或封存的话题，以及创伤禁忌；普通召回默认过滤。
-      与 Wing_Interaction（正向希望 AI 如何陪伴）互补：此处为负向边界与禁运记忆。
-    sort_order: 99
+# Or set EIDOLON_MEMORY_SETTINGS_YAML to point anywhere.
+#
+# Philosophy: this file holds **only** what differs per machine / per
+# deployment. Product constants (wing taxonomy, NATS protocol fields, recall
+# heuristics, steward thresholds, KG window/caps, chromadb pragmas, supervisor
+# backoff) live in code:
+#   - eidolon/memory/domain/wings.py        — CANONICAL_WINGS
+#   - eidolon/memory/config/memory_settings.py — pydantic defaults
+# Override them via this yaml only if you have a concrete reason; otherwise
+# don't paste them in (the defaults are the authoritative source).
+#
+# Secrets (LLM API key, MCP bearer token) MUST live in env vars — the yaml
+# loader rejects inline secrets.
 
-recall:
-  top_k: 5
-  livekit_timeout_seconds: 0.3      # D1: hard end-to-end budget for LiveKit recall
-  filter_taboo_statuses: ["taboo", "archived"]
-  exclude_recent_minutes: 10
-  exclude_current_session: true
-  voice_wings:
-    - Wing_Profile
-    - Wing_Interaction
-    - Wing_Emotion
-    - Wing_Life
-  # KG fusion (T3) — recall_context queries the per-user KG in parallel with vector.
-  kg_in_recall: true                # master switch; false = vector-only
-  kg_timeout_seconds: 0.05          # KG hard timeout; over → degrade to vector-only
-  kg_window_days: 30                # timeline window for `as_of` queries
-  kg_max_entities: 3                # cap entities matched per query
-  kg_max_triples_per_entity: 8      # cap triples returned per entity
+# Where things live on this machine.
+runtime:
+  palaces_root: ""        # default ~/eidolon/memory/mempalaces; env EIDOLON_MEMORY_PALACES_ROOT
+  log_dir: ""             # default ~/eidolon/logs;              env EIDOLON_MEMORY_LOG_DIR
+  run_dir: ""             # default ~/eidolon/run;               env EIDOLON_MEMORY_RUN_DIR
 
-steward:
-  mode: "llm"
-  prompt_template_path: ""
-  fallback_to_rules: true
-  max_fragments_per_turn: 6
-  min_importance_to_write: 3
+# External NATS broker.
+nats:
+  url: "nats://127.0.0.1:4222"
 
+# LLM provider used by steward. api_key MUST come from env var named below.
 llm:
   model: "openai/deepseek-v4-flash"
   base_url: "http://mopai.geni.dyxnet.com.cn/v1"
-  api_key: ""
   api_key_env: "EIDOLON_MEMORY_LLM_API_KEY"
-  timeout_seconds: 30
-  temperature: 0.7
 
-runtime:
-  # D1: per-user palace at <palaces_root>/<user_id>/; agent_runner CLI binds the user.
-  palaces_root: ""                  # default ~/eidolon/palaces (env: EIDOLON_MEMORY_PALACES_ROOT)
-  log_dir: ""                       # default ~/eidolon/logs    (env: EIDOLON_MEMORY_LOG_DIR)
-  run_dir: ""                       # default ~/eidolon/run     (env: EIDOLON_MEMORY_RUN_DIR)
-  read:
-    max_wing_parallel: 0            # 0 = auto by CPU; LiveKit voice fans out ~2-3 wings
-    omp_num_threads: 0              # 0 = auto; manual override e.g. 2 / 4
-    shared_query_embedding: true    # one ONNX embed per recall round (voice)
-    voice_skip_closets: true        # skip closets index for voice latency
-
-chromadb:
-  synchronous: FULL                 # D3: fsync per chroma commit (writes +30%, async-safe)
-
-worker:
-  sync_every_n_turns: 5             # PASSIVE wal_checkpoint every N turns
-
-kg:
-  min_confidence_to_write: 0.6      # T2: steward triples below this dropped before write
-
-supervisor:
-  # users.yaml lists per-user agent_runner ports; env override: EIDOLON_MEMORY_USERS_YAML.
-  # Path is relative to the repo root (or absolute). On first start the supervisor
-  # auto-seeds this file from eidolon/memory/config/users.yaml.tpl when missing.
-  users_file: "eidolon/memory/config/users.yaml"
-  eager_init: true                  # mempalace init each enabled user before spawn (parallel<=4)
-  restart_backoff_seconds: [1, 2, 4, 8, 30]
-  max_failures_per_minute: 5
-
-nats:
-  url: "nats://127.0.0.1:4222"
-  stream: "MEMORY_TURNS"
-  # D1: per-user subject = <base>.<user_id>; stream binds <base>.>
-  conversation_turn_subject_base: "agent.memory.conversation.turn"
-  durable_prefix: "eidolon-memory-agent"
-  stream_max_age_seconds: 1209600
-  stream_max_msgs: 5000
-  stream_max_bytes: 536870912
-  worker_max_deliveries: 3
-  dlq_log_path: "logs/memory_dlq.jsonl"
-
+# Per-agent MCP control-plane listener. CLI --port overrides for multi-user.
 mcp_http:
   host: "127.0.0.1"
-  port: 8030                         # default; agent_runner --port overrides per user
-  path: "/mcp"
-  stateless_http: false
-  bearer_token: ""
-  bearer_token_env: "EIDOLON_MEMORY_MCP_TOKEN"
+  port: 8030
+  bearer_token_env: "EIDOLON_MEMORY_MCP_TOKEN"   # leave empty env = no auth (localhost only)
 
+# Agent-routing discovery HTTP (consumed by external eidolon-agent).
 discovery_http:
   host: "127.0.0.1"
   port: 8020
-  path: "/api/discovery/agent-routing"
+
+# Steward mode: llm | rule | noop. Default llm; switch to noop for tests.
+steward:
+  mode: "llm"
+
+# Operator-tunable recall budgets (defaults usually fine).
+recall:
+  top_k: 5
+  livekit_timeout_seconds: 0.3   # LiveKit end-to-end recall budget

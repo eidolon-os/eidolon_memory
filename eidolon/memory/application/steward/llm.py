@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any, TYPE_CHECKING
 
@@ -86,11 +85,7 @@ class LiteLLMSteward:
         }
         if self._settings.llm.base_url:
             kwargs["api_base"] = self._settings.llm.base_url
-        api_key = (self._settings.llm.api_key or "").strip()
-        if not api_key:
-            api_key = os.environ.get(self._settings.llm.api_key_env, "").strip()
-        if not api_key and self._settings.llm.api_key_env.startswith(("sk-", "sess-")):
-            api_key = self._settings.llm.api_key_env
+        api_key = self._settings.llm.resolve_api_key()
         if api_key:
             kwargs["api_key"] = api_key
         response = await acompletion(**kwargs)

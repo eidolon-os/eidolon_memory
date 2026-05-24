@@ -12,23 +12,18 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
 
+from eidolon.memory.domain.wings import CANONICAL_WINGS, WingDefinition
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
 _DEFAULT_LOCAL_SETTINGS_PATH = Path(__file__).resolve().parent / "memory.default.yaml"
 _SHIPPED_EXAMPLE_SETTINGS_PATH = Path(__file__).resolve().parent / "memory.default.yaml.example"
-
-
-class WingDefinition(BaseModel):
-    id: str
-    display_name: str = ""
-    description: str = ""
-    sort_order: int = 0
 
 
 class RecallPolicy(BaseModel):
@@ -57,12 +52,37 @@ class StewardConfig(BaseModel):
 
 
 class LlmConfig(BaseModel):
+    """LLM provider configuration. **Never** put the API key in yaml — read it
+    from the environment variable named by ``api_key_env``.
+    """
+
     model: str = ""
     base_url: str = ""
-    api_key: str = ""
     api_key_env: str = "EIDOLON_MEMORY_LLM_API_KEY"
     timeout_seconds: float = 20.0
     temperature: float = 0.1
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_inline_api_key(cls, data: Any) -> Any:
+        if isinstance(data, dict) and (data.get("api_key") or "").strip():
+            msg = (
+                "llm.api_key is not allowed in yaml — put the secret in the env var "
+                "named by llm.api_key_env (default EIDOLON_MEMORY_LLM_API_KEY) and "
+                "remove the api_key line from your settings file."
+            )
+            raise ValueError(msg)
+        # Empty / missing api_key is silently dropped (backward compat with
+        # older example files that listed `api_key: ""`).
+        if isinstance(data, dict):
+            data.pop("api_key", None)
+        return data
+
+    def resolve_api_key(self) -> str:
+        env = (self.api_key_env or "").strip()
+        if not env:
+            return ""
+        return os.environ.get(env, "").strip()
 
 
 class ReadRuntimeConfig(BaseModel):
@@ -136,14 +156,30 @@ class McpHttpConfig(BaseModel):
 
     D1: each user has their own port; agent_runner CLI ``--port`` always wins.
     Fields here are defaults / dev-mode single-user convenience.
+
+    **Never** put the bearer token in yaml — read it from the env var named
+    by ``bearer_token_env`` (validator rejects inline tokens).
     """
 
     host: str = "127.0.0.1"
     port: int = 8030  # only used if CLI --port unset
     path: str = "/mcp"
     stateless_http: bool = False
-    bearer_token: str = ""
     bearer_token_env: str = "EIDOLON_MEMORY_MCP_TOKEN"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_inline_bearer_token(cls, data: Any) -> Any:
+        if isinstance(data, dict) and (data.get("bearer_token") or "").strip():
+            msg = (
+                "mcp_http.bearer_token is not allowed in yaml — put the token in "
+                "the env var named by mcp_http.bearer_token_env (default "
+                "EIDOLON_MEMORY_MCP_TOKEN) and remove the bearer_token line."
+            )
+            raise ValueError(msg)
+        if isinstance(data, dict):
+            data.pop("bearer_token", None)
+        return data
 
     def base_url(self, *, port: int | None = None) -> str:
         path = self.path if self.path.startswith("/") else f"/{self.path}"
@@ -151,10 +187,10 @@ class McpHttpConfig(BaseModel):
         return f"http://{self.host}:{effective_port}{path}"
 
     def resolve_bearer_token(self) -> str:
-        token = (self.bearer_token or "").strip()
-        if token:
-            return token
-        return os.environ.get(self.bearer_token_env, "").strip()
+        env = (self.bearer_token_env or "").strip()
+        if not env:
+            return ""
+        return os.environ.get(env, "").strip()
 
     def auth_headers(self) -> dict[str, str]:
         token = self.resolve_bearer_token()
@@ -172,9 +208,14 @@ class DiscoveryHttpConfig(BaseModel):
 
 
 class MemorySettings(BaseModel):
-    """All tunable memory-service parameters: wings, recall, steward, LLM, NATS, paths."""
+    """Memory service settings — deployment-tunable fields only.
 
-    wings: list[WingDefinition] = Field(default_factory=list)
+    Product constants (wing taxonomy, NATS protocol fields, default tunables)
+    live in code:
+    - :mod:`eidolon.memory.domain.wings`  for the wing schema
+    - default values on the sub-config classes for everything else
+    """
+
     recall: RecallPolicy = Field(default_factory=RecallPolicy)
     steward: StewardConfig = Field(default_factory=StewardConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
@@ -187,19 +228,29 @@ class MemorySettings(BaseModel):
     mcp_http: McpHttpConfig = Field(default_factory=McpHttpConfig)
     discovery_http: DiscoveryHttpConfig = Field(default_factory=DiscoveryHttpConfig)
 
-    @field_validator("wings")
+    @model_validator(mode="before")
     @classmethod
-    def _unique_wing_ids(cls, wings: list[WingDefinition]) -> list[WingDefinition]:
-        if not wings:
-            msg = "memory_settings: at least one wing is required"
-            raise ValueError(msg)
-        seen: set[str] = set()
-        for w in wings:
-            if w.id in seen:
-                msg = f"memory_settings: duplicate wing id {w.id!r}"
-                raise ValueError(msg)
-            seen.add(w.id)
-        return wings
+    def _drop_legacy_wings(cls, data: Any) -> Any:
+        """Older memory.default.yaml carried a ``wings:`` section. The wing
+        taxonomy is now a product contract in :data:`CANONICAL_WINGS` — silently
+        drop the yaml field with a log so users can clean their config at
+        leisure. Never raise: backward compat for existing local yaml.
+        """
+        if isinstance(data, dict) and "wings" in data:
+            log.warning(
+                "memory_settings_wings_deprecated",
+                hint=(
+                    "yaml 'wings' is ignored — see eidolon.memory.domain.wings."
+                    "CANONICAL_WINGS. Remove the section from your yaml."
+                ),
+            )
+            data = {k: v for k, v in data.items() if k != "wings"}
+        return data
+
+    @property
+    def wings(self) -> list[WingDefinition]:
+        """Canonical wing list — product contract, not configurable."""
+        return list(CANONICAL_WINGS)
 
     def wings_prompt_block(self) -> str:
         lines = []

@@ -27,25 +27,62 @@ def test_get_memory_settings_is_cached(tmp_path: Path, monkeypatch: pytest.Monke
     assert a is b
 
 
-def test_duplicate_wing_ids_rejected(tmp_path: Path):
-    bad = {
+def test_yaml_wings_ignored_in_favor_of_canonical(tmp_path: Path, caplog):
+    """Yaml ``wings:`` is no longer authoritative — silently dropped (with a
+    deprecation log) in favor of CANONICAL_WINGS so old local yaml files
+    don't break the loader.
+    """
+    from eidolon.memory.domain.wings import CANONICAL_WING_IDS
+
+    bad_or_stale = {
         "wings": [
-            {"id": "W1", "display_name": "a"},
-            {"id": "W1", "display_name": "b"},
+            {"id": "W1", "display_name": "ignored"},
+            {"id": "W1", "display_name": "still ignored, no dup error"},
         ],
-        "nats": {},
+        "nats": {"url": "nats://127.0.0.1:4222"},
     }
-    p = tmp_path / "bad.yaml"
-    p.write_text(yaml.dump(bad), encoding="utf-8")
-    with pytest.raises(ValueError, match="duplicate"):
+    p = tmp_path / "stale.yaml"
+    p.write_text(yaml.dump(bad_or_stale), encoding="utf-8")
+    settings = load_memory_settings(p)
+    # Returned wings are exactly CANONICAL — yaml input had no effect.
+    assert {w.id for w in settings.wings} == CANONICAL_WING_IDS
+
+
+def test_inline_llm_api_key_rejected(tmp_path: Path):
+    p = tmp_path / "secret.yaml"
+    p.write_text(
+        yaml.safe_dump({"llm": {"api_key": "sk-leaked", "model": "x"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="api_key is not allowed"):
         load_memory_settings(p)
 
 
-def test_empty_wings_rejected(tmp_path: Path):
-    p = tmp_path / "empty.yaml"
-    p.write_text(yaml.safe_dump({"wings": [], "nats": {}}), encoding="utf-8")
-    with pytest.raises(ValueError, match="at least one wing"):
+def test_inline_bearer_token_rejected(tmp_path: Path):
+    p = tmp_path / "tok.yaml"
+    p.write_text(
+        yaml.safe_dump({"mcp_http": {"bearer_token": "tok-leaked"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="bearer_token is not allowed"):
         load_memory_settings(p)
+
+
+def test_empty_inline_secrets_are_silently_dropped(tmp_path: Path):
+    """Backward compat: older yaml had ``api_key: ""`` lines from the .example
+    template. Empty values must NOT raise — only non-empty secrets do.
+    """
+    p = tmp_path / "ok.yaml"
+    p.write_text(
+        yaml.safe_dump({
+            "llm": {"api_key": "", "model": "m"},
+            "mcp_http": {"bearer_token": "", "port": 8030},
+        }),
+        encoding="utf-8",
+    )
+    settings = load_memory_settings(p)
+    assert settings.llm.model == "m"
+    assert settings.mcp_http.port == 8030
 
 
 def test_render_steward_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
