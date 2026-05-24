@@ -51,4 +51,8 @@ select = ["E", "F", "I", "W", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = ["mempalace: needs real MemPalace Python package"]
+markers = [
+    "mempalace: needs real MemPalace Python package",
+    "e2e: needs nats-server + eidolon-memory-agent subprocess",
+    "llm: needs EIDOLON_MEMORY_LLM_API_KEY env var (real LLM endpoint)",
+]

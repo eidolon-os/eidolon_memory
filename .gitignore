@@ -29,3 +29,4 @@ reports/architecture_d1_baseline_*/
 # Finder backup copies ("_副本" = "Copy of …")
 *_副本.*
 *_copy.*
+reports/e2e_*/
