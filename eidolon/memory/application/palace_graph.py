@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from eidolon.memory.adapters.locked_backend import LockedBackend
-
 
 async def build_palace_graph(
     backend: Any,
@@ -111,7 +109,8 @@ async def build_palace_graph(
             "total_rooms": len(raw_nodes),
         }
 
-    if isinstance(backend, LockedBackend):
-        async with backend.lock:
+    lock = getattr(backend, "lock", None)
+    if lock is not None:
+        async with lock:
             return await asyncio.to_thread(_run)
     return await asyncio.to_thread(_run)

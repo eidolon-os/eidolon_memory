@@ -1,7 +1,21 @@
-"""Abstract memory backend — implemented by MCP MemPalace or test fakes."""
+"""Abstract memory backend — implemented by MCP MemPalace or test fakes.
+
+D1 lock contract:
+    Backends that need to serialize concurrent access to underlying state
+    (chromadb PersistentClient, SQLite cursor) expose an ``asyncio.Lock``
+    as the ``lock`` attribute. Application-layer code that needs to share
+    that lock across the read/write boundary(e.g. shared-embedding voice
+    fast-path, palace_graph snapshot)reads ``backend.lock``; if ``None``,
+    no locking is needed(unit-test fakes, in-memory implementations).
+
+    This keeps the application layer decoupled from the concrete
+    ``LockedBackend`` / ``LockedKnowledgeGraph`` classes — duck-typing
+    against the Protocol, not the implementation.
+"""
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -11,7 +25,13 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class MemoryReader(Protocol):
-    """Async read surface used by recall clients and MCP read tools."""
+    """Async read surface used by recall clients and MCP read tools.
+
+    Backends with single-owner state expose ``lock`` to share with the
+    write path; otherwise ``lock`` is ``None`` (test fakes / pure in-mem).
+    """
+
+    lock: asyncio.Lock | None
 
     async def search(
         self,

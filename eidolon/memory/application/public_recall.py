@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
 from eidolon.memory.adapters.search_payload import parse_search_tool_payload
-from eidolon.memory.application.kg_recall import query_kg_for_recall, transcribe_triples
+from eidolon.memory.application.kg_recall import query_kg_for_recall
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import MemoryReader
@@ -36,54 +35,11 @@ def recall_record_visible_for_user(rec: MemoryWireRecord, user_id: str) -> bool:
     return not meta_user or meta_user == user_id
 
 
-def group_recall_context(
-    records: list[MemoryWireRecord],
-    *,
-    kg_triples: list | None = None,
-) -> str:
-    """Compose context block. Vector fragments grouped by memory_type;
-    KG triples (if any) appear as a separate section so the LLM can treat
-    structured facts differently from semantic memories.
-    """
-    groups: dict[str, list[str]] = {
-        "个人画像与健康": [],
-        "人机互动": [],
-        "关系": [],
-        "情绪": [],
-        "愿景与目标": [],
-        "工作学习": [],
-        "生活方式与近况": [],
-    }
-    for rec in records:
-        kind = str(rec.metadata.get("memory_type", "")).lower()
-        text = str(rec.value)
-        if kind == "interaction":
-            groups["人机互动"].append(text)
-        elif kind == "goal":
-            groups["愿景与目标"].append(text)
-        elif kind in {"profile", "health"}:
-            groups["个人画像与健康"].append(text)
-        elif kind == "relationship":
-            groups["关系"].append(text)
-        elif kind == "emotion":
-            groups["情绪"].append(text)
-        elif kind == "work":
-            groups["工作学习"].append(text)
-        elif kind in {"preference", "life"}:
-            groups["生活方式与近况"].append(text)
-        else:
-            groups["生活方式与近况"].append(text)
-    lines: list[str] = []
-    for title, items in groups.items():
-        if items:
-            lines.append(f"{title}:")
-            lines.extend(f"- {item}" for item in items[:4])
-
-    if kg_triples:
-        if lines:
-            lines.append("")
-        lines.append(transcribe_triples(kg_triples))
-    return "\n".join(lines)
+# ``group_recall_context`` lives in :mod:`recall_renderer` so subsequent
+# phases (working memory, themes) can extend rendering without touching the
+# fusion logic in this module. Re-exported here for backward compat with
+# callers that import from ``public_recall``.
+from eidolon.memory.application.recall_renderer import group_recall_context  # noqa: E402, F401
 
 
 def _resolve_wings(
@@ -300,8 +256,9 @@ async def _search_voice_shared_embedding(
         )
         return parse_search_tool_payload({"results": raw})
 
-    if isinstance(backend, LockedBackend):
-        async with backend.lock:
+    lock = getattr(backend, "lock", None)
+    if lock is not None:
+        async with lock:
             records = await asyncio.to_thread(_run)
     else:
         records = await asyncio.to_thread(_run)

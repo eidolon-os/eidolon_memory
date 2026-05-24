@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -10,7 +11,14 @@ from eidolon.memory.domain.wire import MemoryWireRecord
 
 
 class FakeMemoryBackend:
-    """Simple async dict + list store mimicking vector hits."""
+    """Simple async dict + list store mimicking vector hits.
+
+    ``lock`` is None per MemoryBackend Protocol — no concurrency state to
+    serialize for tests. Production backends that need single-owner state
+    (LockedBackend) override this with a real ``asyncio.Lock``.
+    """
+
+    lock: asyncio.Lock | None = None
 
     def __init__(self) -> None:
         self.docs: dict[str, MemoryWireRecord] = {}

@@ -32,7 +32,13 @@ class MemPalacePythonBackend(MemoryBackend):
     construction so chroma's SQLite commits fsync — required for hard-kill
     durability since writes are async (NATS-driven) and a 30% commit overhead is
     cheap in this workload.
+
+    ``lock`` is None on this raw adapter — it's meant to be wrapped by
+    ``LockedBackend`` (which adds the per-palace asyncio.Lock). Direct use
+    of this class without the wrapper bypasses D1's single-owner serialization.
     """
+
+    lock: asyncio.Lock | None = None
 
     def __init__(self, settings: MemorySettings, palace_path: str) -> None:
         self._settings = settings
