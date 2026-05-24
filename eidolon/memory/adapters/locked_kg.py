@@ -377,11 +377,15 @@ class LockedKnowledgeGraph:
             f"JOIN entities e_obj ON e_obj.id = t.object "
             f"WHERE (t.subject IN ({placeholders}) OR t.object IN ({placeholders})) "
             f"  AND (t.valid_from IS NULL OR t.valid_from <= ?) "
-            f"  AND (t.valid_to   IS NULL OR t.valid_to   >  ?)",
+            f"  AND (t.valid_to   IS NULL OR t.valid_to   >  ?) "
+            # Phase 1: confidence-first ordering so the per-entity cap keeps
+            # the most authoritative facts; recency only breaks ties.
+            f"ORDER BY t.confidence DESC, t.valid_from DESC, t.extracted_at DESC",
             (*ent_ids, *ent_ids, as_of_iso, as_of_iso),
         ).fetchall()
 
-        # Cap per entity (subject)
+        # Cap per entity (subject). Rows arrive already sorted by confidence
+        # DESC so the slice picks the highest-confidence ones.
         by_subj: dict[str, list[KgTripleRecord]] = {}
         for r in rows:
             rec = _row_to_record(r)

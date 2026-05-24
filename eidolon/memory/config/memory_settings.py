@@ -41,6 +41,10 @@ class RecallPolicy(BaseModel):
     kg_window_days: int = 30
     kg_max_entities: int = 3
     kg_max_triples_per_entity: int = 8
+    # Phase 1 — BM25 + cosine RRF rerank. Toggle off here for zero-cost rollback
+    # if the new sparse signal ever misbehaves on production traffic.
+    rerank_enabled: bool = True
+    rerank_rrf_k: int = 60
 
 
 class StewardConfig(BaseModel):

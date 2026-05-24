@@ -365,3 +365,138 @@ async def test_livekit_recall_holds_kg_reference(tmp_path: Path) -> None:
         backend, settings, palace_path=str(tmp_path), kg="kg-placeholder"
     )
     assert svc._kg == "kg-placeholder"
+
+
+# ─── Phase 1 — rerank wired into recall_with_kg_fusion ─────────────────────
+
+
+async def _seed_text(backend, wing: str, *, key: str, text: str) -> None:
+    """Bypass MemoryFragment validators — go straight to ingest_text."""
+    await backend.ingest_text(
+        wing=wing, room=key, text=text,
+        metadata={"memory_type": "preference"},
+    )
+
+
+async def test_recall_with_rerank_is_invoked_in_pipeline(
+    fusion_setup, monkeypatch
+) -> None:
+    """Phase 1 wire-up: ``recall_with_kg_fusion`` must call ``rerank_bm25_rrf``
+    on the vector hits with the configured ``rrf_k`` and ``top_k``.
+
+    Spies the rerank function so we exercise the integration boundary without
+    fighting FakeBackend's overly-strict substring filter.
+    """
+    from eidolon.memory.application import public_recall
+
+    backend, _kg, settings = fusion_setup
+    wing = next(w.id for w in settings.wings if w.id != "Wing_Privacy")
+    # Seed three docs that all match the substring "用户".
+    await _seed_text(backend, wing, key="noise-1", text="用户最近在听 Acquired 播客")
+    await _seed_text(backend, wing, key="noise-2", text="用户最近在思考人生")
+    await _seed_text(backend, wing, key="tea",     text="用户喝乌龙茶不喝咖啡")
+
+    calls: list[dict] = []
+    real_rerank = public_recall.rerank_bm25_rrf
+
+    def _spy(query, hits, *, top_k, rrf_k):
+        calls.append({
+            "query": query, "n_hits": len(hits),
+            "top_k": top_k, "rrf_k": rrf_k,
+        })
+        return real_rerank(query, hits, top_k=top_k, rrf_k=rrf_k)
+
+    monkeypatch.setattr(public_recall, "rerank_bm25_rrf", _spy)
+
+    result = await public_recall.recall_with_kg_fusion(
+        backend, settings,
+        query="用户",      # matches all 3 in FakeBackend
+        user_id=wing, top_k=3,
+        kg=None,
+        for_voice=False,
+    )
+    # Sanity: full pipeline ran and rerank was applied.
+    assert len(result["vector"]) == 3
+    assert calls and calls[0]["n_hits"] == 3, (
+        f"rerank not invoked or wrong arity: {calls}"
+    )
+    assert calls[0]["top_k"] == 3
+    assert calls[0]["rrf_k"] == settings.recall.rerank_rrf_k
+
+
+async def test_recall_with_rerank_can_be_disabled_via_settings(
+    fusion_setup, monkeypatch
+) -> None:
+    """``rerank_enabled=False`` → bypass rerank entirely (zero-cost rollback).
+
+    Spies ``rerank_bm25_rrf`` and asserts it was *never* called when the
+    flag is off, while the recall pipeline still returns vector hits.
+    """
+    from eidolon.memory.application import public_recall
+
+    backend, _kg, settings = fusion_setup
+    settings = settings.model_copy(deep=True)
+    settings.recall.rerank_enabled = False
+
+    wing = next(w.id for w in settings.wings if w.id != "Wing_Privacy")
+    for i, text in enumerate(["用户 alpha", "用户 beta", "用户 gamma"]):
+        await _seed_text(backend, wing, key=f"k{i}", text=text)
+
+    calls: list[int] = []
+
+    def _spy(*args, **kwargs):
+        calls.append(1)
+        raise AssertionError("rerank should not be called when disabled")
+
+    monkeypatch.setattr(public_recall, "rerank_bm25_rrf", _spy)
+
+    result = await public_recall.recall_with_kg_fusion(
+        backend, settings,
+        query="用户",      # substring-matches all 3 seeded docs
+        user_id=wing, top_k=3,
+        kg=None,
+        for_voice=False,
+    )
+    assert calls == [], "rerank ran despite rerank_enabled=False"
+    assert len(result["vector"]) == 3
+
+
+async def test_recall_kg_triples_ordered_by_confidence(fusion_setup) -> None:
+    """Phase 1.2: KG SQL `ORDER BY confidence DESC` — cap keeps high-conf facts.
+
+    Insert 3 triples for the same entity with descending confidence; cap=2
+    must keep the top two by confidence regardless of insertion order.
+    """
+    from eidolon.memory.application.public_recall import recall_with_kg_fusion
+
+    backend, kg, settings = fusion_setup
+    settings = settings.model_copy(deep=True)
+    settings.recall.kg_max_triples_per_entity = 2
+
+    # Insert lowest-confidence first to prove ORDER BY (not insertion order) wins.
+    await kg.add_triple(
+        subject="self", predicate="likes", object="bitter-tea",
+        confidence=0.30, source_turn_id="low", adapter_name="test",
+    )
+    await kg.add_triple(
+        subject="self", predicate="likes", object="oolong",
+        confidence=0.95, source_turn_id="high", adapter_name="test",
+    )
+    await kg.add_triple(
+        subject="self", predicate="likes", object="green-tea",
+        confidence=0.70, source_turn_id="mid", adapter_name="test",
+    )
+
+    result = await recall_with_kg_fusion(
+        backend, settings,
+        query="self likes tea",
+        user_id="alice", top_k=5,
+        kg=kg,
+        for_voice=False,
+    )
+    objects = {t.object for t in result["kg"]}
+    # Cap=2 → must contain the two highest-confidence (oolong 0.95, green-tea 0.70),
+    # never the 0.30 bitter-tea.
+    assert "oolong" in objects
+    assert "green-tea" in objects
+    assert "bitter-tea" not in objects, f"low-conf triple leaked past cap: {objects}"

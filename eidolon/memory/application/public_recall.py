@@ -10,6 +10,7 @@ from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records
 from eidolon.memory.adapters.search_payload import parse_search_tool_payload
 from eidolon.memory.application.kg_recall import query_kg_for_recall
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
+from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import MemoryReader
 from eidolon.memory.domain.wire import MemoryWireRecord
@@ -124,6 +125,18 @@ async def recall_with_kg_fusion(
 
     vector_records = await vector_task
     kg_records = await kg_task if kg_task is not None else []
+
+    # Phase 1 — BM25 + cosine RRF rerank on vector hits. Pure in-memory,
+    # ~ms scale, fully bypassed when settings.recall.rerank_enabled = False.
+    # Defensive fallback inside rerank_bm25_rrf returns hits[:top_k] on any
+    # failure — never breaks recall.
+    if settings.recall.rerank_enabled and vector_records:
+        vector_records = rerank_bm25_rrf(
+            query,
+            vector_records,
+            top_k=top_k,
+            rrf_k=settings.recall.rerank_rrf_k,
+        )
     return {"vector": vector_records, "kg": kg_records}
 
 

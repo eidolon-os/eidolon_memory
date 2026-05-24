@@ -138,7 +138,8 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
 
     def _spawn(*, user_id: str, port: int, steward_mode: str = "noop",
                env_overrides: dict[str, str] | None = None,
-               palace_root_override: Path | None = None) -> _AgentHandle:
+               palace_root_override: Path | None = None,
+               extra_settings: dict[str, Any] | None = None) -> _AgentHandle:
         palace_root = palace_root_override or palaces_root
         palace_dir = palace_root / user_id
         if palace_dir.exists():
@@ -161,15 +162,24 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         # without touching the user's local memory.default.yaml.
         import yaml
         settings_path = tmp_settings_dir / f"{user_id}.yaml"
+        settings_doc: dict[str, Any] = {
+            "steward": {"mode": steward_mode},
+            "mcp_http": {"host": "127.0.0.1", "port": port},
+            "runtime": {"palaces_root": str(palace_root)},
+        }
+        if extra_settings:
+            # Deep merge so callers can drop in nested overrides like
+            # ``{"recall": {"rerank_enabled": False}}`` without clobbering the
+            # baseline keys above.
+            def _deep_merge(dst: dict, src: dict) -> None:
+                for k, v in src.items():
+                    if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                        _deep_merge(dst[k], v)
+                    else:
+                        dst[k] = v
+            _deep_merge(settings_doc, extra_settings)
         settings_path.write_text(
-            yaml.safe_dump(
-                {
-                    "steward": {"mode": steward_mode},
-                    "mcp_http": {"host": "127.0.0.1", "port": port},
-                    "runtime": {"palaces_root": str(palace_root)},
-                },
-                allow_unicode=True,
-            ),
+            yaml.safe_dump(settings_doc, allow_unicode=True),
             encoding="utf-8",
         )
 
