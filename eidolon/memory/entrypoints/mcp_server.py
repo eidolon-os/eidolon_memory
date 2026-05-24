@@ -9,11 +9,14 @@ single ``asyncio.Lock`` for read+write).
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 from typing import Any
 
-from eidolon.memory.application.privacy_filter import row_visible_to_listing
+from eidolon.memory.adapters.locked_kg import _now_iso
 from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hierarchy_snapshot
 from eidolon.memory.application.palace_graph import build_palace_graph
+from eidolon.memory.application.privacy_filter import row_visible_to_listing
 from eidolon.memory.application.public_recall import (
     group_recall_context,
     recall_with_kg_fusion,
@@ -21,6 +24,12 @@ from eidolon.memory.application.public_recall import (
     wire_record_to_public_dict,
 )
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.kg import (
+    KG_PREDICATE_VALUES,
+    SENSITIVE_PREDICATES,
+    KgAddTripleCommand,
+    KgInvalidateCommand,
+)
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.support.logging import get_logger
 
@@ -209,17 +218,6 @@ def _register_kg_tools(mcp: Any, *, kg: Any, command_publisher: Any, user_id: st
     Write tools publish to NATS (sync-feel polling for visibility); read tools
     query the LockedKnowledgeGraph directly.
     """
-    import time
-    import uuid
-
-    from eidolon.memory.adapters.locked_kg import _now_iso
-    from eidolon.memory.domain.kg import (
-        KG_PREDICATE_VALUES,
-        SENSITIVE_PREDICATES,
-        KgAddTripleCommand,
-        KgInvalidateCommand,
-    )
-
     @mcp.tool()
     async def eidolon_memory_kg_add_triple(
         subject: str,

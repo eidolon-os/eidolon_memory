@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from eidolon.memory.adapters.search_payload import parse_search_tool_payload
@@ -18,6 +19,10 @@ from eidolon.memory.domain.errors import (
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
+from eidolon.memory.support.logging import get_logger
+
+log = get_logger(__name__)
 
 
 class MemPalacePythonBackend(MemoryBackend):
@@ -35,12 +40,6 @@ class MemPalacePythonBackend(MemoryBackend):
         self._apply_chromadb_pragmas()
 
     def _apply_chromadb_pragmas(self) -> None:
-        from pathlib import Path
-
-        from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
-        from eidolon.memory.support.logging import get_logger
-
-        log = get_logger(__name__)
         sqlite_path = Path(self._palace) / "chroma.sqlite3"
         if not sqlite_path.is_file():
             return  # palace not yet initialized; agent_runner lazy-init will handle it

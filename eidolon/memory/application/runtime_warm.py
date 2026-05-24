@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
+from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -16,10 +19,6 @@ async def warm_palace_read_path(
     role: str = "default",
 ) -> None:
     """Load ONNX, closets, and dry-run search on voice wings (blocking, call from startup)."""
-    import asyncio
-
-    from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
-
     apply_cpu_thread_env(settings, role=role)  # type: ignore[arg-type]
     await asyncio.to_thread(_warm_sync, settings, palace_path)
 

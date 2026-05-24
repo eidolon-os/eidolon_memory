@@ -5,11 +5,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from eidolon.memory.adapters.locked_backend import LockedBackend
+from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
+from eidolon.memory.adapters.search_payload import parse_search_tool_payload
+from eidolon.memory.application.kg_recall import query_kg_for_recall, transcribe_triples
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import MemoryReader
 from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.infrastructure.cpu_env import recommend_max_wing_parallel
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -75,8 +80,6 @@ def group_recall_context(
             lines.extend(f"- {item}" for item in items[:4])
 
     if kg_triples:
-        from eidolon.memory.application.kg_recall import transcribe_triples
-
         if lines:
             lines.append("")
         lines.append(transcribe_triples(kg_triples))
@@ -97,8 +100,6 @@ def _resolve_wings(
 
 
 def _effective_wing_parallel(settings: MemorySettings, *, for_voice: bool) -> int:
-    from eidolon.memory.infrastructure.cpu_env import recommend_max_wing_parallel
-
     if for_voice:
         return recommend_max_wing_parallel(settings, role="livekit")
     explicit = settings.runtime.read.max_wing_parallel
@@ -187,8 +188,6 @@ async def _kg_path_with_timeout(
     without knowing about ``pet:`` / ``place:`` / ``mother:`` prefixes.
     Future synonym / alias support extends that method, not this caller.
     """
-    from eidolon.memory.application.kg_recall import query_kg_for_recall
-
     try:
         async def _inner():
             candidates = await kg.match_entities_for_query(query, cap=max_entities)
@@ -290,12 +289,6 @@ async def _search_voice_shared_embedding(
     single-writer-single-reader contract. Non-locked backends (tests) fall back
     to running unlocked.
     """
-    import asyncio
-
-    from eidolon.memory.adapters.locked_backend import LockedBackend
-    from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
-    from eidolon.memory.adapters.search_payload import parse_search_tool_payload
-
     def _run() -> list[MemoryWireRecord]:
         raw = search_memories_shared_embedding(
             query,

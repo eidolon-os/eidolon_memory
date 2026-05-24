@@ -16,6 +16,7 @@ from typing import Any, Protocol
 from pydantic import ValidationError
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
+from eidolon.memory.application.steward.common import apply_privacy_actions
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.kg import (
     KgAddTripleCommand,
@@ -58,8 +59,6 @@ async def _apply_privacy(backend: Any, user_id: str, actions: list) -> None:
     """Wrapper for the steward's privacy-action handler (delete / archive)."""
     if not actions:
         return
-    from eidolon.memory.application.steward.common import apply_privacy_actions
-
     await apply_privacy_actions(backend, user_id=user_id, actions=actions)
 
 

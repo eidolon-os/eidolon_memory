@@ -80,6 +80,11 @@ eidolon-memory-discovery &
 本仓库**不再提供**启动脚本——三个 console-scripts (`eidolon-memory-{supervisor,agent,discovery}`)
 就是全部对外契约,直接 nohup / launchd / systemd / docker / pm2 任选。
 
+> ⚠ **代码改动后必须重启 `eidolon-memory-agent`**(`pkill -f eidolon-memory-agent` 后再起,
+> 或经 supervisor / systemd restart)。Python 长生命周期进程**不做**模块 hot-reload —
+> 边跑边改源代码可能让 `sys.modules` 缓存的旧模块与磁盘上的新模块对不上,
+> 表现为 MCP 工具调用突然报 `ImportError`(参见 `tests/memory/test_lazy_import_guard.py`)。
+
 ---
 
 ## 4. 集成路径一:MCP Streamable HTTP(对外主路径)

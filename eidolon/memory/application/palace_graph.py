@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from eidolon.memory.adapters.locked_backend import LockedBackend
+
 
 async def build_palace_graph(
     backend: Any,
@@ -26,8 +28,6 @@ async def build_palace_graph(
     chroma's sqlite-backed cursor must not race the write path. Non-locked
     backends (tests) execute unlocked.
     """
-    from eidolon.memory.adapters.locked_backend import LockedBackend
-
     def _run() -> dict[str, Any]:
         from mempalace.palace import get_collection
         from mempalace.palace_graph import build_graph, graph_stats

@@ -13,7 +13,7 @@ from typing import Any
 
 import nats
 
-from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
 from eidolon.memory.domain.kg import MemoryCommandPayload
 from eidolon.memory.infrastructure.bus.subjects import memory_command_subject
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
@@ -40,8 +40,6 @@ class JetStreamCommandPublisher:
             return
         self._nc = await nats.connect(self._url)
         self._js = self._nc.jetstream()
-        from eidolon.memory.config.memory_settings import get_memory_settings
-
         await ensure_memory_stream(self._js, get_memory_settings())
 
     async def close(self) -> None:

@@ -23,18 +23,27 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
+from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.application.runtime_warm import warm_palace_read_path
 from eidolon.memory.application.steward import create_steward
-from eidolon.memory.application.turn_processor import process_turn_message
+from eidolon.memory.application.turn_processor import (
+    process_command_message,
+    process_turn_message,
+)
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
 from eidolon.memory.config.palace_directory import (
     resolve_palace_for_user,
     validate_user_id,
 )
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
-from eidolon.memory.infrastructure.bus.subjects import conversation_turn_subject
+from eidolon.memory.infrastructure.bus.subjects import (
+    conversation_turn_subject,
+    memory_command_subject,
+)
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
+from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
+from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
 from eidolon.memory.infrastructure.integrity import (
     IntegrityCheckFailed,
     PalaceLocationError,
@@ -80,8 +89,6 @@ async def _nats_subscriber_loop(
     """In-process JetStream pull-subscriber for both turn + command subjects."""
     import nats
 
-    from eidolon.memory.infrastructure.bus.subjects import memory_command_subject
-
     durable_turn = f"{settings.nats.durable_prefix}-{user_id}"
     durable_cmd = f"{settings.nats.durable_prefix}-cmd-{user_id}"
     turn_subject = conversation_turn_subject(user_id)
@@ -107,8 +114,6 @@ async def _nats_subscriber_loop(
         steward = create_steward(settings)
         sync_every = max(1, settings.worker.sync_every_n_turns)
         writes_since_checkpoint = 0
-
-        from eidolon.memory.application.turn_processor import process_command_message
 
         async def _drain(psub, handler):
             nonlocal writes_since_checkpoint
@@ -242,8 +247,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
-    from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
-
     args = _parse_args(argv)
     user_id = validate_user_id(args.user_id)
     settings = get_memory_settings()
@@ -294,9 +297,6 @@ def main(argv: list[str] | None = None) -> None:
     # KG plan §3.0: LockedKnowledgeGraph shares backend.lock so chroma + KG
     # reads/writes stay coherent inside one agent_runner process.
     from mempalace.knowledge_graph import KnowledgeGraph
-
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-    from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
 
     kg = LockedKnowledgeGraph(
         KnowledgeGraph(db_path=str(kg_sqlite_path)),
