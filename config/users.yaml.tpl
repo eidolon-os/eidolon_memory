@@ -1,6 +1,6 @@
 # Auto-seeded by eidolon-memory-supervisor on first start.
 # Once users.yaml exists at the resolved path, the supervisor will never
-# overwrite it — edit freely. See users.yaml.example for the full schema.
+# overwrite it — edit freely. See README §7.1 for the full schema.
 
 users:
   - id: default

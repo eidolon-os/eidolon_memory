@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prefetch local dev assets before run_all / Admin (embedding model, closets, search path)."""
+"""Prefetch local dev assets before Admin startup (embedding model, closets, search path)."""
 
 from __future__ import annotations
 

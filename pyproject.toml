@@ -34,8 +34,6 @@ eidolon-memory-discovery = "eidolon.memory.entrypoints.discovery_server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["eidolon"]
 include = [
-    "eidolon/memory/config/*.yaml.tpl",
-    "eidolon/memory/config/*.yaml.example",
     "eidolon/memory/config/prompts/*.md",
 ]
 

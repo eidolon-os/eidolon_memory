@@ -226,7 +226,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
             agent_cli = Path(agent_cli_str)
 
         # Write a per-spawn settings yaml so tests can override steward.mode
-        # without touching the user's local memory.default.yaml.
+        # without touching the user's local config/settings.yaml.
         import yaml
         settings_path = tmp_settings_dir / f"{user_id}.yaml"
         settings_doc: dict[str, Any] = {

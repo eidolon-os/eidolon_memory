@@ -111,7 +111,7 @@ async with streamable_http_client(URL) as (read, write, _):
 
 ### 4.2 鉴权(可选)
 
-在 `memory.default.yaml` 设:
+在 `config/settings.yaml` 设:
 ```yaml
 mcp_http:
   bearer_token: ""                     # 或留空走 env
@@ -317,7 +317,7 @@ await ingest_memory_fragment(locked_backend, MemoryFragment(
 每个 user 一条记录,声明端口和 enabled:
 
 ```yaml
-# 默认路径: ~/eidolon/memory/config/users.yaml
+# 默认路径: config/users.yaml (init 从 config/users.yaml.tpl 复制)
 # (可由 settings.supervisor.users_file 或 EIDOLON_MEMORY_USERS_YAML 覆盖)
 users:
   - id: alice
@@ -378,11 +378,10 @@ supervisor 收到 SIGHUP 会重读 yaml:新增 `enabled: true` 的行 → 自动
 ```bash
 # 优先级:
 # 1. $EIDOLON_MEMORY_SETTINGS_YAML
-# 2. eidolon/memory/config/memory.default.yaml (gitignored)
-# 3. eidolon/memory/config/memory.default.yaml.example (打底)
+# 2. config/settings.yaml (gitignored; init 从 config/settings.example.yaml 复制)
 ```
 
-关键字段(完整字段见 `memory.default.yaml.example`):
+关键字段(完整字段见 `config/settings.example.yaml`):
 
 ```yaml
 nats:
@@ -423,7 +422,7 @@ chromadb:
   synchronous: FULL              # D3 hard-kill 持久性
 
 supervisor:
-  users_file: "eidolon/memory/config/users.yaml"
+  users_file: "config/users.yaml"
   eager_init: true
 ```
 

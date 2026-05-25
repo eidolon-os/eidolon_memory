@@ -5,7 +5,7 @@ Resolution order for the users.yaml path (highest priority first):
 1. Caller-supplied ``path`` argument
 2. ``EIDOLON_MEMORY_USERS_YAML`` environment variable
 3. ``settings.supervisor.users_file`` (absolute, or relative to repo root)
-4. ``~/.eidolon/users.yaml``
+4. ``config/users.yaml`` (repo root)
 
 Schema:
 
@@ -34,8 +34,9 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_USERS_PATH = _REPO_ROOT / "config" / "users.yaml"
-_BUNDLED_USERS_TPL = Path(__file__).resolve().parent / "users.yaml.tpl"
+_CONFIG_DIR = _REPO_ROOT / "config"
+_DEFAULT_USERS_PATH = _CONFIG_DIR / "users.yaml"
+_USERS_TEMPLATE_PATH = _CONFIG_DIR / "users.yaml.tpl"
 
 
 class UserEntry(BaseModel):
@@ -118,24 +119,24 @@ def load_users_config(
 
 
 def bundled_users_template_path() -> Path:
-    """Path to the package-bundled ``users.yaml.tpl`` (single ``default`` user)."""
-    return _BUNDLED_USERS_TPL
+    """Path to ``config/users.yaml.tpl`` (single ``default`` user seed)."""
+    return _USERS_TEMPLATE_PATH
 
 
 def ensure_users_yaml_exists(users_path: Path) -> bool:
-    """If ``users_path`` is missing, seed it by copying the bundled ``.tpl``.
+    """If ``users_path`` is missing, seed it from ``config/users.yaml.tpl``.
 
     Returns ``True`` when the file was created, ``False`` when an existing
-    file is kept untouched. Raises :class:`FileNotFoundError` when the bundled
-    template is unexpectedly absent (would indicate a broken install).
+    file is kept untouched. Raises :class:`FileNotFoundError` when the template
+    is missing (copy ``config/users.yaml.tpl`` to ``config/users.yaml``).
     """
     users_path = Path(users_path)
     if users_path.is_file():
         return False
-    if not _BUNDLED_USERS_TPL.is_file():
-        msg = f"bundled users.yaml.tpl missing at {_BUNDLED_USERS_TPL}"
+    if not _USERS_TEMPLATE_PATH.is_file():
+        msg = f"users.yaml.tpl missing at {_USERS_TEMPLATE_PATH}"
         raise FileNotFoundError(msg)
     users_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(_BUNDLED_USERS_TPL, users_path)
+    shutil.copy2(_USERS_TEMPLATE_PATH, users_path)
     log.info("users_yaml_seeded_from_template", path=str(users_path))
     return True

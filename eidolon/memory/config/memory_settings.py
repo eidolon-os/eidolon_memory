@@ -25,11 +25,8 @@ log = get_logger(__name__)
 _PKG_CONFIG_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PKG_CONFIG_DIR.parents[2]
 _CONFIG_DIR = _REPO_ROOT / "config"
-_DEFAULT_LOCAL_SETTINGS_PATH = _CONFIG_DIR / "settings.yaml"
-_LEGACY_PKG_SETTINGS_PATH = _PKG_CONFIG_DIR / "settings.yaml"
-_LEGACY_SETTINGS_PATH = _PKG_CONFIG_DIR / "memory.default.yaml"
+_DEFAULT_SETTINGS_PATH = _CONFIG_DIR / "settings.yaml"
 _DEFAULT_ENV_PATH = _CONFIG_DIR / ".env"
-_LEGACY_ENV_PATH = _PKG_CONFIG_DIR / ".env"
 _SHIPPED_EXAMPLE_SETTINGS_PATH = _CONFIG_DIR / "settings.example.yaml"
 
 
@@ -249,7 +246,7 @@ class MemorySettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _drop_legacy_wings(cls, data: Any) -> Any:
-        """Older memory.default.yaml carried a ``wings:`` section. The wing
+        """Older settings yaml carried a ``wings:`` section. The wing
         taxonomy is now a product contract in :data:`CANONICAL_WINGS` — silently
         drop the yaml field with a log so users can clean their config at
         leisure. Never raise: backward compat for existing local yaml.
@@ -323,15 +320,11 @@ def _bootstrap_dotenv() -> None:
     if env_file:
         path = Path(env_file).expanduser()
     else:
-        path = (
-            _DEFAULT_ENV_PATH
-            if _DEFAULT_ENV_PATH.is_file()
-            else _LEGACY_ENV_PATH
-        )
+        path = _DEFAULT_ENV_PATH
     if not path.is_file():
         raise FileNotFoundError(
             f"memory env file not found: {path}. "
-            f"Run ./deploy/dev/init.sh (config/.env from config/.env.example)"
+            f"Copy config/.env.example to config/.env and set secrets."
         )
     from dotenv import load_dotenv
 
@@ -345,17 +338,11 @@ def default_memory_settings_path() -> Path:
         if not p.is_file():
             raise FileNotFoundError(f"EIDOLON_MEMORY_SETTINGS_YAML missing: {p}")
         return p.resolve()
-    for candidate in (
-        _DEFAULT_LOCAL_SETTINGS_PATH,
-        _LEGACY_PKG_SETTINGS_PATH,
-        _LEGACY_SETTINGS_PATH,
-    ):
-        if candidate.is_file():
-            return candidate.resolve()
+    if _DEFAULT_SETTINGS_PATH.is_file():
+        return _DEFAULT_SETTINGS_PATH.resolve()
     raise FileNotFoundError(
-        f"memory settings not found (tried {_DEFAULT_LOCAL_SETTINGS_PATH}, "
-        f"{_LEGACY_PKG_SETTINGS_PATH}, {_LEGACY_SETTINGS_PATH}). "
-        "Run ./deploy/dev/init.sh"
+        f"memory settings not found: {_DEFAULT_SETTINGS_PATH}. "
+        "Copy config/settings.example.yaml to config/settings.yaml."
     )
 
 
