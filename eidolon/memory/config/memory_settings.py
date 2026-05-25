@@ -62,8 +62,8 @@ class StewardConfig(BaseModel):
 class LlmConfig(BaseModel):
     """LLM provider configuration.
 
-    ``api_key`` in yaml must stay empty (placeholder); value comes from
-    ``EIDOLON_MEMORY_LLM_API_KEY`` in config/.env (or ``api_key_env`` override).
+    ``api_key`` in yaml is the env-var-name placeholder (default
+    ``EIDOLON_MEMORY_LLM_API_KEY``); value comes from config/.env.
     """
 
     model: str = ""
@@ -75,18 +75,19 @@ class LlmConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _reject_inline_api_key(cls, data: Any) -> Any:
-        if isinstance(data, dict) and (data.get("api_key") or "").strip():
-            msg = (
-                "llm.api_key is not allowed in yaml — put the secret in the env var "
-                "named by llm.api_key_env (default EIDOLON_MEMORY_LLM_API_KEY) and "
-                "remove the api_key line from your settings file."
+    def _normalize_api_key_placeholder(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        val = (data.get("api_key") or "").strip()
+        env_name = (data.get("api_key_env") or "EIDOLON_MEMORY_LLM_API_KEY").strip()
+        if val and val != env_name:
+            raise ValueError(
+                "llm.api_key must be empty or the placeholder "
+                f"{env_name}; set that env var in config/.env"
             )
-            raise ValueError(msg)
-        # Empty / missing api_key is silently dropped (backward compat with
-        # older example files that listed `api_key: ""`).
-        if isinstance(data, dict):
-            data.pop("api_key", None)
+        if val == env_name:
+            data.setdefault("api_key_env", env_name)
+        data.pop("api_key", None)
         return data
 
     def resolve_api_key(self) -> str:
@@ -171,8 +172,8 @@ class McpHttpConfig(BaseModel):
     D1: each user has their own port; agent_runner CLI ``--port`` always wins.
     Fields here are defaults / dev-mode single-user convenience.
 
-    ``bearer_token`` in yaml must stay empty (placeholder); value from
-    ``EIDOLON_MEMORY_MCP_TOKEN`` in config/.env (or ``bearer_token_env``).
+    ``bearer_token`` in yaml is the env-var-name placeholder (default
+    ``EIDOLON_MEMORY_MCP_TOKEN``); value from config/.env.
     """
 
     host: str = "127.0.0.1"
@@ -184,16 +185,19 @@ class McpHttpConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _reject_inline_bearer_token(cls, data: Any) -> Any:
-        if isinstance(data, dict) and (data.get("bearer_token") or "").strip():
-            msg = (
-                "mcp_http.bearer_token is not allowed in yaml — put the token in "
-                "the env var named by mcp_http.bearer_token_env (default "
-                "EIDOLON_MEMORY_MCP_TOKEN) and remove the bearer_token line."
+    def _normalize_bearer_token_placeholder(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        val = (data.get("bearer_token") or "").strip()
+        env_name = (data.get("bearer_token_env") or "EIDOLON_MEMORY_MCP_TOKEN").strip()
+        if val and val != env_name:
+            raise ValueError(
+                "mcp_http.bearer_token must be empty or the placeholder "
+                f"{env_name}; set that env var in config/.env"
             )
-            raise ValueError(msg)
-        if isinstance(data, dict):
-            data.pop("bearer_token", None)
+        if val == env_name:
+            data.setdefault("bearer_token_env", env_name)
+        data.pop("bearer_token", None)
         return data
 
     def base_url(self, *, port: int | None = None) -> str:

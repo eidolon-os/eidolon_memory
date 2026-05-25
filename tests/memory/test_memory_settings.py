@@ -54,7 +54,7 @@ def test_inline_llm_api_key_rejected(tmp_path: Path):
         yaml.safe_dump({"llm": {"api_key": "sk-leaked", "model": "x"}}),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="api_key is not allowed"):
+    with pytest.raises(ValueError, match="placeholder"):
         load_memory_settings(p)
 
 
@@ -64,14 +64,12 @@ def test_inline_bearer_token_rejected(tmp_path: Path):
         yaml.safe_dump({"mcp_http": {"bearer_token": "tok-leaked"}}),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="bearer_token is not allowed"):
+    with pytest.raises(ValueError, match="placeholder"):
         load_memory_settings(p)
 
 
 def test_empty_inline_secrets_are_silently_dropped(tmp_path: Path):
-    """Backward compat: older yaml had ``api_key: ""`` lines from the .example
-    template. Empty values must NOT raise — only non-empty secrets do.
-    """
+    """Backward compat: empty secret fields still load."""
     p = tmp_path / "ok.yaml"
     p.write_text(
         yaml.safe_dump({
@@ -83,6 +81,28 @@ def test_empty_inline_secrets_are_silently_dropped(tmp_path: Path):
     settings = load_memory_settings(p)
     assert settings.llm.model == "m"
     assert settings.mcp_http.port == 8030
+
+
+def test_env_name_placeholders_load(tmp_path: Path):
+    p = tmp_path / "ph.yaml"
+    p.write_text(
+        yaml.safe_dump({
+            "llm": {
+                "api_key": "EIDOLON_MEMORY_LLM_API_KEY",
+                "api_key_env": "EIDOLON_MEMORY_LLM_API_KEY",
+                "model": "m",
+            },
+            "mcp_http": {
+                "bearer_token": "EIDOLON_MEMORY_MCP_TOKEN",
+                "bearer_token_env": "EIDOLON_MEMORY_MCP_TOKEN",
+                "port": 8030,
+            },
+        }),
+        encoding="utf-8",
+    )
+    settings = load_memory_settings(p)
+    assert settings.llm.api_key_env == "EIDOLON_MEMORY_LLM_API_KEY"
+    assert settings.mcp_http.bearer_token_env == "EIDOLON_MEMORY_MCP_TOKEN"
 
 
 def test_render_steward_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
