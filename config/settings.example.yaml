@@ -1,0 +1,36 @@
+# Memory settings template — copy to config/settings.yaml
+# Secret placeholders must stay empty; values from config/.env
+
+runtime:
+  palaces_root: ""
+  log_dir: ""
+  run_dir: ""
+
+nats:
+  url: nats://127.0.0.1:4222
+
+llm:
+  model: openai/deepseek-v4-flash
+  base_url: http://127.0.0.1:8080/v1
+  api_key: ""      # env: EIDOLON_MEMORY_LLM_API_KEY
+  api_key_env: EIDOLON_MEMORY_LLM_API_KEY
+
+mcp_http:
+  host: 127.0.0.1
+  port: 8030
+  bearer_token: ""   # env: EIDOLON_MEMORY_MCP_TOKEN
+  bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN
+
+discovery_http:
+  host: 127.0.0.1
+  port: 8020
+
+steward:
+  mode: llm
+
+recall:
+  top_k: 5
+  livekit_timeout_seconds: 0.3
+
+supervisor:
+  users_file: config/users.yaml

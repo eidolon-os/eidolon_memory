@@ -1,8 +1,8 @@
-"""Load and validate memory service settings from YAML.
+"""Load and validate memory service settings from YAML + config/.env.
 
 进程内对默认配置路径的解析结果做缓存；请通过 :func:`get_memory_settings` 获取。
-未设置 ``EIDOLON_MEMORY_SETTINGS_YAML`` 时，只认**本地一份** ``memory.default.yaml``（gitignore，
-不提交）。若该文件尚不存在，则读取同目录已提交的 ``memory.default.yaml.example`` 作为模板。
+未设置 ``EIDOLON_MEMORY_SETTINGS_YAML`` 时，只认 ``settings.yaml``（gitignore）。
+缺失时启动失败（须先 ``init`` 从 ``settings.example.yaml`` 复制）。
 返回的 ``MemorySettings`` 视为只读；若需修改请使用 ``model_copy``，或先调用
 :func:`reset_memory_settings_cache` 再改磁盘上的 YAML。显式传入路径的
 :func:`load_memory_settings` 不使用该缓存。
@@ -22,8 +22,15 @@ from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
-_DEFAULT_LOCAL_SETTINGS_PATH = Path(__file__).resolve().parent / "memory.default.yaml"
-_SHIPPED_EXAMPLE_SETTINGS_PATH = Path(__file__).resolve().parent / "memory.default.yaml.example"
+_PKG_CONFIG_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _PKG_CONFIG_DIR.parents[2]
+_CONFIG_DIR = _REPO_ROOT / "config"
+_DEFAULT_LOCAL_SETTINGS_PATH = _CONFIG_DIR / "settings.yaml"
+_LEGACY_PKG_SETTINGS_PATH = _PKG_CONFIG_DIR / "settings.yaml"
+_LEGACY_SETTINGS_PATH = _PKG_CONFIG_DIR / "memory.default.yaml"
+_DEFAULT_ENV_PATH = _CONFIG_DIR / ".env"
+_LEGACY_ENV_PATH = _PKG_CONFIG_DIR / ".env"
+_SHIPPED_EXAMPLE_SETTINGS_PATH = _CONFIG_DIR / "settings.example.yaml"
 
 
 class RecallPolicy(BaseModel):
@@ -56,12 +63,15 @@ class StewardConfig(BaseModel):
 
 
 class LlmConfig(BaseModel):
-    """LLM provider configuration. **Never** put the API key in yaml — read it
-    from the environment variable named by ``api_key_env``.
+    """LLM provider configuration.
+
+    ``api_key`` in yaml must stay empty (placeholder); value comes from
+    ``EIDOLON_MEMORY_LLM_API_KEY`` in config/.env (or ``api_key_env`` override).
     """
 
     model: str = ""
     base_url: str = ""
+    api_key: str = ""
     api_key_env: str = "EIDOLON_MEMORY_LLM_API_KEY"
     timeout_seconds: float = 20.0
     temperature: float = 0.1
@@ -164,14 +174,15 @@ class McpHttpConfig(BaseModel):
     D1: each user has their own port; agent_runner CLI ``--port`` always wins.
     Fields here are defaults / dev-mode single-user convenience.
 
-    **Never** put the bearer token in yaml — read it from the env var named
-    by ``bearer_token_env`` (validator rejects inline tokens).
+    ``bearer_token`` in yaml must stay empty (placeholder); value from
+    ``EIDOLON_MEMORY_MCP_TOKEN`` in config/.env (or ``bearer_token_env``).
     """
 
     host: str = "127.0.0.1"
     port: int = 8030  # only used if CLI --port unset
     path: str = "/mcp"
     stateless_http: bool = False
+    bearer_token: str = ""
     bearer_token_env: str = "EIDOLON_MEMORY_MCP_TOKEN"
 
     @model_validator(mode="before")
@@ -307,11 +318,45 @@ def resolve_run_dir(settings: MemorySettings) -> Path:
     return (Path.home() / "eidolon" / "run").resolve()
 
 
+def _bootstrap_dotenv() -> None:
+    env_file = os.environ.get("EIDOLON_MEMORY_ENV_FILE", "").strip()
+    if env_file:
+        path = Path(env_file).expanduser()
+    else:
+        path = (
+            _DEFAULT_ENV_PATH
+            if _DEFAULT_ENV_PATH.is_file()
+            else _LEGACY_ENV_PATH
+        )
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"memory env file not found: {path}. "
+            f"Run ./deploy/dev/init.sh (config/.env from config/.env.example)"
+        )
+    from dotenv import load_dotenv
+
+    load_dotenv(path, override=False)
+
+
 def default_memory_settings_path() -> Path:
     env = os.environ.get("EIDOLON_MEMORY_SETTINGS_YAML", "").strip()
     if env:
-        return Path(env).expanduser().resolve()
-    return _DEFAULT_LOCAL_SETTINGS_PATH
+        p = Path(env).expanduser()
+        if not p.is_file():
+            raise FileNotFoundError(f"EIDOLON_MEMORY_SETTINGS_YAML missing: {p}")
+        return p.resolve()
+    for candidate in (
+        _DEFAULT_LOCAL_SETTINGS_PATH,
+        _LEGACY_PKG_SETTINGS_PATH,
+        _LEGACY_SETTINGS_PATH,
+    ):
+        if candidate.is_file():
+            return candidate.resolve()
+    raise FileNotFoundError(
+        f"memory settings not found (tried {_DEFAULT_LOCAL_SETTINGS_PATH}, "
+        f"{_LEGACY_PKG_SETTINGS_PATH}, {_LEGACY_SETTINGS_PATH}). "
+        "Run ./deploy/dev/init.sh"
+    )
 
 
 _default_settings_cache: MemorySettings | None = None
@@ -326,11 +371,7 @@ def reset_memory_settings_cache() -> None:
 
 
 def _effective_default_settings_file() -> Path:
-    p = default_memory_settings_path()
-    if not p.is_file():
-        log.warning("memory_settings_local_missing_using_example", path=str(p))
-        return _SHIPPED_EXAMPLE_SETTINGS_PATH
-    return p.resolve()
+    return default_memory_settings_path()
 
 
 def _read_settings_file(p: Path) -> MemorySettings:
@@ -341,6 +382,7 @@ def _read_settings_file(p: Path) -> MemorySettings:
 def get_memory_settings() -> MemorySettings:
     """返回默认路径下的 ``MemorySettings``（按路径 + 文件 mtime 缓存，避免重复读盘）。"""
     global _default_settings_cache, _default_settings_cache_key
+    _bootstrap_dotenv()
     p = _effective_default_settings_file()
     try:
         mtime = p.stat().st_mtime
@@ -356,7 +398,7 @@ def get_memory_settings() -> MemorySettings:
 
 
 def load_memory_settings(path: Path | None = None) -> MemorySettings:
-    """Load settings from YAML.
+    """Load settings from YAML (and bootstrap config/.env unless path is explicit test fixture).
 
     When ``path`` is ``None``, delegates to :func:`get_memory_settings` (single in-process cache).
     When ``path`` is set, always reads that file from disk (no cache).

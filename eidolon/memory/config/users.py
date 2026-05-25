@@ -34,7 +34,7 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_USERS_PATH = Path.home() / ".eidolon" / "users.yaml"
+_DEFAULT_USERS_PATH = _REPO_ROOT / "config" / "users.yaml"
 _BUNDLED_USERS_TPL = Path(__file__).resolve().parent / "users.yaml.tpl"
 
 

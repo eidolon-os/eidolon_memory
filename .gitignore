@@ -10,6 +10,9 @@ dist/
 build/
 
 # Local memory settings (never commit)
+config/settings.yaml
+config/.env
+config/users.yaml
 **/memory.default.yaml
 **/users.yaml
 logs/*
