@@ -19,6 +19,7 @@ class FakeMemoryBackend:
     """
 
     lock: asyncio.Lock | None = None
+    working_memory: Any = None  # Phase 2 ring; None for unit-test fakes
 
     def __init__(self) -> None:
         self.docs: dict[str, MemoryWireRecord] = {}

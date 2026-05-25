@@ -1,28 +1,41 @@
-"""Default steward: persist the raw turn as one ingest blob (no extra LLM)."""
+"""No-op steward: ack the turn without writing fragments or KG triples.
+
+Use cases:
+    * Bench / e2e tests where we want to exercise the worker plumbing
+      (NATS subscribe → ack → metrics) without exercising the LLM extractor.
+    * "Listen-only" runtime mode for debugging — keep the message bus
+      flowing while triaging steward output offline.
+
+Contract (matches the protocol ``turn_processor`` expects):
+
+    async def decide(turn: ConversationTurnPayload) -> StewardDecision
+        Returns an empty decision (should_write=False, no fragments,
+        no triples, no privacy actions). The worker ACKs the turn cleanly.
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from eidolon.memory.application.ingest import ingest_fragment
-from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon.memory.domain.steward import StewardDecision
 
 if TYPE_CHECKING:
-    from eidolon.memory.domain.ports import MemoryBackend
+    from eidolon.memory.domain.payloads import ConversationTurnPayload
 
 
 class NoOpSteward:
-    """MVP worker handler — structured blob suitable for later LLM-based stewards."""
+    """Steward implementation that intentionally does nothing.
 
-    async def handle_turn(self, turn: ConversationTurnPayload, backend: MemoryBackend) -> None:
-        wing = turn.user_id or "default"
-        room = turn.session_id or "general"
-        text = f"[USER]: {turn.user_text}\n[ASSISTANT]: {turn.assistant_text}"
-        await ingest_fragment(
-            backend,
-            wing=wing,
-            room=room,
-            text=text,
-            metadata=turn.metadata or {},
-            serialize_lock=None,
+    Returning ``should_write=False`` means the worker won't even iterate the
+    (empty) fragments list — fastest possible path through ``turn_processor``.
+    """
+
+    async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
+        del turn  # ack-only path
+        return StewardDecision(
+            should_write=False,
+            fragments=[],
+            triples=[],
+            invalidations=[],
+            privacy_actions=[],
         )

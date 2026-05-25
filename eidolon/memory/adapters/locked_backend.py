@@ -27,6 +27,10 @@ class LockedBackend(MemoryBackend):
     def __init__(self, inner: MemoryBackend, *, lock: asyncio.Lock | None = None) -> None:
         self._inner = inner
         self._lock = lock or asyncio.Lock()
+        # Phase 2: optional in-memory working-memory ring. ``agent_runner``
+        # assigns the actual instance after construction (so settings drive
+        # ``maxlen`` without coupling LockedBackend to the config schema).
+        self.working_memory: Any = None
 
     @property
     def lock(self) -> asyncio.Lock:

@@ -137,7 +137,23 @@ async def recall_with_kg_fusion(
             top_k=top_k,
             rrf_k=settings.recall.rerank_rrf_k,
         )
-    return {"vector": vector_records, "kg": kg_records}
+
+    # Phase 2 — working memory snapshot. ``backend.working_memory`` is
+    # ``None`` on test fakes; the ring's snapshot is empty when disabled
+    # (``maxlen=0``). Either way callers get a list to render.
+    working_memory: list = []
+    ring = getattr(backend, "working_memory", None)
+    if ring is not None:
+        try:
+            working_memory = await ring.snapshot()
+        except Exception as exc:  # noqa: BLE001 - never break recall
+            log.warning("working_memory_snapshot_failed", error=str(exc))
+
+    return {
+        "vector": vector_records,
+        "kg": kg_records,
+        "working_memory": working_memory,
+    }
 
 
 async def _kg_path_with_timeout(

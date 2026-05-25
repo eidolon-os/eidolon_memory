@@ -19,6 +19,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from eidolon.memory.application.working_memory import WorkingMemoryRing
     from eidolon.memory.domain.fragments import MemoryFragment
     from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -29,9 +30,14 @@ class MemoryReader(Protocol):
 
     Backends with single-owner state expose ``lock`` to share with the
     write path; otherwise ``lock`` is ``None`` (test fakes / pure in-mem).
+
+    ``working_memory`` is an optional Phase 2 ring attached at runtime by
+    agent_runner; recall code reads it via ``getattr(backend, "working_memory",
+    None)`` so backends that don't carry one (test fakes) stay decoupled.
     """
 
     lock: asyncio.Lock | None
+    working_memory: WorkingMemoryRing | None
 
     async def search(
         self,

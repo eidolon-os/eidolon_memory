@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
+from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.application.runtime_warm import warm_palace_read_path
@@ -118,12 +119,20 @@ async def _nats_subscriber_loop(
         async def _drain(psub, handler):
             nonlocal writes_since_checkpoint
             try:
-                msgs = await psub.fetch(8, timeout=0.5)
+                # Batch=32: covers typical companion bursts (multi-turn
+                # back-and-forth replayed on reconnect) without going so
+                # high that one slow turn blocks dozens of acks. timeout=0.2s
+                # keeps the worker responsive when idle (≤200ms latency to
+                # process a fresh publish).
+                msgs = await psub.fetch(32, timeout=0.2)
             except TimeoutError:
                 return
             except Exception as exc:
-                log.warning("agent_runner_nats_fetch_error", error=str(exc))
-                await asyncio.sleep(0.5)
+                log.warning(
+                    "agent_runner_nats_fetch_error",
+                    error=str(exc), error_type=type(exc).__name__,
+                )
+                await asyncio.sleep(0.2)
                 return
             for msg in msgs:
                 await handler(msg)
@@ -293,6 +302,14 @@ def main(argv: list[str] | None = None) -> None:
 
     inner = MemPalacePythonBackend(settings, str(palace_path))
     backend = LockedBackend(inner)
+
+    # Phase 2: bolt the working-memory ring onto the backend so it shares
+    # ``backend.lock`` (no second lock to reason about, no deadlock risk).
+    # ``maxlen=0`` from settings disables it cleanly — rollback is config-only.
+    backend.working_memory = WorkingMemoryRing(
+        maxlen=settings.runtime.working_memory_maxlen,
+        lock=backend.lock,
+    )
 
     # KG plan §3.0: LockedKnowledgeGraph shares backend.lock so chroma + KG
     # reads/writes stay coherent inside one agent_runner process.

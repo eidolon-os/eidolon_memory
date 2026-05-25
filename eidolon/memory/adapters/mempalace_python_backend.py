@@ -39,6 +39,7 @@ class MemPalacePythonBackend(MemoryBackend):
     """
 
     lock: asyncio.Lock | None = None
+    working_memory: Any = None  # Phase 2 ring; agent_runner bolts it on at start
 
     def __init__(self, settings: MemorySettings, palace_path: str) -> None:
         self._settings = settings

@@ -127,10 +127,14 @@ def build_control_plane_mcp(
         )
         records = fused["vector"]
         kg_records = fused["kg"]
+        wm_turns = fused.get("working_memory") or []
         return {
-            "context": group_recall_context(records, kg_triples=kg_records),
+            "context": group_recall_context(
+                records, kg_triples=kg_records, working_memory=wm_turns,
+            ),
             "kg_triples": [t.model_dump(mode="json") for t in kg_records],
             "records": [wire_record_to_public_dict(r) for r in records],
+            "working_memory": [t.model_dump(mode="json") for t in wm_turns],
         }
 
     @mcp.tool()

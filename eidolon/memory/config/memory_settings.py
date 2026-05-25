@@ -110,6 +110,9 @@ class RuntimeConfig(BaseModel):
     log_dir: str = ""       # default ~/eidolon/logs;   env EIDOLON_MEMORY_LOG_DIR
     run_dir: str = ""       # default ~/eidolon/run;    env EIDOLON_MEMORY_RUN_DIR
     read: ReadRuntimeConfig = Field(default_factory=ReadRuntimeConfig)
+    # Phase 2 — in-memory short-term continuity ring. 0 disables; reasonable
+    # values are 5-20. Each turn is ~1-2KB so even maxlen=20 is <40KB per user.
+    working_memory_maxlen: int = 10
 
 
 class ChromadbConfig(BaseModel):

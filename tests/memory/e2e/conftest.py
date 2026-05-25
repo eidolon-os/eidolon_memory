@@ -113,6 +113,48 @@ def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
     return False
 
 
+async def _delete_e2e_durables(nats_url: str, user_id: str) -> None:
+    """Reset the JetStream state for ``user_id`` so the next spawn starts
+    from a virgin subscription with no stale messages.
+
+    Three steps, each best-effort:
+
+      1. Delete the durable turn + cmd consumers (prior spawn's pending /
+         in-flight messages are wiped along with the consumer).
+      2. Purge any stream messages whose subject is the user's turn /
+         cmd subject — without this a fresh durable with
+         ``DeliverAllPolicy`` would re-deliver every leftover message
+         from prior test runs.
+
+    Failures are swallowed: on the very first spawn the durable / messages
+    simply don't exist yet, and we don't want the fixture to flake.
+    """
+    try:
+        nc = await nats.connect(nats_url)
+    except Exception:
+        return
+    try:
+        js = nc.jetstream()
+        # 1) drop durables
+        for suffix in ("", "-cmd"):
+            name = f"eidolon-memory-agent{suffix}-{user_id}"
+            try:
+                await js.delete_consumer("MEMORY_TURNS", name)
+            except Exception:
+                pass
+        # 2) purge stream messages on this user's subjects
+        for subject in (
+            f"agent.memory.conversation.turn.{user_id}",
+            f"agent.memory.cmd.{user_id}",
+        ):
+            try:
+                await js.purge_stream("MEMORY_TURNS", subject=subject)
+            except Exception:
+                pass
+    finally:
+        await nc.close()
+
+
 @pytest.fixture
 def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
     """Factory for spawning isolated agent_runner subprocesses.
@@ -144,6 +186,31 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         palace_dir = palace_root / user_id
         if palace_dir.exists():
             shutil.rmtree(palace_dir)
+        # Wipe any stale JetStream state for this user — prior crashes or
+        # aborted runs leave pending messages that would otherwise bleed
+        # into this spawn's pull subscription. ``_spawn`` is sync but the
+        # cleanup is async; in pytest-asyncio context there's a running
+        # loop, so use ``run_until_complete`` via a fresh helper loop to
+        # avoid "asyncio.run() cannot be called from a running event loop".
+        try:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're inside the test's loop — spin a dedicated thread.
+                    import threading
+                    t = threading.Thread(
+                        target=lambda: asyncio.new_event_loop().run_until_complete(
+                            _delete_e2e_durables(live_nats, user_id)
+                        )
+                    )
+                    t.start()
+                    t.join(timeout=10)
+                else:
+                    loop.run_until_complete(_delete_e2e_durables(live_nats, user_id))
+            except RuntimeError:
+                asyncio.run(_delete_e2e_durables(live_nats, user_id))
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            pass
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         log_dir = _REPORTS_ROOT / f"e2e_{user_id}_{ts}"
