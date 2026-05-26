@@ -161,6 +161,13 @@
       "target": "前任相关话题",
       "reason": "用户明确表示不要再提。"
     }
+  ],
+  "mentions": [
+    {
+      "entity_id": "mother:张丽",
+      "alias": "我妈",
+      "confidence": 0.95
+    }
   ]
 }
 ```
@@ -174,8 +181,37 @@
 - `predicate` 必须取自上方白名单
 - 不要捏造关系；不确定就不输出
 
+## mentions（可选 — 自然语言别名 ↔ canonical entity）
+
+如果 user_text 里用了**称谓 / 类别 / 代词**指代某个 entity（**且该 entity 已在本 turn 的 `triples` 里作为 subject 或 object 出现**），额外输出 `mentions` 数组：
+
+- `entity_id` —— 必须与本 turn 的某条 triple 的 `subject` 或 `object` **完全一致**（不在 triples 里的 entity_id 会被 worker 拒绝)
+- `alias` —— 用户**verbatim**用的词，**不要规范化、不要翻译、不要补全**
+- `confidence` 取值规则：
+  - **0.95** — 明确亲属/伴侣称谓："我妈"、"我老婆"、"我老公"、"我儿子"
+  - **0.85** — 类别 / 通用所有格："我家狗"、"公司"、"我们公司"、"老板"
+  - **0.70** — 代词 / 弱指代："她"、"他"、"它"、"我们"、"那个人"
+
+示例：
+
+turn user_text：「我妈张丽这一周又失眠了」
+→ `triples`: `[{subject:"mother:张丽", predicate:"has_state", object:"insomnia", ...}]`
+→ `mentions`: `[{entity_id:"mother:张丽", alias:"我妈", confidence:0.95}]`
+
+turn user_text：「我家狗铁锤是边境牧羊犬」
+→ `triples`: `[{subject:"pet:铁锤", predicate:"holds_role", object:"边境牧羊犬", ...}]`
+→ `mentions`: `[{entity_id:"pet:铁锤", alias:"我家狗", confidence:0.85}]`
+
+turn user_text：「她说想换工作」(上下文里"她"= mother:张丽,且本 turn 有 triple 涉及 mother:张丽)
+→ `mentions`: `[{entity_id:"mother:张丽", alias:"她", confidence:0.70}]`
+
+**不要输出的情况**：
+- 用户用的就是 canonical 名字 ("张丽 又失眠了" — "张丽" 等于 entity_id 的 tail,无需 alias)
+- entity_id 不在本 turn 的 triples 里（worker 会拒绝并记 warning）
+- alias 是空字符串
+
 ## 没有值得写入的内容
 
 - `should_write=false`
-- `fragments / triples / invalidations / privacy_actions` 全部空数组
+- `fragments / triples / invalidations / privacy_actions / mentions` 全部空数组
 - `reason` 说明原因

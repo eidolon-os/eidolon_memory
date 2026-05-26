@@ -49,6 +49,13 @@ def _triple_key(t: dict | object) -> tuple[str, str, str]:
     return (t.subject, t.predicate, t.object)
 
 
+def _mention_key(m: dict | object) -> tuple[str, str]:
+    """Phase 3 — score mentions on (entity_id, alias) pairs."""
+    if isinstance(m, dict):
+        return (m["entity_id"], m["alias"])
+    return (m.entity_id, m.alias)
+
+
 def _confusion(expected: list, actual: list) -> tuple[int, int, int]:
     """Returns (tp, fp, fn) where keys are triple tuples."""
     e = {_triple_key(x) for x in expected}
@@ -57,6 +64,13 @@ def _confusion(expected: list, actual: list) -> tuple[int, int, int]:
     fp = len(a - e)
     fn = len(e - a)
     return tp, fp, fn
+
+
+def _mention_confusion(expected: list, actual: list) -> tuple[int, int, int]:
+    """Same shape as ``_confusion`` but for (entity_id, alias) pairs."""
+    e = {_mention_key(x) for x in expected}
+    a = {_mention_key(x) for x in actual}
+    return len(e & a), len(a - e), len(e - a)
 
 
 def _precision_recall(tp: int, fp: int, fn: int) -> tuple[float, float]:
@@ -85,6 +99,13 @@ async def _run_one(sample: dict, steward, user_id: str) -> dict:
     tp_i, fp_i, fn_i = _confusion(
         expect.get("invalidations", []), decision.invalidations
     )
+    # Phase 3 — mentions scored independently. Samples without an "mentions"
+    # key are treated as expecting none (so a steward that outputs nothing
+    # there is correct, not penalised).
+    tp_m, fp_m, fn_m = _mention_confusion(
+        expect.get("mentions", []),
+        getattr(decision, "mentions", None) or [],
+    )
 
     privacy_expected = expect.get("privacy_action") or None
     privacy_actual = decision.privacy_actions[0].action if decision.privacy_actions else None
@@ -97,6 +118,7 @@ async def _run_one(sample: dict, steward, user_id: str) -> dict:
         "should_write_actual": decision.should_write,
         "triples": {"tp": tp_t, "fp": fp_t, "fn": fn_t},
         "invalidations": {"tp": tp_i, "fp": fp_i, "fn": fn_i},
+        "mentions": {"tp": tp_m, "fp": fp_m, "fn": fn_m},
         "privacy_ok": privacy_ok,
         "privacy_expected": privacy_expected,
         "privacy_actual": privacy_actual,
@@ -106,12 +128,14 @@ async def _run_one(sample: dict, steward, user_id: str) -> dict:
 def _aggregate(results: list[dict]) -> dict:
     sum_t = {"tp": 0, "fp": 0, "fn": 0}
     sum_i = {"tp": 0, "fp": 0, "fn": 0}
+    sum_m = {"tp": 0, "fp": 0, "fn": 0}
     privacy_misses = 0
     privacy_expected_count = 0
     for r in results:
         for k in ("tp", "fp", "fn"):
             sum_t[k] += r["triples"][k]
             sum_i[k] += r["invalidations"][k]
+            sum_m[k] += r.get("mentions", {}).get(k, 0)
         if r["privacy_expected"]:
             privacy_expected_count += 1
             if not r["privacy_ok"]:
@@ -119,17 +143,23 @@ def _aggregate(results: list[dict]) -> dict:
 
     tp, rp = _precision_recall(**sum_t)
     ip, ir = _precision_recall(**sum_i)
+    mp, mr = _precision_recall(**sum_m)
 
     gates = {
         "triples_precision": round(tp, 3),
         "triples_recall": round(rp, 3),
         "invalidations_precision": round(ip, 3),
         "invalidations_recall": round(ir, 3),
+        "mentions_precision": round(mp, 3),
+        "mentions_recall": round(mr, 3),
         "privacy_misses": privacy_misses,
         "privacy_expected_count": privacy_expected_count,
         "pass_triples_precision": tp >= 0.85,
         "pass_triples_recall": rp >= 0.70,
         "pass_invalidations_precision": ip >= 0.90,
+        # Phase 3 plan: mentions precision ≥ 0.80 (don't let LLM hallucinate
+        # alias→entity bindings) — recall is informational only.
+        "pass_mentions_precision": mp >= 0.80,
         "pass_privacy": privacy_misses == 0,
     }
     gates["overall_pass"] = all(
@@ -137,11 +167,12 @@ def _aggregate(results: list[dict]) -> dict:
             "pass_triples_precision",
             "pass_triples_recall",
             "pass_invalidations_precision",
+            "pass_mentions_precision",
             "pass_privacy",
         )
     )
     return {
-        "sums": {"triples": sum_t, "invalidations": sum_i},
+        "sums": {"triples": sum_t, "invalidations": sum_i, "mentions": sum_m},
         "gates": gates,
     }
 
@@ -173,7 +204,9 @@ async def _amain(args) -> int:
         print(
             f"  {s['name']:<32s} "
             f"t-tp={r['triples']['tp']:<2d} t-fp={r['triples']['fp']:<2d} "
-            f"i-tp={r['invalidations']['tp']:<2d} priv={'✓' if r['privacy_ok'] else '✗'} "
+            f"i-tp={r['invalidations']['tp']:<2d} "
+            f"m-tp={r['mentions']['tp']:<2d} m-fp={r['mentions']['fp']:<2d} "
+            f"priv={'✓' if r['privacy_ok'] else '✗'} "
             f"{r['elapsed_ms']}ms"
         )
 

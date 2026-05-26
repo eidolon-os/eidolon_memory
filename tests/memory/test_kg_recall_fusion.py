@@ -500,3 +500,43 @@ async def test_recall_kg_triples_ordered_by_confidence(fusion_setup) -> None:
     assert "oolong" in objects
     assert "green-tea" in objects
     assert "bitter-tea" not in objects, f"low-conf triple leaked past cap: {objects}"
+
+
+# ─── Phase 3 — alias-driven recall fusion ──────────────────────────────────
+
+
+async def test_recall_with_alias_query_hits_kg_via_mentions(fusion_setup) -> None:
+    """Full local pipeline: seed an alias row → query with the alias →
+    ``recall_with_kg_fusion`` returns the triple for the canonical entity.
+
+    Bridges Phase 3c (KG alias lookup) and the existing fusion machinery
+    without needing a real LLM — uses ``record_entity_mention`` directly
+    to simulate what a successful steward-emitted mention would land.
+    """
+    from eidolon.memory.application.public_recall import recall_with_kg_fusion
+
+    backend, kg, settings = fusion_setup
+
+    # Seed canonical entity with a triple, then attach the colloquial alias.
+    await kg.add_triple(
+        subject="mother:张丽", predicate="has_state", object="insomnia",
+        confidence=0.95, source_turn_id="seed-alias", adapter_name="test",
+    )
+    await kg.record_entity_mention(
+        entity_id="mother:张丽", alias="我妈",
+        source="steward-llm", confidence=0.95,
+    )
+
+    result = await recall_with_kg_fusion(
+        backend, settings,
+        query="我妈最近怎样",         # natural-language alias only
+        user_id="alice", top_k=5,
+        kg=kg,
+        for_voice=False,
+    )
+    # Canonical entity surfaces via strategy 3 alias lookup, and its triple
+    # comes through the fusion pipeline.
+    assert any(
+        t.subject == "mother:张丽" and t.object == "insomnia"
+        for t in result["kg"]
+    ), f"alias 'I妈' failed to route to mother:张丽 in fusion: {result['kg']}"

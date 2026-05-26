@@ -25,6 +25,7 @@ Schema reference (mempalace/knowledge_graph.py, paraphrased)::
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -54,6 +55,37 @@ class LockedKnowledgeGraph:
     def __init__(self, inner: Any, lock: asyncio.Lock) -> None:
         self._inner = inner  # mempalace.knowledge_graph.KnowledgeGraph
         self._lock = lock
+        # Phase 3: ensure the entity_mentions table exists. Idempotent — safe
+        # on every spawn, including replay of a long-lived palace. Runs once
+        # at construction so the rest of the class can assume the schema is
+        # in place without per-call existence checks.
+        self._ensure_entity_mentions_schema()
+
+    def _ensure_entity_mentions_schema(self) -> None:
+        """Create the alias index table + supporting indexes if absent.
+
+        Why a separate table vs. a JSON column on ``entities``: aliases are
+        looked up by reverse query (``WHERE alias IN (...)``) on the recall
+        hot path. A dedicated indexed table makes that O(log n); JSON ops on
+        SQLite are O(n).
+        """
+        conn = self._inner._conn()
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS entity_mentions (
+                id          TEXT PRIMARY KEY,
+                entity_id   TEXT NOT NULL,
+                alias       TEXT NOT NULL,
+                source      TEXT NOT NULL,
+                confidence  REAL DEFAULT 0.85,
+                created_at  TEXT NOT NULL,
+                UNIQUE(entity_id, alias)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mentions_alias  ON entity_mentions(alias);
+            CREATE INDEX IF NOT EXISTS idx_mentions_entity ON entity_mentions(entity_id);
+            """
+        )
+        conn.commit()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -199,6 +231,50 @@ class LockedKnowledgeGraph:
         async with self._lock:
             return await asyncio.to_thread(self._entity_names)
 
+    async def record_entity_mention(
+        self,
+        *,
+        entity_id: str,
+        alias: str,
+        source: str,
+        confidence: float = 0.85,
+    ) -> None:
+        """Idempotent write to ``entity_mentions``.
+
+        Idempotency via ``UNIQUE(entity_id, alias)`` — replays / re-deliveries
+        from JetStream collapse to the original row without raising. The
+        deterministic id is ``<entity_id>::<sha8(alias)>`` so the same alias
+        always maps to the same row.
+        """
+        if not entity_id or not alias:
+            return
+        async with self._lock:
+            await asyncio.to_thread(
+                self._insert_entity_mention, entity_id, alias, source, confidence
+            )
+
+    def _insert_entity_mention(
+        self, entity_id: str, alias: str, source: str, confidence: float
+    ) -> None:
+        mention_id = f"{entity_id}::{hashlib.sha256(alias.encode()).hexdigest()[:8]}"
+        conn = self._inner._conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO entity_mentions"
+            "(id, entity_id, alias, source, confidence, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (mention_id, entity_id, alias, source, float(confidence), _now_iso()),
+        )
+        conn.commit()
+
+    def _alias_rows(self) -> list[tuple[str, str]]:
+        """Return ``[(alias, entity_id), ...]`` — typical palace has <200 rows."""
+        rows = self._inner._conn().execute(
+            "SELECT alias, entity_id FROM entity_mentions"
+        ).fetchall()
+        # Tolerate both sqlite Row and bare tuples.
+        return [(r["alias"], r["entity_id"]) if hasattr(r, "keys") else (r[0], r[1])
+                for r in rows]
+
     async def match_entities_for_query(
         self, query: str, *, cap: int
     ) -> list[str]:
@@ -211,16 +287,15 @@ class LockedKnowledgeGraph:
         shouldn't have to know about ``pet:`` vs ``铁锤`` — the KG facade
         bridges it.
 
-        Matching rule (today):
-          1. literal containment      — ``name in query``
-          2. prefix-stripped tail     — ``name.split(':', 1)[1] in query``
+        Matching strategies (in priority order — canonical hits win):
+          1. literal containment of canonical name  — ``name in query``
+          2. prefix-stripped tail of canonical name — ``tail(name) in query``
+          3. (Phase 3) alias reverse lookup        — ``mention.alias in query``
 
-        Future extensions(同义词,LLM 抽取,alias 表)should live in this
-        method, keeping the recall router intact.
-
-        Longer canonical names are preferred over shorter ones so that
-        ``mother:张丽`` wins over ``mother`` for "妈妈 张丽" — same policy
-        as before.
+        Within each strategy, longer matches are preferred so ``mother:张丽``
+        wins over the bare ``mother`` when both could fire. Cross-strategy
+        de-duplication keeps canonical hits and never re-emits the same
+        entity via its alias.
 
         ``cap`` truncates after sorting so pathological queries that mention
         every entity in the palace don't blow up downstream SQL.
@@ -230,18 +305,35 @@ class LockedKnowledgeGraph:
             return []
         async with self._lock:
             names = await asyncio.to_thread(self._entity_names)
-        # Longer canonical names first so prefixed forms beat their bare tails.
-        sorted_names = sorted(set(names), key=lambda n: -len(n))
+            # Same critical section — alias rows live in the same SQLite file
+            # as entities; pull both under one lock acquisition.
+            alias_rows = await asyncio.to_thread(self._alias_rows)
+
         hits: list[str] = []
         seen: set[str] = set()
-        for name in sorted_names:
+
+        # Strategies 1+2: canonical names (prefixed or bare).
+        for name in sorted(set(names), key=lambda n: -len(n)):
             if name in seen:
                 continue
             if _entity_name_in_query(name, q):
                 hits.append(name)
                 seen.add(name)
                 if len(hits) >= cap:
+                    return hits
+
+        # Strategy 3: alias reverse lookup. Longest alias first so "我老婆" beats
+        # the substring "老婆", and entities already matched canonically aren't
+        # re-emitted via their aliases.
+        for alias, entity_id in sorted(alias_rows, key=lambda r: -len(r[0])):
+            if entity_id in seen or not alias:
+                continue
+            if alias in q:
+                hits.append(entity_id)
+                seen.add(entity_id)
+                if len(hits) >= cap:
                     break
+
         return hits
 
     async def has_triple(self, triple_id: str) -> bool:

@@ -234,6 +234,18 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
             "mcp_http": {"host": "127.0.0.1", "port": port},
             "runtime": {"palaces_root": str(palace_root)},
         }
+        # If the test runs in LLM-steward mode, inherit the project's LLM
+        # config from config/settings.yaml. Otherwise the LiteLLM steward
+        # silently falls back to rules (no model/api_base), and the test
+        # would assert against degraded behaviour. Inheritance keeps the
+        # test source minimal: tests don't have to know the model name.
+        if steward_mode == "llm":
+            project_settings = _REPO_ROOT / "config" / "settings.yaml"
+            if project_settings.is_file():
+                with project_settings.open("r", encoding="utf-8") as fh:
+                    parent = yaml.safe_load(fh) or {}
+                if isinstance(parent, dict) and "llm" in parent:
+                    settings_doc["llm"] = parent["llm"]
         if extra_settings:
             # Deep merge so callers can drop in nested overrides like
             # ``{"recall": {"rerank_enabled": False}}`` without clobbering the
@@ -252,6 +264,17 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
 
         env = {**os.environ}
         env["EIDOLON_MEMORY_SETTINGS_YAML"] = str(settings_path)
+        # Forward LLM secret from config/.env if not already exported, so the
+        # llm-mode tests have credentials without each test having to call
+        # ``dotenv.load_dotenv`` manually.
+        if "EIDOLON_MEMORY_LLM_API_KEY" not in env or not env["EIDOLON_MEMORY_LLM_API_KEY"]:
+            dotenv = _REPO_ROOT / "config" / ".env"
+            if dotenv.is_file():
+                for line in dotenv.read_text().splitlines():
+                    if line.startswith("EIDOLON_") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if v.strip() and k not in env:
+                            env[k] = v.strip()
         if env_overrides:
             env.update(env_overrides)
 

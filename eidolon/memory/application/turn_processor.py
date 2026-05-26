@@ -158,6 +158,8 @@ async def process_turn_message(
     # ── KG writes (G7: failure logged, never NAK) ──────────────────────────
     kg_triples_added = 0
     kg_invalidations_applied = 0
+    mentions_written = 0
+    mentions_rejected = 0
     kg_skipped_low_confidence = 0
     kg_failures: list[str] = []
     min_conf = settings.kg.min_confidence_to_write if kg is not None else 1.0
@@ -206,6 +208,14 @@ async def process_turn_message(
                 kg_failures.append(f"add:{exc}")
                 log.warning("kg_add_triple_failed", error=str(exc))
 
+        # Phase 3 — entity_mentions write. Runs AFTER triples so the
+        # anti-hallucination guard can verify each mention's entity_id was
+        # actually asserted in this turn (steward output is LLM-derived,
+        # so cross-validation with structured triple ids is essential).
+        mentions_written, mentions_rejected = await _write_mentions(
+            kg, decision, kg_failures=kg_failures,
+        )
+
     # G8: one structured line per turn — operators can grep this without
     # parsing the whole log stream.
     log.info(
@@ -220,8 +230,69 @@ async def process_turn_message(
         kg_failures=len(kg_failures),
         kg_failure_sample=kg_failures[:2],
         privacy_actions=len(decision.privacy_actions),
+        mentions=mentions_written if kg is not None else 0,
+        mentions_rejected=mentions_rejected if kg is not None else 0,
     )
     await msg.ack()
+
+
+async def _write_mentions(
+    kg: Any,
+    decision: Any,
+    *,
+    kg_failures: list[str],
+) -> tuple[int, int]:
+    """Persist ``decision.mentions`` to the KG, dropping LLM hallucinations.
+
+    Anti-hallucination guard: a steward (LLM) may emit ``EntityMention``
+    pointing at an entity_id that was never asserted in this turn's
+    ``triples``. We compute the union of subjects/objects in the turn's
+    triples and reject any mention outside that set — without this, we'd
+    accumulate alias rows for entities that don't actually exist in the KG.
+
+    G7 semantics: per-mention failures are logged + counted in ``kg_failures``
+    but never raise into the caller — turn ack proceeds regardless.
+
+    Returns ``(written, rejected)``.
+    """
+    mentions = list(getattr(decision, "mentions", None) or [])
+    if not mentions:
+        return 0, 0
+
+    # Entities asserted by this turn = the only entity_ids we'll accept
+    # mentions for. Mentions referencing unrelated entity_ids are LLM noise.
+    triple_entities: set[str] = set()
+    for t in (decision.triples or []):
+        if t.subject:
+            triple_entities.add(t.subject)
+        if t.object:
+            triple_entities.add(t.object)
+
+    written = 0
+    rejected = 0
+    for m in mentions:
+        if m.entity_id not in triple_entities:
+            rejected += 1
+            log.warning(
+                "kg_mention_rejected_unknown_entity",
+                entity=m.entity_id, alias=m.alias,
+            )
+            continue
+        try:
+            await kg.record_entity_mention(
+                entity_id=m.entity_id,
+                alias=m.alias,
+                source="steward-llm",
+                confidence=m.confidence,
+            )
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - G7: never abort turn ack
+            kg_failures.append(f"mention:{exc}")
+            log.warning(
+                "kg_mention_write_failed",
+                entity=m.entity_id, alias=m.alias, error=str(exc),
+            )
+    return written, rejected
 
 
 async def process_command_message(
