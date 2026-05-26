@@ -16,6 +16,9 @@ Schema:
         port: 8030
         enabled: true
         palace_path: ""    # optional override; default ~/eidolon/palaces/<id>/
+        consolidator:      # optional; Phase 4 background theme worker
+          enabled: false
+          interval_hours: 6
 """
 
 from __future__ import annotations
@@ -39,16 +42,40 @@ _DEFAULT_USERS_PATH = _CONFIG_DIR / "users.yaml"
 _USERS_TEMPLATE_PATH = _CONFIG_DIR / "users.yaml.tpl"
 
 
+class ConsolidatorUserConfig(BaseModel):
+    """Phase 4 — per-user knobs for the background theme worker.
+
+    Opt-in by default (``enabled=False``) — adding a new user to ``users.yaml``
+    should not silently start an extra LLM-consuming daemon. Set
+    ``enabled: true`` per user to spawn ``eidolon-memory-consolidator``
+    alongside that user's ``agent_runner`` from within
+    ``eidolon-memory-supervisor``.
+    """
+
+    enabled: bool = False
+    interval_hours: float = Field(gt=0, default=6.0)
+    window_days: int = Field(gt=0, default=30)
+    min_drawers: int = Field(ge=1, default=3)
+    min_confidence: float = Field(ge=0.0, le=1.0, default=0.6)
+
+
 class UserEntry(BaseModel):
     id: str
     port: int = Field(ge=1, le=65535)
     enabled: bool = True
     palace_path: str = ""  # absolute override; empty = use default per-user palace
+    # Phase 4 — optional. ``None`` (the default) means "no consolidator for
+    # this user"; explicit ``ConsolidatorUserConfig`` is the opt-in marker.
+    consolidator: ConsolidatorUserConfig | None = None
 
     @field_validator("id")
     @classmethod
     def _id_valid(cls, value: str) -> str:
         return validate_user_id(value)
+
+    def consolidator_enabled(self) -> bool:
+        """Convenience: True iff a consolidator block exists AND is enabled."""
+        return bool(self.consolidator and self.consolidator.enabled)
 
 
 class UsersConfig(BaseModel):

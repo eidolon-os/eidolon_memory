@@ -6,3 +6,11 @@ users:
   - id: default
     port: 8030
     enabled: true
+    # Phase 4 — opt-in background theme worker. Uncomment to have the
+    # supervisor also spawn `eidolon-memory-consolidator` for this user.
+    # consolidator:
+    #   enabled: true
+    #   interval_hours: 6        # how often to refresh themes
+    #   window_days: 30          # look-back when distilling themes
+    #   min_drawers: 3           # skip wings with fewer drawers
+    #   min_confidence: 0.6      # drop low-confidence themes

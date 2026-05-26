@@ -138,3 +138,86 @@ def test_ensure_users_yaml_exists_creates_parent_dir(tmp_path: Path) -> None:
     created = ensure_users_yaml_exists(target)
     assert created is True
     assert target.is_file()
+
+
+# ─── Phase 4 — consolidator config schema ─────────────────────────────────
+
+
+def test_user_without_consolidator_block_disabled_by_default(tmp_path: Path) -> None:
+    """Backwards-compat: existing users.yaml without ``consolidator:`` block."""
+    p = _write(tmp_path, {"users": [{"id": "alice", "port": 8030}]})
+    user = load_users_config(path=p).find("alice")
+    assert user is not None
+    assert user.consolidator is None
+    assert user.consolidator_enabled() is False
+
+
+def test_user_consolidator_explicit_disabled(tmp_path: Path) -> None:
+    """``consolidator: {enabled: false}`` parses but stays off."""
+    p = _write(tmp_path, {
+        "users": [{
+            "id": "alice", "port": 8030,
+            "consolidator": {"enabled": False},
+        }],
+    })
+    user = load_users_config(path=p).find("alice")
+    assert user.consolidator is not None
+    assert user.consolidator.enabled is False
+    assert user.consolidator_enabled() is False
+
+
+def test_user_consolidator_enabled_with_overrides(tmp_path: Path) -> None:
+    """Per-user overrides flow into the pydantic model."""
+    p = _write(tmp_path, {
+        "users": [{
+            "id": "alice", "port": 8030,
+            "consolidator": {
+                "enabled": True,
+                "interval_hours": 12,
+                "window_days": 14,
+                "min_drawers": 5,
+                "min_confidence": 0.75,
+            },
+        }],
+    })
+    user = load_users_config(path=p).find("alice")
+    assert user.consolidator_enabled() is True
+    assert user.consolidator.interval_hours == 12
+    assert user.consolidator.window_days == 14
+    assert user.consolidator.min_drawers == 5
+    assert user.consolidator.min_confidence == 0.75
+
+
+def test_user_consolidator_defaults_when_enabled_only(tmp_path: Path) -> None:
+    """Only ``enabled: true`` is required — other knobs take defaults."""
+    p = _write(tmp_path, {
+        "users": [{
+            "id": "alice", "port": 8030,
+            "consolidator": {"enabled": True},
+        }],
+    })
+    cfg = load_users_config(path=p).find("alice").consolidator
+    assert cfg is not None
+    assert cfg.enabled is True
+    assert cfg.interval_hours == 6.0   # Phase 4 default
+    assert cfg.window_days == 30
+    assert cfg.min_drawers == 3
+    assert cfg.min_confidence == 0.6
+
+
+def test_user_consolidator_rejects_invalid_values(tmp_path: Path) -> None:
+    """Pydantic must catch obviously-wrong knobs."""
+    import pydantic
+    for bad in (
+        {"enabled": True, "interval_hours": 0},      # gt=0
+        {"enabled": True, "interval_hours": -1},
+        {"enabled": True, "window_days": 0},         # gt=0
+        {"enabled": True, "min_drawers": 0},         # ge=1
+        {"enabled": True, "min_confidence": 1.5},    # le=1
+        {"enabled": True, "min_confidence": -0.1},   # ge=0
+    ):
+        p = _write(tmp_path, {
+            "users": [{"id": "alice", "port": 8030, "consolidator": bad}]
+        })
+        with pytest.raises(pydantic.ValidationError):
+            load_users_config(path=p)

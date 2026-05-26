@@ -49,6 +49,7 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 _AGENT_CLI = "eidolon-memory-agent"
+_CONSOLIDATOR_CLI = "eidolon-memory-consolidator"
 _DEGRADED_MIN_INTERVAL = 60.0  # seconds — rolling failure window
 
 
@@ -59,20 +60,55 @@ def _agent_cli_argv(user: UserEntry, palace_path: Path) -> list[str]:
     return argv
 
 
-def _open_child_log(log_root: Path, user_id: str) -> tuple[Path, "subprocess._FILE"]:
+def _consolidator_cli_argv(user: UserEntry) -> list[str]:
+    """Phase 4 — build the consolidator argv for a user whose
+    ``consolidator.enabled = True``. Assumes the caller already checked
+    ``user.consolidator_enabled()``.
+    """
+    cfg = user.consolidator
+    assert cfg is not None and cfg.enabled, (
+        "consolidator argv asked for a user without enabled config"
+    )
+    return [
+        _CONSOLIDATOR_CLI,
+        "--user-id", user.id,
+        "--mcp-url", f"http://127.0.0.1:{user.port}/mcp",
+        "--interval-hours", str(cfg.interval_hours),
+        "--window-days", str(cfg.window_days),
+        "--min-drawers", str(cfg.min_drawers),
+        "--min-confidence", str(cfg.min_confidence),
+    ]
+
+
+def _open_child_log(
+    log_root: Path, user_id: str, *, prefix: str = "agent"
+) -> tuple[Path, "subprocess._FILE"]:
     log_root.mkdir(parents=True, exist_ok=True)
-    log_path = log_root / f"agent_{user_id}.log"
+    log_path = log_root / f"{prefix}_{user_id}.log"
     fh = log_path.open("ab", buffering=0)
     return log_path, fh
 
 
 class _Child:
-    """Represents one supervised agent_runner subprocess."""
+    """One supervised subprocess (agent_runner OR consolidator).
 
-    def __init__(self, user: UserEntry, palace_path: Path, log_root: Path) -> None:
+    ``kind`` discriminates the two roles for logs / log-file naming /
+    diagnostics; the lifecycle (spawn, monitor, backoff, terminate) is
+    identical so we don't subclass.
+    """
+
+    def __init__(
+        self,
+        user: UserEntry,
+        palace_path: Path,
+        log_root: Path,
+        *,
+        kind: str = "agent",
+    ) -> None:
         self.user = user
         self.palace_path = palace_path
         self.log_root = log_root
+        self.kind = kind
         self.proc: subprocess.Popen | None = None
         self.log_path: Path | None = None
         self._log_fh = None
@@ -81,12 +117,20 @@ class _Child:
         self.degraded: bool = False
         self.last_spawn_at: float = 0.0
 
+    def _build_argv(self) -> list[str]:
+        if self.kind == "consolidator":
+            return _consolidator_cli_argv(self.user)
+        return _agent_cli_argv(self.user, self.palace_path)
+
     def spawn(self) -> None:
-        self.log_path, self._log_fh = _open_child_log(self.log_root, self.user.id)
-        argv = _agent_cli_argv(self.user, self.palace_path)
+        self.log_path, self._log_fh = _open_child_log(
+            self.log_root, self.user.id, prefix=self.kind,
+        )
+        argv = self._build_argv()
         log.info(
             "supervisor_spawn",
             user_id=self.user.id,
+            kind=self.kind,
             port=self.user.port,
             argv=argv,
             log_path=str(self.log_path),
@@ -106,7 +150,10 @@ class _Child:
     def terminate(self, *, grace_seconds: float = 30.0) -> None:
         if self.proc is None:
             return
-        log.info("supervisor_terminate", user_id=self.user.id, pid=self.proc.pid)
+        log.info(
+            "supervisor_terminate",
+            user_id=self.user.id, kind=self.kind, pid=self.proc.pid,
+        )
         try:
             self.proc.terminate()
         except ProcessLookupError:
@@ -114,7 +161,10 @@ class _Child:
         try:
             self.proc.wait(timeout=grace_seconds)
         except subprocess.TimeoutExpired:
-            log.warning("supervisor_kill", user_id=self.user.id, pid=self.proc.pid)
+            log.warning(
+                "supervisor_kill",
+                user_id=self.user.id, kind=self.kind, pid=self.proc.pid,
+            )
             try:
                 self.proc.kill()
             except ProcessLookupError:
@@ -142,7 +192,7 @@ class _Child:
             self.degraded = True
             log.error(
                 "supervisor_user_degraded",
-                user_id=self.user.id,
+                user_id=self.user.id, kind=self.kind,
                 failures_in_window=len(self.failure_times),
             )
 
@@ -169,7 +219,8 @@ class Supervisor:
         self._eager_init = (
             settings.supervisor.eager_init if eager_init is None else eager_init
         )
-        self._children: dict[str, _Child] = {}
+        self._children: dict[str, _Child] = {}            # agent_runner children
+        self._consolidators: dict[str, _Child] = {}       # Phase 4: per-user theme worker
         self._reload_event = asyncio.Event()
         self._stop_event = asyncio.Event()
         self._init_pool = ThreadPoolExecutor(
@@ -232,9 +283,43 @@ class Supervisor:
             child = _Child(user, self._palace_for(user), self._log_root)
             child.spawn()
             self._children[user.id] = child
+            # Phase 4 — opt-in per-user consolidator. Spawn it alongside the
+            # agent_runner; it's a separate process so an LLM blip or
+            # consolidator crash leaves the chat path untouched.
+            if user.consolidator_enabled():
+                self._spawn_consolidator(user)
+
+    def _spawn_consolidator(self, user: UserEntry) -> None:
+        """Create + start the consolidator child for ``user``. No-op if one
+        is already alive — call ``terminate`` first if you need to restart.
+        """
+        existing = self._consolidators.get(user.id)
+        if existing is not None and existing.is_alive():
+            return
+        child = _Child(
+            user, self._palace_for(user), self._log_root, kind="consolidator",
+        )
+        try:
+            child.spawn()
+            self._consolidators[user.id] = child
+        except Exception as exc:  # noqa: BLE001 - never block agent spawn
+            log.error(
+                "supervisor_consolidator_spawn_failed",
+                user_id=user.id, error=str(exc),
+            )
 
     async def stop(self) -> None:
-        log.info("supervisor_stop_begin", n=len(self._children))
+        log.info(
+            "supervisor_stop_begin",
+            agents=len(self._children),
+            consolidators=len(self._consolidators),
+        )
+        # Stop consolidators first — they're read-side, can be killed cheaply
+        # without losing state. agent_runner gets the full 30s grace so its
+        # NATS draining + WAL checkpoint finishes cleanly.
+        for child in list(self._consolidators.values()):
+            child.terminate(grace_seconds=10.0)
+        self._consolidators.clear()
         for child in list(self._children.values()):
             child.terminate(grace_seconds=30.0)
         self._children.clear()
@@ -259,41 +344,44 @@ class Supervisor:
             await self.stop()
 
     def _check_children(self) -> None:
+        """Single pass over both agent + consolidator children; same logic."""
         backoff = self._settings.supervisor.restart_backoff_seconds
         max_fail = self._settings.supervisor.max_failures_per_minute
-        for child in list(self._children.values()):
-            if child.degraded:
-                continue
-            if child.is_alive():
-                # Reset backoff if process has been up for a while
-                if time.monotonic() - child.last_spawn_at > 60.0:
-                    child.backoff_idx = 0
-                continue
+        # Iterate agents and consolidators with one loop — both are ``_Child``
+        # instances with identical lifecycle semantics, only the spawn argv
+        # differs.
+        for tracked in (self._children, self._consolidators):
+            for child in list(tracked.values()):
+                if child.degraded:
+                    continue
+                if child.is_alive():
+                    if time.monotonic() - child.last_spawn_at > 60.0:
+                        child.backoff_idx = 0
+                    continue
 
-            # Child died — figure out backoff and restart
-            rc = child.proc.returncode if child.proc else None
-            log.warning("supervisor_child_exited", user_id=child.user.id, returncode=rc)
-            child.record_failure(max_fail)
-            if child.degraded:
-                continue
-            delay = child.next_backoff(backoff)
-            log.info(
-                "supervisor_restart_scheduled",
-                user_id=child.user.id,
-                delay_seconds=delay,
-            )
-            # Sleep here is OK; the supervisor loop is otherwise idle.
-            # We block briefly to honor backoff per-child.
-            time.sleep(delay)
-            try:
-                child.spawn()
-            except Exception as exc:
-                log.error(
-                    "supervisor_spawn_failed",
-                    user_id=child.user.id,
-                    error=str(exc),
+                rc = child.proc.returncode if child.proc else None
+                log.warning(
+                    "supervisor_child_exited",
+                    user_id=child.user.id, kind=child.kind, returncode=rc,
                 )
                 child.record_failure(max_fail)
+                if child.degraded:
+                    continue
+                delay = child.next_backoff(backoff)
+                log.info(
+                    "supervisor_restart_scheduled",
+                    user_id=child.user.id, kind=child.kind, delay_seconds=delay,
+                )
+                # Sleep here is OK; the supervisor loop is otherwise idle.
+                time.sleep(delay)
+                try:
+                    child.spawn()
+                except Exception as exc:
+                    log.error(
+                        "supervisor_spawn_failed",
+                        user_id=child.user.id, kind=child.kind, error=str(exc),
+                    )
+                    child.record_failure(max_fail)
 
     async def _reconcile(self) -> None:
         """Re-read users.yaml and align running set."""
@@ -306,12 +394,15 @@ class Supervisor:
         wanted_init_pool = [u for u in wanted.values() if u.id not in self._children]
         ok = await self._init_users_parallel(wanted_init_pool)
 
-        # 1) Stop children not in wanted set, or whose port changed
+        # 1) Stop agent children not in wanted set, or whose port changed.
+        #    A port change cascades: the consolidator's --mcp-url embeds the
+        #    port, so it must restart too.
         for user_id, child in list(self._children.items()):
             if user_id not in wanted:
                 log.info("supervisor_reload_remove", user_id=user_id)
                 child.terminate()
                 self._children.pop(user_id, None)
+                self._terminate_consolidator(user_id)
                 continue
             new_def = wanted[user_id]
             if new_def.port != child.user.port:
@@ -323,6 +414,9 @@ class Supervisor:
                 )
                 child.terminate()
                 self._children.pop(user_id, None)
+                # Port shifts ⇒ consolidator's --mcp-url is stale; drop it so
+                # step 3 below respawns with the new port.
+                self._terminate_consolidator(user_id)
 
         # 2) Start children that should be running but aren't
         for user_id, user_def in wanted.items():
@@ -340,6 +434,38 @@ class Supervisor:
                     user_id=user_id,
                     error=str(exc),
                 )
+
+        # 3) Reconcile consolidators against the current wanted set:
+        #    - removed user / disabled flag → terminate
+        #    - newly enabled → spawn
+        #    - config field change (interval / window / etc.) → restart
+        for user_id, c_child in list(self._consolidators.items()):
+            wanted_def = wanted.get(user_id)
+            if wanted_def is None or not wanted_def.consolidator_enabled():
+                log.info("supervisor_reload_consolidator_remove", user_id=user_id)
+                self._terminate_consolidator(user_id)
+                continue
+            if wanted_def.consolidator != c_child.user.consolidator:
+                log.info(
+                    "supervisor_reload_consolidator_config_change", user_id=user_id,
+                )
+                self._terminate_consolidator(user_id)
+        for user_id, user_def in wanted.items():
+            if not user_def.consolidator_enabled():
+                continue
+            if self._eager_init and user_id not in ok:
+                continue
+            # Refresh the stored UserEntry on the existing child or spawn fresh.
+            existing = self._consolidators.get(user_id)
+            if existing is not None and existing.is_alive():
+                existing.user = user_def
+                continue
+            self._spawn_consolidator(user_def)
+
+    def _terminate_consolidator(self, user_id: str) -> None:
+        c = self._consolidators.pop(user_id, None)
+        if c is not None:
+            c.terminate(grace_seconds=10.0)
 
     # -------------------- signal handlers --------------------
 
