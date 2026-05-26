@@ -18,7 +18,9 @@ from pydantic import ValidationError
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.steward.common import apply_privacy_actions
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.kg import (
+    ConsolidatorIngestThemeCommand,
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryCommandPayload,
@@ -311,7 +313,7 @@ async def process_command_message(
     logged but don't NAK (the source is admin, not chat; chat ack-loop is the
     one that needs strong delivery guarantees).
     """
-    del backend, settings  # not used yet; reserved for future delete / privacy cmds
+    del settings  # not currently consulted; reserved for future cmd kinds
     try:
         raw = json.loads(msg.data.decode("utf-8"))
         kind = raw.get("kind")
@@ -319,6 +321,8 @@ async def process_command_message(
             cmd: MemoryCommandPayload = KgAddTripleCommand.model_validate(raw)
         elif kind == "kg_invalidate":
             cmd = KgInvalidateCommand.model_validate(raw)
+        elif kind == "consolidator_ingest_theme":
+            cmd = ConsolidatorIngestThemeCommand.model_validate(raw)
         else:
             log.error("cmd_unknown_kind", kind=kind)
             await msg.ack()
@@ -373,7 +377,52 @@ async def process_command_message(
                 predicate=cmd.predicate,
                 object=cmd.object,
             )
+        elif isinstance(cmd, ConsolidatorIngestThemeCommand):
+            await _ingest_theme(backend, cmd)
+            log.info(
+                "cmd_theme_ingest_ok",
+                request_id=cmd.request_id,
+                underlying_wing=cmd.underlying_wing,
+                drawer_count=len(cmd.source_drawer_ids),
+                confidence=cmd.confidence,
+            )
     except Exception as exc:
         log.error("cmd_apply_failed", request_id=cmd.request_id, error=str(exc))
 
     await msg.ack()
+
+
+async def _ingest_theme(backend: Any, cmd: "ConsolidatorIngestThemeCommand") -> None:
+    """Write a consolidator-produced theme directly as a Wing_Theme fragment.
+
+    Skip the steward layer entirely — themes are already a steward output
+    (synthesized by ``eidolon-memory-consolidator``), and putting them
+    through ``LiteLLMSteward.decide()`` again would either:
+      a) produce theme-of-theme noise, or
+      b) be a wasted LLM round-trip.
+
+    Idempotency: the deterministic ``key`` derived from ``cmd.request_id``
+    means re-delivery of the same theme collapses to one drawer at the
+    chroma layer (its doc id = ``user_id::key``).
+    """
+    fragment = MemoryFragment(
+        fragment_id=f"theme:{cmd.request_id}",
+        user_id=cmd.user_id,
+        wing="Wing_Theme",
+        room=f"theme:{cmd.request_id[:16]}",
+        content=cmd.text,
+        memory_type="profile",   # closest existing type for high-level summaries
+        importance=4,
+        confidence=cmd.confidence,
+        source_turn_id=f"consolidator:{cmd.request_id}",
+        session_id="consolidator",
+        tags=["theme", cmd.underlying_wing],
+        privacy="normal",
+        metadata={
+            "source": "consolidator",
+            "underlying_wing": cmd.underlying_wing,
+            "window_days": cmd.window_days,
+            "source_drawer_ids": cmd.source_drawer_ids,
+        },
+    )
+    await ingest_memory_fragment(backend, fragment)

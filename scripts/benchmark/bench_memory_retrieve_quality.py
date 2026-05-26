@@ -504,6 +504,56 @@ async def _list_fragment_count(session: ClientSession) -> int:
     return len(payload.get("records") or [])
 
 
+async def _count_wing_theme_drawers(session: ClientSession) -> int:
+    """Count Wing_Theme drawers via the MCP listing tool."""
+    result = await session.call_tool(
+        "eidolon_memory_list", {"limit": 5000, "include_private": False},
+    )
+    payload = _unwrap(result)
+    if not isinstance(payload, dict):
+        return 0
+    rows = payload.get("records") or []
+    return sum(
+        1 for r in rows
+        if isinstance(r, dict)
+        and (r.get("metadata") or {}).get("wing") == "Wing_Theme"
+    )
+
+
+async def _run_consolidator_inline(
+    *, user_id: str, mcp_url: str, settings_yaml: Any, log_path: Any,
+) -> int:
+    """Spawn the consolidator subprocess, wait for it, return exit code.
+
+    Inherits ``EIDOLON_MEMORY_LLM_API_KEY`` from the parent env (forwarded
+    from ``config/.env`` if necessary) so the LLM call works.
+    """
+    import subprocess
+    from pathlib import Path
+    cli = Path(sys.executable).parent / "eidolon-memory-consolidator"
+    if not cli.is_file():
+        from shutil import which
+        cli_str = which("eidolon-memory-consolidator")
+        if cli_str is None:
+            raise RuntimeError("eidolon-memory-consolidator not on PATH")
+        cli = Path(cli_str)
+    env = {**os.environ, "EIDOLON_MEMORY_SETTINGS_YAML": str(settings_yaml)}
+    dotenv = _REPO_ROOT / "config" / ".env"
+    if dotenv.is_file():
+        for line in dotenv.read_text().splitlines():
+            if line.startswith("EIDOLON_") and "=" in line:
+                k, v = line.split("=", 1)
+                if v.strip() and k not in env:
+                    env[k] = v.strip()
+    with open(log_path, "ab") as log_fp:
+        proc = subprocess.run(
+            [str(cli), "--user-id", user_id, "--mcp-url", mcp_url,
+             "--once", "--min-drawers", "2", "--min-confidence", "0.5"],
+            stdout=log_fp, stderr=subprocess.STDOUT, env=env, timeout=240,
+        )
+    return proc.returncode
+
+
 async def _wait_for_ingestion(
     session: ClientSession,
     *,
@@ -627,6 +677,37 @@ async def amain(args: argparse.Namespace) -> int:
                 f"fragments={fragments}"
             )
 
+            # 3.5) Optionally run the consolidator + wait for Wing_Theme drawers.
+            consolidator_seconds = 0.0
+            theme_count = 0
+            if args.with_consolidator:
+                print("[consolidator] running ...")
+                cons_t0 = time.monotonic()
+                consolidator_log = out_dir / "consolidator.log"
+                rc = await _run_consolidator_inline(
+                    user_id=args.user_id, mcp_url=mcp_url,
+                    settings_yaml=settings_path, log_path=consolidator_log,
+                )
+                consolidator_seconds = time.monotonic() - cons_t0
+                if rc != 0:
+                    print(
+                        f"[consolidator] exit={rc}; log={consolidator_log}",
+                        file=sys.stderr,
+                    )
+
+                # Wait for cmd subscriber to apply theme writes (themes don't
+                # show up instantly — give the JetStream loop a window).
+                theme_deadline = time.monotonic() + 30.0
+                while time.monotonic() < theme_deadline:
+                    theme_count = await _count_wing_theme_drawers(session)
+                    if theme_count > 0:
+                        break
+                    await asyncio.sleep(2.0)
+                print(
+                    f"[consolidator] {consolidator_seconds:.1f}s, "
+                    f"Wing_Theme drawers landed: {theme_count}"
+                )
+
             # 4) Run queries.
             print(f"[query] running {len(queries)} queries ...")
             results: list[QueryResult] = []
@@ -733,6 +814,9 @@ def main() -> int:
                         help="Wait until eidolon_memory_list returns at least this many fragments")
     parser.add_argument("--ingest-timeout", type=float, default=360.0,
                         help="Max seconds to wait for ingestion (LLM steward is slow)")
+    parser.add_argument("--with-consolidator", action="store_true",
+                        help="Run eidolon-memory-consolidator after ingestion so the "
+                             "[主题] section is populated for the query battery")
     args = parser.parse_args()
     return asyncio.run(amain(args))
 

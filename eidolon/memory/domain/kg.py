@@ -156,5 +156,30 @@ class KgInvalidateCommand(_BaseMemoryCommand):
     ended: str | None = None
 
 
-MemoryCommandPayload = KgAddTripleCommand | KgInvalidateCommand
+class ConsolidatorIngestThemeCommand(_BaseMemoryCommand):
+    """Phase 4 — emitted by the ``eidolon-memory-consolidator`` worker.
+
+    The consolidator is **another agent client** that:
+      1. reads drawers via MCP (read-only, doesn't break D1 single-owner),
+      2. asks an LLM to produce a small set of cross-time themes,
+      3. publishes each surviving theme back via this cmd kind.
+
+    The agent_runner's ``process_command_message`` writes the theme as a
+    standard ``MemoryFragment`` in ``Wing_Theme``, **bypassing the steward**
+    (themes are already structured, re-LLM extraction would loop). The
+    ``request_id`` doubles as an idempotency key — re-publishing the same
+    theme is a no-op at the backend layer (chromadb dedup on doc id).
+    """
+
+    kind: Literal["consolidator_ingest_theme"] = "consolidator_ingest_theme"
+    text: str = Field(min_length=1)
+    underlying_wing: str       # Source wing the consolidator distilled (e.g. "Wing_Work")
+    window_days: int = Field(gt=0, default=30)
+    source_drawer_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0, default=0.7)
+
+
+MemoryCommandPayload = (
+    KgAddTripleCommand | KgInvalidateCommand | ConsolidatorIngestThemeCommand
+)
 """Discriminated union; route on the ``kind`` field."""

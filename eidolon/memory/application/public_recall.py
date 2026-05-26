@@ -138,6 +138,24 @@ async def recall_with_kg_fusion(
             rrf_k=settings.recall.rerank_rrf_k,
         )
 
+    # Phase 4 — Wing_Theme drawers always surface (when present). They
+    # encode cross-time "what's been on your mind" overviews that don't
+    # compete on cosine ranking with concrete fragments; they're meant
+    # to live in their own [主题] section, not displace vector hits.
+    # We fetch them with a dedicated search and merge ADDITIVELY (no
+    # truncation of vector_records). Dedup on key avoids double-counting
+    # if a theme happened to win a vector top-K slot too.
+    theme_records = await _fetch_themes(backend, query, settings)
+    if theme_records:
+        existing_keys = {r.key for r in vector_records}
+        # Themes go first in the merged list so the renderer's split-by-
+        # `_is_theme_record` puts the [主题] section in front naturally.
+        merged: list[MemoryWireRecord] = [
+            r for r in theme_records if r.key not in existing_keys
+        ]
+        merged.extend(vector_records)
+        vector_records = merged
+
     # Phase 2 — working memory snapshot. ``backend.working_memory`` is
     # ``None`` on test fakes; the ring's snapshot is empty when disabled
     # (``maxlen=0``). Either way callers get a list to render.
@@ -154,6 +172,29 @@ async def recall_with_kg_fusion(
         "kg": kg_records,
         "working_memory": working_memory,
     }
+
+
+async def _fetch_themes(
+    backend: MemoryReader,
+    query: str,
+    settings: MemorySettings,
+) -> list[MemoryWireRecord]:
+    """Pull up to ``recall.theme_top_k`` Wing_Theme drawers.
+
+    Uses ``backend.search`` against the Wing_Theme scope only — cheap
+    (single wing, ≤ cap rows). Returns ``[]`` when no themes exist or
+    when the configured cap is 0 (a deliberate disable).
+    """
+    cap = max(0, int(settings.recall.theme_top_k))
+    if cap == 0:
+        return []
+    try:
+        return await backend.search(
+            query, wing="Wing_Theme", n_results=cap, room=None,
+        )
+    except Exception as exc:  # noqa: BLE001 - never break recall
+        log.warning("theme_fetch_failed", error=str(exc))
+        return []
 
 
 async def _kg_path_with_timeout(

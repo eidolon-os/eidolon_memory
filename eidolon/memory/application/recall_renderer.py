@@ -43,6 +43,10 @@ _MAX_ITEMS_PER_GROUP = 4
 _WM_MAX_TURNS = 5
 _WM_TRUNC = 200
 
+# Phase 4 — high-level themes from the consolidator. Capped at 4 lines so
+# the [主题] section doesn't crowd out vector recall on busy users.
+_THEMES_MAX_ITEMS = 4
+
 
 def _truncate(text: str, limit: int = _WM_TRUNC) -> str:
     text = text or ""
@@ -67,6 +71,35 @@ def _render_working_memory(turns: list[ConversationTurnPayload]) -> list[str]:
     return lines
 
 
+def _is_theme_record(rec: MemoryWireRecord) -> bool:
+    """Phase 4 — themes come from the consolidator and live in Wing_Theme.
+
+    Either signal qualifies: the wing tag (preferred — set at ingest time)
+    or the source marker (defensive — survives wing-config edits). One ⇒
+    the record renders in the [主题] section instead of the vector groups.
+    """
+    meta = rec.metadata or {}
+    return (
+        meta.get("wing") == "Wing_Theme"
+        or meta.get("source") == "consolidator"
+    )
+
+
+def _render_themes(themes: list[MemoryWireRecord]) -> list[str]:
+    """Render the ``[主题]`` section (cross-time consolidator summaries)."""
+    if not themes:
+        return []
+    lines: list[str] = ["[主题]"]
+    for rec in themes[:_THEMES_MAX_ITEMS]:
+        underlying = (rec.metadata or {}).get("underlying_wing")
+        text = _truncate(str(rec.value or ""))
+        if underlying:
+            lines.append(f"- ({underlying}) {text}")
+        else:
+            lines.append(f"- {text}")
+    return lines
+
+
 def _classify(memory_type: str) -> str:
     """Return the section title for a given memory_type, defaulting to lifestyle."""
     mt = (memory_type or "").lower()
@@ -86,13 +119,15 @@ def group_recall_context(
 
     Section order (top → bottom):
       1. ``[最近对话]`` — Phase 2 verbatim recent turns (highest priority)
-      2. Vector fragments grouped by ``metadata.memory_type``
-      3. ``知识图谱事实`` — KG triples
+      2. ``[主题]`` — Phase 4 consolidator-distilled cross-time themes
+      3. Vector fragments grouped by ``metadata.memory_type``
+      4. ``知识图谱事实`` — KG triples
 
     Each section is independently skipped if its source is empty. Vector
     sections are individually capped at ``_MAX_ITEMS_PER_GROUP``; working
-    memory at ``_WM_MAX_TURNS`` × 2 lines; KG transcription handles its own
-    capping (caller supplies the trimmed triple list).
+    memory at ``_WM_MAX_TURNS`` × 2 lines; themes at ``_THEMES_MAX_ITEMS``;
+    KG transcription handles its own capping (caller supplies the trimmed
+    triple list).
     """
     lines: list[str] = []
 
@@ -103,9 +138,26 @@ def group_recall_context(
     if wm_lines:
         lines.extend(wm_lines)
 
+    # Phase 4 — split themes out of the raw record list so they render in
+    # their own [主题] section instead of leaking into a vector group whose
+    # ``memory_type`` taxonomy was never designed for cross-time summaries.
+    theme_records: list[MemoryWireRecord] = []
+    vector_records: list[MemoryWireRecord] = []
+    for rec in records:
+        if _is_theme_record(rec):
+            theme_records.append(rec)
+        else:
+            vector_records.append(rec)
+
+    theme_lines = _render_themes(theme_records)
+    if theme_lines:
+        if lines:
+            lines.append("")
+        lines.extend(theme_lines)
+
     # Vector fragments — grouped + capped per group.
     groups: dict[str, list[str]] = {title: [] for title in _WING_GROUP_MAP}
-    for rec in records:
+    for rec in vector_records:
         kind = str(rec.metadata.get("memory_type", ""))
         text = str(rec.value)
         groups[_classify(kind)].append(text)

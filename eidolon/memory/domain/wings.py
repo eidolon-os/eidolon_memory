@@ -127,6 +127,17 @@ CANONICAL_WINGS: Final[tuple[WingDefinition, ...]] = (
         ),
         sort_order=99,
     ),
+    WingDefinition(
+        id="Wing_Theme",
+        display_name="主题与走势",
+        description=(
+            "Consolidator 后台进程的产物：跨时段的高阶主题摘要（如\"近三周担心妈妈失眠 + "
+            "工作压力\"）。原始细节仍在其他 wing；Wing_Theme 提供\"远观\"角度，召回时排在"
+            "[最近对话]之后、其他 wing 之前。fragment.metadata 必带 source=\"consolidator\" + "
+            "underlying_wing 指向源主题所在 wing。"
+        ),
+        sort_order=10,
+    ),
 )
 
 

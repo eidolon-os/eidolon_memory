@@ -49,6 +49,10 @@ class RecallPolicy(BaseModel):
     # if the new sparse signal ever misbehaves on production traffic.
     rerank_enabled: bool = True
     rerank_rrf_k: int = 60
+    # Phase 4 — Wing_Theme drawers surface additively (don't compete with
+    # vector top_k). 0 disables the [主题] section cleanly. Capped low so
+    # they don't crowd out concrete fragments in the rendered context.
+    theme_top_k: int = 3
 
 
 class StewardConfig(BaseModel):
