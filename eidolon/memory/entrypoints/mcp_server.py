@@ -29,6 +29,7 @@ from eidolon.memory.domain.kg import (
     SENSITIVE_PREDICATES,
     KgAddTripleCommand,
     KgInvalidateCommand,
+    UserConfirmedFactCommand,
 )
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.support.logging import get_logger
@@ -204,12 +205,83 @@ def build_control_plane_mcp(
             max_edges=me,
         )
 
+    if command_publisher is not None:
+        _register_user_confirm_tool(
+            mcp, command_publisher=command_publisher, user_id=user_id,
+        )
+
     if kg is not None and command_publisher is not None:
         _register_kg_tools(
             mcp, kg=kg, command_publisher=command_publisher, user_id=user_id
         )
 
     return mcp
+
+
+def _register_user_confirm_tool(
+    mcp: Any, *, command_publisher: Any, user_id: str,
+) -> None:
+    """Phase 5.2 — verbatim-write tool, bypasses steward.
+
+    Decoupled from ``_register_kg_tools`` because this writes a *fragment*
+    (chromadb drawer), not a KG triple. Only needs ``command_publisher`` —
+    no ``kg`` dependency.
+    """
+
+    @mcp.tool()
+    async def eidolon_memory_user_confirm(
+        text: str,
+        wing: str = "Wing_Profile",
+        memory_type: str = "profile",
+        importance: int = 5,
+        confidence: float = 0.99,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Persist a user-confirmed fact verbatim, bypassing the LLM steward.
+
+        Use when the caller (LiveKit voice agent / IDE / chat UI) has
+        positively determined the user wants something remembered
+        word-for-word — e.g. "记住我喝乌龙茶不喝绿茶". The steward path
+        (where LLM may paraphrase, mis-route, or drop the statement
+        entirely) is **not** appropriate for this intent.
+
+        Writes:
+          - ``metadata.source = "user-confirmed"`` — recall pins these
+            ahead of cosine-ranked drawers in the same wing.
+          - ``confidence = 0.99`` (caller-override allowed) — the
+            highest-trust signal in the system short of KG facts.
+          - ``importance = 5`` default — explicit user intent ranks
+            top of the importance ladder.
+
+        Returns ``{status: "pending", request_id, wing}``. Idempotency:
+        re-publishing the same ``request_id`` (caller can't drive that
+        from the tool, but JetStream redelivery does) collapses at chroma.
+        """
+        clean = (text or "").strip()
+        if not clean:
+            return {
+                "status": "error",
+                "error": "text must be a non-empty string",
+            }
+        request_id = uuid.uuid4().hex
+        cmd = UserConfirmedFactCommand(
+            request_id=request_id,
+            user_id=user_id,
+            issued_at=_now_iso(),
+            issuer="agent",
+            text=clean,
+            wing=wing,
+            memory_type=memory_type,
+            importance=max(1, min(5, importance)),
+            confidence=max(0.0, min(1.0, confidence)),
+            tags=list(tags or []),
+        )
+        await command_publisher.publish(cmd)
+        return {
+            "status": "pending",
+            "request_id": request_id,
+            "wing": wing,
+        }
 
 
 # palace_graph business logic lives in eidolon.memory.application.palace_graph

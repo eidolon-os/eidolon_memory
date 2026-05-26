@@ -18,6 +18,7 @@ logs/*
 
 # Local-only perf / baseline reports (only fixtures under reports/bench_palace/ are tracked)
 reports/memory_perf_*/
+reports/memory_quality_*/
 reports/architecture_d1_baseline_*/
 
 # Transient SQLite WAL / SHM next to any chroma.sqlite3

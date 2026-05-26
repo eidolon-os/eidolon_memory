@@ -179,7 +179,40 @@ class ConsolidatorIngestThemeCommand(_BaseMemoryCommand):
     confidence: float = Field(ge=0.0, le=1.0, default=0.7)
 
 
+class UserConfirmedFactCommand(_BaseMemoryCommand):
+    """Phase 5.2 — verbatim fact the user explicitly asked to remember.
+
+    Why a dedicated cmd kind rather than routing through the conversation
+    turn pipeline:
+
+    - Steward (LLM) may **paraphrase, mis-classify, or drop** the user's
+      statement; user-confirmed facts must land **verbatim**.
+    - User-confirmed facts get a recall-time priority boost (pinned ahead
+      of cosine-ranked drawers in their wing). The cmd kind is the marker
+      that lets the recall path identify them at write time, not via
+      brittle prompt-engineering of the steward.
+    - Same idempotency story as the consolidator: ``request_id`` is the
+      stable fragment id; redelivery collapses at chroma.
+
+    Typical invokers:
+      - LiveKit / chat agent recognizing "记住 ..." / "remember this"
+        intents and calling the ``eidolon_memory_user_confirm`` MCP tool.
+      - Admin UI surfacing a "pin this fact" affordance.
+    """
+
+    kind: Literal["user_confirm_fact"] = "user_confirm_fact"
+    text: str = Field(min_length=1)
+    wing: str                      # Destination wing (e.g. "Wing_Profile")
+    memory_type: str = "profile"   # MemoryType literal; kept str for replay tolerance
+    importance: int = Field(ge=1, le=5, default=5)
+    confidence: float = Field(ge=0.0, le=1.0, default=0.99)
+    tags: list[str] = Field(default_factory=list)
+
+
 MemoryCommandPayload = (
-    KgAddTripleCommand | KgInvalidateCommand | ConsolidatorIngestThemeCommand
+    KgAddTripleCommand
+    | KgInvalidateCommand
+    | ConsolidatorIngestThemeCommand
+    | UserConfirmedFactCommand
 )
 """Discriminated union; route on the ``kind`` field."""

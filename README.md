@@ -114,8 +114,7 @@ async with streamable_http_client(URL) as (read, write, _):
 在 `config/settings.yaml` 设:
 ```yaml
 mcp_http:
-  bearer_token: ""                     # 或留空走 env
-  bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN
+  bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN  # 值在 config/.env
 ```
 设了之后 client 必须发 `Authorization: Bearer <token>` 头。
 
@@ -392,8 +391,7 @@ mcp_http:
   host: "127.0.0.1"
   port: 8030                     # 仅用于 ad-hoc 单用户;多用户走 users.yaml
   path: "/mcp"
-  bearer_token: ""               # 启用后 client 必须发 Authorization
-  bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN
+  bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN  # 值在 config/.env
 
 discovery_http:
   host: "127.0.0.1"
@@ -406,8 +404,7 @@ steward:
 llm:
   model: "openai/local-model"
   base_url: "http://127.0.0.1:1234/v1"
-  api_key: ""
-  api_key_env: EIDOLON_MEMORY_LLM_API_KEY
+  api_key_env: EIDOLON_MEMORY_LLM_API_KEY  # 值在 config/.env
 
 recall:
   livekit_timeout_seconds: 0.3   # LiveKit 整体 wait_for

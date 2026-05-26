@@ -24,6 +24,7 @@ from eidolon.memory.domain.kg import (
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryCommandPayload,
+    UserConfirmedFactCommand,
 )
 from eidolon.memory.domain.payloads import ConversationTurnPayload
 from eidolon.memory.domain.steward import StewardDecision
@@ -323,6 +324,8 @@ async def process_command_message(
             cmd = KgInvalidateCommand.model_validate(raw)
         elif kind == "consolidator_ingest_theme":
             cmd = ConsolidatorIngestThemeCommand.model_validate(raw)
+        elif kind == "user_confirm_fact":
+            cmd = UserConfirmedFactCommand.model_validate(raw)
         else:
             log.error("cmd_unknown_kind", kind=kind)
             await msg.ack()
@@ -386,6 +389,15 @@ async def process_command_message(
                 drawer_count=len(cmd.source_drawer_ids),
                 confidence=cmd.confidence,
             )
+        elif isinstance(cmd, UserConfirmedFactCommand):
+            await _ingest_user_confirmed(backend, cmd)
+            log.info(
+                "cmd_user_confirm_ok",
+                request_id=cmd.request_id,
+                wing=cmd.wing,
+                memory_type=cmd.memory_type,
+                confidence=cmd.confidence,
+            )
     except Exception as exc:
         log.error("cmd_apply_failed", request_id=cmd.request_id, error=str(exc))
 
@@ -423,6 +435,41 @@ async def _ingest_theme(backend: Any, cmd: "ConsolidatorIngestThemeCommand") -> 
             "underlying_wing": cmd.underlying_wing,
             "window_days": cmd.window_days,
             "source_drawer_ids": cmd.source_drawer_ids,
+        },
+    )
+    await ingest_memory_fragment(backend, fragment)
+
+
+async def _ingest_user_confirmed(
+    backend: Any, cmd: "UserConfirmedFactCommand",
+) -> None:
+    """Write a user-confirmed fact directly as a drawer in the chosen wing.
+
+    Bypasses the steward by design: a user-confirmed fact is the user's
+    own ground truth — paraphrase / mis-classification / silent drop by
+    the LLM are all unacceptable. Recall-time priority boost is keyed off
+    ``metadata.source == "user-confirmed"``, so this string is the
+    cross-layer contract; do not rename without updating recall too.
+
+    Idempotency: ``fragment_id = "userconfirm:<request_id>"``; chroma's
+    doc id = ``user_id::room`` collapses redelivery to one row.
+    """
+    fragment = MemoryFragment(
+        fragment_id=f"userconfirm:{cmd.request_id}",
+        user_id=cmd.user_id,
+        wing=cmd.wing,
+        room=f"userconfirm:{cmd.request_id[:16]}",
+        content=cmd.text,
+        memory_type=cmd.memory_type,
+        importance=cmd.importance,
+        confidence=cmd.confidence,
+        source_turn_id=f"user-confirmed:{cmd.request_id}",
+        session_id="user-confirmed",
+        tags=["user-confirmed", *cmd.tags],
+        privacy="normal",
+        metadata={
+            "source": "user-confirmed",
+            "request_id": cmd.request_id,
         },
     )
     await ingest_memory_fragment(backend, fragment)

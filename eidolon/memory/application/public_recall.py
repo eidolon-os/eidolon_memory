@@ -138,6 +138,24 @@ async def recall_with_kg_fusion(
             rrf_k=settings.recall.rerank_rrf_k,
         )
 
+    # Phase 5.2 — pin user-confirmed drawers to the top of vector_records.
+    # These are facts the user explicitly told us to remember verbatim
+    # (via the ``eidolon_memory_user_confirm`` MCP tool, NOT via steward
+    # LLM extraction) — they outrank cosine/BM25 signal by policy. They
+    # still flow through the regular wing fan-out + rerank, so this pin
+    # is purely a re-ordering inside the already-returned set.
+    if vector_records:
+        confirmed = [
+            r for r in vector_records
+            if (r.metadata or {}).get("source") == "user-confirmed"
+        ]
+        if confirmed:
+            others = [
+                r for r in vector_records
+                if (r.metadata or {}).get("source") != "user-confirmed"
+            ]
+            vector_records = confirmed + others
+
     # Phase 4 — Wing_Theme drawers always surface (when present). They
     # encode cross-time "what's been on your mind" overviews that don't
     # compete on cosine ranking with concrete fragments; they're meant
