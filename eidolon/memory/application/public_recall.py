@@ -62,6 +62,19 @@ def recall_record_visible_for_user(rec: MemoryWireRecord, user_id: str) -> bool:
 from eidolon.memory.application.recall_renderer import group_recall_context  # noqa: E402, F401
 
 
+# Wings excluded from the default competitive vector fan-out.
+#   Wing_Privacy — never recalled (privacy boundary).
+#   Wing_Theme   — Phase 4.1: themes are a SEPARATE retrieval channel
+#     (``_fetch_themes`` searches Wing_Theme on its own budget and renders
+#     into the [主题] section). Letting Wing_Theme compete in the shared
+#     top_k let broad theme summaries evict specific facts on
+#     precision-sensitive queries (negative / future_plans / preference) —
+#     measured at -15..-17pp in the consolidator A/B bench. Excluding it here
+#     keeps the specific-fact top_k clean while themes still surface via
+#     their own channel.
+_FANOUT_EXCLUDED_WINGS = frozenset({"Wing_Privacy", "Wing_Theme"})
+
+
 def _resolve_wings(
     settings: MemorySettings,
     *,
@@ -69,10 +82,10 @@ def _resolve_wings(
     for_voice: bool,
 ) -> list[str]:
     if wing:
-        return [wing]
+        return [wing]  # explicit single-wing request (incl. callers wanting Wing_Theme)
     if for_voice and settings.recall.voice_wings:
         return list(settings.recall.voice_wings)
-    return [w.id for w in settings.wings if w.id != "Wing_Privacy"]
+    return [w.id for w in settings.wings if w.id not in _FANOUT_EXCLUDED_WINGS]
 
 
 def _effective_wing_parallel(settings: MemorySettings, *, for_voice: bool) -> int:

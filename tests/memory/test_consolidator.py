@@ -312,3 +312,40 @@ def test_consolidator_command_pydantic_defaults():
     assert cmd.source_drawer_ids == []
     assert cmd.confidence == 0.7
     assert cmd.kind == "consolidator_ingest_theme"
+
+
+# ─── Phase 4.1 — themes are a separate retrieval channel ───────────────────
+
+
+def test_wing_theme_excluded_from_default_fanout():
+    """Phase 4.1: Wing_Theme must NOT compete in the shared vector top_k.
+
+    Broad theme summaries winning top_k slots evicted specific facts on
+    precision-sensitive queries (negative / future_plans / preference),
+    measured at -15..-17pp in the consolidator A/B bench. Themes reach
+    recall via their own ``_fetch_themes`` channel instead.
+    """
+    from eidolon.memory.application.public_recall import _resolve_wings
+    from eidolon.memory.config.memory_settings import load_memory_settings
+
+    settings = load_memory_settings()
+    wings = _resolve_wings(settings, wing=None, for_voice=False)
+    assert "Wing_Theme" not in wings, (
+        "Wing_Theme leaked into the competitive fan-out — it would evict "
+        "specific facts from the shared top_k"
+    )
+    assert "Wing_Privacy" not in wings  # unchanged
+    # The other canonical wings are still fanned out.
+    assert "Wing_Profile" in wings
+    assert "Wing_Emotion" in wings
+
+
+def test_explicit_wing_theme_request_still_allowed():
+    """An explicit ``wing="Wing_Theme"`` (e.g. the _fetch_themes channel or
+    admin) bypasses the fan-out exclusion — exclusion only applies to the
+    default multi-wing fan-out."""
+    from eidolon.memory.application.public_recall import _resolve_wings
+    from eidolon.memory.config.memory_settings import load_memory_settings
+
+    settings = load_memory_settings()
+    assert _resolve_wings(settings, wing="Wing_Theme", for_voice=False) == ["Wing_Theme"]
