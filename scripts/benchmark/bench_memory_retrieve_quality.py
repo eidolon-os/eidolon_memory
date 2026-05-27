@@ -488,6 +488,47 @@ def _render_markdown(
     return "\n".join(lines)
 
 
+def _render_ab_comparison(
+    *,
+    baseline: dict[str, Any],
+    themed: dict[str, Any],
+    theme_count: int,
+    consolidator_seconds: float,
+) -> str:
+    """Render the before/after (no-themes vs themed) per-category delta.
+
+    This is the table that actually answers "did Phase 4 lift the
+    topic / emotion / preference categories the original bench flagged at
+    0-25%?" — the one gap the Phase 4 P-gate never closed.
+    """
+    b_cats = {r["category"]: r for r in baseline["per_category"]}
+    t_cats = {r["category"]: r for r in themed["per_category"]}
+    cats = sorted(set(b_cats) | set(t_cats))
+
+    lines: list[str] = []
+    lines.append("## Phase 4 A/B — query battery before vs after consolidation\n")
+    lines.append(
+        f"- Wing_Theme drawers produced: **{theme_count}** "
+        f"(consolidator ran {consolidator_seconds:.1f}s)"
+    )
+    bo, to = baseline["overall"], themed["overall"]
+    lines.append(
+        f"- Overall correct: baseline **{bo['correct_pct']}%** → "
+        f"themed **{to['correct_pct']}%** "
+        f"(Δ {to['correct_pct'] - bo['correct_pct']:+.1f}pp)"
+    )
+    lines.append("")
+    lines.append("| Category | baseline | themed | Δ pp |")
+    lines.append("|----------|---------:|-------:|-----:|")
+    for cat in cats:
+        b = b_cats.get(cat, {}).get("correct_pct", 0.0)
+        t = t_cats.get(cat, {}).get("correct_pct", 0.0)
+        arrow = "▲" if t > b else ("▼" if t < b else "=")
+        lines.append(f"| {cat} | {b}% | {t}% | {arrow} {t - b:+.1f} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Main orchestration
 # ───────────────────────────────────────────────────────────────────────────
@@ -587,6 +628,33 @@ async def _wait_for_ingestion(
     return False, last_stats, last_fragments, time.monotonic() - start
 
 
+async def _run_battery(
+    session: ClientSession, queries: list[dict], *, label: str,
+) -> tuple[list["QueryResult"], list[dict]]:
+    """Run the full query battery once, printing a one-line trace per query.
+
+    ``label`` distinguishes the before/after passes in the A/B flow
+    (e.g. "baseline" vs "themed").
+    """
+    print(f"[query:{label}] running {len(queries)} queries ...")
+    results: list[QueryResult] = []
+    raw: list[dict] = []
+    for q in queries:
+        try:
+            r, response = await _run_query(session, q)
+        except Exception as exc:  # noqa: BLE001 - bench resilience
+            print(f"  [err] {q['id']}: {exc}")
+            continue
+        results.append(r)
+        raw.append({"id": q["id"], "response": response})
+        marker = "✓" if r.correct else ("⚠" if r.negative_violation else "·")
+        print(
+            f"  {marker} {r.id:<22} {r.category:<18} {r.elapsed_ms:>6.1f}ms  "
+            f"{', '.join(r.matched_signals[:2])}"
+        )
+    return results, raw
+
+
 async def _run_query(
     session: ClientSession, query: dict
 ) -> tuple[QueryResult, dict[str, Any]]:
@@ -677,9 +745,19 @@ async def amain(args: argparse.Namespace) -> int:
                 f"fragments={fragments}"
             )
 
-            # 3.5) Optionally run the consolidator + wait for Wing_Theme drawers.
+            # 4) Run the query battery. With --with-consolidator we run it
+            #    TWICE — once now (baseline, no themes) and once after the
+            #    consolidator lands Wing_Theme drawers — to quantify the
+            #    Phase 4 gain in a single, same-palace A/B.
+            baseline_results, raw_responses = await _run_battery(
+                session, queries, label="baseline" if args.with_consolidator else "all",
+            )
+            agg = _aggregate(baseline_results)
+            results = baseline_results  # default reporting target
+
             consolidator_seconds = 0.0
             theme_count = 0
+            themed_agg: dict[str, Any] | None = None
             if args.with_consolidator:
                 print("[consolidator] running ...")
                 cons_t0 = time.monotonic()
@@ -694,9 +772,7 @@ async def amain(args: argparse.Namespace) -> int:
                         f"[consolidator] exit={rc}; log={consolidator_log}",
                         file=sys.stderr,
                     )
-
-                # Wait for cmd subscriber to apply theme writes (themes don't
-                # show up instantly — give the JetStream loop a window).
+                # Wait for the cmd subscriber to apply theme writes.
                 theme_deadline = time.monotonic() + 30.0
                 while time.monotonic() < theme_deadline:
                     theme_count = await _count_wing_theme_drawers(session)
@@ -708,25 +784,13 @@ async def amain(args: argparse.Namespace) -> int:
                     f"Wing_Theme drawers landed: {theme_count}"
                 )
 
-            # 4) Run queries.
-            print(f"[query] running {len(queries)} queries ...")
-            results: list[QueryResult] = []
-            raw_responses: list[dict] = []
-            for q in queries:
-                try:
-                    r, raw = await _run_query(session, q)
-                except Exception as exc:  # noqa: BLE001 - bench resilience
-                    print(f"  [err] {q['id']}: {exc}")
-                    continue
-                results.append(r)
-                raw_responses.append({"id": q["id"], "response": raw})
-                marker = "✓" if r.correct else ("⚠" if r.negative_violation else "·")
-                print(
-                    f"  {marker} {r.id:<22} {r.category:<18} {r.elapsed_ms:>6.1f}ms  "
-                    f"{', '.join(r.matched_signals[:2])}"
+                # Re-run the same battery now that themes exist.
+                themed_results, raw_responses = await _run_battery(
+                    session, queries, label="themed",
                 )
-
-            agg = _aggregate(results)
+                themed_agg = _aggregate(themed_results)
+                results = themed_results   # report the themed pass as primary
+                agg = themed_agg
 
         # 5) Render summary.
         md = _render_markdown(
@@ -737,6 +801,13 @@ async def amain(args: argparse.Namespace) -> int:
             corpus_size=len(corpus),
             ingest_seconds=ingest_s,
         )
+        if themed_agg is not None:
+            md += "\n" + _render_ab_comparison(
+                baseline=_aggregate(baseline_results),
+                themed=themed_agg,
+                theme_count=theme_count,
+                consolidator_seconds=consolidator_seconds,
+            )
         (out_dir / "summary.md").write_text(md, encoding="utf-8")
         (out_dir / "raw_results.json").write_text(
             json.dumps(
@@ -747,11 +818,15 @@ async def amain(args: argparse.Namespace) -> int:
                         "user_id": args.user_id,
                         "min_triples": args.min_triples,
                         "min_fragments": args.min_fragments,
+                        "with_consolidator": args.with_consolidator,
                     },
                     "kg_stats_at_query_time": stats,
                     "fragments_at_query_time": fragments,
                     "ingest_seconds": ingest_s,
+                    "consolidator_seconds": consolidator_seconds,
+                    "theme_count": theme_count,
                     "aggregate": agg,
+                    "baseline_aggregate": _aggregate(baseline_results),
                     "per_query": [r.__dict__ for r in results],
                 },
                 ensure_ascii=False,
@@ -771,6 +846,14 @@ async def amain(args: argparse.Namespace) -> int:
             f"({o['correct_pct']}%) · "
             f"p50 {o['p50_ms']}ms · p95 {o['p95_ms']}ms · mean {o['mean_ms']}ms"
         )
+        if themed_agg is not None:
+            bo = _aggregate(baseline_results)["overall"]
+            print(
+                f"  A/B overall: baseline {bo['correct_pct']}% → "
+                f"themed {o['correct_pct']}% "
+                f"(Δ {o['correct_pct'] - bo['correct_pct']:+.1f}pp); "
+                f"themes={theme_count}"
+            )
         print("")
         print("  by category:")
         for row in agg["per_category"]:
