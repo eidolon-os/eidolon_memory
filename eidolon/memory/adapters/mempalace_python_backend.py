@@ -380,5 +380,10 @@ def _record_from_get_result(result: Any, index: int, *, drawer_id: str) -> Memor
         user_id=wing,
         key=drawer_id or room,
         value=content,
-        metadata={**meta, "wing": wing, "room": room, "source": "mempalace-python"},
+        # Preserve the *stored* ``source`` (e.g. "user-confirmed",
+        # "consolidator") — it's the write-time provenance that recall
+        # ranking + theme rendering key off. Only default to
+        # "mempalace-python" when the drawer carried no source at all.
+        # ``wing``/``room`` stay authoritative (read-time placement).
+        metadata={"source": "mempalace-python", **meta, "wing": wing, "room": room},
     )

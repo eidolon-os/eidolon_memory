@@ -44,11 +44,16 @@ def parse_search_tool_payload(data: Any) -> list[MemoryWireRecord]:
             {
                 "wing": wing,
                 "room": room,
-                "source": "mcp",
                 "source_file": str(r.get("source_file", "")),
                 "similarity": round(similarity, 4),
             }
         )
+        # Preserve the stored write-time ``source`` (e.g. "user-confirmed",
+        # "consolidator") that recall ranking + theme rendering key off.
+        # Only stamp "mcp" when the hit carried no source — "mcp" is just
+        # "this came back via the search tool", redundant when real
+        # provenance exists.
+        meta.setdefault("source", "mcp")
         meta.update(internal)
         status = r.get("status", r.get("room_status"))
         if status is not None:

@@ -209,6 +209,17 @@ class UserConfirmedFactCommand(_BaseMemoryCommand):
     tags: list[str] = Field(default_factory=list)
 
 
+# Cross-layer contract: user-confirmed drawers use this ``room`` prefix.
+#
+# Why room (not metadata.source): mempalace's vector search returns hits with
+# only {text, wing, room, source_file, similarity} — custom metadata (incl.
+# ``source``) is dropped on the search path. ``room`` is a first-class field
+# that survives, so the recall-time pin keys off this prefix. The writer
+# (``turn_processor._ingest_user_confirmed``) and reader (``public_recall``)
+# both import this constant — don't fork the string.
+USER_CONFIRMED_ROOM_PREFIX = "userconfirm:"
+
+
 MemoryCommandPayload = (
     KgAddTripleCommand
     | KgInvalidateCommand

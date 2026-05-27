@@ -20,6 +20,7 @@ from eidolon.memory.application.steward.common import apply_privacy_actions
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.kg import (
+    USER_CONFIRMED_ROOM_PREFIX,
     ConsolidatorIngestThemeCommand,
     KgAddTripleCommand,
     KgInvalidateCommand,
@@ -458,7 +459,7 @@ async def _ingest_user_confirmed(
         fragment_id=f"userconfirm:{cmd.request_id}",
         user_id=cmd.user_id,
         wing=cmd.wing,
-        room=f"userconfirm:{cmd.request_id[:16]}",
+        room=f"{USER_CONFIRMED_ROOM_PREFIX}{cmd.request_id[:16]}",
         content=cmd.text,
         memory_type=cmd.memory_type,
         importance=cmd.importance,

@@ -12,12 +12,31 @@ from eidolon.memory.application.kg_recall import query_kg_for_recall
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.kg import USER_CONFIRMED_ROOM_PREFIX
 from eidolon.memory.domain.ports import MemoryReader
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.cpu_env import recommend_max_wing_parallel
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _is_user_confirmed(rec: MemoryWireRecord) -> bool:
+    """True if ``rec`` is a Phase 5.2 user-confirmed drawer.
+
+    Two signals because the metadata that survives differs by read path:
+      - ``metadata.source == "user-confirmed"`` survives ``get_all`` /
+        FakeMemoryBackend, but mempalace's vector search drops custom
+        metadata.
+      - ``room`` (prefixed ``userconfirm:``) is a first-class field that
+        mempalace search DOES return — the reliable signal on the recall
+        hot path. Checking both keeps the pin correct across every backend.
+    """
+    meta = rec.metadata or {}
+    if meta.get("source") == "user-confirmed":
+        return True
+    room = str(meta.get("room") or rec.key or "")
+    return room.startswith(USER_CONFIRMED_ROOM_PREFIX)
 
 
 def wire_record_to_public_dict(rec: MemoryWireRecord) -> dict[str, Any]:
@@ -145,15 +164,9 @@ async def recall_with_kg_fusion(
     # still flow through the regular wing fan-out + rerank, so this pin
     # is purely a re-ordering inside the already-returned set.
     if vector_records:
-        confirmed = [
-            r for r in vector_records
-            if (r.metadata or {}).get("source") == "user-confirmed"
-        ]
+        confirmed = [r for r in vector_records if _is_user_confirmed(r)]
         if confirmed:
-            others = [
-                r for r in vector_records
-                if (r.metadata or {}).get("source") != "user-confirmed"
-            ]
+            others = [r for r in vector_records if not _is_user_confirmed(r)]
             vector_records = confirmed + others
 
     # Phase 4 — Wing_Theme drawers always surface (when present). They

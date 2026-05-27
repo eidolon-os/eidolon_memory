@@ -507,6 +507,32 @@ async def nats_publish_kg_invalidate(
     return str(payload["request_id"])
 
 
+async def nats_publish_user_confirm(
+    nats_url: str,
+    *,
+    user_id: str,
+    text: str,
+    wing: str = "Wing_Profile",
+    memory_type: str = "preference",
+    request_id: str | None = None,
+) -> str:
+    """Publish a ``UserConfirmedFactCommand`` (Phase 5.2) to the cmd subject.
+
+    This is the exact wire shape the ``eidolon_memory_user_confirm`` MCP tool
+    emits — e2e tests publish it directly to verify the worker → drawer →
+    recall-pin path end to end.
+    """
+    payload = _base_cmd(user_id, "user_confirm_fact", request_id)
+    payload.update({
+        "issuer": "agent",
+        "text": text,
+        "wing": wing,
+        "memory_type": memory_type,
+    })
+    await _nats_publish(nats_url, f"agent.memory.cmd.{user_id}", payload)
+    return str(payload["request_id"])
+
+
 # ─── MCP tool result unwrapping ────────────────────────────────────────────
 
 
