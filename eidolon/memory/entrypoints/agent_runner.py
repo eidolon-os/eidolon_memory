@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import signal
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
@@ -95,86 +96,116 @@ async def _nats_subscriber_loop(
     turn_subject = conversation_turn_subject(user_id)
     cmd_subject = memory_command_subject(user_id)
 
-    nc = await nats.connect(settings.nats.url)
-    js = nc.jetstream()
-    try:
-        await ensure_memory_stream(js, settings)
-        psub_turn = await js.pull_subscribe(
-            turn_subject, durable=durable_turn, stream=settings.nats.stream
-        )
-        psub_cmd = await js.pull_subscribe(
-            cmd_subject, durable=durable_cmd, stream=settings.nats.stream
-        )
-        log.info(
-            "agent_runner_nats_pull_subscribe",
-            user_id=user_id,
-            turn_subject=turn_subject,
-            cmd_subject=cmd_subject,
-            stream=settings.nats.stream,
-        )
-        steward = create_steward(settings)
-        sync_every = max(1, settings.worker.sync_every_n_turns)
-        writes_since_checkpoint = 0
+    steward = create_steward(settings)
+    sync_every = max(1, settings.worker.sync_every_n_turns)
+    writes_since_checkpoint = 0
 
-        async def _drain(psub, handler):
-            nonlocal writes_since_checkpoint
-            try:
-                # Batch=32: covers typical companion bursts (multi-turn
-                # back-and-forth replayed on reconnect) without going so
-                # high that one slow turn blocks dozens of acks. timeout=0.2s
-                # keeps the worker responsive when idle (≤200ms latency to
-                # process a fresh publish).
-                msgs = await psub.fetch(32, timeout=0.2)
-            except TimeoutError:
-                return
-            except Exception as exc:
-                log.warning(
-                    "agent_runner_nats_fetch_error",
-                    error=str(exc), error_type=type(exc).__name__,
-                )
-                await asyncio.sleep(0.2)
-                return
-            for msg in msgs:
-                await handler(msg)
-                writes_since_checkpoint += 1
+    async def _drain(psub, handler) -> None:
+        """Fetch a batch and dispatch each message.
 
-        while not stop.is_set():
-            await _drain(
-                psub_turn,
-                lambda m: process_turn_message(
-                    m,
-                    steward=steward,
-                    backend=backend,
-                    kg=kg,
-                    settings=settings,
-                    max_deliveries=settings.nats.worker_max_deliveries,
-                    expected_user_id=user_id,
-                ),
-            )
-            await _drain(
-                psub_cmd,
-                lambda m: process_command_message(
-                    m, backend=backend, kg=kg, expected_user_id=user_id, settings=settings
-                ),
-            )
-            if writes_since_checkpoint >= sync_every:
-                # G4: both chroma and KG are WAL — checkpoint both
-                await asyncio.to_thread(
-                    checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
-                )
-                await asyncio.to_thread(
-                    checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE"
-                )
-                await asyncio.to_thread(
-                    fsync_directory, Path(palace_sqlite).parent
-                )
-                writes_since_checkpoint = 0
-    finally:
+        Idle fetch (``TimeoutError``) is swallowed here so an idle turn
+        subject never starves the cmd subject (or vice versa) — each subject
+        drains independently every loop. Any OTHER exception (drained /
+        dead connection, e.g. ``msg.ack()`` failing mid-batch under long
+        LLM load) propagates to the outer reconnect loop, instead of the
+        prior behavior where it killed the subscriber permanently and
+        silently stopped all turn + cmd ingestion until process restart.
+        """
+        nonlocal writes_since_checkpoint
         try:
-            await nc.drain()
-        except Exception:
-            pass
-        log.info("agent_runner_nats_stopped", user_id=user_id)
+            # Batch=32: covers typical companion bursts without one slow turn
+            # blocking dozens of acks. timeout=0.2s keeps the worker
+            # responsive when idle (≤200ms latency to a fresh publish).
+            msgs = await psub.fetch(32, timeout=0.2)
+        except TimeoutError:
+            return
+        for msg in msgs:
+            await handler(msg)
+            writes_since_checkpoint += 1
+
+    # Outer reconnect loop: a dropped / drained NATS connection re-subscribes
+    # with exponential backoff instead of exiting. Durable consumers persist
+    # server-side, so re-subscribe rebinds and resumes from the last ack.
+    reconnect_delay = 1.0
+    _MAX_RECONNECT_DELAY = 30.0
+    while not stop.is_set():
+        nc = None
+        try:
+            nc = await nats.connect(
+                settings.nats.url,
+                max_reconnect_attempts=-1,   # infinite connection-level retries
+                reconnect_time_wait=2,
+            )
+            js = nc.jetstream()
+            await ensure_memory_stream(js, settings)
+            psub_turn = await js.pull_subscribe(
+                turn_subject, durable=durable_turn, stream=settings.nats.stream
+            )
+            psub_cmd = await js.pull_subscribe(
+                cmd_subject, durable=durable_cmd, stream=settings.nats.stream
+            )
+            log.info(
+                "agent_runner_nats_pull_subscribe",
+                user_id=user_id,
+                turn_subject=turn_subject,
+                cmd_subject=cmd_subject,
+                stream=settings.nats.stream,
+            )
+            reconnect_delay = 1.0  # healthy connection — reset backoff
+
+            while not stop.is_set():
+                try:
+                    await _drain(
+                        psub_turn,
+                        lambda m: process_turn_message(
+                            m,
+                            steward=steward,
+                            backend=backend,
+                            kg=kg,
+                            settings=settings,
+                            max_deliveries=settings.nats.worker_max_deliveries,
+                            expected_user_id=user_id,
+                        ),
+                    )
+                    await _drain(
+                        psub_cmd,
+                        lambda m: process_command_message(
+                            m, backend=backend, kg=kg,
+                            expected_user_id=user_id, settings=settings,
+                        ),
+                    )
+                except TimeoutError:
+                    # Idle fetch — normal, just loop.
+                    pass
+                if writes_since_checkpoint >= sync_every:
+                    # G4: both chroma and KG are WAL — checkpoint both
+                    await asyncio.to_thread(
+                        checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
+                    )
+                    await asyncio.to_thread(
+                        checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE"
+                    )
+                    await asyncio.to_thread(
+                        fsync_directory, Path(palace_sqlite).parent
+                    )
+                    writes_since_checkpoint = 0
+        except Exception as exc:  # noqa: BLE001 - any connection/sub failure → reconnect
+            if stop.is_set():
+                break
+            log.warning(
+                "agent_runner_nats_reconnect",
+                error=str(exc), error_type=type(exc).__name__,
+                retry_in_s=reconnect_delay,
+            )
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, _MAX_RECONNECT_DELAY)
+        finally:
+            if nc is not None:
+                try:
+                    await nc.drain()
+                except Exception:
+                    pass
+    log.info("agent_runner_nats_stopped", user_id=user_id)
 
 
 def _compose_starlette_lifespan(
@@ -188,8 +219,6 @@ def _compose_starlette_lifespan(
     palace_path: str,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
-    from pathlib import Path
-
     palace_sqlite = str(Path(palace_path) / "chroma.sqlite3")
     kg_sqlite = str(Path(palace_path) / "knowledge_graph.sqlite3")
     stop_event = asyncio.Event()
