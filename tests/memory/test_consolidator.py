@@ -349,3 +349,51 @@ def test_explicit_wing_theme_request_still_allowed():
 
     settings = load_memory_settings()
     assert _resolve_wings(settings, wing="Wing_Theme", for_voice=False) == ["Wing_Theme"]
+
+
+async def test_fetch_themes_applies_similarity_floor():
+    """Phase 4.1 — themes below the relevance floor are dropped so broad
+    summaries don't leak onto out-of-scope queries (the negative-category
+    -20pp regression). Hits without a similarity field are kept (fakes)."""
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    from eidolon.memory.application.public_recall import _fetch_themes
+    from eidolon.memory.config.memory_settings import load_memory_settings
+    from eidolon.memory.domain.wire import MemoryWireRecord
+
+    settings = load_memory_settings().model_copy(deep=True)
+    settings.recall.theme_top_k = 5
+    settings.recall.theme_min_similarity = 0.55
+
+    def _theme(val, sim):
+        return MemoryWireRecord(
+            user_id="Wing_Theme", key=f"k-{val}", value=val,
+            metadata={"wing": "Wing_Theme", "similarity": sim},
+        )
+
+    backend = SimpleNamespace(search=AsyncMock(return_value=[
+        _theme("relevant-high", 0.80),
+        _theme("borderline", 0.55),     # == floor → kept
+        _theme("irrelevant-low", 0.40), # < floor → dropped
+    ]))
+    out = await _fetch_themes(backend, "query", settings)
+    vals = [r.value for r in out]
+    assert vals == ["relevant-high", "borderline"], vals
+
+
+async def test_fetch_themes_floor_zero_disables():
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    from eidolon.memory.application.public_recall import _fetch_themes
+    from eidolon.memory.config.memory_settings import load_memory_settings
+    from eidolon.memory.domain.wire import MemoryWireRecord
+
+    settings = load_memory_settings().model_copy(deep=True)
+    settings.recall.theme_top_k = 5
+    settings.recall.theme_min_similarity = 0.0  # disabled
+    backend = SimpleNamespace(search=AsyncMock(return_value=[
+        MemoryWireRecord(user_id="Wing_Theme", key="k", value="low",
+                         metadata={"wing": "Wing_Theme", "similarity": 0.1}),
+    ]))
+    out = await _fetch_themes(backend, "q", settings)
+    assert [r.value for r in out] == ["low"]

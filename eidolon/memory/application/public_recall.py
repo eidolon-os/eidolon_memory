@@ -233,12 +233,28 @@ async def _fetch_themes(
     if cap == 0:
         return []
     try:
-        return await backend.search(
+        hits = await backend.search(
             query, wing="Wing_Theme", n_results=cap, room=None,
         )
     except Exception as exc:  # noqa: BLE001 - never break recall
         log.warning("theme_fetch_failed", error=str(exc))
         return []
+
+    # Phase 4.1 — relevance floor. Themes are broad cross-time summaries;
+    # fetched unconditionally they leak onto out-of-scope queries (a pet
+    # theme surfacing on "我家鸟会说话吗"). Drop themes whose cosine
+    # similarity is below the configured floor. ``similarity`` is stamped by
+    # ``parse_search_tool_payload``; absent (e.g. fakes) → keep the hit so
+    # tests that don't model similarity still see themes.
+    floor = float(settings.recall.theme_min_similarity)
+    if floor <= 0.0:
+        return hits
+    kept: list[MemoryWireRecord] = []
+    for r in hits:
+        sim = (r.metadata or {}).get("similarity")
+        if sim is None or float(sim) >= floor:
+            kept.append(r)
+    return kept
 
 
 async def _kg_path_with_timeout(

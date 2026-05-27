@@ -53,6 +53,12 @@ class RecallPolicy(BaseModel):
     # vector top_k). 0 disables the [主题] section cleanly. Capped low so
     # they don't crowd out concrete fragments in the rendered context.
     theme_top_k: int = 3
+    # Phase 4.1 — only surface a theme when it's genuinely relevant to the
+    # query. Themes are broad summaries; fetched unconditionally they leak
+    # onto out-of-scope queries (e.g. a pet theme on "我家鸟会说话吗"),
+    # measured as a -20pp hit on the negative category. Drop themes whose
+    # cosine similarity is below this floor. 0.0 disables the floor.
+    theme_min_similarity: float = 0.55
 
 
 class StewardConfig(BaseModel):
