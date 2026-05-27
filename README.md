@@ -23,26 +23,32 @@
 
 ---
 
-## 2. 架构一图
+## 2. 架构总览
+
+### 2.1 部署拓扑(进程 / 端口 / 文件)
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
 │ eidolon-memory-supervisor  (Python,纯进程经理,subprocess.Popen)  │
-│   │                                                                │
+│   │  读 users.yaml,per-user fan-out;SIGHUP reconcile             │
 │   ├─ eidolon-memory-agent --user-id=alice --port=8030 ────────────┤
 │   │     ├─ LiveKit pipeline (in-process recall)                    │
 │   │     ├─ MCP Streamable HTTP @ 127.0.0.1:8030/mcp               │
 │   │     ├─ NATS subscriber  agent.memory.conversation.turn.alice   │
 │   │     │                   agent.memory.cmd.alice                 │
 │   │     ├─ MemPalacePythonBackend × 1 (LockedBackend)             │
-│   │     │   └─ chroma.sqlite3            (单 PersistentClient)    │
+│   │     │   ├─ chroma.sqlite3            (单 PersistentClient)    │
+│   │     │   └─ WorkingMemoryRing         (in-memory,共享 lock)    │
 │   │     └─ LockedKnowledgeGraph                                    │
-│   │         └─ knowledge_graph.sqlite3   (bi-temporal triples)     │
+│   │         └─ knowledge_graph.sqlite3   (triples + entity_mentions)│
+│   │                                                                │
+│   ├─ (opt-in) eidolon-memory-consolidator --user-id=alice ─────────┤  Phase 4
+│   │     主题摘要 worker:MCP 读 drawers → LLM → NATS cmd 写主题     │
 │   │                                                                │
 │   ├─ eidolon-memory-agent --user-id=bob --port=8031   …            │
 │   └─ eidolon-memory-agent --user-id=charlie --port=8032 …          │
 │                                                                    │
-│  palace 物理隔离: ~/eidolon/memory/mempalaces/<user_id>/          │
+│  palace 物理隔离: ~/eidolon/palaces/<user_id>/                    │
 └────────────────────────────────────────────────────────────────────┘
                               ▲             ▲
                               │             │
@@ -51,9 +57,149 @@
                        任何外部消费者(本节后面说明)
 ```
 
-**关键**:每份 palace 文件只被**一个进程**持有(D1 铁律,避免 chromadb 多进程 corruption)。
-外部访问**必须**通过 MCP / NATS / Discovery,**不要**自己开 `mempalace.knowledge_graph.KnowledgeGraph`
-或 `chromadb.PersistentClient` 去碰 palace 目录。
+**D1 铁律**:每份 palace 文件只被**一个进程**持有(避免 chromadb 多进程 corruption)。
+外部访问**必须**通过 MCP / NATS / Discovery,**不要**自己开 `KnowledgeGraph` /
+`chromadb.PersistentClient` 去碰 palace 目录。consolidator 也遵守此律——它是"另一个
+客户端"(MCP 读 + NATS 写),不持 chroma 句柄。
+
+### 2.2 分层架构(DDD,7 个包)
+
+依赖**单向向下**,下层不 import 上层:
+
+```
+entrypoints/   进程入口 · CLI · 进程经理
+  supervisor.py        多用户 fan-out(agent + 可选 consolidator)+ 重连/重启
+  agent_runner.py      单用户进程:MCP server + NATS subscriber(带重连韧性)
+  consolidator.py      主题 worker(独立进程)
+  mcp_server.py        FastMCP 工具注册(14 个工具)
+  discovery_server.py  agent-routing HTTP
+        │ 调用
+        ▼
+application/   用例编排(无 IO 细节,只编排)
+  turn_processor.py    写路径:turn → steward → fragments/triples/mentions
+                       cmd 路径:kg_add / kg_invalidate / theme / user_confirm
+  public_recall.py     读路径:recall_with_kg_fusion(融合中枢)
+  recall_rerank.py     BM25 + cosine RRF rerank            (Phase 1)
+  recall_renderer.py   渲染 [最近对话]/[主题]/wing 分组/[知识图谱事实]
+  working_memory.py    WorkingMemoryRing 短期对话环          (Phase 2)
+  kg_recall.py         KG 实体路由 + triple 转中文叙述
+  steward/             noop | rules | llm(factory 选择)
+  livekit_recall.py    voice 300ms 预算封装
+        │ 依赖抽象(Protocol)
+        ▼
+domain/        纯数据 + 契约(pydantic,零 IO)
+  ports.py             MemoryReader/Writer/Backend Protocol(lock + working_memory)
+  wire.py / fragments.py / payloads.py / kg.py / steward.py / wings.py
+        ▲ 被实现
+        │
+adapters/      具体 IO 实现
+  locked_backend.py    asyncio.Lock 包 chromadb(D1 单写单读)
+  locked_kg.py         asyncio.Lock 包 KG sqlite + entity_mentions(Phase 3)
+  mempalace_python_backend.py  真 chromadb;search_payload 解析
+  fake_backend.py      内存假实现(单测)
+infrastructure/  NATS / stream / checkpoint / palace init / CPU 调优
+config/          settings.yaml + users.yaml + .env 加载
+support/         logging / pydantic base
+```
+
+**解耦关键**:`application/` 只依赖 `domain/ports.py` 的 Protocol(`backend.lock`、
+`backend.working_memory`),从不 import 具体的 `LockedBackend`——所以测试可以塞
+`FakeMemoryBackend`,生产塞 `MemPalacePythonBackend`,召回逻辑一行不改。
+
+### 2.3 写路径 — 两条 NATS subject,8 个逻辑分支
+
+```
+NATS JetStream
+ ├─ agent.memory.conversation.turn.<uid>   (对话热路径)
+ │     → agent_runner._nats_subscriber_loop._drain
+ │     → turn_processor.process_turn_message
+ │        1. JSON 解析失败            → ack 丢弃(不 NAK)
+ │        2. user_id 不匹配           → ack 丢弃
+ │        3. ★ working_memory.append(turn)  ← 先于 steward(G7:连续性≠抽取质量)
+ │        4. steward.decide(turn):
+ │             ├─ noop  → 空 decision(只 ack)
+ │             ├─ rules → 正则抽 1 fragment + privacy_actions
+ │             └─ llm   → LiteLLM 抽 fragments+triples+invalidations+mentions
+ │                         (失败 → fallback rules)
+ │        5. fragment 写失败          → NAK / 超 max_deliveries 进 DLQ
+ │        6. KG triple/invalidation 写 → 失败仅 log(G7,不 NAK)
+ │        7. ★ mentions 写入(Phase 3):entity_id 必须在本 turn triples 里
+ │             → 否则拒绝(防 LLM 幻觉)
+ │        8. ack
+ │
+ └─ agent.memory.cmd.<uid>                 (admin / 系统写,绕 steward)
+       → turn_processor.process_command_message,按 kind 分发 4 种:
+          ├─ kg_add_triple              → LockedKG.add_triple
+          ├─ kg_invalidate              → LockedKG.invalidate
+          ├─ consolidator_ingest_theme  → 直写 Wing_Theme fragment   (Phase 4)
+          └─ user_confirm_fact          → 直写 verbatim drawer        (Phase 5.2)
+```
+
+**NATS subscriber 韧性**(重构):`_drain` 把 fetch + handler 都包进重连边界;长 LLM
+ingestion 期间连接被 drain → `ack()` 抛错 → **外层 reconnect-and-resubscribe 循环**
+(指数退避)而非永久死亡。turn/cmd 各自吞 idle TimeoutError,互不饿死。
+
+### 2.4 读路径 — recall 融合中枢,7 个信号源叠加
+
+`application/public_recall.py::recall_with_kg_fusion` 是所有读的中枢。**并行**拉 vector
++ KG,再叠加 working memory / 主题 / user-confirmed,最后渲染:
+
+```
+recall_context(query, voice?)
+ │
+ ├─[A] vector_task  search_all_wings_mcp_style
+ │       ├─ voice=True 且 shared_query_embedding → 单次 ONNX embed + 各 wing 并行 query(快路径)
+ │       └─ voice=False → 各 wing backend.search 扇出 + rank_by_similarity 截 top_k
+ │       fan-out 排除 Wing_Privacy + Wing_Theme(Phase 4.1:主题不抢具体事实的 top_k)
+ │
+ ├─[B] kg_task(可选,settings.recall.kg_in_recall)
+ │       match_entities_for_query:① 字面 ② 前缀剥离(pet:铁锤→铁锤)
+ │                                 ③ alias 反查(我妈→mother:张丽,Phase 3)
+ │       → query_entity_combined(SQL ORDER BY confidence DESC,Phase 1)
+ │       voice 超时 50ms / 非 voice 1s,超时静默退化为 vector-only
+ │
+ ├─[C] rerank(settings.recall.rerank_enabled,Phase 1)
+ │       BM25 + cosine RRF 融合;rank-bm25 缺失/抛错 → 恒等退化
+ │
+ ├─[D] user-confirmed 置顶(Phase 5.2)
+ │       _is_user_confirmed:metadata.source 或 room 前缀 `userconfirm:`
+ │       (mempalace search 丢 metadata,room 是唯一存活信号)→ 拉到 vector 最前
+ │
+ ├─[E] 主题独立通道(Phase 4 + 4.1)
+ │       _fetch_themes:单独 search Wing_Theme,theme_top_k 上限
+ │       + theme_min_similarity=0.55 相关性门槛(低于则丢,防越界泄漏)
+ │
+ ├─[F] working memory 快照(Phase 2)
+ │       backend.working_memory.snapshot() → 最近 N turn verbatim
+ │
+ └─[G] 渲染 recall_renderer.group_recall_context,段顺序:
+         [最近对话] → [主题] → wing 分组(个人画像/情绪/工作…) → [知识图谱事实]
+```
+
+返回 `{context: str, records: [...], kg_triples: [...], working_memory: [...]}`。
+任一信号源失败都不打断 recall(全程 defensive,voice 300ms 预算硬保)。
+
+### 2.5 形态演进:查询式 → 情境式(本轮重构的全部内容)
+
+原系统是**形态 1 查询式**(agent 主动 query 才有数据)。本轮把它推进到**形态 2 情境式**
+(memory 主动注入连续性 + 主题 + 关系别名 + 用户确认),分阶段、每阶段独立验证:
+
+| 阶段 | 解决的痛点 | 核心机制 | 落点 | tag |
+|------|-----------|---------|------|-----|
+| **P0** | 长进程 lazy import 撞 stale 模块 | 跨包 import 上提 + AST 守门 | `test_lazy_import_guard` | — |
+| **P1** | cosine 噪声压过关键词命中 | BM25+cosine RRF rerank + KG confidence 排序 | `recall_rerank.py` | — |
+| **P2** | "刚才说啥"无法 cosine 答 | 内存环 + `[最近对话]` 段 | `working_memory.py` | `phase2-complete` |
+| **P3** | "我妈/我家狗"别名命中不了 canonical | `entity_mentions` 表 + alias 反查 + steward 防幻觉 | `locked_kg.py` | `phase3-complete` |
+| **P4** | "最近怎样"只给零散 fragment | consolidator 独立进程 + Wing_Theme + `[主题]` | `consolidator.py` | `phase4-complete` |
+| **P4.1** | 主题挤占具体事实(精度代价 −15~−20pp) | 主题移出竞争 top_k + 相关性门槛 | `public_recall.py` | `phase4.1-complete` |
+| **P5.2** | 用户说"记住X"被 steward 改写/丢 | cmd 直写通道 + recall 置顶 | `turn_processor.py` | `phase5.2-complete` |
+
+每阶段都过 **U/F/E/P/R 五闸门**(单元/功能/e2e/性能/回归);Phase 4 还经 `--with-consolidator`
+A/B bench 量化(靶向类目 emotion/time/topic +10~+33pp,精度类目零回归)。
+完整执行记录见 `~/.claude/plans/mempalace-mcp-nats-admin-robust-meadow.md` 的「执行记录」节。
+
+**重构期间挖出并修复的 3 个潜伏生产 bug**(详见 §13.1):NATS subscriber 永久死循环、
+WAL checkpoint 的 `Path` NameError、stored `source` metadata 三处覆盖。
 
 ---
 
@@ -118,12 +264,13 @@ mcp_http:
 ```
 设了之后 client 必须发 `Authorization: Bearer <token>` 头。
 
-### 4.3 工具清单(11 个,T1+T2+T3 全量)
+### 4.3 工具清单(14 个,T1+T2+T3 + 形态 2 全量)
 
 | 工具 | 用途 | 主要参数 |
 |------|------|---------|
 | `eidolon_memory_search` | 语义向量检索 | `query`, `top_k`, 可选 `wing` / `room` |
-| `eidolon_memory_recall_context` | **vector + KG 融合召回**(LiveKit 同源) | `query`, `top_k`, `voice` (LiveKit 50ms KG 预算 / non-voice 1s), `include_kg`, `include_sensitive_kg` |
+| `eidolon_memory_recall_context` | **vector + KG + 主题 + 工作记忆 融合召回**(LiveKit 同源) | `query`, `top_k`, `voice` (LiveKit 50ms KG 预算 / non-voice 1s), `include_kg`, `include_sensitive_kg` |
+| `eidolon_memory_user_confirm` | **用户确认事实直写**(绕 steward,verbatim,召回置顶,Phase 5.2) | `text`, `wing`, `memory_type`, `importance`, `confidence`, `tags` |
 | `eidolon_memory_list` | 分页列举所有 drawer | `limit`, `offset`, `include_private` |
 | `eidolon_memory_status` | 当前 agent 状态(palace、wings、steward mode) | — |
 | `eidolon_memory_hierarchy_snapshot` | wing→room→drawer 树 | `max_records`, `max_drawers_per_room` |
@@ -515,12 +662,48 @@ uv run pytest tests -q                           # 145 passed, 2 skipped
 
 | 层级 | 目录 | 角色 |
 |------|------|------|
-| Domain | `eidolon/memory/domain/` | `MemoryFragment` / `ConversationTurnPayload` / `Kg*` schema, `MemoryBackend` 端口 |
-| Config | `eidolon/memory/config/` | `MemorySettings`, `UsersConfig`, palace 解析, steward prompts |
-| Infrastructure | `eidolon/memory/infrastructure/` | NATS / JetStream / 完整性 / palace init |
-| Adapters | `eidolon/memory/adapters/` | `MemPalacePythonBackend`, `LockedBackend`, `LockedKnowledgeGraph`, `FakeMemoryBackend` |
-| Application | `eidolon/memory/application/` | `turn_processor`, `livekit_recall`, `public_recall` (融合), `kg_recall`, steward |
-| Entrypoints | `eidolon/memory/entrypoints/` | `agent_runner`(主进程)、`supervisor`、`mcp_server`(工具注册)、`discovery_server` |
+| Domain | `eidolon/memory/domain/` | `MemoryFragment` / `ConversationTurnPayload` / `Kg*` schema, `EntityMention`, `ports.py`(`MemoryBackend` Protocol + `lock`/`working_memory`) |
+| Config | `eidolon/memory/config/` | `MemorySettings`(含 recall.rerank/theme 旋钮)、`UsersConfig`(含 `consolidator`)、palace 解析、steward prompts |
+| Infrastructure | `eidolon/memory/infrastructure/` | NATS / JetStream stream / WAL checkpoint / 完整性 / palace init |
+| Adapters | `eidolon/memory/adapters/` | `MemPalacePythonBackend`、`LockedBackend`、`LockedKnowledgeGraph`(+`entity_mentions`)、`search_payload`、`FakeMemoryBackend` |
+| Application | `eidolon/memory/application/` | `turn_processor`(写)、`public_recall`(读融合)、`recall_rerank`(P1)、`recall_renderer`、`working_memory`(P2)、`kg_recall`、`steward/*` |
+| Entrypoints | `eidolon/memory/entrypoints/` | `agent_runner`(主进程 + NATS 重连)、`supervisor`(fan-out)、`consolidator`(P4)、`mcp_server`(14 工具)、`discovery_server` |
+| Bench | `scripts/benchmark/` | `bench_read_livekit`(R-01 延时)、`bench_memory_retrieve_quality`(`--with-consolidator` A/B 质量) |
+
+### 13.1 重构期间发现并修复的 3 个潜伏生产 bug
+
+端到端真实验证(长 LLM ingestion + 真 NATS)逼出的、单测 mock 不掉的问题:
+
+1. **NATS subscriber 遇瞬时断连永久死亡**(`agent_runner.py`)
+   `_drain` 只把 `psub.fetch` 包 try,`msg.ack()` 在外;长 ingestion 期连接被 drain →
+   ack 抛错 → 逃出 while → 永久停止消费 turn+cmd。**修**:外层 reconnect-and-resubscribe
+   循环(指数退避),turn/cmd 各自吞 idle TimeoutError。
+
+2. **WAL checkpoint 的 `Path` NameError**(`agent_runner.py`)
+   `Path` 只在 `main()` 内 import,`_nats_subscriber_loop` 取不到 → 每 5 turn checkpoint
+   时 NameError(被 bug 1 掩盖)→ ingestion 期 WAL checkpoint 实际从未运行。**修**:
+   `from pathlib import Path` 提模块顶层。
+
+3. **stored `source` metadata 在 3 处读路径被覆盖**(`mempalace_python_backend` /
+   `search_payload` / `fake_backend`)
+   get_all→`mempalace-python`、search→`mcp`、fake→`fake`;且 mempalace 向量 search 只回
+   `{text,wing,room,source_file,similarity}`(自定义 metadata 全丢)。导致 P5.2 user-confirmed
+   置顶 + P4 source 检查静默失效。**修**:三处改"仅缺失时默认";user-confirmed 改用
+   `room` 前缀(search 会保留)做信号。
+
+### 13.2 关键不变量(改代码前必读)
+
+- **D1 单写单读**:一份 palace 一个进程;`LockedBackend`/`LockedKnowledgeGraph` 共享同一把
+  `asyncio.Lock`。consolidator 不持 chroma 句柄(它是 MCP 读 + NATS 写的"另一个客户端")。
+- **召回热路径只能依赖 mempalace search 保证返回的字段**:`{text, wing, room, source_file,
+  similarity}`。任何依赖自定义 metadata 的召回逻辑都会失效(见 13.1#3)——用 `room` 前缀或
+  专属 wing 做信号。
+- **G7 写顺序**:turn 先 append working_memory 再跑 steward——短期连续性独立于抽取质量。
+- **NATS-write / MCP-read 契约**:所有 e2e 必须走真链路(NATS 发、MCP 读),禁止 in-process
+  直调 backend/kg 作捷径。
+- **代码改后必重启 agent**(无 hot-reload,见 §3 警告 + `test_lazy_import_guard`)。
+- **零成本回滚旋钮**:`recall.rerank_enabled`、`runtime.working_memory_maxlen=0`、
+  `recall.theme_top_k=0`、`recall.kg_in_recall` —— 每个新形态都能配置关掉退回旧行为。
 
 ---
 
