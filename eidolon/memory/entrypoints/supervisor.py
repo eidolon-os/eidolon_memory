@@ -27,6 +27,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from eidolon.memory.application.user_admin import UserAdmin
 from eidolon.memory.config.memory_settings import (
     MemorySettings,
     get_memory_settings,
@@ -40,6 +41,7 @@ from eidolon.memory.config.users import (
     load_users_config,
     resolve_users_file_path,
 )
+from eidolon.memory.entrypoints.admin_api import build_admin_api
 from eidolon.memory.infrastructure.palace_init import (
     PalaceInitError,
     ensure_palace_initialized,
@@ -226,6 +228,32 @@ class Supervisor:
         self._init_pool = ThreadPoolExecutor(
             max_workers=4, thread_name_prefix="supervisor-init"
         )
+
+    # -------------------- public surface for the admin HTTP layer --------------------
+    #
+    # ``user_admin.UserAdmin`` drives the supervisor through these. Kept thin
+    # and side-effect-free at the read end; the only writer is reconcile_now.
+
+    @property
+    def users_path(self) -> Path:
+        return self._users_path
+
+    def is_worker_alive(self, user_id: str) -> bool:
+        child = self._children.get(user_id)
+        return child is not None and child.is_alive()
+
+    def palace_path_for(self, user: UserEntry) -> Path:
+        return self._palace_for(user)
+
+    async def reconcile_now(self) -> None:
+        """Run one reconcile pass synchronously (await until children align).
+
+        The supervisor's main run loop also reconciles on ``request_reload``,
+        but admin HTTP handlers cannot just set the event and return — they
+        need to await the alignment to know whether the spawn/terminate
+        succeeded. This is the same body as the loop's internal call.
+        """
+        await self._reconcile()
 
     # -------------------- config loading --------------------
 
@@ -491,6 +519,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip eager mempalace init; rely on agent_runner's lazy init.",
     )
+    parser.add_argument(
+        "--admin-host",
+        default="",
+        help="Bind host for the admin HTTP surface (default settings.supervisor.admin_http_host).",
+    )
+    parser.add_argument(
+        "--admin-port",
+        type=int,
+        default=0,
+        help="Bind port for the admin HTTP surface (default settings.supervisor.admin_http_port).",
+    )
     return parser.parse_args(argv)
 
 
@@ -514,6 +553,16 @@ def main(argv: list[str] | None = None) -> None:
         eager_init=(not args.no_init) and settings.supervisor.eager_init,
     )
 
+    # Admin HTTP control surface — runs in the same asyncio loop as the
+    # reconcile/check passes so HTTP handlers can directly drive supervisor
+    # state transitions without cross-process signaling.
+    import uvicorn
+
+    user_admin = UserAdmin(supervisor)
+    admin_app = build_admin_api(user_admin)
+    admin_host = (args.admin_host or settings.supervisor.admin_http_host).strip() or "127.0.0.1"
+    admin_port = args.admin_port or settings.supervisor.admin_http_port
+
     async def _main() -> None:
         loop = asyncio.get_running_loop()
         for sig, handler in (
@@ -525,7 +574,51 @@ def main(argv: list[str] | None = None) -> None:
                 loop.add_signal_handler(sig, handler)
             except (NotImplementedError, RuntimeError):
                 pass
-        await supervisor.run()
+
+        # Run supervisor's reconcile loop AND the admin HTTP server in the
+        # same loop. When SIGTERM fires:
+        #   * supervisor.run() observes ``_stop_event`` and exits cleanly
+        #   * we explicitly tell uvicorn to shut down via ``server.should_exit``
+        # asyncio.gather then unblocks and the process exits.
+        admin_server = uvicorn.Server(
+            uvicorn.Config(
+                admin_app,
+                host=admin_host,
+                port=admin_port,
+                log_level="warning",  # keep INFO noise for the supervisor itself
+                access_log=False,
+            )
+        )
+
+        sv_task = asyncio.create_task(supervisor.run(), name="supervisor_run")
+        api_task = asyncio.create_task(admin_server.serve(), name="admin_http_serve")
+
+        # Watchdog: if either task finishes first (supervisor stop → graceful;
+        # uvicorn crash → bad), cancel the other so we don't dangle.
+        done, pending = await asyncio.wait(
+            {sv_task, api_task}, return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            if task is sv_task:
+                # Graceful shutdown path: tell uvicorn to exit and await.
+                admin_server.should_exit = True
+            else:
+                # Admin HTTP died unexpectedly; force supervisor down too.
+                log.error("supervisor_admin_http_exited_unexpectedly")
+                supervisor.request_stop()
+        for task in pending:
+            try:
+                await asyncio.wait_for(task, timeout=10.0)
+            except (TimeoutError, asyncio.CancelledError):
+                task.cancel()
+                with __import__("contextlib").suppress(asyncio.CancelledError):
+                    await task
+        # Surface exceptions from the originally-finished task last so the
+        # process exit code reflects the real failure if there was one.
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                raise exc
 
     try:
         asyncio.run(_main())

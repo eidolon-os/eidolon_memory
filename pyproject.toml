@@ -21,6 +21,9 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "httpx>=0.27",
     "rank-bm25>=0.2.2",
+    # FastAPI powers the supervisor's admin HTTP control surface. Light
+    # transitive surface (starlette + pydantic, both already pulled in).
+    "fastapi>=0.110",
 ]
 
 [project.optional-dependencies]

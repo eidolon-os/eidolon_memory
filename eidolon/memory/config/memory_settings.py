@@ -161,6 +161,11 @@ class SupervisorConfig(BaseModel):
         default_factory=lambda: [1, 2, 4, 8, 30]
     )
     max_failures_per_minute: int = 5  # disable user beyond this rate
+    # Admin HTTP control surface bound inside the supervisor process. Admin
+    # talks to this to create/delete users without going through SIGHUP. The
+    # surface is admin-only, never exposed to agent_runner or end users.
+    admin_http_host: str = "127.0.0.1"
+    admin_http_port: int = 8019
 
 
 class NatsConfig(BaseModel):
