@@ -151,6 +151,11 @@ def user_to_view(
     """The flat JSON shape the HTTP layer returns. Matches admin's
     ``UserView`` schema field-for-field — admin can ``model_validate(view)``
     on this dict.
+
+    ``mcp_http_url`` (added 29.K): the user-worker's MCP endpoint.
+    Memory is authoritative for port assignment, so we expose the URL
+    here rather than make admin synthesize from convention. Channel
+    eventually receives this via /api/resolve and dials it for tools.
     """
     return {
         "spec": {
@@ -177,6 +182,11 @@ def user_to_view(
         },
         "active_agent_id": None,  # admin-side concept, memory doesn't know
         "agent_ids": [],  # ditto
+        # Runtime addressing — admin needs this to compose ResolvedContext
+        # for channel without a second round-trip. Memory's MCP path is
+        # always /mcp and the host is loopback (sub-projects co-locate
+        # with admin in the dev stack).
+        "mcp_http_url": f"http://127.0.0.1:{user.port}/mcp",
     }
 
 

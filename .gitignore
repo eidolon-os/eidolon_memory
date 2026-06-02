@@ -14,6 +14,8 @@ config/settings.yaml
 config/.env
 config/users.yaml
 **/users.yaml
+# filelock sentinels around users.yaml — runtime, never source.
+**/users.yaml.lock
 logs/*
 
 # Local-only perf / baseline reports (only fixtures under reports/bench_palace/ are tracked)
