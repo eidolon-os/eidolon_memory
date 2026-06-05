@@ -40,15 +40,15 @@ async def test_livekit_recall_fail_fast_on_error() -> None:
     async def _boom(*_a, **_k):
         raise MemoryBackendUnavailable("Error finding id")
 
-    original = mod.search_all_wings_mcp_style
-    mod.search_all_wings_mcp_style = _boom
+    original = mod.recall_with_kg_fusion
+    mod.recall_with_kg_fusion = _boom
     try:
         svc = LiveKitRecallService(backend, _settings(), palace_path="/tmp/fake")
         out = await svc.recall_context_with_records("hello", session_id="s1")
         assert out["context"] == ""
         assert out["degraded"] is True
     finally:
-        mod.search_all_wings_mcp_style = original
+        mod.recall_with_kg_fusion = original
 
 
 @pytest.mark.asyncio
@@ -63,15 +63,15 @@ async def test_livekit_recall_fail_fast_on_timeout() -> None:
         await asyncio.sleep(5)
         return []
 
-    original = mod.search_all_wings_mcp_style
-    mod.search_all_wings_mcp_style = _slow
+    original = mod.recall_with_kg_fusion
+    mod.recall_with_kg_fusion = _slow
     try:
         svc = LiveKitRecallService(backend, _settings(), palace_path="/tmp/fake")
         out = await svc.recall_context_with_records("hello")
         assert out["degraded"] is True
         assert out["context"] == ""
     finally:
-        mod.search_all_wings_mcp_style = original
+        mod.recall_with_kg_fusion = original
 
 
 def test_filter_excludes_same_session() -> None:

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import signal
 import subprocess
 import sys
@@ -84,7 +83,7 @@ def _consolidator_cli_argv(user: UserEntry) -> list[str]:
 
 def _open_child_log(
     log_root: Path, user_id: str, *, prefix: str = "agent"
-) -> tuple[Path, "subprocess._FILE"]:
+) -> tuple[Path, subprocess._FILE]:
     log_root.mkdir(parents=True, exist_ok=True)
     log_path = log_root / f"{prefix}_{user_id}.log"
     fh = log_path.open("ab", buffering=0)
@@ -272,18 +271,7 @@ class Supervisor:
         if not self._eager_init or not users:
             return {u.id for u in users}
 
-        loop = asyncio.get_running_loop()
-
-        def _init_one(u: UserEntry) -> tuple[str, str | None]:
-            try:
-                ensure_palace_initialized(u.id, self._palace_for(u))
-                return u.id, None
-            except PalaceInitError as exc:
-                return u.id, str(exc)
-
-        tasks = [
-            loop.run_in_executor(self._init_pool, _init_one, u) for u in users
-        ]
+        tasks = [self._init_user(u) for u in users]
         results = await asyncio.gather(*tasks)
         ok: set[str] = set()
         for user_id, err in results:
@@ -292,6 +280,21 @@ class Supervisor:
             else:
                 log.error("supervisor_palace_init_failed", user_id=user_id, error=err)
         return ok
+
+    async def _init_user(self, user: UserEntry) -> tuple[str, str | None]:
+        if not self._eager_init:
+            return user.id, None
+
+        loop = asyncio.get_running_loop()
+
+        def _run() -> tuple[str, str | None]:
+            try:
+                ensure_palace_initialized(user.id, self._palace_for(user))
+                return user.id, None
+            except PalaceInitError as exc:
+                return user.id, str(exc)
+
+        return await loop.run_in_executor(self._init_pool, _run)
 
     # -------------------- lifecycle --------------------
 
@@ -304,10 +307,14 @@ class Supervisor:
             enabled=len(enabled),
             eager_init=self._eager_init,
         )
-        ok = await self._init_users_parallel(enabled)
-        for user in enabled:
-            if user.id not in ok:
-                continue  # init failed; skipped
+        by_id = {u.id: u for u in enabled}
+        init_tasks = [asyncio.create_task(self._init_user(u)) for u in enabled]
+        for task in asyncio.as_completed(init_tasks):
+            user_id, err = await task
+            if err is not None:
+                log.error("supervisor_palace_init_failed", user_id=user_id, error=err)
+                continue
+            user = by_id[user_id]
             child = _Child(user, self._palace_for(user), self._log_root)
             child.spawn()
             self._children[user.id] = child
@@ -392,6 +399,7 @@ class Supervisor:
                     "supervisor_child_exited",
                     user_id=child.user.id, kind=child.kind, returncode=rc,
                 )
+                child._close_log()
                 child.record_failure(max_fail)
                 if child.degraded:
                     continue
@@ -419,7 +427,10 @@ class Supervisor:
             log.error("supervisor_reload_failed", error=str(exc))
             return
         wanted = {u.id: u for u in users.enabled_users()}
-        wanted_init_pool = [u for u in wanted.values() if u.id not in self._children]
+        wanted_init_pool = [
+            u for u in wanted.values()
+            if _agent_child_needs_spawn(self._children.get(u.id))
+        ]
         ok = await self._init_users_parallel(wanted_init_pool)
 
         # 1) Stop agent children not in wanted set, or whose port changed.
@@ -448,8 +459,16 @@ class Supervisor:
 
         # 2) Start children that should be running but aren't
         for user_id, user_def in wanted.items():
-            if user_id in self._children and self._children[user_id].is_alive():
+            existing = self._children.get(user_id)
+            if existing is not None and existing.is_alive() and not existing.degraded:
+                existing.user = user_def
                 continue
+            if existing is not None:
+                if existing.is_alive():
+                    existing.terminate()
+                else:
+                    existing._close_log()
+                self._children.pop(user_id, None)
             if self._eager_init and user_id not in ok:
                 continue
             child = _Child(user_def, self._palace_for(user_def), self._log_root)
@@ -502,6 +521,10 @@ class Supervisor:
 
     def request_stop(self) -> None:
         self._stop_event.set()
+
+
+def _agent_child_needs_spawn(child: _Child | None) -> bool:
+    return child is None or child.degraded or not child.is_alive()
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

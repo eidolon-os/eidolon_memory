@@ -12,6 +12,7 @@ from eidolon.memory.application.kg_recall import query_kg_for_recall
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.errors import MemoryBackendUnavailable
 from eidolon.memory.domain.kg import USER_CONFIRMED_ROOM_PREFIX
 from eidolon.memory.domain.ports import MemoryReader
 from eidolon.memory.domain.wire import MemoryWireRecord
@@ -60,7 +61,6 @@ def recall_record_visible_for_user(rec: MemoryWireRecord, user_id: str) -> bool:
 # fusion logic in this module. Re-exported here for backward compat with
 # callers that import from ``public_recall``.
 from eidolon.memory.application.recall_renderer import group_recall_context  # noqa: E402, F401
-
 
 # Wings excluded from the default competitive vector fan-out.
 #   Wing_Privacy — never recalled (privacy boundary).
@@ -131,6 +131,7 @@ async def recall_with_kg_fusion(
             session_id=session_id,
             user_utterance=user_utterance,
             palace_path=palace_path,
+            raise_on_degraded=True,
         )
     )
 
@@ -155,7 +156,19 @@ async def recall_with_kg_fusion(
             )
         )
 
-    vector_records = await vector_task
+    vector_degraded = False
+    try:
+        vector_records = await vector_task
+    except BaseException as exc:
+        if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+            raise
+        log.warning(
+            "vector_recall_degraded",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        vector_records = []
+        vector_degraded = True
     kg_records = await kg_task if kg_task is not None else []
 
     # Phase 1 — BM25 + cosine RRF rerank on vector hits. Pure in-memory,
@@ -215,6 +228,7 @@ async def recall_with_kg_fusion(
         "vector": vector_records,
         "kg": kg_records,
         "working_memory": working_memory,
+        "degraded": vector_degraded,
     }
 
 
@@ -288,7 +302,7 @@ async def _kg_path_with_timeout(
             )
 
         return await asyncio.wait_for(_inner(), timeout=timeout_s)
-    except (TimeoutError, asyncio.TimeoutError):
+    except TimeoutError:
         log.warning("kg_recall_timeout", timeout_s=timeout_s)
         return []
     except Exception as exc:
@@ -309,6 +323,7 @@ async def search_all_wings_mcp_style(
     session_id: str = "",
     user_utterance: str = "",
     palace_path: str | None = None,
+    raise_on_degraded: bool = False,
 ) -> list[MemoryWireRecord]:
     """Search configured wings in parallel, filter, rank, and cap top_k."""
     wings = _resolve_wings(settings, wing=wing, for_voice=for_voice)
@@ -320,16 +335,34 @@ async def search_all_wings_mcp_style(
         and settings.runtime.read.shared_query_embedding
         and palace_path
     ):
-        hits = await _search_voice_shared_embedding(
-            palace_path,
-            settings,
-            backend=backend,
-            query=query,
-            wings=wings,
-            room=room,
-            top_k=top_k,
-            user_id=uid,
-        )
+        try:
+            hits = await _search_voice_shared_embedding(
+                palace_path,
+                settings,
+                backend=backend,
+                query=query,
+                wings=wings,
+                room=room,
+                top_k=top_k,
+                user_id=uid,
+            )
+        except BaseException as exc:
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                raise
+            if raise_on_degraded:
+                raise MemoryBackendUnavailable(
+                    f"voice shared embedding search failed: {exc}"
+                ) from exc
+            # Chroma/mempalace can surface pyo3 panic wrappers as BaseException
+            # rather than Exception. Voice recall is a degraded dependency on
+            # the realtime path, so return no vector hits instead of taking the
+            # whole MCP worker/session down.
+            log.warning(
+                "voice_shared_embedding_search_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            hits = []
     else:
         parallel = _effective_wing_parallel(settings, for_voice=for_voice)
         sem = asyncio.Semaphore(parallel)

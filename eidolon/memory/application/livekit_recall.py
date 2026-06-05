@@ -13,12 +13,10 @@ from typing import Any
 from eidolon.memory.application.public_recall import (
     group_recall_context,
     recall_with_kg_fusion,
-    search_all_wings_mcp_style,
     wire_record_to_public_dict,
 )
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import MemoryBackend
-from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -89,7 +87,7 @@ class LiveKitRecallService:
                 "context": group_recall_context(vector_records, kg_triples=kg_records),
                 "records": [wire_record_to_public_dict(r) for r in vector_records],
                 "kg_triples": [t.model_dump(mode="json") for t in kg_records],
-                "degraded": False,
+                "degraded": bool(fused.get("degraded", False)),
             }
         except TimeoutError:
             log.warning("livekit_recall_degraded", reason="timeout", query_len=len(query))

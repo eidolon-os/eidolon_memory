@@ -8,6 +8,7 @@ from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import (
     group_recall_context,
     recall_record_visible_for_user,
+    recall_with_kg_fusion,
     search_all_wings_mcp_style,
 )
 from eidolon.memory.config.memory_settings import get_memory_settings
@@ -129,3 +130,66 @@ async def test_single_wing_voice_uses_shared_embedding_path(monkeypatch):
         palace_path="/tmp/fake-palace",
     )
     assert calls == [["Wing_Profile"]]
+
+
+@pytest.mark.asyncio
+async def test_voice_shared_embedding_failure_degrades_to_empty(monkeypatch):
+    """Chroma/mempalace pyo3 panics can arrive as BaseException wrappers.
+    Voice recall must degrade instead of crashing the MCP worker process.
+    """
+    settings = get_memory_settings()
+    backend = FakeMemoryBackend()
+
+    class PanicLike(BaseException):
+        pass
+
+    async def _panic(*_args, **_kwargs):
+        raise PanicLike("sqlite disk I/O panic")
+
+    monkeypatch.setattr(
+        "eidolon.memory.application.public_recall._search_voice_shared_embedding",
+        _panic,
+    )
+
+    out = await search_all_wings_mcp_style(
+        backend,
+        settings,
+        query="test",
+        user_id="alice",
+        top_k=3,
+        wing="Wing_Profile",
+        room=None,
+        for_voice=True,
+        palace_path="/tmp/fake-palace",
+    )
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_recall_fusion_marks_degraded_when_voice_fast_path_fails(monkeypatch):
+    settings = get_memory_settings()
+    backend = FakeMemoryBackend()
+
+    class PanicLike(BaseException):
+        pass
+
+    async def _panic(*_args, **_kwargs):
+        raise PanicLike("sqlite disk I/O panic")
+
+    monkeypatch.setattr(
+        "eidolon.memory.application.public_recall._search_voice_shared_embedding",
+        _panic,
+    )
+
+    result = await recall_with_kg_fusion(
+        backend,
+        settings,
+        query="test",
+        user_id="alice",
+        top_k=3,
+        kg=None,
+        for_voice=True,
+        palace_path="/tmp/fake-palace",
+    )
+    assert result["vector"] == []
+    assert result["degraded"] is True

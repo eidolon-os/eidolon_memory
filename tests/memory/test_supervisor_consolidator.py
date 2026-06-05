@@ -18,8 +18,8 @@ flags (``is_alive``, ``returncode``) are emulated on the mock.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,16 +29,13 @@ from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.config.users import (
     ConsolidatorUserConfig,
     UserEntry,
-    load_users_config,
-    resolve_users_file_path,
 )
 from eidolon.memory.entrypoints.supervisor import (
     Supervisor,
-    _Child,
     _agent_cli_argv,
+    _Child,
     _consolidator_cli_argv,
 )
-
 
 # ─── argv builder ──────────────────────────────────────────────────────────
 
@@ -215,6 +212,92 @@ async def test_supervisor_per_user_consolidator_opt_in(
         assert set(sup._children) == {"alice", "bob"}
         assert set(sup._consolidators) == {"alice"}
         assert _patched_popen.call_count == 3  # 2 agents + 1 consolidator
+    finally:
+        await sup.stop()
+
+
+async def test_start_spawns_ready_user_before_slow_init_finishes(
+    tmp_path: Path, _patched_popen, monkeypatch,
+):
+    """One slow/bad user's palace init must not block healthy users from
+    getting a worker. This protects stack restart latency in multi-user dev
+    and production supervisors.
+    """
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
+        lambda _s: tmp_path / "logs",
+    )
+    yaml_path = _write_users_yaml(tmp_path, [
+        {"id": "fast", "port": 9001, "enabled": True},
+        {"id": "slow", "port": 9002, "enabled": True},
+    ])
+
+    def _fake_init(user_id: str, _palace_path: Path) -> None:
+        if user_id == "slow":
+            time.sleep(0.3)
+
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor.ensure_palace_initialized",
+        _fake_init,
+    )
+
+    loop = asyncio.get_running_loop()
+    fast_spawned = asyncio.Event()
+    real_spawn = _Child.spawn
+
+    def _spawn_spy(self: _Child) -> None:
+        real_spawn(self)
+        if self.user.id == "fast":
+            loop.call_soon(fast_spawned.set)
+
+    monkeypatch.setattr(_Child, "spawn", _spawn_spy)
+
+    settings = load_memory_settings()
+    sup = Supervisor(settings, yaml_path, eager_init=True)
+    start_task = asyncio.create_task(sup.start())
+    try:
+        await asyncio.wait_for(fast_spawned.wait(), timeout=0.5)
+        assert "fast" in sup._children
+        assert "slow" not in sup._children
+        assert not start_task.done()
+
+        await start_task
+        assert set(sup._children) == {"fast", "slow"}
+    finally:
+        if not start_task.done():
+            start_task.cancel()
+            with __import__("contextlib").suppress(asyncio.CancelledError):
+                await start_task
+        await sup.stop()
+
+
+async def test_reconcile_restarts_degraded_dead_agent_child(
+    tmp_path: Path, _patched_popen, monkeypatch,
+):
+    """A degraded dead child is a stopped runtime, not a valid alignment.
+    Operator/admin reconcile should discard it and spawn a fresh worker.
+    """
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
+        lambda _s: tmp_path / "logs",
+    )
+    yaml_path = _write_users_yaml(tmp_path, [
+        {"id": "alice", "port": 9001, "enabled": True},
+    ])
+    sup = _build_supervisor(tmp_path, yaml_path)
+    await sup.start()
+    try:
+        old = sup._children["alice"]
+        assert old.proc is not None
+        old.proc.poll.return_value = 1
+        old.proc.returncode = 1
+        old.degraded = True
+
+        await sup._reconcile()
+
+        new = sup._children["alice"]
+        assert new is not old
+        assert _patched_popen.call_count == 2
     finally:
         await sup.stop()
 
