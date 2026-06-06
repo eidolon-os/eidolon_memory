@@ -119,9 +119,9 @@ def group_recall_context(
 
     Section order (top → bottom):
       1. ``[最近对话]`` — Phase 2 verbatim recent turns (highest priority)
-      2. ``[主题]`` — Phase 4 consolidator-distilled cross-time themes
-      3. Vector fragments grouped by ``metadata.memory_type``
-      4. ``知识图谱事实`` — KG triples
+      2. ``知识图谱事实`` — KG triples (high-confidence structured facts)
+      3. ``[主题]`` — Phase 4 consolidator-distilled cross-time themes
+      4. Vector fragments grouped by ``metadata.memory_type``
 
     Each section is independently skipped if its source is empty. Vector
     sections are individually capped at ``_MAX_ITEMS_PER_GROUP``; working
@@ -137,6 +137,11 @@ def group_recall_context(
     wm_lines = _render_working_memory(working_memory or [])
     if wm_lines:
         lines.extend(wm_lines)
+
+    if kg_triples:
+        if lines:
+            lines.append("")
+        lines.append(transcribe_triples(kg_triples))
 
     # Phase 4 — split themes out of the raw record list so they render in
     # their own [主题] section instead of leaking into a vector group whose
@@ -171,10 +176,5 @@ def group_recall_context(
         if lines:
             lines.append("")
         lines.extend(vector_lines)
-
-    if kg_triples:
-        if lines:
-            lines.append("")
-        lines.append(transcribe_triples(kg_triples))
 
     return "\n".join(lines)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
@@ -288,22 +289,43 @@ async def _kg_path_with_timeout(
     without knowing about ``pet:`` / ``place:`` / ``mother:`` prefixes.
     Future synonym / alias support extends that method, not this caller.
     """
+    t0 = time.monotonic()
     try:
         async def _inner():
             candidates = await kg.match_entities_for_query(query, cap=max_entities)
             if not candidates:
+                log.debug(
+                    "kg_recall_result",
+                    query_len=len(query or ""),
+                    candidate_count=0,
+                    triple_count=0,
+                    elapsed_ms=int((time.monotonic() - t0) * 1000),
+                )
                 return []
-            return await query_kg_for_recall(
+            triples = await query_kg_for_recall(
                 kg,
                 entity_names=candidates,
                 window_days=window_days,
                 max_triples_per_entity=max_triples_per_entity,
                 include_sensitive=include_sensitive,
             )
+            log.info(
+                "kg_recall_result",
+                query_len=len(query or ""),
+                candidate_count=len(candidates),
+                triple_count=len(triples),
+                elapsed_ms=int((time.monotonic() - t0) * 1000),
+            )
+            return triples
 
         return await asyncio.wait_for(_inner(), timeout=timeout_s)
     except TimeoutError:
-        log.warning("kg_recall_timeout", timeout_s=timeout_s)
+        log.warning(
+            "kg_recall_timeout",
+            timeout_s=timeout_s,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+            query_len=len(query or ""),
+        )
         return []
     except Exception as exc:
         log.warning("kg_recall_failed", error=str(exc))

@@ -186,6 +186,24 @@ def test_transcribe_triple_current_state() -> None:
     assert "自 2026-04-01" in out
 
 
+def test_transcribe_pet_role_as_breed_identity() -> None:
+    from eidolon.memory.application.kg_recall import transcribe_triple
+    from eidolon.memory.domain.kg import KgTripleRecord
+
+    t = KgTripleRecord(
+        id="t1",
+        subject="pet:铁锤",
+        predicate="holds_role",
+        object="边境牧羊犬",
+        valid_from=None,
+        valid_to=None,
+    )
+    out = transcribe_triple(t)
+    assert "铁锤 的品种/身份是 边境牧羊犬" in out
+    assert "pet:铁锤" not in out
+    assert "担任" not in out
+
+
 # ─── list_entity_names freshness (post-cache-deletion architecture) ───────
 
 

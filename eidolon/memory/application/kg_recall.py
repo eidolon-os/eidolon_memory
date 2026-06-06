@@ -47,7 +47,15 @@ def transcribe_triple(t: KgTripleRecord) -> str:
     """Render one triple as a single readable Chinese line (KG plan §5.5)."""
     valid_from = (t.valid_from or "").strip()
     valid_to = (t.valid_to or "").strip()
-    body = f"{t.subject} {_predicate_zh(t.predicate)} {t.object}"
+    subject = _entity_label(t.subject)
+    object_ = _entity_label(t.object)
+    if t.predicate == "holds_role":
+        if str(t.subject).startswith("pet:"):
+            body = f"{subject} 的品种/身份是 {object_}"
+        else:
+            body = f"{subject} 的角色/身份是 {object_}"
+    else:
+        body = f"{subject} {_predicate_zh(t.predicate)} {object_}"
     qualifier: str
     if t.predicate == "promised" and valid_to:
         qualifier = f"（截至 {valid_to}）"
@@ -105,6 +113,14 @@ _PREDICATE_ZH = {
 
 def _predicate_zh(p: str) -> str:
     return _PREDICATE_ZH.get(p, p)
+
+
+def _entity_label(value: object) -> str:
+    text = str(value or "")
+    prefix, sep, label = text.partition(":")
+    if sep and prefix.isascii() and prefix.replace("_", "").isalnum() and label:
+        return label
+    return text
 
 
 def computed_kg_window_iso(window_days: int) -> str:

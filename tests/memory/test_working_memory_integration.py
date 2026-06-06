@@ -210,8 +210,8 @@ def test_renderer_truncates_long_turn_text():
     assert "X" * 1000 not in out
 
 
-def test_renderer_working_memory_then_vector_then_kg_order():
-    """Full stack: [最近对话] → vector sections → KG section."""
+def test_renderer_working_memory_then_kg_then_vector_order():
+    """Full stack: [最近对话] → KG section → vector sections."""
     from eidolon.memory.domain.kg import KgTripleRecord
     from eidolon.memory.domain.wire import MemoryWireRecord
     turns = [_turn(0, "继续", "好")]
@@ -229,4 +229,4 @@ def test_renderer_working_memory_then_vector_then_kg_order():
     p_wm  = out.find("[最近对话]")
     p_vec = out.find("生活方式与近况")
     p_kg  = out.find("知识图谱")
-    assert 0 == p_wm < p_vec < p_kg, (p_wm, p_vec, p_kg, out)
+    assert 0 == p_wm < p_kg < p_vec, (p_wm, p_vec, p_kg, out)

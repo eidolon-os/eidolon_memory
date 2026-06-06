@@ -84,7 +84,7 @@ def test_section_order_stable_in_output():
     assert 0 <= p1 < p2 < p3, f"section ordering broken: {(p1, p2, p3)}\nout=\n{out}"
 
 
-def test_kg_triples_section_appears_after_vector():
+def test_kg_triples_section_appears_before_vector():
     records = [_rec("profile", "用户喜欢早起")]
     triple = KgTripleRecord(
         id="t1", subject="self", predicate="likes",
@@ -92,7 +92,7 @@ def test_kg_triples_section_appears_after_vector():
     )
     out = group_recall_context(records, kg_triples=[triple])
     assert "知识图谱事实" in out
-    assert out.find("个人画像与健康:") < out.find("知识图谱事实")
+    assert out.find("知识图谱事实") < out.find("个人画像与健康:")
 
 
 def test_kg_only_no_vector_renders_only_kg_section():
