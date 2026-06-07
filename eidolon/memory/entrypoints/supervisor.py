@@ -45,6 +45,10 @@ from eidolon.memory.infrastructure.palace_init import (
     PalaceInitError,
     ensure_palace_initialized,
 )
+from eidolon.memory.infrastructure.mempalace_backend import (
+    mempalace_backend_env,
+    selected_mempalace_backend,
+)
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -289,7 +293,12 @@ class Supervisor:
 
         def _run() -> tuple[str, str | None]:
             try:
-                ensure_palace_initialized(user.id, self._palace_for(user))
+                ensure_palace_initialized(
+                    user.id,
+                    self._palace_for(user),
+                    backend=selected_mempalace_backend(self._settings),
+                    env=mempalace_backend_env(self._settings),
+                )
                 return user.id, None
             except PalaceInitError as exc:
                 return user.id, str(exc)

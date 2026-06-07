@@ -20,6 +20,7 @@ from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
+from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -47,6 +48,8 @@ class MemPalacePythonBackend(MemoryBackend):
         self._apply_chromadb_pragmas()
 
     def _apply_chromadb_pragmas(self) -> None:
+        if selected_mempalace_backend(self._settings) != "chroma":
+            return
         sqlite_path = Path(self._palace) / "chroma.sqlite3"
         if not sqlite_path.is_file():
             return  # palace not yet initialized; agent_runner lazy-init will handle it

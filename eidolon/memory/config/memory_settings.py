@@ -139,6 +139,26 @@ class ChromadbConfig(BaseModel):
     synchronous: str = "FULL"  # FULL = fsync each commit; chroma write +30% latency, safer
 
 
+class MempalaceBackendConfig(BaseModel):
+    """MemPalace storage backend selection.
+
+    Chroma remains the default. Qdrant can be enabled during development with:
+    ``mempalace.backend=qdrant`` plus the local Qdrant URL/namespace below.
+    """
+
+    backend: str = "chroma"
+    qdrant_url: str = "http://127.0.0.1:6333"
+    qdrant_namespace: str = "eidolon"
+    qdrant_timeout_seconds: float = 10.0
+    qdrant_api_key_env: str = "MEMPALACE_QDRANT_API_KEY"
+
+    def resolve_qdrant_api_key(self) -> str:
+        env = (self.qdrant_api_key_env or "").strip()
+        if not env:
+            return ""
+        return os.environ.get(env, "").strip()
+
+
 class WorkerConfig(BaseModel):
     """In-process NATS subscriber + steward (no longer a standalone process in D1)."""
 
@@ -255,6 +275,7 @@ class MemorySettings(BaseModel):
     llm: LlmConfig = Field(default_factory=LlmConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     chromadb: ChromadbConfig = Field(default_factory=ChromadbConfig)
+    mempalace: MempalaceBackendConfig = Field(default_factory=MempalaceBackendConfig)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     kg: KgConfig = Field(default_factory=KgConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)

@@ -7,6 +7,7 @@ import asyncio
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
 from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
+from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -30,8 +31,9 @@ def _warm_sync(settings: MemorySettings, palace_path: str) -> None:
     from mempalace.palace import get_closets_collection
     from mempalace.searcher import search_memories
 
+    backend = selected_mempalace_backend(settings)
     sqlite = Path(palace_path) / "chroma.sqlite3"
-    if sqlite.is_file():
+    if backend == "chroma" and sqlite.is_file():
         mode = ensure_sqlite_wal(str(sqlite))
         log.info("chroma_sqlite_pragma", **mode)
 

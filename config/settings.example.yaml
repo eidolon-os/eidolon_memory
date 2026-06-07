@@ -6,6 +6,15 @@ runtime:
   log_dir: ""
   run_dir: ""
 
+mempalace:
+  # chroma is the default embedded local backend. Use qdrant for A/B testing
+  # with a local Qdrant service listening on qdrant_url.
+  backend: chroma
+  qdrant_url: http://127.0.0.1:6333
+  qdrant_namespace: eidolon-dev
+  qdrant_timeout_seconds: 10
+  qdrant_api_key_env: MEMPALACE_QDRANT_API_KEY
+
 nats:
   url: nats://127.0.0.1:4222
 

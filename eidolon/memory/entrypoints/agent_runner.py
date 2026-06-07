@@ -53,6 +53,12 @@ from eidolon.memory.infrastructure.integrity import (
     fsync_directory,
     run_integrity_check,
 )
+from eidolon.memory.infrastructure.mempalace_backend import (
+    apply_mempalace_backend_env,
+    mempalace_backend_env,
+    selected_mempalace_backend,
+    vector_sqlite_integrity_targets,
+)
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
 from eidolon.memory.support.logging import get_logger
@@ -84,7 +90,7 @@ async def _nats_subscriber_loop(
     settings: MemorySettings,
     backend: Any,
     kg: Any,
-    palace_sqlite: str,
+    palace_sqlite: str | None,
     kg_sqlite: str,
     stop: asyncio.Event,
 ) -> None:
@@ -178,16 +184,15 @@ async def _nats_subscriber_loop(
                     # Idle fetch — normal, just loop.
                     pass
                 if writes_since_checkpoint >= sync_every:
-                    # G4: both chroma and KG are WAL — checkpoint both
-                    await asyncio.to_thread(
-                        checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
-                    )
+                    # G4: local SQLite backends are WAL — checkpoint when present.
+                    if palace_sqlite:
+                        await asyncio.to_thread(
+                            checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
+                        )
                     await asyncio.to_thread(
                         checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE"
                     )
-                    await asyncio.to_thread(
-                        fsync_directory, Path(palace_sqlite).parent
-                    )
+                    await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
                     writes_since_checkpoint = 0
         except Exception as exc:  # noqa: BLE001 - any connection/sub failure → reconnect
             if stop.is_set():
@@ -219,7 +224,10 @@ def _compose_starlette_lifespan(
     palace_path: str,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
-    palace_sqlite = str(Path(palace_path) / "chroma.sqlite3")
+    backend_name = selected_mempalace_backend(settings)
+    palace_sqlite = (
+        str(Path(palace_path) / "chroma.sqlite3") if backend_name == "chroma" else None
+    )
     kg_sqlite = str(Path(palace_path) / "knowledge_graph.sqlite3")
     stop_event = asyncio.Event()
     session_manager = mcp.session_manager
@@ -288,6 +296,8 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     user_id = validate_user_id(args.user_id)
     settings = get_memory_settings()
+    apply_mempalace_backend_env(settings)
+    backend_name = selected_mempalace_backend(settings)
     apply_cpu_thread_env(settings, role="livekit")
 
     palace_path = (
@@ -305,7 +315,12 @@ def main(argv: list[str] | None = None) -> None:
         log.error("agent_runner_unsafe_palace_location", error=str(exc))
         raise
 
-    ensure_palace_initialized(user_id, palace_path)
+    ensure_palace_initialized(
+        user_id,
+        palace_path,
+        backend=backend_name,
+        env=mempalace_backend_env(settings),
+    )
 
     # KG plan §3.2 G3: explicitly create the KG SQLite so integrity_check sees a
     # committed file (mempalace KnowledgeGraph initializes tables on first open).
@@ -313,7 +328,11 @@ def main(argv: list[str] | None = None) -> None:
     _materialize_kg_file(kg_sqlite_path)
 
     # D2 + KG G3: integrity check — refuse to come up on a malformed palace OR KG.
-    for label, db_path in (("chroma", palace_path / "chroma.sqlite3"), ("kg", kg_sqlite_path)):
+    integrity_targets = [
+        *vector_sqlite_integrity_targets(palace_path, backend_name),
+        ("kg", kg_sqlite_path),
+    ]
+    for label, db_path in integrity_targets:
         report = run_integrity_check(str(db_path), quick=False)
         if not report.ok:
             msg = (
@@ -372,6 +391,7 @@ def main(argv: list[str] | None = None) -> None:
         "agent_runner_start",
         user_id=user_id,
         palace=str(palace_path),
+        backend=backend_name,
         host=host,
         port=port,
     )

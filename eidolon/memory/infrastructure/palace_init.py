@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from eidolon.memory.infrastructure.mempalace_backend import backend_is_initialized
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -26,9 +27,9 @@ class PalaceInitError(RuntimeError):
     """Raised when ``mempalace init`` exits non-zero or times out."""
 
 
-def palace_is_initialized(palace_path: Path) -> bool:
-    """Best-effort check: chroma.sqlite3 present means mempalace has been initialized."""
-    return (palace_path / "chroma.sqlite3").is_file()
+def palace_is_initialized(palace_path: Path, *, backend: str = "chroma") -> bool:
+    """Best-effort check for the selected MemPalace backend artifact."""
+    return backend_is_initialized(palace_path, backend)
 
 
 def _resolve_mempalace_cli() -> str:
@@ -60,6 +61,8 @@ def ensure_palace_initialized(
     user_id: str,
     palace_path: Path,
     *,
+    backend: str = "chroma",
+    env: dict[str, str] | None = None,
     timeout_seconds: float = 60.0,
 ) -> None:
     """Run ``mempalace init <palace_path>`` if the palace is not yet present.
@@ -68,11 +71,12 @@ def ensure_palace_initialized(
     leaks into the parent process (critical for supervisor pre-spawn init).
     """
     palace_path = Path(palace_path).expanduser().resolve()
-    if palace_is_initialized(palace_path):
+    if palace_is_initialized(palace_path, backend=backend):
         log.debug(
             "palace_init_skip_already_initialized",
             user_id=user_id,
             palace=str(palace_path),
+            backend=backend,
         )
         return
 
@@ -81,13 +85,25 @@ def ensure_palace_initialized(
     palace_path.mkdir(parents=True, exist_ok=True)
     log.info("palace_init_start", user_id=user_id, palace=str(palace_path))
     cli = _resolve_mempalace_cli()
+    cmd = [
+        cli,
+        "--backend",
+        backend,
+        "init",
+        "--backend",
+        backend,
+        "--yes",
+        "--no-llm",
+        str(palace_path),
+    ]
     try:
         completed = subprocess.run(
-            [cli, "init", "--yes", "--no-llm", str(palace_path)],
+            cmd,
             check=True,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise PalaceInitError(f"mempalace CLI {cli!r} disappeared between resolve and exec") from exc
@@ -101,45 +117,59 @@ def ensure_palace_initialized(
             f"stderr={(exc.stderr or '').strip()[:300]}"
         ) from exc
 
-    # ``mempalace init`` only writes ``mempalace.yaml``; chroma.sqlite3 is created
-    # lazily by ``get_collection(..., create=True)``. Materialize it here so the
-    # palace is fully ready before agent_runner spawns.
-    if not palace_is_initialized(palace_path):
-        _materialize_chroma_collection(palace_path)
+    # ``mempalace init`` only writes config files. Backend artifacts are created
+    # lazily by collection access/write. Materialize them here so the palace is
+    # fully ready before agent_runner spawns.
+    if not palace_is_initialized(palace_path, backend=backend):
+        _materialize_backend_collection(palace_path, backend=backend, env=env)
 
-    if not palace_is_initialized(palace_path):
+    if not palace_is_initialized(palace_path, backend=backend):
         raise PalaceInitError(
-            f"mempalace init succeeded but chroma.sqlite3 not materialized at {palace_path}"
+            f"mempalace init succeeded but {backend} artifact not materialized at {palace_path}"
         )
 
     log.info(
         "palace_init_ok",
         user_id=user_id,
         palace=str(palace_path),
+        backend=backend,
         stdout=(completed.stdout or "").strip()[:200],
     )
 
 
-def _materialize_chroma_collection(palace_path: Path) -> None:
-    """Force-create chroma.sqlite3 + default drawers collection.
+def _materialize_backend_collection(
+    palace_path: Path,
+    *,
+    backend: str,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Force-create the selected backend's default drawers collection.
 
-    Run as a subprocess so the parent process never holds a chromadb
-    PersistentClient — the same rationale as ``subprocess.run`` for
-    ``mempalace init``.
+    Run as a subprocess so the parent process never holds backend client state
+    (especially chromadb PersistentClient) — the same rationale as
+    ``subprocess.run`` for ``mempalace init``.
     """
     code = (
-        "import sys; from mempalace.palace import get_collection; "
-        "get_collection(sys.argv[1], create=True); print('ok')"
+        "import sys; "
+        "from mempalace.palace import get_collection; "
+        "palace, backend = sys.argv[1], sys.argv[2]; "
+        "col = get_collection(palace, create=True, backend=backend); "
+        "probe = '__eidolon_backend_init_probe__'; "
+        "col.upsert(ids=[probe], documents=['eidolon backend init probe'], "
+        "metadatas=[{'wing':'Wing_Work','room':'init','source_file':'eidolon'}]); "
+        "col.delete(ids=[probe]); "
+        "print('ok')"
     )
     completed = subprocess.run(
-        [sys.executable, "-c", code, str(palace_path)],
+        [sys.executable, "-c", code, str(palace_path), backend],
         check=False,
         capture_output=True,
         text=True,
         timeout=30.0,
+        env=env,
     )
     if completed.returncode != 0:
         raise PalaceInitError(
-            f"chroma collection materialization failed for {palace_path}: "
-            f"rc={completed.returncode} stderr={(completed.stderr or '').strip()[:300]}"
+            f"{backend} collection materialization failed for {palace_path}: "
+            f"rc={completed.returncode} stderr={(completed.stderr or '').strip()[:1200]}"
         )
