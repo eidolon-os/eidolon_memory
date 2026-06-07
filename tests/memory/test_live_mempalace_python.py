@@ -68,7 +68,7 @@ async def test_live_rules_steward_turn(live_memory_settings, test_palace_dir):
     await RuleBasedSteward(live_memory_settings).handle_turn(turn, backend)
     found = False
     for _ in range(80):
-        hits = await backend.search(token, wing="Wing_Work", n_results=12)
+        hits = await backend.search(token, wing="Wing_Emotion", n_results=12)
         if any(token in str(h.value) for h in hits):
             found = True
             break

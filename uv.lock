@@ -589,6 +589,7 @@ name = "eidolon-memory"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "fastapi" },
     { name = "faststream", extra = ["nats"] },
     { name = "httpx" },
     { name = "litellm" },
@@ -610,11 +611,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.110" },
     { name = "faststream", extras = ["nats"], specifier = ">=0.5" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "litellm", specifier = ">=1.0" },
     { name = "mcp", specifier = ">=1.2.0" },
-    { name = "mempalace", specifier = ">=3.3.5" },
+    { name = "mempalace", specifier = ">=3.4.0" },
     { name = "nats-py", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -642,6 +644,22 @@ wheels = [
 [package.optional-dependencies]
 pydantic = [
     { name = "pydantic" },
+]
+
+[[package]]
+name = "fastapi"
+version = "0.136.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/81/2d/ff8d91d7b564d464629a0fd50a4489c97fcb836ac230bf3a7269232a9b1f/fastapi-0.136.3.tar.gz", hash = "sha256:e487fae93ad408e6f47641ee4dfe389864fd7bec92e547ea8498fc13f43e83ab", size = 396410, upload-time = "2026-05-23T18:53:15.192Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/82/45359b62a067409bd929ae8a56b8ed13e5a8c8a61194b3c236920999ab83/fastapi-0.136.3-py3-none-any.whl", hash = "sha256:3d2a69bdf04b7e9f3afa292c3bc7a98816bbfafa10bc9b45f3f3700d2f761620", size = 117481, upload-time = "2026-05-23T18:53:16.924Z" },
 ]
 
 [[package]]
@@ -1376,15 +1394,19 @@ wheels = [
 
 [[package]]
 name = "mempalace"
-version = "3.3.5"
+version = "3.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "chromadb" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "python-dateutil" },
     { name = "pyyaml" },
+    { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/31/a9/e93cfd42ce416d6f540dcf0d03abd2ba1fe05ff686a6a2a692a3d096759c/mempalace-3.3.5.tar.gz", hash = "sha256:6ff74f22fcb801749707dea31fcf7a1903bdac94411e737652003ab362d3ca8e", size = 24184377, upload-time = "2026-05-10T23:44:34.663Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/ad/907ce718293ab123be65263d01c0c3c8d82194b4c549b5eca9dfe8e3da1a/mempalace-3.4.0.tar.gz", hash = "sha256:3947a4331166c993ea2ba13b57da479e1da1d09ed056bafd570e4db5f84436ab", size = 24947549, upload-time = "2026-06-06T08:59:10.722Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/a3/b1d632f1358103f49c62eda987a56f0a15d3d26cda4d9ef041539069e30a/mempalace-3.3.5-py3-none-any.whl", hash = "sha256:725d1e5646684468ad54415545378c1734091e31fb5b8765170b996d7446b3d0", size = 333058, upload-time = "2026-05-10T23:44:29.606Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/a5/3018e2a5b5e46fca94e9ff7496faf120e4150546143882a8664c389b4d85/mempalace-3.4.0-py3-none-any.whl", hash = "sha256:5e5df0e0708c9a8f8e2a47365de00d47360490005bba11674bc0bfe7709df527", size = 463395, upload-time = "2026-06-06T08:59:08.519Z" },
 ]
 
 [[package]]
