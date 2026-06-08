@@ -1,0 +1,26 @@
+runtime:
+  palaces_root: ~/eidolon/memory/mempalaces
+  log_dir: ''
+  run_dir: ''
+nats:
+  url: nats://127.0.0.1:4222
+llm:
+  model: openai/deepseek-v4-flash
+  base_url: http://mopai.geni.dyxnet.com.cn/v1
+  api_key_env: EIDOLON_MEMORY_LLM_API_KEY
+  timeout_seconds: 30
+  temperature: 0.7
+mcp_http:
+  host: 127.0.0.1
+  port: 8030
+  bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN
+discovery_http:
+  host: 127.0.0.1
+  port: 8020
+steward:
+  mode: llm
+recall:
+  top_k: 5
+  livekit_timeout_seconds: 0.3
+supervisor:
+  users_file: config/users.yaml
