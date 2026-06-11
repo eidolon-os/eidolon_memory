@@ -124,8 +124,14 @@ class MemPalacePythonBackend(MemoryBackend):
 
         now_iso = _now_iso()
         raw_meta = dict(metadata or {})
-        raw_meta.setdefault("occurred_at", raw_meta.get("memory_time") or now_iso)
-        raw_meta["filed_at"] = now_iso
+        occurred_at = str(raw_meta.get("occurred_at") or raw_meta.get("memory_time") or now_iso)
+        raw_meta["occurred_at"] = occurred_at
+        raw_meta.setdefault("indexed_at", now_iso)
+        # MemPalace's public search currently exposes ``filed_at`` as the
+        # top-level ``created_at`` and drops custom metadata. Store the
+        # canonical memory time here so plain search still reports when the
+        # topic happened; ``indexed_at`` keeps the physical write time.
+        raw_meta["filed_at"] = occurred_at
         drawer_id = _drawer_id(wing, room, content)
         meta = _metadata_for_chroma(
             {

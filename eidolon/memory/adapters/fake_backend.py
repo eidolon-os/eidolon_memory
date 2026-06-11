@@ -66,8 +66,10 @@ class FakeMemoryBackend:
         # ``source="user-confirmed"``, which recall ranking keys off). ``wing``
         # and ``room`` remain authoritative (the adapter owns placement).
         raw_meta = dict(metadata or {})
-        raw_meta.setdefault("occurred_at", raw_meta.get("memory_time") or now_iso)
-        raw_meta.setdefault("filed_at", now_iso)
+        occurred_at = str(raw_meta.get("occurred_at") or raw_meta.get("memory_time") or now_iso)
+        raw_meta["occurred_at"] = occurred_at
+        raw_meta.setdefault("indexed_at", now_iso)
+        raw_meta.setdefault("filed_at", occurred_at)
         meta = {"source": "fake", **raw_meta, "wing": wing, "room": room}
         did = self._doc_id(wing, room)
         self.docs[did] = MemoryWireRecord(

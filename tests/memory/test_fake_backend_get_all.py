@@ -51,3 +51,21 @@ async def test_get_all_pagination_slice():
     assert len(page1) == 2
     texts = sorted({str(r.value) for r in page0 + page1})
     assert texts == ["0", "1", "2", "3"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_text_preserves_canonical_memory_time_and_indexed_at():
+    b = FakeMemoryBackend()
+    await b.ingest_text(
+        wing="Wing_Life",
+        room="pet_iron",
+        text="铁锤今天去洗澡",
+        metadata={"occurred_at": "2026-05-18T20:00:00Z"},
+    )
+    rows = await b.get_all("")
+    assert len(rows) == 1
+    assert rows[0].memory_time is not None
+    assert rows[0].memory_time.isoformat() == "2026-05-18T20:00:00+00:00"
+    assert rows[0].memory_time_source == "occurred_at"
+    assert rows[0].metadata["filed_at"] == "2026-05-18T20:00:00Z"
+    assert rows[0].metadata["indexed_at"]
