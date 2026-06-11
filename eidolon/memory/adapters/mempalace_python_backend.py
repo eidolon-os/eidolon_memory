@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +18,16 @@ from eidolon.memory.domain.errors import (
 )
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
-from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.domain.wire import MemoryWireRecord, parse_memory_datetime
 from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class MemPalacePythonBackend(MemoryBackend):
@@ -118,16 +122,19 @@ class MemPalacePythonBackend(MemoryBackend):
         except ValueError as exc:
             raise MemoryBackendWriteFailed(str(exc)) from exc
 
+        now_iso = _now_iso()
+        raw_meta = dict(metadata or {})
+        raw_meta.setdefault("occurred_at", raw_meta.get("memory_time") or now_iso)
+        raw_meta["filed_at"] = now_iso
         drawer_id = _drawer_id(wing, room, content)
         meta = _metadata_for_chroma(
             {
-                **(metadata or {}),
+                **raw_meta,
                 "wing": wing,
                 "room": room,
-                "source_file": (metadata or {}).get("source_file", ""),
+                "source_file": raw_meta.get("source_file", ""),
                 "chunk_index": 0,
-                "added_by": (metadata or {}).get("added_by", "eidolon-memory"),
-                "filed_at": datetime.now().isoformat(),
+                "added_by": raw_meta.get("added_by", "eidolon-memory"),
             }
         )
         try:
@@ -389,4 +396,6 @@ def _record_from_get_result(result: Any, index: int, *, drawer_id: str) -> Memor
         # "mempalace-python" when the drawer carried no source at all.
         # ``wing``/``room`` stay authoritative (read-time placement).
         metadata={"source": "mempalace-python", **meta, "wing": wing, "room": room},
+        created_at=parse_memory_datetime(meta.get("created_at") or meta.get("filed_at")),
+        updated_at=parse_memory_datetime(meta.get("updated_at")),
     )

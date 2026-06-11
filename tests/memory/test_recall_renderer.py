@@ -48,6 +48,22 @@ def test_unknown_memory_type_falls_back_to_lifestyle():
     assert "- fallback content" in out
 
 
+def test_vector_memory_renders_canonical_date_when_available():
+    records = [
+        MemoryWireRecord(
+            user_id="u1",
+            key="k-time",
+            value="铁锤今天去洗澡",
+            metadata={
+                "memory_type": "life",
+                "occurred_at": "2026-05-18T20:00:00Z",
+            },
+        )
+    ]
+    out = group_recall_context(records)
+    assert "- [2026-05-18] 铁锤今天去洗澡" in out
+
+
 def test_classify_covers_all_memory_types_in_map():
     """sanity: every value in _WING_GROUP_MAP routes to its title via _classify."""
     for title, members in _WING_GROUP_MAP.items():

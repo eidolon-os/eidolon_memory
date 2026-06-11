@@ -294,12 +294,23 @@ mcp_http:
     {"subject":"self","predicate":"likes","object":"乌龙茶","valid_from":"…","valid_to":null}
   ],
   "records": [
-    {"user_id":"alice","key":"...","value":"我刚泡了乌龙","metadata":{"wing":"Wing_Life","similarity":0.78}}
+    {
+      "user_id":"alice",
+      "key":"...",
+      "value":"我刚泡了乌龙",
+      "memory_time":"2026-05-19T12:40:00Z",
+      "memory_time_source":"occurred_at",
+      "created_at":"2026-05-19T12:40:02Z",
+      "metadata":{"wing":"Wing_Life","similarity":0.78}
+    }
   ]
 }
 ```
 
-`context` 是已格式化好可以直接喂给 LLM 的字符串;`records` + `kg_triples` 是原始结构供二次处理。
+`context` 是已格式化好可以直接喂给 LLM 的字符串;向量记忆行会在可用时渲染
+`[YYYY-MM-DD]` 前缀。`records[].memory_time` 是上层统一消费的记忆时间点,
+优先级为 `occurred_at > valid_from > created_at > filed_at > updated_at`;
+`memory_time_source` 表明它来自哪个原始字段。`records` + `kg_triples` 是原始结构供二次处理。
 
 ### 4.5 Discovery HTTP(agent-routing)
 

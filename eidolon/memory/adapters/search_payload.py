@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from eidolon.memory.adapters.recall_ranking import vector_fields_from_hit
-from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.domain.wire import MemoryWireRecord, parse_memory_datetime
 
 
 def parse_search_tool_payload(data: Any) -> list[MemoryWireRecord]:
@@ -58,12 +58,18 @@ def parse_search_tool_payload(data: Any) -> list[MemoryWireRecord]:
         status = r.get("status", r.get("room_status"))
         if status is not None:
             meta["room_status"] = status
+        created_at = parse_memory_datetime(
+            r.get("created_at") or meta.get("created_at") or meta.get("filed_at")
+        )
+        updated_at = parse_memory_datetime(r.get("updated_at") or meta.get("updated_at"))
         out.append(
             MemoryWireRecord(
                 user_id=wing or "default",
                 key=room or "general",
                 value=value,
                 metadata=meta,
+                created_at=created_at,
+                updated_at=updated_at,
             )
         )
     return out

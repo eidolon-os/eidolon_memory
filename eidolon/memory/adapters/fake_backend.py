@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from eidolon.memory.domain.fragments import MemoryFragment
@@ -59,11 +60,15 @@ class FakeMemoryBackend:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         self.ingests.append((wing, room, text, metadata))
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         # Default ``source="fake"`` only when the caller didn't set one — don't
         # silently discard caller-provided metadata (e.g. Phase 5.2 writes
         # ``source="user-confirmed"``, which recall ranking keys off). ``wing``
         # and ``room`` remain authoritative (the adapter owns placement).
-        meta = {"source": "fake", **(metadata or {}), "wing": wing, "room": room}
+        raw_meta = dict(metadata or {})
+        raw_meta.setdefault("occurred_at", raw_meta.get("memory_time") or now_iso)
+        raw_meta.setdefault("filed_at", now_iso)
+        meta = {"source": "fake", **raw_meta, "wing": wing, "room": room}
         did = self._doc_id(wing, room)
         self.docs[did] = MemoryWireRecord(
             user_id=wing,

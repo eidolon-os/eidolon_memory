@@ -14,6 +14,7 @@ input parameter to `group_recall_context` and a single guarded block.
 
 from __future__ import annotations
 
+from datetime import timezone
 from typing import TYPE_CHECKING
 
 from eidolon.memory.application.kg_recall import transcribe_triples
@@ -51,6 +52,15 @@ _THEMES_MAX_ITEMS = 4
 def _truncate(text: str, limit: int = _WM_TRUNC) -> str:
     text = text or ""
     return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _time_prefix(rec: MemoryWireRecord) -> str:
+    if rec.memory_time is None:
+        return ""
+    dt = rec.memory_time
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
+    return f"[{dt.strftime('%Y-%m-%d')}] "
 
 
 def _render_working_memory(turns: list[ConversationTurnPayload]) -> list[str]:
@@ -92,7 +102,7 @@ def _render_themes(themes: list[MemoryWireRecord]) -> list[str]:
     lines: list[str] = ["[主题]"]
     for rec in themes[:_THEMES_MAX_ITEMS]:
         underlying = (rec.metadata or {}).get("underlying_wing")
-        text = _truncate(str(rec.value or ""))
+        text = _time_prefix(rec) + _truncate(str(rec.value or ""))
         if underlying:
             lines.append(f"- ({underlying}) {text}")
         else:
@@ -164,7 +174,7 @@ def group_recall_context(
     groups: dict[str, list[str]] = {title: [] for title in _WING_GROUP_MAP}
     for rec in vector_records:
         kind = str(rec.metadata.get("memory_type", ""))
-        text = str(rec.value)
+        text = _time_prefix(rec) + str(rec.value)
         groups[_classify(kind)].append(text)
 
     vector_lines: list[str] = []

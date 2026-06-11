@@ -142,7 +142,12 @@ async def process_turn_message(
         await _apply_privacy(backend, fallback_user, decision.privacy_actions)
         if decision.should_write:
             for fragment in decision.fragments:
-                await ingest_memory_fragment(backend, fragment)
+                stamped = (
+                    fragment
+                    if fragment.occurred_at
+                    else fragment.model_copy(update={"occurred_at": turn_ts})
+                )
+                await ingest_memory_fragment(backend, stamped)
                 fragments_written += 1
     except Exception as exc:
         log.error(
@@ -427,6 +432,7 @@ async def _ingest_theme(backend: Any, cmd: "ConsolidatorIngestThemeCommand") -> 
         memory_type="profile",   # closest existing type for high-level summaries
         importance=4,
         confidence=cmd.confidence,
+        occurred_at=cmd.issued_at,
         source_turn_id=f"consolidator:{cmd.request_id}",
         session_id="consolidator",
         tags=["theme", cmd.underlying_wing],
@@ -464,6 +470,7 @@ async def _ingest_user_confirmed(
         memory_type=cmd.memory_type,
         importance=cmd.importance,
         confidence=cmd.confidence,
+        occurred_at=cmd.issued_at,
         source_turn_id=f"user-confirmed:{cmd.request_id}",
         session_id="user-confirmed",
         tags=["user-confirmed", *cmd.tags],
