@@ -164,6 +164,7 @@ def user_to_view(
             # at its own bookkeeping layer; memory always returns "default".
             "tenant_id": "default",
             "display_name": user.id,  # memory has no display name field today
+            "enabled": user.enabled,
             "palace_path": user.palace_path,
             "consolidator": {
                 "enabled": user.consolidator.enabled if user.consolidator else False,
@@ -249,18 +250,21 @@ class UserAdmin:
         *,
         user_id: str,
         port: Optional[int] = None,
+        enabled: bool = False,
         palace_path: str = "",
         consolidator: Optional[ConsolidatorUserConfig] = None,
         wait_for_worker_timeout_s: float = 10.0,
     ) -> dict:
-        """Create a user, persist to yaml, reconcile, wait for worker.
+        """Create a user, persist to yaml, and optionally start its worker.
 
         Steps:
           1. validate uniqueness (id + port)
           2. write the new entry to users.yaml (atomic + locked)
-          3. trigger reconcile (in-process, no SIGHUP)
-          4. poll for the worker to be alive within ``wait_for_worker_timeout_s``
-          5. return the freshly built view
+          3. if enabled: trigger reconcile (in-process, no SIGHUP)
+          4. if enabled: poll for the worker to be alive within
+             ``wait_for_worker_timeout_s``
+          5. return the freshly built view. Disabled users are pure catalog
+             records until they are explicitly enabled.
 
         Failure modes:
           - id collision           → 409 UserAlreadyExists, no yaml change
@@ -285,7 +289,7 @@ class UserAdmin:
             entry = UserEntry(
                 id=user_id,
                 port=final_port,
-                enabled=True,
+                enabled=enabled,
                 palace_path=palace_path,
                 consolidator=consolidator,
             )
@@ -297,26 +301,26 @@ class UserAdmin:
                 # case the in-memory check missed (e.g. concurrent writer).
                 raise PortConflict(str(exc)) from exc
 
-            await self._sup.reconcile_now()
-
-            # Wait for the worker process to be alive. We DON'T poll the MCP
-            # port from here because that introduces an HTTP roundtrip into
-            # the supervisor's event loop; admin's later resolve endpoint
-            # does the MCP liveness check.
-            deadline = time.monotonic() + wait_for_worker_timeout_s
-            while not self._sup.is_worker_alive(user_id):
-                if time.monotonic() >= deadline:
-                    log.warning(
-                        "user_admin_create_worker_slow",
-                        user_id=user_id,
-                        timeout_s=wait_for_worker_timeout_s,
-                    )
-                    # Don't roll back — the entry is valid, the worker may
-                    # still be starting (palace init is the slow part).
-                    # Return the view with worker_running=false so the
-                    # operator sees the degraded state and can decide.
-                    break
-                await asyncio.sleep(0.1)
+            if enabled:
+                await self._sup.reconcile_now()
+                # Wait for the worker process to be alive. We DON'T poll the MCP
+                # port from here because that introduces an HTTP roundtrip into
+                # the supervisor's event loop; admin's later resolve endpoint
+                # does the MCP liveness check.
+                deadline = time.monotonic() + wait_for_worker_timeout_s
+                while not self._sup.is_worker_alive(user_id):
+                    if time.monotonic() >= deadline:
+                        log.warning(
+                            "user_admin_create_worker_slow",
+                            user_id=user_id,
+                            timeout_s=wait_for_worker_timeout_s,
+                        )
+                        # Don't roll back — the entry is valid, the worker may
+                        # still be starting (palace init is the slow part).
+                        # Return the view with worker_running=false so the
+                        # operator sees the degraded state and can decide.
+                        break
+                    await asyncio.sleep(0.1)
 
             return user_to_view(
                 entry,

@@ -130,7 +130,7 @@ def test_allocate_port_full_range_raises() -> None:
 # ---- create happy path -----------------------------------------------------
 
 
-async def test_create_user_persists_and_starts_worker(admin_env) -> None:
+async def test_create_user_persists_disabled_by_default(admin_env) -> None:
     admin, sup, _ = admin_env
     view = await admin.create_user(user_id="alice")
 
@@ -139,10 +139,23 @@ async def test_create_user_persists_and_starts_worker(admin_env) -> None:
     assert [u.id for u in cfg.users] == ["alice"]
     # Auto-allocated port from the [8030, 8100) range.
     assert cfg.users[0].port == 8030
-    # Worker is up (stub reconciles synchronously).
-    assert "alice" in sup.alive
-    # View reflects healthy state.
+    assert cfg.users[0].enabled is False
+    # Default creation only persists config; activation is a separate step.
+    assert "alice" not in sup.alive
     assert view["spec"]["user_id"] == "alice"
+    assert view["spec"]["enabled"] is False
+    assert view["health"]["worker_running"] is False
+    assert sup.reconcile_count == 0
+
+
+async def test_create_user_enabled_starts_worker(admin_env) -> None:
+    admin, sup, _ = admin_env
+    view = await admin.create_user(user_id="alice", enabled=True)
+
+    cfg = _read_users(sup.users_path)
+    assert cfg.users[0].enabled is True
+    assert "alice" in sup.alive
+    assert view["spec"]["enabled"] is True
     assert view["health"]["worker_running"] is True
     assert sup.reconcile_count == 1
 

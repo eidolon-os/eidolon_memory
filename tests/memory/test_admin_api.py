@@ -81,11 +81,24 @@ def test_create_then_list(client: TestClient) -> None:
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["spec"]["user_id"] == "alice"
-    assert body["health"]["worker_running"] is True
+    assert body["spec"]["enabled"] is False
+    assert body["health"]["worker_running"] is False
 
     r2 = client.get("/api/admin/users")
     assert r2.status_code == 200
     assert [u["spec"]["user_id"] for u in r2.json()["users"]] == ["alice"]
+
+
+def test_create_enabled_starts_worker(client: TestClient) -> None:
+    r = client.post(
+        "/api/admin/users",
+        json={"user_id": "alice", "enabled": True},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["spec"]["user_id"] == "alice"
+    assert body["spec"]["enabled"] is True
+    assert body["health"]["worker_running"] is True
 
 
 def test_create_rejects_bad_user_id(client: TestClient) -> None:

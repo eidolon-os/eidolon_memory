@@ -62,6 +62,7 @@ class CreateUserRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=64)
     # Optional explicit port; if None, user_admin auto-allocates from a range.
     port: Optional[int] = Field(None, ge=1, le=65535)
+    enabled: bool = False
     palace_path: str = ""
     consolidator: Optional[_ConsolidatorIn] = None
 
@@ -110,6 +111,7 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
             return await user_admin.create_user(
                 user_id=body.user_id,
                 port=body.port,
+                enabled=body.enabled,
                 palace_path=body.palace_path,
                 consolidator=body.consolidator.to_domain() if body.consolidator else None,
             )
