@@ -67,6 +67,10 @@ async def test_status_returns_identity_and_config(live_agent_runner, mcp_session
         assert "Wing_Privacy" in wing_ids, wing_ids
         # MCP transport identifier — guards against accidental stdio fallback.
         assert s.get("mcp_transport") == "streamable-http", s
+        # Runtime readiness contract used by admin's memory user list.
+        assert s.get("mempalace_backend"), s
+        assert s.get("palace_initialized") is True, s
+        assert s.get("ready") is True, s
 
 
 async def test_list_paginates_and_filters_private(live_agent_runner, mcp_session):

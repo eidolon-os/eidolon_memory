@@ -232,7 +232,7 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
         {"id": "slow", "port": 9002, "enabled": True},
     ])
 
-    def _fake_init(user_id: str, _palace_path: Path) -> None:
+    def _fake_init(user_id: str, _palace_path: Path, **_kwargs) -> None:
         if user_id == "slow":
             time.sleep(0.3)
 
@@ -268,6 +268,62 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
             start_task.cancel()
             with __import__("contextlib").suppress(asyncio.CancelledError):
                 await start_task
+        await sup.stop()
+
+
+async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
+    tmp_path: Path, _patched_popen, monkeypatch,
+):
+    """SIGHUP reconcile must stream init completions just like cold start.
+
+    This protects admin enable/create flows: a new slow user may still be
+    initializing, but already-ready users should get their workers immediately.
+    """
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
+        lambda _s: tmp_path / "logs",
+    )
+    yaml_path = _write_users_yaml(tmp_path, [
+        {"id": "fast", "port": 9001, "enabled": True},
+        {"id": "slow", "port": 9002, "enabled": True},
+    ])
+
+    def _fake_init(user_id: str, _palace_path: Path, **_kwargs) -> None:
+        if user_id == "slow":
+            time.sleep(0.3)
+
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor.ensure_palace_initialized",
+        _fake_init,
+    )
+
+    loop = asyncio.get_running_loop()
+    fast_spawned = asyncio.Event()
+    real_spawn = _Child.spawn
+
+    def _spawn_spy(self: _Child) -> None:
+        real_spawn(self)
+        if self.user.id == "fast":
+            loop.call_soon(fast_spawned.set)
+
+    monkeypatch.setattr(_Child, "spawn", _spawn_spy)
+
+    settings = load_memory_settings()
+    sup = Supervisor(settings, yaml_path, eager_init=True)
+    reconcile_task = asyncio.create_task(sup._reconcile())
+    try:
+        await asyncio.wait_for(fast_spawned.wait(), timeout=0.5)
+        assert "fast" in sup._children
+        assert "slow" not in sup._children
+        assert not reconcile_task.done()
+
+        await reconcile_task
+        assert set(sup._children) == {"fast", "slow"}
+    finally:
+        if not reconcile_task.done():
+            reconcile_task.cancel()
+            with __import__("contextlib").suppress(asyncio.CancelledError):
+                await reconcile_task
         await sup.stop()
 
 

@@ -3,12 +3,10 @@
 Sits between the HTTP layer (``entrypoints/admin_api.py``) and the
 process layer (``entrypoints/supervisor.py``). Knows:
 
-  * how to allocate a free MCP port for a new user (scans users.yaml)
+  * how to read admin's user registry through the same loader supervisor uses
   * how to drive the supervisor through a state transition without
     racing its own reconcile loop (serialized via an asyncio.Lock)
-  * how to roll back a partial DELETE if any step fails — so a failed
-    palace deletion does NOT leave the user half-alive (worker dead,
-    yaml entry still there, palace still on disk)
+  * how to clean up memory-owned palace data after admin removes a user
 
 The cascade for DELETE is documented inline in :func:`delete_user`.
 
@@ -24,21 +22,15 @@ from __future__ import annotations
 import asyncio
 import shutil
 import time
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from eidolon.memory.config.users import (
     ConsolidatorUserConfig,
     UserEntry,
-    UsersConfig,
     load_users_config,
-)
-from eidolon.memory.config.users_io import (
-    UsersYamlError,
-    remove_user as yaml_remove_user,
-    update_enabled as yaml_update_enabled,
-    upsert_user as yaml_upsert_user,
 )
 from eidolon.memory.support.logging import get_logger
 
@@ -77,11 +69,13 @@ class WorkerNotTerminated(UserAdminError):
 
 
 class PalaceCleanupFailed(UserAdminError):
-    """File-system error while moving the palace to trash. Step 1 was
-    rolled back: worker is restored, yaml entry is enabled again.
-    """
+    """File-system error while moving the palace to trash."""
 
     status_code = 503
+
+
+class UserRegistryReadOnly(UserAdminError):
+    status_code = 409
 
 
 # ---- protocols (so tests can stub) ------------------------------------------
@@ -96,7 +90,7 @@ class _SupervisorProtocol(Protocol):
     implements all of these.
     """
 
-    users_path: Path  # absolute path to users.yaml
+    users_path: Path | None
 
     async def reconcile_now(self) -> None:
         """Re-read users.yaml and align running children. Must be safe to
@@ -173,13 +167,13 @@ def user_to_view(
                 "min_drawers": user.consolidator.min_drawers if user.consolidator else 3,
                 "min_confidence": user.consolidator.min_confidence if user.consolidator else 0.6,
             },
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         },
         "health": {
             "worker_running": worker_alive and user.enabled,
             "mcp_reachable": worker_alive and user.enabled,  # liveness conflates the two for now
             "palace_initialized": palace_path.exists(),
-            "note": "" if user.enabled else "user disabled (yaml enabled=false)",
+            "note": "" if user.enabled else "user disabled by admin registry",
         },
         "active_agent_id": None,  # admin-side concept, memory doesn't know
         "agent_ids": [],  # ditto
@@ -243,90 +237,25 @@ class UserAdmin:
             palace_path=self._sup.palace_path_for(user),
         )
 
+    async def reconcile(self) -> None:
+        async with self._lock:
+            await self._sup.reconcile_now()
+
     # -------------------- create --------------------
 
     async def create_user(
         self,
         *,
         user_id: str,
-        port: Optional[int] = None,
+        port: int | None = None,
         enabled: bool = False,
         palace_path: str = "",
-        consolidator: Optional[ConsolidatorUserConfig] = None,
+        consolidator: ConsolidatorUserConfig | None = None,
         wait_for_worker_timeout_s: float = 10.0,
     ) -> dict:
-        """Create a user, persist to yaml, and optionally start its worker.
-
-        Steps:
-          1. validate uniqueness (id + port)
-          2. write the new entry to users.yaml (atomic + locked)
-          3. if enabled: trigger reconcile (in-process, no SIGHUP)
-          4. if enabled: poll for the worker to be alive within
-             ``wait_for_worker_timeout_s``
-          5. return the freshly built view. Disabled users are pure catalog
-             records until they are explicitly enabled.
-
-        Failure modes:
-          - id collision           → 409 UserAlreadyExists, no yaml change
-          - port collision         → 409 PortConflict, no yaml change
-          - yaml write failure     → original yaml intact (atomic write)
-          - reconcile/worker hang  → 503; the yaml entry remains, operator
-                                     can investigate the worker log
-        """
-        async with self._lock:
-            config = load_users_config(path=self._sup.users_path)
-            if config.find(user_id) is not None:
-                raise UserAlreadyExists(f"user {user_id!r} already in users.yaml")
-
-            # Port allocation: explicit > auto-pick from range
-            if port is not None:
-                if any(u.port == port for u in config.users):
-                    raise PortConflict(f"port {port} already used by another user")
-                final_port = port
-            else:
-                final_port = allocate_port(config.users)
-
-            entry = UserEntry(
-                id=user_id,
-                port=final_port,
-                enabled=enabled,
-                palace_path=palace_path,
-                consolidator=consolidator,
-            )
-
-            try:
-                yaml_upsert_user(self._sup.users_path, entry)
-            except UsersYamlError as exc:
-                # UsersConfig's validator caught a duplicate-port-against-enabled
-                # case the in-memory check missed (e.g. concurrent writer).
-                raise PortConflict(str(exc)) from exc
-
-            if enabled:
-                await self._sup.reconcile_now()
-                # Wait for the worker process to be alive. We DON'T poll the MCP
-                # port from here because that introduces an HTTP roundtrip into
-                # the supervisor's event loop; admin's later resolve endpoint
-                # does the MCP liveness check.
-                deadline = time.monotonic() + wait_for_worker_timeout_s
-                while not self._sup.is_worker_alive(user_id):
-                    if time.monotonic() >= deadline:
-                        log.warning(
-                            "user_admin_create_worker_slow",
-                            user_id=user_id,
-                            timeout_s=wait_for_worker_timeout_s,
-                        )
-                        # Don't roll back — the entry is valid, the worker may
-                        # still be starting (palace init is the slow part).
-                        # Return the view with worker_running=false so the
-                        # operator sees the degraded state and can decide.
-                        break
-                    await asyncio.sleep(0.1)
-
-            return user_to_view(
-                entry,
-                worker_alive=self._sup.is_worker_alive(user_id),
-                palace_path=self._sup.palace_path_for(entry),
-            )
+        raise UserRegistryReadOnly(
+            "memory no longer creates users; write users through eidolon_admin /api/users"
+        )
 
     # -------------------- delete (cascade with compensation) --------------------
 
@@ -340,12 +269,9 @@ class UserAdmin:
 
         The three steps, each individually safe:
 
-        Step 1 — Disable
-            Flip ``enabled=false`` in users.yaml, trigger reconcile. The
-            supervisor terminates the agent_runner (and consolidator if
-            any) with grace. If reconcile or the worker hangs, we return
-            503 with the yaml *not* fully disabled — re-running DELETE is
-            idempotent.
+        Step 1 — Reconcile
+            Admin has already flipped enabled=false or deleted the registry
+            row. Re-read the admin registry and wait for the worker to stop.
 
         Step 2 — Trash palace
             Move the user's palace directory under
@@ -353,14 +279,6 @@ class UserAdmin:
             until the operator wipes the trash. If the move fails (FS
             error, permission), we ROLL BACK step 1: re-enable the user,
             reconcile, supervisor brings the worker back. Return 503.
-
-        Step 3 — Remove yaml entry
-            Permanently remove the user from users.yaml. After this,
-            the user no longer exists. If THIS step fails (rare — yaml
-            disk full?), the worker is dead, palace is trashed, but
-            the entry remains as ``enabled=false``. Subsequent DELETE
-            is idempotent: yaml entry gone, palace already trashed
-            (idempotent move), worker already dead.
 
         Returns a small status dict so the operator UI can show what
         was actually done ("worker stopped, palace moved to <path>").
@@ -372,45 +290,22 @@ class UserAdmin:
                 raise UserNotFound(f"user {user_id!r} not found")
 
             palace_path = self._sup.palace_path_for(entry)
-            was_enabled = entry.enabled
 
-            # ---- Step 1: disable + reconcile, await worker death ----
-            if entry.enabled:
-                try:
-                    yaml_update_enabled(self._sup.users_path, user_id, enabled=False)
-                except UsersYamlError as exc:
-                    raise UserAdminError(f"step 1 yaml write failed: {exc}") from exc
-
-                await self._sup.reconcile_now()
-
-                # Wait for the worker to actually terminate.
-                deadline = time.monotonic() + worker_stop_timeout_s
-                while self._sup.is_worker_alive(user_id):
-                    if time.monotonic() >= deadline:
-                        # Step 1 didn't complete. Try to roll back, but the
-                        # worker being stuck means it's already in a bad state.
-                        log.error(
-                            "user_admin_worker_did_not_stop",
-                            user_id=user_id,
-                            timeout_s=worker_stop_timeout_s,
-                        )
-                        # Best-effort rollback of yaml. The worker is still
-                        # alive so functionally nothing changed for users.
-                        if was_enabled:
-                            try:
-                                yaml_update_enabled(
-                                    self._sup.users_path, user_id, enabled=True,
-                                )
-                            except Exception:
-                                log.exception(
-                                    "user_admin_rollback_failed",
-                                    user_id=user_id,
-                                )
-                        raise WorkerNotTerminated(
-                            f"worker for user {user_id!r} did not exit within "
-                            f"{worker_stop_timeout_s}s; check worker log and retry"
-                        )
-                    await asyncio.sleep(0.1)
+            # ---- Step 1: reconcile + await worker death ----
+            await self._sup.reconcile_now()
+            deadline = time.monotonic() + worker_stop_timeout_s
+            while self._sup.is_worker_alive(user_id):
+                if time.monotonic() >= deadline:
+                    log.error(
+                        "user_admin_worker_did_not_stop",
+                        user_id=user_id,
+                        timeout_s=worker_stop_timeout_s,
+                    )
+                    raise WorkerNotTerminated(
+                        f"worker for user {user_id!r} did not exit within "
+                        f"{worker_stop_timeout_s}s; check worker log and retry"
+                    )
+                await asyncio.sleep(0.1)
 
             # ---- Step 2: trash palace ----
             trash_target: Path | None = None
@@ -419,41 +314,9 @@ class UserAdmin:
                     trash_target = self._trash_palace(palace_path, user_id)
                 except Exception as exc:  # noqa: BLE001 - need broad to drive rollback
                     log.exception("user_admin_palace_trash_failed", user_id=user_id)
-                    # Roll back step 1: re-enable, reconcile, supervisor
-                    # brings the worker back up.
-                    if was_enabled:
-                        try:
-                            yaml_update_enabled(
-                                self._sup.users_path, user_id, enabled=True,
-                            )
-                            await self._sup.reconcile_now()
-                        except Exception:
-                            log.exception(
-                                "user_admin_rollback_after_palace_fail",
-                                user_id=user_id,
-                            )
                     raise PalaceCleanupFailed(
                         f"palace move to trash failed: {exc}"
                     ) from exc
-
-            # ---- Step 3: final yaml removal (point of no return) ----
-            try:
-                yaml_remove_user(self._sup.users_path, user_id)
-            except UsersYamlError as exc:
-                # Worker is dead, palace is trashed. Yaml entry remains
-                # as enabled=false. Operator can retry DELETE — it's
-                # idempotent (find returns the stale entry, worker
-                # check passes immediately, palace.exists() is False so
-                # step 2 skips, step 3 retries).
-                log.warning(
-                    "user_admin_yaml_final_remove_failed",
-                    user_id=user_id,
-                    error=str(exc),
-                )
-                raise UserAdminError(
-                    f"user worker stopped and palace trashed to {trash_target}, "
-                    f"but yaml entry remove failed: {exc} — re-run DELETE to clean up"
-                ) from exc
 
             # Final reconcile so any UI status reads are consistent.
             await self._sup.reconcile_now()

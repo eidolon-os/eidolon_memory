@@ -1,26 +1,15 @@
-"""Tests for the user-admin control plane + cascade delete compensation.
+"""Tests for the memory user control plane.
 
 Real file system (tmp_path for users.yaml + palace dirs + trash). Stub
 supervisor so we can drive worker_alive deterministically and verify the
-cascade's rollback path WITHOUT spawning real subprocesses.
+cleanup path WITHOUT spawning real subprocesses.
 
-The 4-step DELETE flow needs adversarial coverage:
-  - happy path: all three steps succeed
-  - worker doesn't terminate within timeout → rollback yaml, raise 503
-  - palace trash fails → rollback yaml AND reconcile, raise 503
-  - yaml final-remove fails after palace trashed → raise 503 but worker
-    is dead and palace is gone (intentional non-rollback; DELETE retry
-    is idempotent)
-
-CREATE flow tests:
-  - allocate port when not specified
-  - reject duplicate user_id
-  - reject port collision (against any user, not just enabled)
-  - worker-slow-to-start returns view with worker_running=false
+Memory no longer owns the user registry. It reads admin's registry, exposes
+reconcile for runtime sync, and deletes only memory-owned palace data after
+admin has disabled or removed a user.
 """
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -30,14 +19,12 @@ from eidolon.memory.application.user_admin import (
     PalaceCleanupFailed,
     PortConflict,
     UserAdmin,
-    UserAdminError,
-    UserAlreadyExists,
     UserNotFound,
+    UserRegistryReadOnly,
     WorkerNotTerminated,
     allocate_port,
 )
 from eidolon.memory.config.users import UserEntry, UsersConfig
-
 
 # ---- stub supervisor --------------------------------------------------------
 
@@ -127,67 +114,33 @@ def test_allocate_port_full_range_raises() -> None:
         allocate_port(existing)
 
 
-# ---- create happy path -----------------------------------------------------
+# ---- read-only registry boundary ------------------------------------------
 
 
-async def test_create_user_persists_disabled_by_default(admin_env) -> None:
+async def test_create_user_is_read_only(admin_env) -> None:
     admin, sup, _ = admin_env
-    view = await admin.create_user(user_id="alice")
-
-    # Yaml has alice now.
-    cfg = _read_users(sup.users_path)
-    assert [u.id for u in cfg.users] == ["alice"]
-    # Auto-allocated port from the [8030, 8100) range.
-    assert cfg.users[0].port == 8030
-    assert cfg.users[0].enabled is False
-    # Default creation only persists config; activation is a separate step.
-    assert "alice" not in sup.alive
-    assert view["spec"]["user_id"] == "alice"
-    assert view["spec"]["enabled"] is False
-    assert view["health"]["worker_running"] is False
+    with pytest.raises(UserRegistryReadOnly):
+        await admin.create_user(user_id="alice")
+    assert _read_users(sup.users_path).users == []
     assert sup.reconcile_count == 0
 
 
-async def test_create_user_enabled_starts_worker(admin_env) -> None:
+async def test_reconcile_delegates_to_supervisor(admin_env) -> None:
     admin, sup, _ = admin_env
-    view = await admin.create_user(user_id="alice", enabled=True)
-
-    cfg = _read_users(sup.users_path)
-    assert cfg.users[0].enabled is True
+    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+    await admin.reconcile()
     assert "alice" in sup.alive
-    assert view["spec"]["enabled"] is True
-    assert view["health"]["worker_running"] is True
     assert sup.reconcile_count == 1
 
 
-async def test_create_user_explicit_port(admin_env) -> None:
-    admin, sup, _ = admin_env
-    await admin.create_user(user_id="alice", port=8050)
-    cfg = _read_users(sup.users_path)
-    assert cfg.users[0].port == 8050
-
-
-async def test_create_user_rejects_duplicate_id(admin_env) -> None:
-    admin, sup, _ = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030))
-    with pytest.raises(UserAlreadyExists):
-        await admin.create_user(user_id="alice")
-
-
-async def test_create_user_rejects_port_collision(admin_env) -> None:
-    admin, sup, _ = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030))
-    with pytest.raises(PortConflict):
-        await admin.create_user(user_id="bob", port=8030)
-
-
-# ---- delete happy path -----------------------------------------------------
+# ---- delete cleanup path ---------------------------------------------------
 
 
 async def test_delete_user_three_step_happy_path(admin_env) -> None:
     admin, sup, tmp_path = admin_env
-    # Seed: alice exists, worker alive, palace on disk.
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030))
+    # Seed: admin has already disabled alice; a worker is still alive until
+    # reconcile observes the registry and terminates it.
+    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=False))
     sup.alive.add("alice")
     palace = tmp_path / "palaces" / "alice"
     palace.mkdir(parents=True)
@@ -203,9 +156,10 @@ async def test_delete_user_three_step_happy_path(admin_env) -> None:
     trash_dir = Path(result["palace_trashed_to"])
     assert trash_dir.exists()
     assert (trash_dir / "chroma.sqlite3").read_bytes() == b"some data"
-    # Step 3: yaml entry gone.
+    # Registry ownership stays with admin; memory does not remove the row.
     cfg = _read_users(sup.users_path)
-    assert cfg.users == []
+    assert len(cfg.users) == 1
+    assert cfg.users[0].enabled is False
 
 
 async def test_delete_user_missing_raises_404(admin_env) -> None:
@@ -218,19 +172,18 @@ async def test_delete_user_missing_raises_404(admin_env) -> None:
 
 
 async def test_delete_user_rolls_back_when_worker_wont_stop(admin_env) -> None:
-    """Step 1 hangs (worker refuses to die) → yaml flipped back to enabled=true."""
+    """Step 1 hangs (worker refuses to die) → raise without mutating registry."""
     admin, sup, _ = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=False))
     sup.alive.add("alice")
     sup.reconcile_terminates_worker = False  # simulate wedged worker
 
     with pytest.raises(WorkerNotTerminated):
         await admin.delete_user("alice", worker_stop_timeout_s=0.1)
 
-    # Yaml should be rolled back to enabled=true.
     cfg = _read_users(sup.users_path)
     assert len(cfg.users) == 1
-    assert cfg.users[0].enabled is True
+    assert cfg.users[0].enabled is False
     # Worker (in the simulation) is still alive.
     assert "alice" in sup.alive
 
@@ -238,10 +191,9 @@ async def test_delete_user_rolls_back_when_worker_wont_stop(admin_env) -> None:
 async def test_delete_user_rolls_back_when_palace_trash_fails(
     admin_env, monkeypatch
 ) -> None:
-    """Step 2 fails (FS error moving palace) → step 1 rolled back: yaml
-    re-enabled, supervisor reconciled, worker brought back up."""
+    """Step 2 fails (FS error moving palace) → worker remains stopped."""
     admin, sup, tmp_path = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=False))
     sup.alive.add("alice")
     palace = tmp_path / "palaces" / "alice"
     palace.mkdir(parents=True)
@@ -257,65 +209,28 @@ async def test_delete_user_rolls_back_when_palace_trash_fails(
     with pytest.raises(PalaceCleanupFailed):
         await admin.delete_user("alice")
 
-    # Yaml re-enabled.
     cfg = _read_users(sup.users_path)
-    assert cfg.users[0].enabled is True
-    # Worker brought back up by the rollback reconcile.
-    assert "alice" in sup.alive
+    assert cfg.users[0].enabled is False
+    assert "alice" not in sup.alive
     # Palace still intact on disk (move never happened).
     assert palace.exists()
     assert (palace / "x").read_text() == "data"
 
 
-async def test_delete_user_does_not_rollback_after_palace_trashed(
-    admin_env, monkeypatch
-) -> None:
-    """Step 3 (final yaml remove) fails — palace ALREADY trashed, worker
-    dead. We don't try to un-trash; we raise 503 with a "retry DELETE"
-    message and the operator re-runs (idempotent)."""
+async def test_delete_user_without_palace_returns_success(admin_env) -> None:
     admin, sup, tmp_path = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
-    sup.alive.add("alice")
-    palace = tmp_path / "palaces" / "alice"
-    palace.mkdir(parents=True)
-    (palace / "x").write_text("data")
-
-    # Make the FINAL yaml remove blow up.
-    real_remove = __import__(
-        "eidolon.memory.config.users_io", fromlist=["remove_user"]
-    ).remove_user
-
-    def _explode_remove(*_args, **_kwargs):
-        raise __import__(
-            "eidolon.memory.config.users_io", fromlist=["UsersYamlError"]
-        ).UsersYamlError("simulated yaml disk full")
-
-    monkeypatch.setattr(
-        "eidolon.memory.application.user_admin.yaml_remove_user", _explode_remove
-    )
-
-    with pytest.raises(UserAdminError) as exc_info:
-        await admin.delete_user("alice")
-
-    # The error message tells the operator about the retry path.
-    assert "re-run DELETE" in str(exc_info.value)
-    # Palace is gone (step 2 succeeded).
-    assert not palace.exists()
-    # Worker is dead.
+    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=False))
+    result = await admin.delete_user("alice")
+    assert result == {
+        "user_id": "alice",
+        "deleted": True,
+        "palace_trashed_to": None,
+    }
+    assert not (tmp_path / "palaces" / "alice").exists()
     assert "alice" not in sup.alive
-    # Yaml still has alice as disabled (step 3 didn't commit).
     cfg = _read_users(sup.users_path)
     assert len(cfg.users) == 1
     assert cfg.users[0].enabled is False
-
-    # And: re-running DELETE is idempotent — should drive yaml clean.
-    monkeypatch.setattr(
-        "eidolon.memory.application.user_admin.yaml_remove_user", real_remove
-    )
-    result = await admin.delete_user("alice")
-    assert result["deleted"] is True
-    cfg = _read_users(sup.users_path)
-    assert cfg.users == []
 
 
 # ---- list / get -----------------------------------------------------------

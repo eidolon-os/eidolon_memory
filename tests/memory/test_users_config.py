@@ -102,14 +102,11 @@ def test_users_config_round_trip() -> None:
     assert cfg.users[0].palace_path == "/tmp/a"
 
 
-def test_bundled_users_template_parses() -> None:
-    """Seed template must round-trip through UsersConfig validation."""
+def test_bundled_users_template_removed() -> None:
+    """Admin registry owns users now; memory no longer ships a seed template."""
     tpl = bundled_users_template_path()
-    assert tpl.is_file(), f"bundled template missing: {tpl}"
-    cfg = load_users_config(path=tpl)
-    enabled = cfg.enabled_users()
-    assert enabled, "bundled .tpl must declare at least one enabled user"
-    assert any(u.id == "default" for u in enabled)
+    assert tpl.name == "users.yaml.tpl"
+    assert not tpl.exists()
 
 
 def test_ensure_users_yaml_exists_seeds_when_missing(tmp_path: Path) -> None:
@@ -118,9 +115,9 @@ def test_ensure_users_yaml_exists_seeds_when_missing(tmp_path: Path) -> None:
     created = ensure_users_yaml_exists(target)
     assert created is True
     assert target.is_file()
-    # The seeded file must validate.
+    # Legacy helper creates an empty file; admin registry is the real source.
     cfg = load_users_config(path=target)
-    assert any(u.id == "default" for u in cfg.enabled_users())
+    assert cfg.users == []
 
 
 def test_ensure_users_yaml_exists_preserves_existing(tmp_path: Path) -> None:

@@ -4,7 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from eidolon_sdk.memory import ConversationTurnPayload
+
 from eidolon.memory.support.model_base import BaseEidolonModel
+
+__all__ = [
+    "ConversationTurnPayload",
+    "MemoryDeletePayload",
+    "MemoryGetAllPayload",
+    "MemoryGetPayload",
+    "MemoryQueryPayload",
+    "MemoryResultPayload",
+    "MemoryStorePayload",
+]
 
 
 class MemoryQueryPayload(BaseEidolonModel):
@@ -29,18 +41,6 @@ class MemoryStorePayload(BaseEidolonModel):
     correlation_id: str = ""
     occurred_at: str | None = None
     verbatim: bool | None = None
-
-
-class ConversationTurnPayload(BaseEidolonModel):
-    """JetStream payload: one completed user/assistant turn for the Memory Worker."""
-
-    turn_id: str
-    user_text: str
-    assistant_text: str
-    timestamp: str
-    session_id: str = ""
-    user_id: str = ""
-    metadata: dict[str, Any] | None = None
 
 
 class MemoryResultPayload(BaseEidolonModel):

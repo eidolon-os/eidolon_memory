@@ -27,6 +27,14 @@ class PalaceInitError(RuntimeError):
     """Raised when ``mempalace init`` exits non-zero or times out."""
 
 
+def _snippet(value: str | bytes | None, limit: int = 1200) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
+    return value.strip()[:limit]
+
+
 def palace_is_initialized(palace_path: Path, *, backend: str = "chroma") -> bool:
     """Best-effort check for the selected MemPalace backend artifact."""
     return backend_is_initialized(palace_path, backend)
@@ -83,7 +91,13 @@ def ensure_palace_initialized(
     # mempalace init wants the directory to exist
     palace_path.parent.mkdir(parents=True, exist_ok=True)
     palace_path.mkdir(parents=True, exist_ok=True)
-    log.info("palace_init_start", user_id=user_id, palace=str(palace_path))
+    log.info(
+        "palace_init_start",
+        user_id=user_id,
+        palace=str(palace_path),
+        backend=backend,
+        timeout_seconds=timeout_seconds,
+    )
     cli = _resolve_mempalace_cli()
     cmd = [
         cli,
@@ -104,12 +118,14 @@ def ensure_palace_initialized(
             text=True,
             timeout=timeout_seconds,
             env=env,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         raise PalaceInitError(f"mempalace CLI {cli!r} disappeared between resolve and exec") from exc
     except subprocess.TimeoutExpired as exc:
         raise PalaceInitError(
-            f"mempalace init timed out after {timeout_seconds}s for {user_id!r}"
+            f"mempalace init timed out after {timeout_seconds}s for {user_id!r}; "
+            f"stdout={_snippet(exc.stdout)!r} stderr={_snippet(exc.stderr)!r}"
         ) from exc
     except subprocess.CalledProcessError as exc:
         raise PalaceInitError(
@@ -167,6 +183,7 @@ def _materialize_backend_collection(
         text=True,
         timeout=30.0,
         env=env,
+        stdin=subprocess.DEVNULL,
     )
     if completed.returncode != 0:
         raise PalaceInitError(

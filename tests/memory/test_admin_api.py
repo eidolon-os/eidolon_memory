@@ -1,13 +1,14 @@
 """HTTP-layer tests for the supervisor's admin API.
 
 These wrap a real ``UserAdmin`` (against a stub Supervisor + tmp_path
-yaml) in FastAPI's ``TestClient`` so the request → handler → orchestrator
-pipeline is exercised end-to-end without spawning real subprocesses.
+registry fixture) in FastAPI's ``TestClient`` so the request → handler →
+orchestrator pipeline is exercised end-to-end without spawning real
+subprocesses.
 
 What this layer covers (in addition to test_user_admin.py):
   - HTTP status codes from UserAdminError subclasses (404/409/503)
   - Pydantic request validation (bad user_id chars, bad port range)
-  - GET/POST/DELETE wiring + JSON envelope shapes
+  - GET/reconcile/DELETE wiring + JSON envelope shapes
 """
 from __future__ import annotations
 
@@ -50,15 +51,23 @@ def _read_users(path: Path) -> UsersConfig:
     return UsersConfig.model_validate(raw)
 
 
+def _write_users(path: Path, *entries: UserEntry) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"users": [u.model_dump(mode="json") for u in entries]}
+    path.write_text(yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8")
+
+
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
     users_yaml = tmp_path / "users.yaml"
-    users_yaml.parent.mkdir(parents=True, exist_ok=True)
-    users_yaml.write_text("users: []\n", encoding="utf-8")
+    _write_users(users_yaml)
     sup = _StubSupervisor(users_yaml, tmp_path / "palaces")
     admin = UserAdmin(sup, trash_root=tmp_path / "trash")
     app = build_admin_api(admin)
-    return TestClient(app)
+    test_client = TestClient(app)
+    test_client.users_path = users_yaml  # type: ignore[attr-defined]
+    test_client.supervisor = sup  # type: ignore[attr-defined]
+    return test_client
 
 
 def test_health_endpoint(client: TestClient) -> None:
@@ -73,32 +82,28 @@ def test_list_users_empty(client: TestClient) -> None:
     assert r.json() == {"users": [], "memory_available": True}
 
 
-def test_create_then_list(client: TestClient) -> None:
+def test_create_user_is_read_only(client: TestClient) -> None:
     r = client.post(
         "/api/admin/users",
         json={"user_id": "alice"},
     )
-    assert r.status_code == 201, r.text
-    body = r.json()
-    assert body["spec"]["user_id"] == "alice"
-    assert body["spec"]["enabled"] is False
-    assert body["health"]["worker_running"] is False
+    assert r.status_code == 409
+    assert "read-only" in r.json()["detail"]
 
     r2 = client.get("/api/admin/users")
     assert r2.status_code == 200
-    assert [u["spec"]["user_id"] for u in r2.json()["users"]] == ["alice"]
+    assert r2.json()["users"] == []
 
 
-def test_create_enabled_starts_worker(client: TestClient) -> None:
-    r = client.post(
-        "/api/admin/users",
-        json={"user_id": "alice", "enabled": True},
+def test_reconcile_starts_enabled_worker(client: TestClient) -> None:
+    _write_users(
+        client.users_path,  # type: ignore[attr-defined]
+        UserEntry(id="alice", port=8030, enabled=True),
     )
-    assert r.status_code == 201, r.text
-    body = r.json()
-    assert body["spec"]["user_id"] == "alice"
-    assert body["spec"]["enabled"] is True
-    assert body["health"]["worker_running"] is True
+    r = client.post("/api/admin/reconcile")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert "alice" in client.supervisor.alive  # type: ignore[attr-defined]
 
 
 def test_create_rejects_bad_user_id(client: TestClient) -> None:
@@ -111,16 +116,19 @@ def test_create_rejects_bad_user_id(client: TestClient) -> None:
 
 
 def test_create_duplicate_returns_409(client: TestClient) -> None:
-    client.post("/api/admin/users", json={"user_id": "alice"})
+    _write_users(
+        client.users_path,  # type: ignore[attr-defined]
+        UserEntry(id="alice", port=8030, enabled=True),
+    )
     r = client.post("/api/admin/users", json={"user_id": "alice"})
     assert r.status_code == 409
-    assert "already" in r.json()["detail"]
+    assert "read-only" in r.json()["detail"]
 
 
 def test_create_with_explicit_port_collision_returns_409(client: TestClient) -> None:
-    client.post("/api/admin/users", json={"user_id": "alice", "port": 8030})
     r = client.post("/api/admin/users", json={"user_id": "bob", "port": 8030})
     assert r.status_code == 409
+    assert "read-only" in r.json()["detail"]
 
 
 def test_get_missing_user_returns_404(client: TestClient) -> None:
@@ -129,7 +137,10 @@ def test_get_missing_user_returns_404(client: TestClient) -> None:
 
 
 def test_delete_happy_path(client: TestClient) -> None:
-    client.post("/api/admin/users", json={"user_id": "alice"})
+    _write_users(
+        client.users_path,  # type: ignore[attr-defined]
+        UserEntry(id="alice", port=8030, enabled=False),
+    )
     r = client.delete("/api/admin/users/alice")
     assert r.status_code == 200
     body = r.json()
@@ -137,9 +148,9 @@ def test_delete_happy_path(client: TestClient) -> None:
     assert body["user_id"] == "alice"
     # palace_trashed_to is None because we never wrote a palace dir for the
     # synthetic alice — that's expected and not an error.
-    # list is now empty
+    # Registry ownership stays with admin; memory does not remove the row.
     r2 = client.get("/api/admin/users")
-    assert r2.json()["users"] == []
+    assert [u["spec"]["user_id"] for u in r2.json()["users"]] == ["alice"]
 
 
 def test_delete_missing_returns_404(client: TestClient) -> None:
@@ -147,24 +158,25 @@ def test_delete_missing_returns_404(client: TestClient) -> None:
     assert r.status_code == 404
 
 
-def test_create_with_consolidator_config(client: TestClient) -> None:
-    """Consolidator opts-in via explicit config block in the request."""
-    r = client.post(
-        "/api/admin/users",
-        json={
-            "user_id": "alice",
-            "consolidator": {
+def test_list_with_consolidator_config(client: TestClient) -> None:
+    """Consolidator config is read from the admin-owned registry."""
+    _write_users(
+        client.users_path,  # type: ignore[attr-defined]
+        UserEntry(
+            id="alice",
+            port=8030,
+            consolidator={
                 "enabled": True,
                 "interval_hours": 4.5,
                 "window_days": 14,
                 "min_drawers": 2,
                 "min_confidence": 0.75,
             },
-        },
+        ),
     )
-    assert r.status_code == 201, r.text
-    body = r.json()
-    cons = body["spec"]["consolidator"]
+    r = client.get("/api/admin/users")
+    assert r.status_code == 200
+    cons = r.json()["users"][0]["spec"]["consolidator"]
     assert cons["enabled"] is True
     assert cons["interval_hours"] == 4.5
     assert cons["window_days"] == 14

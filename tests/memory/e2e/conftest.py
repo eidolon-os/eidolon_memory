@@ -103,7 +103,11 @@ def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
-            httpx.get(f"http://127.0.0.1:{port}/mcp/", timeout=1.0)
+            httpx.get(
+                f"http://127.0.0.1:{port}/mcp/",
+                timeout=1.0,
+                trust_env=False,
+            )
             # Any HTTP response (even 404/500) means the server is alive.
             return True
         except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError,
@@ -375,9 +379,24 @@ async def mcp_session():
     """
     from contextlib import asynccontextmanager
 
+    def _local_http_client(
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            headers=headers,
+            timeout=timeout,
+            auth=auth,
+            trust_env=False,
+        )
+
     @asynccontextmanager
     async def _open(url: str) -> AsyncIterator[ClientSession]:
-        async with streamablehttp_client(url) as (read, write, _):
+        async with streamablehttp_client(
+            url,
+            httpx_client_factory=_local_http_client,
+        ) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session

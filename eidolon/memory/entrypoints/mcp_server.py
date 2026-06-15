@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from eidolon.memory.adapters.locked_kg import _now_iso
@@ -32,6 +33,8 @@ from eidolon.memory.domain.kg import (
     UserConfirmedFactCommand,
 )
 from eidolon.memory.domain.ports import MemoryBackend
+from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
+from eidolon.memory.infrastructure.palace_init import palace_is_initialized
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -141,10 +144,18 @@ def build_control_plane_mcp(
     @mcp.tool()
     async def eidolon_memory_status() -> dict[str, Any]:
         """Report this agent runner's memory service status."""
+        mempalace_backend = selected_mempalace_backend(settings)
+        initialized = palace_is_initialized(
+            Path(palace_path),
+            backend=mempalace_backend,
+        )
         return {
             "backend": "mempalace-python",
+            "mempalace_backend": mempalace_backend,
             "user_id": user_id,
             "palace_path": palace_path,
+            "palace_initialized": initialized,
+            "ready": initialized,
             "steward_mode": settings.steward.mode,
             "mcp_transport": "streamable-http",
             "mcp_http_url": settings.mcp_http.base_url(port=port),

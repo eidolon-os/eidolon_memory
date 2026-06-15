@@ -589,6 +589,7 @@ name = "eidolon-memory"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "eidolon-sdk" },
     { name = "fastapi" },
     { name = "faststream", extra = ["nats"] },
     { name = "httpx" },
@@ -611,6 +612,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "eidolon-sdk", editable = "../eidolon_sdk" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "faststream", extras = ["nats"], specifier = ">=0.5" },
     { name = "httpx", specifier = ">=0.27" },
@@ -627,6 +629,28 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "eidolon-sdk"
+version = "0.1.0"
+source = { editable = "../eidolon_sdk" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", marker = "extra == 'db'", specifier = ">=0.20" },
+    { name = "hatchling", marker = "extra == 'dev'", specifier = ">=1.25" },
+    { name = "httpx", marker = "extra == 'http'", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "pyjwt", marker = "extra == 'runtime'", specifier = ">=2.8" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'db'", specifier = ">=2.0" },
+]
+provides-extras = ["db", "runtime", "http", "dev"]
 
 [[package]]
 name = "fast-depends"

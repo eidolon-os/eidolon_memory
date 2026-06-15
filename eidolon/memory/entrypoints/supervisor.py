@@ -20,7 +20,6 @@ import argparse
 import asyncio
 import signal
 import subprocess
-import sys
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -36,18 +35,17 @@ from eidolon.memory.config.palace_directory import resolve_palace_for_user
 from eidolon.memory.config.users import (
     UserEntry,
     UsersConfig,
-    ensure_users_yaml_exists,
     load_users_config,
     resolve_users_file_path,
 )
 from eidolon.memory.entrypoints.admin_api import build_admin_api
-from eidolon.memory.infrastructure.palace_init import (
-    PalaceInitError,
-    ensure_palace_initialized,
-)
 from eidolon.memory.infrastructure.mempalace_backend import (
     mempalace_backend_env,
     selected_mempalace_backend,
+)
+from eidolon.memory.infrastructure.palace_init import (
+    PalaceInitError,
+    ensure_palace_initialized,
 )
 from eidolon.memory.support.logging import get_logger
 
@@ -214,7 +212,7 @@ class Supervisor:
     def __init__(
         self,
         settings: MemorySettings,
-        users_path: Path,
+        users_path: Path | None = None,
         *,
         eager_init: bool | None = None,
     ) -> None:
@@ -238,7 +236,7 @@ class Supervisor:
     # and side-effect-free at the read end; the only writer is reconcile_now.
 
     @property
-    def users_path(self) -> Path:
+    def users_path(self) -> Path | None:
         return self._users_path
 
     def is_worker_alive(self, user_id: str) -> bool:
@@ -436,11 +434,6 @@ class Supervisor:
             log.error("supervisor_reload_failed", error=str(exc))
             return
         wanted = {u.id: u for u in users.enabled_users()}
-        wanted_init_pool = [
-            u for u in wanted.values()
-            if _agent_child_needs_spawn(self._children.get(u.id))
-        ]
-        ok = await self._init_users_parallel(wanted_init_pool)
 
         # 1) Stop agent children not in wanted set, or whose port changed.
         #    A port change cascades: the consolidator's --mcp-url embeds the
@@ -466,38 +459,56 @@ class Supervisor:
                 # step 3 below respawns with the new port.
                 self._terminate_consolidator(user_id)
 
-        # 2) Start children that should be running but aren't
+        # 2) Start children that should be running but aren't. Process eager
+        #    init results as they arrive so one slow/bad palace does not block
+        #    unrelated users from getting a worker during SIGHUP reconcile.
+        spawn_candidates = [
+            u for u in wanted.values()
+            if _agent_child_needs_spawn(self._children.get(u.id))
+        ]
+        if self._eager_init:
+            by_id = {u.id: u for u in spawn_candidates}
+            init_tasks = [
+                asyncio.create_task(self._init_user(u)) for u in spawn_candidates
+            ]
+            for task in asyncio.as_completed(init_tasks):
+                user_id, err = await task
+                if err is not None:
+                    log.error(
+                        "supervisor_palace_init_failed",
+                        user_id=user_id,
+                        error=err,
+                    )
+                    continue
+                user_def = by_id.get(user_id)
+                if user_def is not None:
+                    self._ensure_agent_child(user_def)
+        else:
+            for user_def in spawn_candidates:
+                self._ensure_agent_child(user_def)
+
+        # Refresh live child definitions even when they did not need a spawn.
         for user_id, user_def in wanted.items():
             existing = self._children.get(user_id)
             if existing is not None and existing.is_alive() and not existing.degraded:
                 existing.user = user_def
-                continue
-            if existing is not None:
-                if existing.is_alive():
-                    existing.terminate()
-                else:
-                    existing._close_log()
-                self._children.pop(user_id, None)
-            if self._eager_init and user_id not in ok:
-                continue
-            child = _Child(user_def, self._palace_for(user_def), self._log_root)
-            try:
-                child.spawn()
-                self._children[user_id] = child
-            except Exception as exc:
-                log.error(
-                    "supervisor_reload_spawn_failed",
-                    user_id=user_id,
-                    error=str(exc),
-                )
 
         # 3) Reconcile consolidators against the current wanted set:
         #    - removed user / disabled flag → terminate
         #    - newly enabled → spawn
         #    - config field change (interval / window / etc.) → restart
+        ready_user_ids = {
+            user_id
+            for user_id, child in self._children.items()
+            if user_id in wanted and child.is_alive() and not child.degraded
+        }
         for user_id, c_child in list(self._consolidators.items()):
             wanted_def = wanted.get(user_id)
-            if wanted_def is None or not wanted_def.consolidator_enabled():
+            if (
+                wanted_def is None
+                or not wanted_def.consolidator_enabled()
+                or user_id not in ready_user_ids
+            ):
                 log.info("supervisor_reload_consolidator_remove", user_id=user_id)
                 self._terminate_consolidator(user_id)
                 continue
@@ -509,7 +520,7 @@ class Supervisor:
         for user_id, user_def in wanted.items():
             if not user_def.consolidator_enabled():
                 continue
-            if self._eager_init and user_id not in ok:
+            if user_id not in ready_user_ids:
                 continue
             # Refresh the stored UserEntry on the existing child or spawn fresh.
             existing = self._consolidators.get(user_id)
@@ -517,6 +528,28 @@ class Supervisor:
                 existing.user = user_def
                 continue
             self._spawn_consolidator(user_def)
+
+    def _ensure_agent_child(self, user_def: UserEntry) -> None:
+        existing = self._children.get(user_def.id)
+        if existing is not None and existing.is_alive() and not existing.degraded:
+            existing.user = user_def
+            return
+        if existing is not None:
+            if existing.is_alive():
+                existing.terminate()
+            else:
+                existing._close_log()
+            self._children.pop(user_def.id, None)
+        child = _Child(user_def, self._palace_for(user_def), self._log_root)
+        try:
+            child.spawn()
+            self._children[user_def.id] = child
+        except Exception as exc:
+            log.error(
+                "supervisor_reload_spawn_failed",
+                user_id=user_def.id,
+                error=str(exc),
+            )
 
     def _terminate_consolidator(self, user_id: str) -> None:
         c = self._consolidators.pop(user_id, None)
@@ -544,7 +577,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--users-file",
         default="",
-        help="Override users.yaml path (env EIDOLON_MEMORY_USERS_YAML / settings).",
+        help="Legacy/testing override for users.yaml path.",
     )
     parser.add_argument(
         "--no-init",
@@ -568,16 +601,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     settings = get_memory_settings()
-    users_path = resolve_users_file_path(settings, path=args.users_file or None)
-
-    # Bootstrap: seed users.yaml from the bundled template on first start.
-    try:
-        seeded = ensure_users_yaml_exists(users_path)
-    except FileNotFoundError as exc:
-        log.error("supervisor_users_template_missing", error=str(exc))
-        sys.exit(2)
-    if seeded:
-        log.info("supervisor_users_yaml_created", path=str(users_path))
+    users_path = (
+        resolve_users_file_path(settings, path=args.users_file)
+        if args.users_file
+        else None
+    )
 
     supervisor = Supervisor(
         settings,

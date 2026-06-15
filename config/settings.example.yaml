@@ -40,4 +40,4 @@ recall:
   livekit_timeout_seconds: 0.3
 
 supervisor:
-  users_file: config/users.yaml
+  admin_api_url: http://127.0.0.1:9000

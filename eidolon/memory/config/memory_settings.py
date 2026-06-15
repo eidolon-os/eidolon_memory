@@ -175,7 +175,12 @@ class KgConfig(BaseModel):
 class SupervisorConfig(BaseModel):
     """Multi-user agent_runner process supervisor."""
 
-    users_file: str = ""  # path to users.yaml; env override: EIDOLON_MEMORY_USERS_YAML
+    # Admin owns the user registry. Memory reads /api/users and only executes
+    # the enabled/runtime state. ``users_file`` remains only for explicit test
+    # fixtures and local migration tooling.
+    admin_api_url: str = ""
+    admin_api_timeout_seconds: float = 5.0
+    users_file: str = ""
     eager_init: bool = True  # on startup, mempalace init each enabled user (parallel<=4)
     restart_backoff_seconds: list[int] = Field(
         default_factory=lambda: [1, 2, 4, 8, 30]

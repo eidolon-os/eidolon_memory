@@ -15,8 +15,8 @@ reads. Write operations on users go through this HTTP surface.
 Routes:
     GET    /api/admin/users                  list all (with health)
     GET    /api/admin/users/{user_id}        single detail
-    POST   /api/admin/users                  create + wait-for-worker
-    DELETE /api/admin/users/{user_id}        cascade-delete with compensation
+    POST   /api/admin/reconcile              re-read admin registry
+    DELETE /api/admin/users/{user_id}        clean up memory-owned palace data
 
 All admin endpoints are namespaced under ``/api/admin`` and bound to
 ``settings.supervisor_http.host:port`` (config addition in this phase).
@@ -107,14 +107,17 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
 
     @app.post("/api/admin/users", status_code=201)
     async def create_user(body: CreateUserRequest) -> dict:
+        del body
+        raise HTTPException(
+            status_code=409,
+            detail="memory user registry is read-only; create users through eidolon_admin /api/users",
+        )
+
+    @app.post("/api/admin/reconcile")
+    async def reconcile() -> dict:
         try:
-            return await user_admin.create_user(
-                user_id=body.user_id,
-                port=body.port,
-                enabled=body.enabled,
-                palace_path=body.palace_path,
-                consolidator=body.consolidator.to_domain() if body.consolidator else None,
-            )
+            await user_admin.reconcile()
+            return {"ok": True}
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
