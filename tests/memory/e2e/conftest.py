@@ -35,6 +35,17 @@ _REPORTS_ROOT = _REPO_ROOT / "reports"
 _NATS_DATA_FALLBACK = Path.home() / "eidolon" / "data" / "nats-jetstream-e2e"
 
 
+def tail_file(path: Path, *, max_chars: int = 4000) -> str:
+    """Return a readable tail for pytest failure messages."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"<could not read {path}: {exc}>"
+    if len(text) <= max_chars:
+        return text
+    return text[-max_chars:]
+
+
 # ─── nats-server lifecycle ─────────────────────────────────────────────────
 
 
@@ -103,13 +114,16 @@ def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
-            httpx.get(
+            response = httpx.get(
                 f"http://127.0.0.1:{port}/mcp/",
                 timeout=1.0,
                 trust_env=False,
             )
-            # Any HTTP response (even 404/500) means the server is alive.
-            return True
+            # Any non-5xx HTTP response means uvicorn + FastMCP are up. A
+            # 502/500 means the MCP endpoint is alive but unhealthy; keep
+            # polling so startup failures surface with the agent log tail.
+            if response.status_code < 500:
+                return True
         except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError,
                 httpx.TimeoutException):
             pass
@@ -299,7 +313,8 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                 proc.kill()
             pytest.fail(
                 f"agent_runner --user-id {user_id} --port {port} failed to "
-                f"bind within 45s (see {log_path})"
+                f"bind healthy MCP within 45s.\n"
+                f"agent log ({log_path}) tail:\n{tail_file(log_path)}"
             )
 
         handle = _AgentHandle(

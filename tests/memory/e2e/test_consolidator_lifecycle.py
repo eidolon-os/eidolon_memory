@@ -36,6 +36,7 @@ from tests.memory.e2e.conftest import (
     load_companion_corpus,
     mcp_tool_json,
     nats_publish_turn,
+    tail_file,
     wait_for_visible,
 )
 
@@ -203,7 +204,9 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
         if proc.returncode != 0:
             pytest.fail(
                 f"consolidator exit code = {proc.returncode}; log:\n"
-                f"{log_path.read_text(errors='replace')[-2000:]}"
+                f"{tail_file(log_path, max_chars=3000)}\n"
+                f"agent_runner log ({handle.log_path}) tail:\n"
+                f"{tail_file(handle.log_path, max_chars=4000)}"
             )
 
         # ── Wait for the agent_runner cmd subscriber to apply theme writes.
@@ -216,7 +219,9 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
         assert ok, (
             f"consolidator subprocess exited cleanly but no Wing_Theme "
             f"drawers landed after 30s. final count={theme_count}. "
-            f"consolidator log tail:\n{log_path.read_text(errors='replace')[-1000:]}"
+            f"consolidator log tail:\n{tail_file(log_path, max_chars=2000)}\n"
+            f"agent_runner log ({handle.log_path}) tail:\n"
+            f"{tail_file(handle.log_path, max_chars=4000)}"
         )
 
         # ── Functional: recall_context now renders the [主题] section.
