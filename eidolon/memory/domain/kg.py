@@ -8,35 +8,16 @@ project's defence against KG predicate sprawl from LLM hallucination.
 
 from __future__ import annotations
 
-from eidolon_sdk.memory import (
-    KG_PREDICATE_VALUES,
-    SENSITIVE_PREDICATES,
-    USER_CONFIRMED_ROOM_PREFIX,
-    ConsolidatorIngestThemeCommand,
-    KgAddTripleCommand,
-    KgInvalidateCommand,
-    KgPredicate,
-    MemoryCommandPayload,
-    UserConfirmedFactCommand,
-)
+from eidolon_sdk.memory import KgPredicate as _KgPredicate
 from pydantic import Field
 
 from eidolon.memory.support.model_base import BaseEidolonModel
 
 __all__ = [
-    "KG_PREDICATE_VALUES",
-    "SENSITIVE_PREDICATES",
-    "USER_CONFIRMED_ROOM_PREFIX",
-    "ConsolidatorIngestThemeCommand",
-    "KgAddTripleCommand",
     "KgEntityRecord",
-    "KgInvalidateCommand",
     "KgInvalidationAction",
-    "KgPredicate",
     "KgTripleAction",
     "KgTripleRecord",
-    "MemoryCommandPayload",
-    "UserConfirmedFactCommand",
 ]
 
 # ── Predicate whitelist (KG plan §4.2) ──────────────────────────────────────
@@ -49,7 +30,7 @@ class KgTripleAction(BaseEidolonModel):
     """One ``add_triple`` instruction emitted by the LLM steward."""
 
     subject: str = Field(min_length=1, max_length=128)
-    predicate: KgPredicate
+    predicate: _KgPredicate
     object: str = Field(min_length=1, max_length=256)
     valid_from: str | None = None
     valid_to: str | None = None
@@ -60,7 +41,7 @@ class KgInvalidationAction(BaseEidolonModel):
     """Steward output: stop a previously-valid triple at ``ended`` (or NOW)."""
 
     subject: str = Field(min_length=1)
-    predicate: KgPredicate
+    predicate: _KgPredicate
     object: str = Field(min_length=1)
     ended: str | None = None
     reason: str = Field(default="", max_length=128)
@@ -89,7 +70,3 @@ class KgTripleRecord(BaseEidolonModel):
     confidence: float = 1.0
     source_turn_id: str | None = None
     adapter_name: str | None = None
-
-
-# NATS command payloads are SDK-owned cross-project wire contracts and are
-# imported above for backwards-compatible ``eidolon.memory.domain.kg`` access.

@@ -11,7 +11,7 @@ import asyncio
 import pytest
 
 from eidolon.memory.application.working_memory import WorkingMemoryRing
-from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon_sdk.memory import ConversationTurnPayload
 
 pytestmark = pytest.mark.asyncio
 

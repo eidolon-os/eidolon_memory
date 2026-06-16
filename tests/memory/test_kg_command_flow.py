@@ -167,12 +167,12 @@ async def test_command_unknown_kind_acked(kg_setup) -> None:
 
 
 async def test_subject_helpers() -> None:
-    from eidolon.memory.infrastructure.bus.subjects import (
-        all_stream_patterns,
+    from eidolon_sdk.memory import (
+        all_memory_stream_patterns,
         memory_command_subject,
     )
 
     assert memory_command_subject("alice") == "agent.memory.cmd.alice"
-    patterns = all_stream_patterns()
+    patterns = all_memory_stream_patterns()
     assert "agent.memory.conversation.turn.>" in patterns
     assert "agent.memory.cmd.>" in patterns

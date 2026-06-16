@@ -12,12 +12,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from eidolon_sdk.memory import MEMORY_COMMAND_BASE
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.config.users import UserEntry, load_users_config
-from eidolon.memory.infrastructure.bus.subjects import SharedSubjects
 
 DISCOVERY_VERSION = 1
 
@@ -76,7 +76,7 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
                 f"{settings.nats.conversation_turn_subject_base}.{{user_id}}"
             ),
             "cmd_subject_template": (
-                f"{SharedSubjects.MEMORY_COMMAND_BASE}.{{user_id}}"
+                f"{MEMORY_COMMAND_BASE}.{{user_id}}"
             ),
         },
         "users": [

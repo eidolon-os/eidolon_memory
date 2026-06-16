@@ -26,7 +26,7 @@ from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.application.turn_processor import process_turn_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
-from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon_sdk.memory import ConversationTurnPayload
 from eidolon.memory.domain.steward import StewardDecision
 
 pytestmark = pytest.mark.asyncio

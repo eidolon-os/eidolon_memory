@@ -10,9 +10,7 @@ from eidolon.memory.config.memory_settings import (
 )
 from eidolon.memory.config.palace_directory import resolve_palaces_root
 from eidolon.memory.config.users import load_users_config, resolve_users_file_path
-from eidolon.memory.infrastructure.bus.subjects import (
-    conversation_turn_stream_pattern,
-)
+from eidolon_sdk.memory import conversation_turn_stream_pattern
 
 
 def main() -> None:

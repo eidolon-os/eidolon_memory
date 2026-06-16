@@ -6,6 +6,8 @@ import asyncio
 import time
 from typing import Any
 
+from eidolon_sdk.memory import USER_CONFIRMED_ROOM_PREFIX
+
 from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
 from eidolon.memory.adapters.search_payload import parse_search_tool_payload
@@ -14,7 +16,6 @@ from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
-from eidolon.memory.domain.kg import USER_CONFIRMED_ROOM_PREFIX
 from eidolon.memory.domain.ports import MemoryReader
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.cpu_env import recommend_max_wing_parallel

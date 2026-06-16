@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
+from eidolon_sdk.memory import all_memory_stream_patterns
 
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.infrastructure.bus.subjects import all_stream_patterns
 
 
 def stream_config_for_settings(settings: MemorySettings) -> StreamConfig:
@@ -16,7 +16,7 @@ def stream_config_for_settings(settings: MemorySettings) -> StreamConfig:
         name=nats.stream,
         # KG plan §3.4: stream binds turn + command subjects so admin writes
         # share JetStream durability + replay with chat turns.
-        subjects=all_stream_patterns(),
+        subjects=all_memory_stream_patterns(),
         retention=RetentionPolicy.LIMITS,
         storage=StorageType.FILE,
         max_age=nats.stream_max_age_seconds,

@@ -12,10 +12,9 @@ import json
 from typing import Any
 
 import nats
+from eidolon_sdk.memory import MemoryCommandPayload, memory_command_subject
 
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
-from eidolon.memory.domain.kg import MemoryCommandPayload
-from eidolon.memory.infrastructure.bus.subjects import memory_command_subject
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
 from eidolon.memory.support.logging import get_logger
 

@@ -5,14 +5,16 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from eidolon.memory.domain.kg import (
+from eidolon_sdk.memory import (
     KG_PREDICATE_VALUES,
     SENSITIVE_PREDICATES,
     KgAddTripleCommand,
     KgInvalidateCommand,
+    MemoryCommandPayload,
+)
+from eidolon.memory.domain.kg import (
     KgInvalidationAction,
     KgTripleAction,
-    MemoryCommandPayload,
 )
 
 

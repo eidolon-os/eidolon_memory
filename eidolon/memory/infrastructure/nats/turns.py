@@ -6,10 +6,9 @@ import json
 from typing import Any
 
 import nats
+from eidolon_sdk.memory import ConversationTurnPayload, conversation_turn_subject
 
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
-from eidolon.memory.domain.payloads import ConversationTurnPayload
-from eidolon.memory.infrastructure.bus.subjects import conversation_turn_subject
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
 from eidolon.memory.support.logging import get_logger
 

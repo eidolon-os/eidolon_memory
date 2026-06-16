@@ -9,7 +9,7 @@ import pytest
 
 from eidolon.memory.application.steward.llm import LiteLLMSteward
 from eidolon.memory.config.memory_settings import MemorySettings, load_memory_settings
-from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon_sdk.memory import ConversationTurnPayload
 
 
 def _settings_local_llm() -> MemorySettings:

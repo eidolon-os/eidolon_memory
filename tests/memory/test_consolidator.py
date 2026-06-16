@@ -20,12 +20,12 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from eidolon_sdk.memory import ConsolidatorIngestThemeCommand
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.application.turn_processor import _ingest_theme
-from eidolon.memory.domain.kg import ConsolidatorIngestThemeCommand
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.entrypoints.consolidator import (
     Theme,
@@ -249,7 +249,7 @@ def test_renderer_themes_section_label_and_position():
 
 def test_renderer_themes_after_working_memory_before_vector():
     """[最近对话] → [主题] → vector groups."""
-    from eidolon.memory.domain.payloads import ConversationTurnPayload
+    from eidolon_sdk.memory import ConversationTurnPayload
     wm = [ConversationTurnPayload(
         turn_id="t1", user_text="u", assistant_text="a",
         timestamp="2026-05-26T00:00:00Z", session_id="s", user_id="alice",

@@ -15,7 +15,7 @@ import pytest
 
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.application.steward.rules import RuleBasedSteward
-from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon_sdk.memory import ConversationTurnPayload
 
 
 def _require_live() -> None:

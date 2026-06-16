@@ -7,12 +7,12 @@ import re
 from typing import Any, TYPE_CHECKING
 
 from pydantic import ValidationError
+from eidolon_sdk.memory import ConversationTurnPayload
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.steward.common import apply_privacy_actions, finalize_fragments
 from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.domain.errors import StewardOutputError
-from eidolon.memory.domain.payloads import ConversationTurnPayload
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.logging import get_logger
 

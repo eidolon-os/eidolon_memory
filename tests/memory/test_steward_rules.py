@@ -6,7 +6,7 @@ import pytest
 
 from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.config.memory_settings import load_memory_settings
-from eidolon.memory.domain.payloads import ConversationTurnPayload
+from eidolon_sdk.memory import ConversationTurnPayload
 
 
 def _turn(user_text: str) -> ConversationTurnPayload:

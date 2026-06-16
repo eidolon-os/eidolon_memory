@@ -14,20 +14,20 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import ValidationError
-
-from eidolon.memory.application.ingest import ingest_memory_fragment
-from eidolon.memory.application.steward.common import apply_privacy_actions
-from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.kg import (
+from eidolon_sdk.memory import (
     USER_CONFIRMED_ROOM_PREFIX,
+    ConversationTurnPayload,
     ConsolidatorIngestThemeCommand,
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryCommandPayload,
     UserConfirmedFactCommand,
 )
-from eidolon.memory.domain.payloads import ConversationTurnPayload
+
+from eidolon.memory.application.ingest import ingest_memory_fragment
+from eidolon.memory.application.steward.common import apply_privacy_actions
+from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.logging import get_logger
 

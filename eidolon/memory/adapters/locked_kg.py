@@ -29,8 +29,9 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
+from eidolon_sdk.memory import SENSITIVE_PREDICATES
+
 from eidolon.memory.domain.kg import (
-    SENSITIVE_PREDICATES,
     KgEntityRecord,
     KgTripleRecord,
 )

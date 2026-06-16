@@ -80,7 +80,7 @@ def _precision_recall(tp: int, fp: int, fn: int) -> tuple[float, float]:
 
 
 async def _run_one(sample: dict, steward, user_id: str) -> dict:
-    from eidolon.memory.domain.payloads import ConversationTurnPayload
+    from eidolon_sdk.memory import ConversationTurnPayload
 
     turn = ConversationTurnPayload(
         turn_id=uuid.uuid4().hex,

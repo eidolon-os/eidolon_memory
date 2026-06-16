@@ -46,12 +46,12 @@ from typing import Any
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+from eidolon_sdk.memory import ConsolidatorIngestThemeCommand
 
 from eidolon.memory.config.memory_settings import (
     MemorySettings,
     get_memory_settings,
 )
-from eidolon.memory.domain.kg import ConsolidatorIngestThemeCommand
 from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
 from eidolon.memory.support.logging import get_logger
 

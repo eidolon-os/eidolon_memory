@@ -10,7 +10,6 @@ from eidolon.memory.domain.errors import (
 )
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.payloads import (
-    ConversationTurnPayload,
     MemoryDeletePayload,
     MemoryGetAllPayload,
     MemoryGetPayload,
@@ -37,7 +36,6 @@ __all__ = [
     "StewardError",
     "StewardOutputError",
     "MemoryWireRecord",
-    "ConversationTurnPayload",
     "MemoryQueryPayload",
     "MemoryStorePayload",
     "MemoryResultPayload",

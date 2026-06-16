@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from eidolon.memory.domain.steward import StewardDecision
 
 if TYPE_CHECKING:
-    from eidolon.memory.domain.payloads import ConversationTurnPayload
+    from eidolon_sdk.memory import ConversationTurnPayload
 
 
 class NoOpSteward:

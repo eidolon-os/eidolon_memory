@@ -85,8 +85,7 @@ async def _run(
 ) -> dict:
     import nats
 
-    from eidolon.memory.domain.payloads import ConversationTurnPayload
-    from eidolon.memory.infrastructure.bus.subjects import conversation_turn_subject
+    from eidolon_sdk.memory import ConversationTurnPayload, conversation_turn_subject
 
     subject = conversation_turn_subject(user_id)
     publish_ms: list[float] = []

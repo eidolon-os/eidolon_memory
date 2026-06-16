@@ -6,6 +6,8 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from eidolon_sdk.memory import ConversationTurnPayload
+
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.steward.common import (
     apply_privacy_actions,
@@ -13,7 +15,6 @@ from eidolon.memory.application.steward.common import (
     safe_room_token,
 )
 from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.payloads import ConversationTurnPayload
 from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
 
 from eidolon.memory.config.memory_settings import MemorySettings

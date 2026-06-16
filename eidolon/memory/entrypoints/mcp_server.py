@@ -14,6 +14,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from eidolon_sdk.memory import (
+    KG_PREDICATE_VALUES,
+    SENSITIVE_PREDICATES,
+    KgAddTripleCommand,
+    KgInvalidateCommand,
+    UserConfirmedFactCommand,
+)
+
 from eidolon.memory.adapters.locked_kg import _now_iso
 from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hierarchy_snapshot
 from eidolon.memory.application.palace_graph import build_palace_graph
@@ -25,13 +33,6 @@ from eidolon.memory.application.public_recall import (
     wire_record_to_public_dict,
 )
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.domain.kg import (
-    KG_PREDICATE_VALUES,
-    SENSITIVE_PREDICATES,
-    KgAddTripleCommand,
-    KgInvalidateCommand,
-    UserConfirmedFactCommand,
-)
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.palace_init import palace_is_initialized

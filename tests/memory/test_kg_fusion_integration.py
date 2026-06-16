@@ -164,7 +164,7 @@ async def test_admin_command_to_recall_closed_loop(stack) -> None:
     """
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.application.turn_processor import process_command_message
-    from eidolon.memory.domain.kg import KgAddTripleCommand
+    from eidolon_sdk.memory import KgAddTripleCommand
 
     backend, kg, settings = stack
 

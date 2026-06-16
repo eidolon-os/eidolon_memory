@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from eidolon_sdk.memory import ConversationTurnPayload
-
 from eidolon.memory.support.model_base import BaseEidolonModel
 
 __all__ = [
-    "ConversationTurnPayload",
     "MemoryDeletePayload",
     "MemoryGetAllPayload",
     "MemoryGetPayload",

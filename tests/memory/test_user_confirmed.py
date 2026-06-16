@@ -26,7 +26,7 @@ from eidolon.memory.application.turn_processor import (
     process_command_message,
 )
 from eidolon.memory.config.memory_settings import load_memory_settings
-from eidolon.memory.domain.kg import UserConfirmedFactCommand
+from eidolon_sdk.memory import UserConfirmedFactCommand
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 pytestmark = pytest.mark.asyncio

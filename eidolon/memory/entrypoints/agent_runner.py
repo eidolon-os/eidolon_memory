@@ -23,6 +23,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from eidolon_sdk.memory import conversation_turn_subject, memory_command_subject
+
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
@@ -39,10 +41,6 @@ from eidolon.memory.config.palace_directory import (
     validate_user_id,
 )
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
-from eidolon.memory.infrastructure.bus.subjects import (
-    conversation_turn_subject,
-    memory_command_subject,
-)
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
 from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
 from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
