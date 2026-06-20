@@ -10,6 +10,7 @@ admin has disabled or removed a user.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ import yaml
 from eidolon.memory.application.user_admin import (
     PalaceCleanupFailed,
     PortConflict,
+    RebuildAlreadyRunning,
     UserAdmin,
     UserNotFound,
     UserRegistryReadOnly,
@@ -50,6 +52,9 @@ class _StubSupervisor:
         self.alive: set[str] = set()
         self.reconcile_terminates_worker: bool = True
         self.reconcile_count: int = 0
+        self.rebuild_calls: list[tuple[str, Path]] = []
+        self.rebuild_returncode: int = 0
+        self.rebuild_wait: asyncio.Event | None = None
 
     async def reconcile_now(self) -> None:
         self.reconcile_count += 1
@@ -67,6 +72,18 @@ class _StubSupervisor:
 
     def palace_path_for(self, user: UserEntry) -> Path:
         return self._palaces_root / user.id
+
+    async def rebuild_memory_index(self, user: UserEntry, *, log_path: Path) -> dict:
+        self.rebuild_calls.append((user.id, log_path))
+        if self.rebuild_wait is not None:
+            await self.rebuild_wait.wait()
+        return {
+            "user_id": user.id,
+            "palace_path": str(self.palace_path_for(user)),
+            "backend": "chroma",
+            "returncode": self.rebuild_returncode,
+            "log_path": str(log_path),
+        }
 
 
 # ---- helpers ----------------------------------------------------------------
@@ -92,7 +109,11 @@ def admin_env(tmp_path: Path) -> tuple[UserAdmin, _StubSupervisor, Path]:
     trash_root = tmp_path / "trash"
     _yaml_init(users_yaml)  # start empty
     sup = _StubSupervisor(users_yaml, palaces_root)
-    admin = UserAdmin(sup, trash_root=trash_root)
+    admin = UserAdmin(
+        sup,
+        trash_root=trash_root,
+        maintenance_log_root=tmp_path / "maintenance",
+    )
     return admin, sup, tmp_path
 
 
@@ -131,6 +152,67 @@ async def test_reconcile_delegates_to_supervisor(admin_env) -> None:
     await admin.reconcile()
     assert "alice" in sup.alive
     assert sup.reconcile_count == 1
+
+
+async def test_rebuild_index_job_succeeds(admin_env) -> None:
+    admin, sup, _ = admin_env
+    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+
+    created = await admin.start_rebuild_index("alice")
+    assert created["status"] == "pending"
+    job_id = created["job_id"]
+
+    for _ in range(20):
+        status = admin.get_rebuild_index_job(job_id)
+        if status["status"] == "succeeded":
+            break
+        await asyncio.sleep(0.01)
+
+    status = admin.get_rebuild_index_job(job_id)
+    assert status["status"] == "succeeded"
+    assert status["error"] is None
+    assert status["result"]["returncode"] == 0
+    assert sup.rebuild_calls[0][0] == "alice"
+
+
+async def test_rebuild_index_job_failure_is_recorded(admin_env) -> None:
+    admin, sup, _ = admin_env
+    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+    sup.rebuild_returncode = 2
+
+    created = await admin.start_rebuild_index("alice")
+    job_id = created["job_id"]
+
+    for _ in range(20):
+        status = admin.get_rebuild_index_job(job_id)
+        if status["status"] == "failed":
+            break
+        await asyncio.sleep(0.01)
+
+    status = admin.get_rebuild_index_job(job_id)
+    assert status["status"] == "failed"
+    assert "exited with 2" in status["error"]
+
+
+async def test_rebuild_index_rejects_duplicate_running_job(admin_env) -> None:
+    admin, sup, _ = admin_env
+    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+    sup.rebuild_wait = asyncio.Event()
+
+    created = await admin.start_rebuild_index("alice")
+    for _ in range(20):
+        if admin.get_rebuild_index_job(created["job_id"])["status"] == "running":
+            break
+        await asyncio.sleep(0.01)
+
+    with pytest.raises(RebuildAlreadyRunning):
+        await admin.start_rebuild_index("alice")
+
+    sup.rebuild_wait.set()
+    for _ in range(20):
+        if admin.get_rebuild_index_job(created["job_id"])["status"] == "succeeded":
+            break
+        await asyncio.sleep(0.01)
 
 
 # ---- delete cleanup path ---------------------------------------------------

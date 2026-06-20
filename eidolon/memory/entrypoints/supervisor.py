@@ -46,6 +46,7 @@ from eidolon.memory.infrastructure.mempalace_backend import (
 from eidolon.memory.infrastructure.palace_init import (
     PalaceInitError,
     ensure_palace_initialized,
+    _resolve_mempalace_cli,
 )
 from eidolon.memory.support.logging import get_logger
 
@@ -255,6 +256,78 @@ class Supervisor:
         succeeded. This is the same body as the loop's internal call.
         """
         await self._reconcile()
+
+    async def rebuild_memory_index(self, user: UserEntry, *, log_path: Path) -> dict:
+        """Rebuild one user's MemPalace vector index without opening Chroma here.
+
+        The supervisor owns child lifecycles, so maintenance runs here:
+        stop the user's agent/consolidator, execute the MemPalace CLI in a
+        subprocess, then reconcile back to the admin registry.
+        """
+        user_id = user.id
+        palace_path = self._palace_for(user)
+        backend = selected_mempalace_backend(self._settings)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        await asyncio.to_thread(self._terminate_consolidator, user_id)
+        child = self._children.pop(user_id, None)
+        if child is not None:
+            await asyncio.to_thread(child.terminate, grace_seconds=30.0)
+
+        cli = _resolve_mempalace_cli()
+        cmd = [
+            cli,
+            "--backend",
+            backend,
+            "--palace",
+            str(palace_path),
+            "repair",
+            "--yes",
+        ]
+        log.info(
+            "supervisor_rebuild_index_start",
+            user_id=user_id,
+            palace=str(palace_path),
+            backend=backend,
+            log_path=str(log_path),
+        )
+        with log_path.open("ab", buffering=0) as fh:
+            fh.write(
+                (
+                    f"\n[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
+                    f"running: {' '.join(cmd)}\n"
+                ).encode("utf-8")
+            )
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=fh,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                env=mempalace_backend_env(self._settings),
+            )
+            returncode = await proc.wait()
+            fh.write(
+                (
+                    f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
+                    f"exit: {returncode}\n"
+                ).encode("utf-8")
+            )
+
+        await self._reconcile()
+        log.info(
+            "supervisor_rebuild_index_done",
+            user_id=user_id,
+            palace=str(palace_path),
+            backend=backend,
+            returncode=returncode,
+        )
+        return {
+            "user_id": user_id,
+            "palace_path": str(palace_path),
+            "backend": backend,
+            "returncode": returncode,
+            "log_path": str(log_path),
+        }
 
     # -------------------- config loading --------------------
 

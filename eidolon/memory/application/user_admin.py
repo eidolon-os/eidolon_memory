@@ -22,7 +22,9 @@ from __future__ import annotations
 import asyncio
 import shutil
 import time
+import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -78,6 +80,14 @@ class UserRegistryReadOnly(UserAdminError):
     status_code = 409
 
 
+class RebuildAlreadyRunning(UserAdminError):
+    status_code = 409
+
+
+class RebuildJobNotFound(UserAdminError):
+    status_code = 404
+
+
 # ---- protocols (so tests can stub) ------------------------------------------
 
 
@@ -105,6 +115,12 @@ class _SupervisorProtocol(Protocol):
 
     def palace_path_for(self, user: UserEntry) -> Path:
         """Where would this user's palace live on disk."""
+        ...
+
+    async def rebuild_memory_index(self, user: UserEntry, *, log_path: Path) -> dict:
+        """Stop this user's runtime, rebuild its MemPalace vector index, then
+        reconcile the runtime back to the registry's desired state.
+        """
         ...
 
 
@@ -185,6 +201,32 @@ def user_to_view(
     }
 
 
+@dataclass
+class RebuildIndexJob:
+    job_id: str
+    user_id: str
+    status: str
+    log_path: Path
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error: str | None = None
+    result: dict | None = None
+
+    def to_view(self) -> dict:
+        return {
+            "job_id": self.job_id,
+            "user_id": self.user_id,
+            "status": self.status,
+            "created_at": self.created_at.isoformat(),
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "log_path": str(self.log_path),
+            "error": self.error,
+            "result": self.result,
+        }
+
+
 # ---- orchestration ----------------------------------------------------------
 
 
@@ -201,9 +243,13 @@ class UserAdmin:
         supervisor: _SupervisorProtocol,
         *,
         trash_root: Path | None = None,
+        maintenance_log_root: Path | None = None,
     ) -> None:
         self._sup = supervisor
         self._lock = asyncio.Lock()
+        self._maintenance_lock = asyncio.Lock()
+        self._rebuild_jobs: dict[str, RebuildIndexJob] = {}
+        self._rebuild_tasks: dict[str, asyncio.Task] = {}
         # Where ``delete_user`` moves a palace before final yaml removal.
         # Putting trash in a sibling of the palaces root keeps it on the same
         # filesystem (so ``shutil.move`` stays atomic via ``os.rename``).
@@ -212,6 +258,9 @@ class UserAdmin:
             # so a wipe-all-palaces command never accidentally erases trash.
             trash_root = Path.home() / ".eidolon-trash"
         self._trash_root = trash_root
+        if maintenance_log_root is None:
+            maintenance_log_root = Path.home() / "eidolon" / "logs" / "memory" / "maintenance"
+        self._maintenance_log_root = maintenance_log_root
 
     # -------------------- list / get --------------------
 
@@ -240,6 +289,80 @@ class UserAdmin:
     async def reconcile(self) -> None:
         async with self._lock:
             await self._sup.reconcile_now()
+
+    # -------------------- memory index rebuild --------------------
+
+    async def start_rebuild_index(self, user_id: str) -> dict:
+        """Create an async job that rebuilds one user's MemPalace vector index."""
+        async with self._lock:
+            config = load_users_config(path=self._sup.users_path)
+            entry = config.find(user_id)
+            if entry is None:
+                raise UserNotFound(f"user {user_id!r} not found")
+
+            for existing in self._rebuild_jobs.values():
+                if existing.user_id == user_id and existing.status in {"pending", "running"}:
+                    raise RebuildAlreadyRunning(
+                        f"memory index rebuild for user {user_id!r} is already {existing.status}"
+                    )
+
+            now = datetime.now(UTC)
+            job_id = f"rebuild-{user_id}-{uuid.uuid4().hex[:10]}"
+            log_path = self._maintenance_log_root / f"{job_id}.log"
+            job = RebuildIndexJob(
+                job_id=job_id,
+                user_id=user_id,
+                status="pending",
+                created_at=now,
+                log_path=log_path,
+            )
+            self._rebuild_jobs[job_id] = job
+            task = asyncio.create_task(
+                self._run_rebuild_index_job(job_id, entry),
+                name=f"memory_rebuild_index:{user_id}",
+            )
+            self._rebuild_tasks[job_id] = task
+            task.add_done_callback(lambda _task, jid=job_id: self._rebuild_tasks.pop(jid, None))
+            return job.to_view()
+
+    def get_rebuild_index_job(self, job_id: str) -> dict:
+        job = self._rebuild_jobs.get(job_id)
+        if job is None:
+            raise RebuildJobNotFound(f"memory index rebuild job {job_id!r} not found")
+        return job.to_view()
+
+    def list_rebuild_index_jobs(self, *, user_id: str | None = None) -> list[dict]:
+        jobs = self._rebuild_jobs.values()
+        if user_id is not None:
+            jobs = [j for j in jobs if j.user_id == user_id]
+        return [j.to_view() for j in sorted(jobs, key=lambda j: j.created_at, reverse=True)]
+
+    async def _run_rebuild_index_job(self, job_id: str, entry: UserEntry) -> None:
+        job = self._rebuild_jobs[job_id]
+        async with self._lock:
+            job.status = "running"
+            job.started_at = datetime.now(UTC)
+        try:
+            async with self._maintenance_lock:
+                result = await self._sup.rebuild_memory_index(entry, log_path=job.log_path)
+        except Exception as exc:  # noqa: BLE001 - async job must record failures
+            async with self._lock:
+                job.status = "failed"
+                job.error = str(exc)
+                job.finished_at = datetime.now(UTC)
+            log.exception("memory_rebuild_index_failed", user_id=entry.id, job_id=job_id)
+            return
+
+        async with self._lock:
+            job.result = result
+            returncode = result.get("returncode")
+            if returncode == 0:
+                job.status = "succeeded"
+                job.error = None
+            else:
+                job.status = "failed"
+                job.error = f"mempalace repair exited with {returncode}"
+            job.finished_at = datetime.now(UTC)
 
     # -------------------- create --------------------
 

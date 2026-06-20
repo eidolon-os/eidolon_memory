@@ -12,6 +12,7 @@ What this layer covers (in addition to test_user_admin.py):
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ class _StubSupervisor:
         self.users_path = users_path
         self._palaces_root = palaces_root
         self.alive: set[str] = set()
+        self.rebuild_calls: list[tuple[str, Path]] = []
 
     async def reconcile_now(self) -> None:
         cfg = _read_users(self.users_path)
@@ -42,6 +44,17 @@ class _StubSupervisor:
 
     def palace_path_for(self, user: UserEntry) -> Path:
         return self._palaces_root / user.id
+
+    async def rebuild_memory_index(self, user: UserEntry, *, log_path: Path) -> dict:
+        self.rebuild_calls.append((user.id, log_path))
+        await asyncio.sleep(0)
+        return {
+            "user_id": user.id,
+            "palace_path": str(self.palace_path_for(user)),
+            "backend": "chroma",
+            "returncode": 0,
+            "log_path": str(log_path),
+        }
 
 
 def _read_users(path: Path) -> UsersConfig:
@@ -62,7 +75,11 @@ def client(tmp_path: Path) -> TestClient:
     users_yaml = tmp_path / "users.yaml"
     _write_users(users_yaml)
     sup = _StubSupervisor(users_yaml, tmp_path / "palaces")
-    admin = UserAdmin(sup, trash_root=tmp_path / "trash")
+    admin = UserAdmin(
+        sup,
+        trash_root=tmp_path / "trash",
+        maintenance_log_root=tmp_path / "maintenance",
+    )
     app = build_admin_api(admin)
     test_client = TestClient(app)
     test_client.users_path = users_yaml  # type: ignore[attr-defined]
@@ -104,6 +121,34 @@ def test_reconcile_starts_enabled_worker(client: TestClient) -> None:
     assert r.status_code == 200
     assert r.json() == {"ok": True}
     assert "alice" in client.supervisor.alive  # type: ignore[attr-defined]
+
+
+def test_rebuild_index_starts_async_job(client: TestClient) -> None:
+    _write_users(
+        client.users_path,  # type: ignore[attr-defined]
+        UserEntry(id="alice", port=8030, enabled=True),
+    )
+
+    r = client.post("/api/admin/users/alice/memory/rebuild-index")
+    assert r.status_code == 202
+    body = r.json()
+    assert body["user_id"] == "alice"
+    assert body["status"] in {"pending", "running", "succeeded"}
+    assert body["log_path"].endswith(".log")
+
+    status = client.get(f"/api/admin/memory/rebuild-index/{body['job_id']}")
+    assert status.status_code == 200
+    assert status.json()["user_id"] == "alice"
+
+
+def test_rebuild_index_missing_user_returns_404(client: TestClient) -> None:
+    r = client.post("/api/admin/users/ghost/memory/rebuild-index")
+    assert r.status_code == 404
+
+
+def test_rebuild_index_missing_job_returns_404(client: TestClient) -> None:
+    r = client.get("/api/admin/memory/rebuild-index/nope")
+    assert r.status_code == 404
 
 
 def test_create_rejects_bad_user_id(client: TestClient) -> None:

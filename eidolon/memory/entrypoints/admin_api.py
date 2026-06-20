@@ -16,6 +16,10 @@ Routes:
     GET    /api/admin/users                  list all (with health)
     GET    /api/admin/users/{user_id}        single detail
     POST   /api/admin/reconcile              re-read admin registry
+    POST   /api/admin/users/{user_id}/memory/rebuild-index
+                                                async rebuild vector index
+    GET    /api/admin/memory/rebuild-index/{job_id}
+                                                rebuild job status
     DELETE /api/admin/users/{user_id}        clean up memory-owned palace data
 
 All admin endpoints are namespaced under ``/api/admin`` and bound to
@@ -120,6 +124,24 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
             return {"ok": True}
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @app.post("/api/admin/users/{user_id}/memory/rebuild-index", status_code=202)
+    async def rebuild_memory_index(user_id: str) -> dict:
+        try:
+            return await user_admin.start_rebuild_index(user_id)
+        except UserAdminError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @app.get("/api/admin/memory/rebuild-index/{job_id}")
+    async def get_rebuild_memory_index_job(job_id: str) -> dict:
+        try:
+            return user_admin.get_rebuild_index_job(job_id)
+        except UserAdminError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @app.get("/api/admin/users/{user_id}/memory/rebuild-index")
+    async def list_user_rebuild_memory_index_jobs(user_id: str) -> dict:
+        return {"jobs": user_admin.list_rebuild_index_jobs(user_id=user_id)}
 
     @app.delete("/api/admin/users/{user_id}")
     async def delete_user(user_id: str) -> dict:
