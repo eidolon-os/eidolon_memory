@@ -10,6 +10,13 @@ mempalace:
   # chroma is the default embedded local backend. Use qdrant for A/B testing
   # with a local Qdrant service listening on qdrant_url.
   backend: chroma
+  # Optional: minilm (legacy/English) or embeddinggemma (multilingual).
+  # Existing palaces must be rebuilt before switching embedding_model.
+  embedding_model: ""
+  # Optional: auto, cpu, cuda, coreml, or dml.
+  embedding_device: ""
+  # Optional local copy of model files for operations/runbooks.
+  embedding_model_dir: ""
   qdrant_url: http://127.0.0.1:6333
   qdrant_namespace: eidolon-dev
   qdrant_timeout_seconds: 10

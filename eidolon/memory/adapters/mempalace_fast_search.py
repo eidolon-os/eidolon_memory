@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
-from eidolon.memory.application.query_embedding import embed_query_vector
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
 
 
@@ -26,11 +26,17 @@ def search_memories_shared_embedding(
     except ImportError as exc:
         raise MemoryBackendUnavailable("mempalace package is not installed") from exc
 
-    embedding = query_embedding if query_embedding is not None else embed_query_vector(query)
+    if query_embedding is None:
+        from eidolon.memory.application.query_embedding import embed_query_vector
+
+        embedding = embed_query_vector(query)
+    else:
+        embedding = query_embedding
     vec = [embedding]
 
     try:
         drawers_col = get_collection(palace_path, collection_name=collection_name, create=False)
+        metric = _metric_for_collection(drawers_col)
         where = _combined_where(wings, room)
         limit = max(n_results * max(3, len(wings) * 3), n_results)
         try:
@@ -75,6 +81,7 @@ def search_memories_shared_embedding(
         n_results=max(n_results * len(wings), n_results),
         closet_boost_by_source=closet_boost_by_source,
         post_filter=post_filter,
+        metric=metric,
     )
     hits.sort(key=lambda h: float(h.get("similarity", 0.0)), reverse=True)
     return hits[: max(n_results * len(wings), n_results)]
@@ -112,6 +119,43 @@ def _query_collection(
     if where:
         kwargs["where"] = where
     return collection.query(**kwargs)
+
+
+def _metric_for_collection(collection: Any) -> str:
+    try:
+        from mempalace.searcher import _metric_for_collection as upstream_metric_for_collection
+
+        return upstream_metric_for_collection(collection)
+    except Exception:
+        try:
+            metric = getattr(collection, "distance_metric", "cosine")
+        except Exception:
+            return "cosine"
+        metric = str(metric or "cosine").lower()
+        return metric if metric in {"cosine", "l2", "ip"} else "cosine"
+
+
+def _distance_to_similarity(distance: float | None, metric: str = "cosine") -> float:
+    try:
+        from mempalace.searcher import _distance_to_similarity as upstream_distance_to_similarity
+
+        return float(upstream_distance_to_similarity(distance, metric))
+    except Exception:
+        if distance is None:
+            return 0.0
+        metric = (metric or "cosine").lower()
+        if metric == "l2":
+            return 1.0 / (1.0 + max(0.0, float(distance)))
+        if metric == "ip":
+            return 1.0 / (1.0 + math.exp(min(60.0, float(distance))))
+        return max(0.0, 1.0 - float(distance))
+
+
+def _apply_distance_boost(distance: float, boost: float, metric: str) -> float:
+    effective = float(distance) - boost
+    if (metric or "cosine").lower() == "cosine":
+        return max(0.0, min(2.0, effective))
+    return max(0.0, effective)
 
 
 def _matches_scope(meta: dict[str, Any], *, wings: list[str], room: str | None) -> bool:
@@ -180,6 +224,7 @@ def _score_results(
     n_results: int,
     closet_boost_by_source: dict[str, tuple],
     post_filter: bool,
+    metric: str = "cosine",
 ) -> list[dict[str, Any]]:
     from mempalace.searcher import _first_or_empty
 
@@ -202,7 +247,7 @@ def _score_results(
             c_rank, c_dist, _preview = closet_boost_by_source[source]
             if c_dist <= closet_distance_cap and c_rank < len(closet_rank_boosts):
                 boost = closet_rank_boosts[c_rank]
-        effective_dist = max(0.0, min(2.0, float(dist) - boost))
+        effective_dist = _apply_distance_boost(float(dist), boost, metric)
         scored.append(
             {
                 "text": doc,
@@ -210,7 +255,7 @@ def _score_results(
                 "room": meta.get("room", "unknown"),
                 "source_file": Path(source).name if source else "?",
                 "distance": round(float(dist), 4),
-                "similarity": round(max(0.0, 1.0 - effective_dist), 3),
+                "similarity": round(_distance_to_similarity(effective_dist, metric), 3),
                 "_sort_key": effective_dist,
                 "metadata": meta,
             }
@@ -221,4 +266,3 @@ def _score_results(
     for h in trimmed:
         h.pop("_sort_key", None)
     return trimmed
-

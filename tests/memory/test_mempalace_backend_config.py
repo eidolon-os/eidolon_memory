@@ -44,6 +44,24 @@ def test_qdrant_env_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     assert env["MEMPALACE_QDRANT_API_KEY"] == "secret"
 
 
+def test_embedding_env_is_applied() -> None:
+    settings = MemorySettings.model_validate(
+        {
+            "mempalace": {
+                "embedding_model": "embeddinggemma",
+                "embedding_device": "coreml",
+                "embedding_model_dir": "/models/embeddinggemma",
+            }
+        }
+    )
+
+    env = mempalace_backend_env(settings, base={})
+
+    assert settings.mempalace.embedding_model_dir == "/models/embeddinggemma"
+    assert env["MEMPALACE_EMBEDDING_MODEL"] == "embeddinggemma"
+    assert env["MEMPALACE_EMBEDDING_DEVICE"] == "coreml"
+
+
 def test_backend_artifacts_and_integrity_targets(tmp_path: Path) -> None:
     assert backend_artifact_path(tmp_path, "chroma") == tmp_path / "chroma.sqlite3"
     assert backend_artifact_path(tmp_path, "qdrant") == tmp_path / "qdrant_backend.json"

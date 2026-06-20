@@ -627,7 +627,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "litellm", specifier = ">=1.0" },
     { name = "mcp", specifier = ">=1.2.0" },
-    { name = "mempalace", specifier = ">=3.4.0" },
+    { name = "mempalace", specifier = ">=3.4.1" },
     { name = "nats-py", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -649,6 +649,7 @@ dependencies = [
     { name = "grpcio" },
     { name = "httpx" },
     { name = "livekit-api" },
+    { name = "protobuf" },
     { name = "pydantic" },
     { name = "pyjwt" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -668,6 +669,8 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'http'", specifier = ">=0.27" },
     { name = "livekit-api", specifier = ">=0.5" },
     { name = "livekit-api", marker = "extra == 'livekit'", specifier = ">=0.5" },
+    { name = "protobuf", specifier = ">=4.25" },
+    { name = "protobuf", marker = "extra == 'grpc'", specifier = ">=4.25" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pyjwt", specifier = ">=2.8" },
     { name = "pyjwt", marker = "extra == 'runtime'", specifier = ">=2.8" },
@@ -1552,7 +1555,7 @@ wheels = [
 
 [[package]]
 name = "mempalace"
-version = "3.4.0"
+version = "3.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "chromadb" },
@@ -1562,9 +1565,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a9/ad/907ce718293ab123be65263d01c0c3c8d82194b4c549b5eca9dfe8e3da1a/mempalace-3.4.0.tar.gz", hash = "sha256:3947a4331166c993ea2ba13b57da479e1da1d09ed056bafd570e4db5f84436ab", size = 24947549, upload-time = "2026-06-06T08:59:10.722Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/38/b5bd19281a337b2e48434dcd617b6c452f45702faff7a2e96fa463702326/mempalace-3.4.1.tar.gz", hash = "sha256:7f7982f3a37d96560274aca385fb60199e32a1159939e7b50e581230cc9265a8", size = 25109136, upload-time = "2026-06-15T09:39:06.678Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5c/a5/3018e2a5b5e46fca94e9ff7496faf120e4150546143882a8664c389b4d85/mempalace-3.4.0-py3-none-any.whl", hash = "sha256:5e5df0e0708c9a8f8e2a47365de00d47360490005bba11674bc0bfe7709df527", size = 463395, upload-time = "2026-06-06T08:59:08.519Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/41/6a29ac07c72528b2b4c8e7be1f3754ca0b001f70bcaaed32085b4cf8118a/mempalace-3.4.1-py3-none-any.whl", hash = "sha256:d926e79d29f2d9d85780adb6f248ccf57775b33c56f53347d54d2e5d688f34dd", size = 491175, upload-time = "2026-06-15T09:39:03.978Z" },
 ]
 
 [[package]]

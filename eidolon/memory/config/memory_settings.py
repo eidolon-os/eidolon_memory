@@ -144,9 +144,15 @@ class MempalaceBackendConfig(BaseModel):
 
     Chroma remains the default. Qdrant can be enabled during development with:
     ``mempalace.backend=qdrant`` plus the local Qdrant URL/namespace below.
+    ``embedding_model`` is intentionally blank by default so existing palaces
+    keep the embedder they were built with; set ``embeddinggemma`` only after
+    rebuilding indexes for existing palace data.
     """
 
     backend: str = "chroma"
+    embedding_model: str = ""
+    embedding_device: str = ""
+    embedding_model_dir: str = ""
     qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_namespace: str = "eidolon"
     qdrant_timeout_seconds: float = 10.0

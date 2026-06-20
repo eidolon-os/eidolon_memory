@@ -2,6 +2,11 @@ runtime:
   palaces_root: ~/eidolon/memory/mempalaces
   log_dir: ''
   run_dir: ''
+mempalace:
+  backend: chroma
+  embedding_model: embeddinggemma
+  embedding_device: cpu
+  embedding_model_dir: /Users/manson/eidolon/data/models/embeddinggemma-300m-ONNX
 nats:
   url: nats://127.0.0.1:4222
 llm:

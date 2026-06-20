@@ -35,6 +35,13 @@ def mempalace_backend_env(
     backend = selected_mempalace_backend(settings)
     env["MEMPALACE_BACKEND"] = backend
 
+    embedding_model = settings.mempalace.embedding_model.strip().lower()
+    if embedding_model:
+        env["MEMPALACE_EMBEDDING_MODEL"] = embedding_model
+    embedding_device = settings.mempalace.embedding_device.strip().lower()
+    if embedding_device:
+        env["MEMPALACE_EMBEDDING_DEVICE"] = embedding_device
+
     if backend == "qdrant":
         if settings.mempalace.qdrant_url:
             env["MEMPALACE_QDRANT_URL"] = settings.mempalace.qdrant_url
