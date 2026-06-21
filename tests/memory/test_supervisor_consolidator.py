@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sqlite3
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -169,11 +170,21 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     """
     yaml_path = _write_users_yaml(tmp_path, [])
     sup = _build_supervisor(tmp_path, yaml_path)
+    palace_path = tmp_path / "palaces" / "alice"
+    palace_path.mkdir(parents=True)
+    kg_path = palace_path / "knowledge_graph.sqlite3"
+    conn = sqlite3.connect(kg_path)
+    try:
+        conn.execute("CREATE TABLE marker (value TEXT)")
+        conn.execute("INSERT INTO marker VALUES ('kept')")
+        conn.commit()
+    finally:
+        conn.close()
     user = UserEntry(
         id="alice",
         port=9001,
         enabled=True,
-        palace_path=str(tmp_path / "palaces" / "alice"),
+        palace_path=str(palace_path),
     )
     captured: dict[str, object] = {}
 
@@ -199,6 +210,7 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     result = await sup.rebuild_memory_index(user, log_path=tmp_path / "repair.log")
 
     assert result["returncode"] == 0
+    assert result["kg_preserved"] is True
     assert captured["cmd"] == [
         "/venv/bin/mempalace",
         "--backend",
@@ -211,6 +223,12 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
         "--archive-existing",
         "--yes",
     ]
+    assert (tmp_path / "repair.knowledge_graph.sqlite3").is_file()
+    conn = sqlite3.connect(kg_path)
+    try:
+        assert conn.execute("SELECT value FROM marker").fetchone()[0] == "kept"
+    finally:
+        conn.close()
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
     assert kwargs["stderr"] == subprocess.STDOUT

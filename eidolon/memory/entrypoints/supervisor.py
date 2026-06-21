@@ -19,6 +19,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import signal
+import shutil
+import sqlite3
 import subprocess
 import time
 from collections import deque
@@ -55,6 +57,33 @@ log = get_logger(__name__)
 _AGENT_CLI = "eidolon-memory-agent"
 _CONSOLIDATOR_CLI = "eidolon-memory-consolidator"
 _DEGRADED_MIN_INTERVAL = 60.0  # seconds — rolling failure window
+
+
+def _backup_sqlite_database(source: Path, dest: Path) -> bool:
+    """Write a consistent SQLite backup of ``source`` to ``dest``.
+
+    Used for KG preservation around MemPalace's Chroma rebuild. SQLite's
+    backup API folds any WAL state into a standalone destination DB, unlike a
+    naive file copy of ``*.sqlite3``.
+    """
+    if not source.is_file():
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    try:
+        dst = sqlite3.connect(dest)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return True
+
+
+def _restore_sqlite_database(source: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
 
 
 def _agent_cli_argv(user: UserEntry, palace_path: Path) -> list[str]:
@@ -274,6 +303,12 @@ class Supervisor:
         if child is not None:
             await asyncio.to_thread(child.terminate, grace_seconds=30.0)
 
+        kg_path = palace_path / "knowledge_graph.sqlite3"
+        kg_backup_path = log_path.with_suffix(".knowledge_graph.sqlite3")
+        kg_backed_up = await asyncio.to_thread(
+            _backup_sqlite_database, kg_path, kg_backup_path
+        )
+
         cli = _resolve_mempalace_cli()
         cmd = [
             cli,
@@ -309,6 +344,16 @@ class Supervisor:
                 env=mempalace_backend_env(self._settings),
             )
             returncode = await proc.wait()
+            if returncode == 0 and kg_backed_up:
+                await asyncio.to_thread(
+                    _restore_sqlite_database, kg_backup_path, kg_path
+                )
+                fh.write(
+                    (
+                        f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
+                        f"kg-restored: {kg_path}\n"
+                    ).encode("utf-8")
+                )
             fh.write(
                 (
                     f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
@@ -330,6 +375,7 @@ class Supervisor:
             "backend": backend,
             "returncode": returncode,
             "log_path": str(log_path),
+            "kg_preserved": kg_backed_up and returncode == 0,
         }
 
     # -------------------- config loading --------------------
