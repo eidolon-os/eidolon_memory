@@ -282,6 +282,9 @@ class Supervisor:
             "--palace",
             str(palace_path),
             "repair",
+            "--mode",
+            "from-sqlite",
+            "--archive-existing",
             "--yes",
         ]
         log.info(

@@ -18,9 +18,10 @@ flags (``is_alive``, ``returncode``) are emulated on the mock.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -156,6 +157,64 @@ async def test_supervisor_skips_consolidator_when_disabled(
         assert agent_argv[0] == "eidolon-memory-agent"
     finally:
         await sup.stop()
+
+
+async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Embedding-model switches cannot use legacy repair: Chroma refuses to
+    open the existing collection before it can be rebuilt. Supervisor must use
+    MemPalace's sqlite extraction path, which re-embeds into a fresh palace.
+    """
+    yaml_path = _write_users_yaml(tmp_path, [])
+    sup = _build_supervisor(tmp_path, yaml_path)
+    user = UserEntry(
+        id="alice",
+        port=9001,
+        enabled=True,
+        palace_path=str(tmp_path / "palaces" / "alice"),
+    )
+    captured: dict[str, object] = {}
+
+    class _Proc:
+        async def wait(self) -> int:
+            return 0
+
+    async def _fake_exec(*cmd: str, **kwargs: object) -> _Proc:
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor._resolve_mempalace_cli",
+        lambda: "/venv/bin/mempalace",
+    )
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor.asyncio.create_subprocess_exec",
+        _fake_exec,
+    )
+    monkeypatch.setattr(sup, "_reconcile", AsyncMock())
+
+    result = await sup.rebuild_memory_index(user, log_path=tmp_path / "repair.log")
+
+    assert result["returncode"] == 0
+    assert captured["cmd"] == [
+        "/venv/bin/mempalace",
+        "--backend",
+        "chroma",
+        "--palace",
+        str(tmp_path / "palaces" / "alice"),
+        "repair",
+        "--mode",
+        "from-sqlite",
+        "--archive-existing",
+        "--yes",
+    ]
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["stderr"] == subprocess.STDOUT
+    assert kwargs["stdin"] == subprocess.DEVNULL
 
 
 async def test_supervisor_spawns_consolidator_when_enabled(
