@@ -106,6 +106,7 @@ def admin_env(
         sup,
         trash_root=trash_root,
         maintenance_log_root=tmp_path / "maintenance",
+        user_log_root=tmp_path / "logs",
     )
     return admin, sup, tmp_path
 
@@ -228,12 +229,41 @@ async def test_delete_user_three_step_happy_path(admin_env) -> None:
     # Step 2: palace moved to trash, original gone.
     assert not palace.exists()
     assert result["palace_trashed_to"] is not None
+    assert result["palace_deleted"] is False
     trash_dir = Path(result["palace_trashed_to"])
     assert trash_dir.exists()
     assert (trash_dir / "chroma.sqlite3").read_bytes() == b"some data"
     # Registry ownership stays with admin; memory does not remove the row.
     assert len(sup.registry.users) == 1
     assert sup.registry.users[0].enabled is False
+
+
+async def test_delete_user_purge_removes_palace(admin_env) -> None:
+    admin, sup, tmp_path = admin_env
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=False))
+    sup.alive.add("alice")
+    palace = tmp_path / "palaces" / "alice"
+    palace.mkdir(parents=True)
+    (palace / "chroma.sqlite3").write_bytes(b"some data")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    agent_log = logs / "agent_alice.log"
+    consolidator_log = logs / "consolidator_alice.log"
+    agent_log.write_text("agent log")
+    consolidator_log.write_text("consolidator log")
+
+    result = await admin.delete_user("alice", purge_palace=True)
+
+    assert "alice" not in sup.alive
+    assert not palace.exists()
+    assert not agent_log.exists()
+    assert not consolidator_log.exists()
+    assert result["palace_trashed_to"] is None
+    assert result["palace_deleted"] is True
+    assert sorted(Path(p).name for p in result["logs_deleted"]) == [
+        "agent_alice.log",
+        "consolidator_alice.log",
+    ]
 
 
 async def test_delete_user_missing_raises_404(admin_env) -> None:
@@ -297,6 +327,8 @@ async def test_delete_user_without_palace_returns_success(admin_env) -> None:
         "user_id": "alice",
         "deleted": True,
         "palace_trashed_to": None,
+        "palace_deleted": False,
+        "logs_deleted": [],
     }
     assert not (tmp_path / "palaces" / "alice").exists()
     assert "alice" not in sup.alive

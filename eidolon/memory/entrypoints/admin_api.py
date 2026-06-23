@@ -144,9 +144,9 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
         return {"jobs": user_admin.list_rebuild_index_jobs(user_id=user_id)}
 
     @app.delete("/api/admin/users/{user_id}")
-    async def delete_user(user_id: str) -> dict:
+    async def delete_user(user_id: str, purge: bool = False) -> dict:
         try:
-            return await user_admin.delete_user(user_id)
+            return await user_admin.delete_user(user_id, purge_palace=purge)
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 

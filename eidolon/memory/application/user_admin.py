@@ -246,6 +246,7 @@ class UserAdmin:
         *,
         trash_root: Path | None = None,
         maintenance_log_root: Path | None = None,
+        user_log_root: Path | None = None,
     ) -> None:
         self._sup = supervisor
         self._lock = asyncio.Lock()
@@ -263,6 +264,9 @@ class UserAdmin:
         if maintenance_log_root is None:
             maintenance_log_root = Path.home() / "eidolon" / "logs" / "memory" / "maintenance"
         self._maintenance_log_root = maintenance_log_root
+        if user_log_root is None:
+            user_log_root = Path.home() / "eidolon" / "logs" / "memory"
+        self._user_log_root = user_log_root
 
     # -------------------- list / get --------------------
 
@@ -391,6 +395,7 @@ class UserAdmin:
         user_id: str,
         *,
         worker_stop_timeout_s: float = 30.0,
+        purge_palace: bool = False,
     ) -> dict:
         """Cascade-delete a user with rollback on failure.
 
@@ -400,15 +405,14 @@ class UserAdmin:
             Admin has already flipped enabled=false or deleted the registry
             row. Re-read the admin registry and wait for the worker to stop.
 
-        Step 2 — Trash palace
+        Step 2 — Clean palace
             Move the user's palace directory under
-            ``~/.eidolon-trash/<user>_<unix-ts>/``. This is reversible
-            until the operator wipes the trash. If the move fails (FS
-            error, permission), we ROLL BACK step 1: re-enable the user,
-            reconcile, supervisor brings the worker back. Return 503.
+            ``~/.eidolon-trash/<user>_<unix-ts>/`` by default, or delete it
+            permanently when ``purge_palace=True``. If cleanup fails (FS
+            error, permission), return 503 before memory reports success.
 
         Returns a small status dict so the operator UI can show what
-        was actually done ("worker stopped, palace moved to <path>").
+        was actually done ("worker stopped, palace moved/deleted").
         """
         async with self._lock:
             config = load_users_config()
@@ -436,13 +440,20 @@ class UserAdmin:
 
             # ---- Step 2: trash palace ----
             trash_target: Path | None = None
+            palace_deleted = False
+            deleted_logs: list[str] = []
             if palace_path.exists():
                 try:
-                    trash_target = self._trash_palace(palace_path, user_id)
+                    if purge_palace:
+                        self._delete_palace(palace_path, user_id)
+                        palace_deleted = True
+                        deleted_logs = self._delete_user_logs(user_id)
+                    else:
+                        trash_target = self._trash_palace(palace_path, user_id)
                 except Exception as exc:  # noqa: BLE001 - need broad to drive rollback
-                    log.exception("user_admin_palace_trash_failed", user_id=user_id)
+                    log.exception("user_admin_palace_cleanup_failed", user_id=user_id)
                     raise PalaceCleanupFailed(
-                        f"palace move to trash failed: {exc}"
+                        f"palace cleanup failed: {exc}"
                     ) from exc
 
             # Final reconcile so any UI status reads are consistent.
@@ -452,6 +463,8 @@ class UserAdmin:
                 "user_id": user_id,
                 "deleted": True,
                 "palace_trashed_to": str(trash_target) if trash_target else None,
+                "palace_deleted": palace_deleted,
+                "logs_deleted": deleted_logs,
             }
 
     # -------------------- internals --------------------
@@ -480,3 +493,23 @@ class UserAdmin:
             to=str(target),
         )
         return target
+
+    def _delete_palace(self, palace_path: Path, user_id: str) -> None:
+        shutil.rmtree(palace_path)
+        log.info(
+            "user_admin_palace_deleted",
+            user_id=user_id,
+            path=str(palace_path),
+        )
+
+    def _delete_user_logs(self, user_id: str) -> list[str]:
+        deleted: list[str] = []
+        for name in (f"agent_{user_id}.log", f"consolidator_{user_id}.log"):
+            path = self._user_log_root / name
+            if not path.exists():
+                continue
+            path.unlink()
+            deleted.append(str(path))
+        if deleted:
+            log.info("user_admin_logs_deleted", user_id=user_id, files=deleted)
+        return deleted
