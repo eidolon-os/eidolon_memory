@@ -7,7 +7,7 @@ End-to-end edges:
 
     Subprocess (separate from agent_runner):
        eidolon-memory-consolidator --user-id X --once
-         → MCP eidolon_memory_list (read drawers)
+         → NATS query agent_runner (read drawers)
          → LLM (theme synthesis per wing)
          → NATS publish ConsolidatorIngestThemeCommand × N
        ↓ agent_runner cmd subscriber
@@ -117,7 +117,6 @@ async def _wing_theme_count(session) -> int:
 def _run_consolidator(
     *,
     user_id: str,
-    mcp_url: str,
     settings_yaml: Path,
     log_path: Path,
     timeout_s: float = 180,
@@ -136,7 +135,7 @@ def _run_consolidator(
                     env[k] = v.strip()
     with log_path.open("ab") as log_fp:
         return subprocess.run(
-            [str(cli), "--user-id", user_id, "--mcp-url", mcp_url,
+            [str(cli), "--user-id", user_id,
              "--once", "--min-drawers", "2", "--min-confidence", "0.5"],
             stdout=log_fp, stderr=subprocess.STDOUT, env=env,
             timeout=timeout_s,
@@ -198,8 +197,7 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
 
         log_path = tmp_path / "consolidator.log"
         proc = _run_consolidator(
-            user_id=handle.user_id, mcp_url=handle.mcp_url,
-            settings_yaml=spawn_settings, log_path=log_path,
+            user_id=handle.user_id, settings_yaml=spawn_settings, log_path=log_path,
         )
         if proc.returncode != 0:
             pytest.fail(
@@ -287,8 +285,8 @@ async def test_consolidator_idempotent_on_rerun(
 
         # First pass
         _run_consolidator(
-            user_id=handle.user_id, mcp_url=handle.mcp_url,
-            settings_yaml=spawn_settings, log_path=tmp_path / "c1.log",
+            user_id=handle.user_id, settings_yaml=spawn_settings,
+            log_path=tmp_path / "c1.log",
         )
 
         async def _has_theme(s) -> bool:
@@ -300,8 +298,8 @@ async def test_consolidator_idempotent_on_rerun(
 
         # Second pass — same palace, same drawer set.
         _run_consolidator(
-            user_id=handle.user_id, mcp_url=handle.mcp_url,
-            settings_yaml=spawn_settings, log_path=tmp_path / "c2.log",
+            user_id=handle.user_id, settings_yaml=spawn_settings,
+            log_path=tmp_path / "c2.log",
         )
         # Allow the cmd subscriber to drain any new (idempotent) writes.
         await asyncio.sleep(5)

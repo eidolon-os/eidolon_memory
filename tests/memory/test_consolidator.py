@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from nats.errors import NoRespondersError
 from eidolon_sdk.memory import ConsolidatorIngestThemeCommand
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
@@ -30,8 +31,10 @@ from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.entrypoints.consolidator import (
     Theme,
     _extract_themes_from_llm_response,
+    _list_all_drawers,
     group_drawers_by_wing,
 )
+from eidolon.memory.infrastructure.nats.query import NatsMemoryQueryClient
 
 pytestmark = pytest.mark.asyncio
 
@@ -122,6 +125,68 @@ def test_group_drawers_keeps_drawers_with_missing_timestamp():
     }
     grouped = group_drawers_by_wing([rec], window_days=30)
     assert grouped.get("Wing_Life") == [rec]
+
+
+async def test_list_all_drawers_reads_pages_from_query_client():
+    class _FakeQueryClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def list_drawers(self, **kwargs):
+            self.calls.append(kwargs)
+            offset = kwargs["offset"]
+            limit = kwargs["limit"]
+            rows = [
+                {"key": f"k{i}", "metadata": {"wing": "Wing_Work"}}
+                for i in range(offset, min(offset + limit, 5))
+            ]
+            return {"records": rows}
+
+    client = _FakeQueryClient()
+
+    rows = await _list_all_drawers(
+        client,  # type: ignore[arg-type]
+        user_id="alice",
+        limit=5,
+        page_size=2,
+    )
+
+    assert [r["key"] for r in rows] == ["k0", "k1", "k2", "k3", "k4"]
+    assert [c["offset"] for c in client.calls] == [0, 2, 4]
+    assert all(c["user_id"] == "alice" for c in client.calls)
+
+
+async def test_query_client_wait_until_ready_retries_no_responders(monkeypatch):
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(
+        "eidolon.memory.infrastructure.nats.query.asyncio.sleep",
+        _fake_sleep,
+    )
+
+    class _FakeQueryClient(NatsMemoryQueryClient):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def list_drawers(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise NoRespondersError()
+            return {"records": []}
+
+    client = _FakeQueryClient()
+
+    await client.wait_until_ready(
+        user_id="alice",
+        timeout_seconds=1.0,
+        poll_interval_seconds=0.01,
+    )
+
+    assert client.calls == 2
+    assert sleeps == [0.05]
 
 
 # ─── LLM-response parser ──────────────────────────────────────────────────

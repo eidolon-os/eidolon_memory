@@ -2,8 +2,9 @@
 
 A *separate process* from ``eidolon-memory-agent`` that:
 
-  1. Reads drawer text via MCP (``eidolon_memory_list``, read-only — does not
-     break D1 single-owner: agent_runner remains the only chromadb writer).
+  1. Reads drawer text via an internal NATS request/reply snapshot endpoint
+     served by the user's ``eidolon-memory-agent``. This keeps D1 intact:
+     agent_runner remains the only process holding the Chroma/KG handles.
   2. Groups drawers by ``metadata.wing`` within a time window.
   3. Asks an LLM to distil 0–3 high-level themes per wing (skipping
      ``Wing_Theme`` itself and ``Wing_Privacy``).
@@ -24,7 +25,6 @@ Why a separate process
 CLI
   eidolon-memory-consolidator --user-id alice [--once | --interval-hours 6]
                               [--window-days 30] [--min-drawers 3]
-                              [--mcp-url http://127.0.0.1:8030/mcp]
 
 The ``--once`` flag is what tests / cron use. Without it the worker loops
 on ``--interval-hours`` (default 6).
@@ -44,8 +44,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
 from eidolon_sdk.memory import ConsolidatorIngestThemeCommand
 
 from eidolon.memory.config.memory_settings import (
@@ -53,6 +51,7 @@ from eidolon.memory.config.memory_settings import (
     get_memory_settings,
 )
 from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
+from eidolon.memory.infrastructure.nats.query import NatsMemoryQueryClient
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -98,40 +97,42 @@ class Theme:
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# Drawer reading (MCP, read-only)
+# Drawer reading (internal NATS query, read-only)
 # ───────────────────────────────────────────────────────────────────────────
 
 
-async def _list_all_drawers(session: ClientSession, *, limit: int = 5000) -> list[dict]:
-    """Pull every drawer the user has via the MCP listing tool.
+async def _list_all_drawers(
+    query_client: NatsMemoryQueryClient,
+    *,
+    user_id: str,
+    limit: int = 5000,
+    page_size: int = 250,
+) -> list[dict]:
+    """Pull a bounded drawer snapshot through agent_runner's query responder.
 
-    The consolidator NEVER bypasses MCP for reads — that would couple it to
-    the agent_runner's in-process chromadb client and break the "another
-    agent client" contract.
+    The responder runs inside the owning ``eidolon-memory-agent`` and uses its
+    existing ``LockedBackend``. Consolidator therefore stays decoupled from MCP
+    HTTP while still avoiding a second Chroma/PersistentClient owner.
     """
-    result = await session.call_tool(
-        "eidolon_memory_list", {"limit": limit, "include_private": False},
-    )
-    payload = _unwrap_mcp(result) or {}
-    if not isinstance(payload, dict):
-        return []
-    return payload.get("records") or []
-
-
-def _unwrap_mcp(result: Any) -> Any:
-    """Same envelope-unwrapping helper as ``tests/memory/e2e/conftest.mcp_tool_json``."""
-    if not getattr(result, "content", None):
-        return None
-    text = getattr(result.content[0], "text", "") or ""
-    if not text:
-        return None
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if isinstance(payload, dict) and set(payload) == {"result"}:
-        return payload["result"]
-    return payload
+    out: list[dict] = []
+    offset = 0
+    page = max(1, min(page_size, 1000))
+    while len(out) < limit:
+        take = min(page, limit - len(out))
+        payload = await query_client.list_drawers(
+            user_id=user_id,
+            limit=take,
+            offset=offset,
+            include_private=False,
+        )
+        records = payload.get("records") or []
+        if not isinstance(records, list) or not records:
+            break
+        out.extend(r for r in records if isinstance(r, dict))
+        if len(records) < take:
+            break
+        offset += take
+    return out
 
 
 def _parse_iso(s: str | None) -> datetime | None:
@@ -346,16 +347,17 @@ async def publish_themes(
 async def consolidate_once(
     *,
     user_id: str,
-    mcp_url: str,
     settings: MemorySettings,
     window_days: int = 30,
     min_drawers: int = 3,
     confidence_threshold: float = 0.6,
+    query_timeout_seconds: float = 5.0,
+    query_startup_wait_seconds: float = 300.0,
 ) -> dict[str, Any]:
     """One full pass — returns a result dict suitable for logging or assertion.
 
     The work the worker actually does:
-      1. open MCP session → list drawers
+      1. request a drawer snapshot from the owning agent_runner over NATS
       2. group by themable wing within window
       3. for each wing with ≥ ``min_drawers`` drawers:
            - synthesize themes via LLM
@@ -373,12 +375,18 @@ async def consolidate_once(
       }
     """
     publisher = JetStreamCommandPublisher.from_memory_settings(settings)
+    query_client = NatsMemoryQueryClient.from_memory_settings(
+        settings,
+        timeout_seconds=query_timeout_seconds,
+    )
     await publisher.connect()
+    await query_client.connect()
     try:
-        async with streamablehttp_client(mcp_url) as (r, w, _):
-            async with ClientSession(r, w) as session:
-                await session.initialize()
-                drawers = await _list_all_drawers(session)
+        await query_client.wait_until_ready(
+            user_id=user_id,
+            timeout_seconds=query_startup_wait_seconds,
+        )
+        drawers = await _list_all_drawers(query_client, user_id=user_id)
         by_wing = group_drawers_by_wing(drawers, window_days=window_days)
 
         rows: list[dict[str, Any]] = []
@@ -408,6 +416,7 @@ async def consolidate_once(
         )
         return {"themes_published": published, "wings": rows}
     finally:
+        await query_client.close()
         await publisher.close()
 
 
@@ -416,11 +425,12 @@ async def _run(args: argparse.Namespace) -> int:
     if args.once:
         result = await consolidate_once(
             user_id=args.user_id,
-            mcp_url=args.mcp_url,
             settings=settings,
             window_days=args.window_days,
             min_drawers=args.min_drawers,
             confidence_threshold=args.min_confidence,
+            query_timeout_seconds=args.query_timeout,
+            query_startup_wait_seconds=args.query_startup_wait,
         )
         log.info("consolidator_once_done", **{k: v for k, v in result.items() if k != "wings"})
         for row in result["wings"]:
@@ -435,11 +445,12 @@ async def _run(args: argparse.Namespace) -> int:
         try:
             await consolidate_once(
                 user_id=args.user_id,
-                mcp_url=args.mcp_url,
                 settings=settings,
                 window_days=args.window_days,
                 min_drawers=args.min_drawers,
                 confidence_threshold=args.min_confidence,
+                query_timeout_seconds=args.query_timeout,
+                query_startup_wait_seconds=args.query_startup_wait,
             )
         except Exception as exc:  # noqa: BLE001
             log.error("consolidator_pass_failed", error=str(exc))
@@ -452,8 +463,8 @@ def main() -> int:
     )
     parser.add_argument("--user-id", required=True,
                         help="Which user's palace to consolidate")
-    parser.add_argument("--mcp-url", default="http://127.0.0.1:8030/mcp",
-                        help="The user's agent_runner MCP endpoint (default :8030)")
+    parser.add_argument("--mcp-url", default="",
+                        help=argparse.SUPPRESS)  # deprecated; reads now use NATS query
     parser.add_argument("--once", action="store_true",
                         help="Run a single pass and exit (cron / tests use this)")
     parser.add_argument("--interval-hours", type=float, default=6,
@@ -464,6 +475,10 @@ def main() -> int:
                         help="Skip wings with fewer drawers than this")
     parser.add_argument("--min-confidence", type=float, default=0.6,
                         help="Drop themes below this confidence")
+    parser.add_argument("--query-timeout", type=float, default=5.0,
+                        help="Seconds to wait for the agent_runner NATS query reply")
+    parser.add_argument("--query-startup-wait", type=float, default=300.0,
+                        help="Seconds to wait for the agent_runner query responder at startup")
     args = parser.parse_args()
     return asyncio.run(_run(args))
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import json
 import signal
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,6 +31,8 @@ from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.application.runtime_warm import warm_palace_read_path
+from eidolon.memory.application.privacy_filter import row_visible_to_listing
+from eidolon.memory.application.public_recall import wire_record_to_public_dict
 from eidolon.memory.application.steward import create_steward
 from eidolon.memory.application.turn_processor import (
     process_command_message,
@@ -44,6 +47,7 @@ from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
 from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
 from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
+from eidolon.memory.infrastructure.nats.query import memory_list_drawers_query_subject
 from eidolon.memory.infrastructure.integrity import (
     IntegrityCheckFailed,
     PalaceLocationError,
@@ -91,6 +95,7 @@ async def _nats_subscriber_loop(
     palace_sqlite: str | None,
     kg_sqlite: str,
     stop: asyncio.Event,
+    ready: asyncio.Event | None = None,
 ) -> None:
     """In-process JetStream pull-subscriber for both turn + command subjects."""
     import nats
@@ -99,6 +104,7 @@ async def _nats_subscriber_loop(
     durable_cmd = f"{settings.nats.durable_prefix}-cmd-{user_id}"
     turn_subject = conversation_turn_subject(user_id)
     cmd_subject = memory_command_subject(user_id)
+    query_subject = memory_list_drawers_query_subject(user_id)
 
     steward = create_steward(settings)
     sync_every = max(1, settings.worker.sync_every_n_turns)
@@ -127,6 +133,46 @@ async def _nats_subscriber_loop(
             await handler(msg)
             writes_since_checkpoint += 1
 
+    async def _handle_list_drawers_query(msg) -> None:
+        """Serve ephemeral consolidation snapshot reads.
+
+        The consolidator is an internal background worker, but reads still go
+        through this agent_runner process so Chroma/KG ownership stays single-
+        process. This replaces the old MCP HTTP dependency for consolidator
+        reads while reusing the same ``LockedBackend`` and privacy filter as
+        ``eidolon_memory_list``.
+        """
+        try:
+            payload = json.loads(msg.data.decode("utf-8") or "{}")
+            limit = max(1, min(int(payload.get("limit") or 500), 1000))
+            offset = max(0, int(payload.get("offset") or 0))
+            include_private = bool(payload.get("include_private", False))
+            rows = await backend.get_all(user_id, limit=limit, offset=offset)
+            filtered = [
+                row
+                for row in rows
+                if row_visible_to_listing(row, include_private=include_private)
+            ]
+            response = {
+                "records": [wire_record_to_public_dict(row) for row in filtered],
+                "total_hint": len(filtered),
+                "limit": limit,
+                "offset": offset,
+            }
+        except Exception as exc:  # noqa: BLE001 - responder returns typed error JSON
+            log.warning(
+                "agent_runner_query_failed",
+                user_id=user_id,
+                subject=query_subject,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            response = {
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        await msg.respond(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+
     # Outer reconnect loop: a dropped / drained NATS connection re-subscribes
     # with exponential backoff instead of exiting. Durable consumers persist
     # server-side, so re-subscribe rebinds and resumes from the last ack.
@@ -148,11 +194,16 @@ async def _nats_subscriber_loop(
             psub_cmd = await js.pull_subscribe(
                 cmd_subject, durable=durable_cmd, stream=settings.nats.stream
             )
+            await nc.subscribe(query_subject, cb=_handle_list_drawers_query)
+            await nc.flush()
+            if ready is not None and not ready.is_set():
+                ready.set()
             log.info(
                 "agent_runner_nats_pull_subscribe",
                 user_id=user_id,
                 turn_subject=turn_subject,
                 cmd_subject=cmd_subject,
+                query_subject=query_subject,
                 stream=settings.nats.stream,
             )
             reconnect_delay = 1.0  # healthy connection — reset backoff
@@ -193,6 +244,8 @@ async def _nats_subscriber_loop(
                     await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
                     writes_since_checkpoint = 0
         except Exception as exc:  # noqa: BLE001 - any connection/sub failure → reconnect
+            if ready is not None and not ready.is_set():
+                ready.clear()
             if stop.is_set():
                 break
             log.warning(
@@ -228,6 +281,7 @@ def _compose_starlette_lifespan(
     )
     kg_sqlite = str(Path(palace_path) / "knowledge_graph.sqlite3")
     stop_event = asyncio.Event()
+    nats_ready_event = asyncio.Event()
     session_manager = mcp.session_manager
 
     @asynccontextmanager
@@ -248,10 +302,12 @@ def _compose_starlette_lifespan(
                 palace_sqlite=palace_sqlite,
                 kg_sqlite=kg_sqlite,
                 stop=stop_event,
+                ready=nats_ready_event,
             ),
             name=f"nats-sub-{user_id}",
         )
         try:
+            await asyncio.wait_for(nats_ready_event.wait(), timeout=30.0)
             async with session_manager.run():
                 yield
         finally:

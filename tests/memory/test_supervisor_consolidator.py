@@ -7,8 +7,8 @@ Scope (in-process, no real subprocess):
     ``user.consolidator_enabled() is True``.
   * ``Supervisor.start`` does NOT spawn a consolidator when the block is
     absent or ``enabled=False``.
-  * Port change in admin registry cascades a consolidator restart (its --mcp-url
-    embeds the port; stale URL would silently break).
+  * Port change in admin registry cascades a consolidator restart because the
+    consolidator depends on the per-user agent child being ready.
   * Reconcile flips: disable → terminate; enable → spawn.
 
 We mock ``subprocess.Popen`` so the tests don't actually fork. Lifecycle
@@ -64,9 +64,7 @@ def test_consolidator_cli_argv_has_all_knobs():
     argv = _consolidator_cli_argv(user)
     assert argv[0] == "eidolon-memory-consolidator"
     assert ["--user-id", "alice"] == argv[1:3]
-    # --mcp-url must point at the agent_runner on this user's port.
-    assert argv[3] == "--mcp-url"
-    assert argv[4] == "http://127.0.0.1:9001/mcp"
+    assert "--mcp-url" not in argv
     # All per-user knobs propagate.
     flat = " ".join(argv)
     assert "--interval-hours 8" in flat
@@ -264,10 +262,8 @@ async def test_supervisor_spawns_consolidator_when_enabled(
         assert sorted(kinds) == [
             "eidolon-memory-agent", "eidolon-memory-consolidator",
         ]
-        # The consolidator's --mcp-url must point at alice's agent port.
         cons_argv = next(a for a in argv_list if a[0] == "eidolon-memory-consolidator")
-        i = cons_argv.index("--mcp-url")
-        assert cons_argv[i + 1] == "http://127.0.0.1:9001/mcp"
+        assert "--mcp-url" not in cons_argv
     finally:
         await sup.stop()
 
@@ -514,8 +510,8 @@ async def test_reconcile_disabling_consolidator_terminates_it(
 async def test_reconcile_port_change_restarts_consolidator(
     tmp_path: Path, _patched_popen, monkeypatch,
 ):
-    """If the user's agent port shifts, the consolidator's --mcp-url is
-    stale → we must terminate + respawn with the new port."""
+    """If the user's agent port shifts, restart the dependent consolidator
+    after the fresh agent child is up."""
     monkeypatch.setattr(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
@@ -530,11 +526,11 @@ async def test_reconcile_port_change_restarts_consolidator(
     await sup.start()
     try:
         first_cons = sup._consolidators["alice"]
-        original_port_in_argv = next(
+        original_cons_argv = next(
             a for a in [c.args[0] for c in _patched_popen.call_args_list]
             if a[0] == "eidolon-memory-consolidator"
         )
-        assert "http://127.0.0.1:9001/mcp" in original_port_in_argv
+        assert "--mcp-url" not in original_cons_argv
 
         # Shift port to 9099.
         cfg.users = UsersConfig.model_validate({"users": [
@@ -554,8 +550,7 @@ async def test_reconcile_port_change_restarts_consolidator(
         # And the latest spawn carries the new port.
         new_argv = _patched_popen.call_args_list[-1].args[0]
         assert new_argv[0] == "eidolon-memory-consolidator"
-        i = new_argv.index("--mcp-url")
-        assert new_argv[i + 1] == "http://127.0.0.1:9099/mcp"
+        assert "--mcp-url" not in new_argv
     finally:
         await sup.stop()
 

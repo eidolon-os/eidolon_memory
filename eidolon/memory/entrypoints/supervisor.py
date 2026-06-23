@@ -106,7 +106,6 @@ def _consolidator_cli_argv(user: UserEntry) -> list[str]:
     return [
         _CONSOLIDATOR_CLI,
         "--user-id", user.id,
-        "--mcp-url", f"http://127.0.0.1:{user.port}/mcp",
         "--interval-hours", str(cfg.interval_hours),
         "--window-days", str(cfg.window_days),
         "--min-drawers", str(cfg.min_drawers),
@@ -636,8 +635,6 @@ class Supervisor:
                 self._init_failures.pop(user_id, None)
 
         # 1) Stop agent children not in wanted set, or whose port changed.
-        #    A port change cascades: the consolidator's --mcp-url embeds the
-        #    port, so it must restart too.
         for user_id, child in list(self._children.items()):
             if user_id not in wanted:
                 log.info("supervisor_reload_remove", user_id=user_id)
@@ -655,8 +652,9 @@ class Supervisor:
                 )
                 child.terminate()
                 self._children.pop(user_id, None)
-                # Port shifts ⇒ consolidator's --mcp-url is stale; drop it so
-                # step 3 below respawns with the new port.
+                # Port shifts require a fresh agent. The consolidator reads via
+                # NATS query now, but it depends on a ready agent child, so drop
+                # it and let step 3 respawn after the new agent is alive.
                 self._terminate_consolidator(user_id)
 
         # 2) Start children that should be running but aren't. Process eager
