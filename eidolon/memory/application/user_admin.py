@@ -100,10 +100,8 @@ class _SupervisorProtocol(Protocol):
     implements all of these.
     """
 
-    users_path: Path | None
-
     async def reconcile_now(self) -> None:
-        """Re-read users.yaml and align running children. Must be safe to
+        """Re-read admin's registry and align running children. Must be safe to
         call concurrently with the supervisor's internal reconcile loop —
         callers are expected to serialize via the admin lock above.
         """
@@ -265,7 +263,7 @@ class UserAdmin:
     # -------------------- list / get --------------------
 
     def list_users(self) -> list[dict]:
-        config = load_users_config(path=self._sup.users_path)
+        config = load_users_config()
         return [
             user_to_view(
                 u,
@@ -276,7 +274,7 @@ class UserAdmin:
         ]
 
     def get_user(self, user_id: str) -> dict:
-        config = load_users_config(path=self._sup.users_path)
+        config = load_users_config()
         user = config.find(user_id)
         if user is None:
             raise UserNotFound(f"user {user_id!r} not found")
@@ -295,7 +293,7 @@ class UserAdmin:
     async def start_rebuild_index(self, user_id: str) -> dict:
         """Create an async job that rebuilds one user's MemPalace vector index."""
         async with self._lock:
-            config = load_users_config(path=self._sup.users_path)
+            config = load_users_config()
             entry = config.find(user_id)
             if entry is None:
                 raise UserNotFound(f"user {user_id!r} not found")
@@ -407,7 +405,7 @@ class UserAdmin:
         was actually done ("worker stopped, palace moved to <path>").
         """
         async with self._lock:
-            config = load_users_config(path=self._sup.users_path)
+            config = load_users_config()
             entry = config.find(user_id)
             if entry is None:
                 raise UserNotFound(f"user {user_id!r} not found")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the effective YAML-backed memory runtime configuration."""
+"""Print the effective memory runtime configuration."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from eidolon.memory.config.memory_settings import (
     resolve_run_dir,
 )
 from eidolon.memory.config.palace_directory import resolve_palaces_root
-from eidolon.memory.config.users import load_users_config, resolve_users_file_path
+from eidolon.memory.config.users import load_users_config, resolve_admin_api_url
 from eidolon_sdk.memory import conversation_turn_stream_pattern
 
 
@@ -18,14 +18,13 @@ def main() -> None:
     print("palaces_root:", resolve_palaces_root(settings))
     print("log_dir:", resolve_log_dir(settings))
     print("run_dir:", resolve_run_dir(settings))
-    users_path = resolve_users_file_path(settings)
-    print("users.yaml:", users_path)
+    print("admin_registry:", f"{resolve_admin_api_url(settings)}/api/users/registry")
     try:
         ucfg = load_users_config(settings)
         for u in ucfg.users:
             print(f"  {u.id:14s} enabled={u.enabled} port={u.port}")
     except Exception as exc:
-        print(f"  (users.yaml parse failed: {exc})")
+        print(f"  (admin registry read failed: {exc})")
     print("backend:", "mempalace-python")
     print("nats.url:", settings.nats.url)
     print("nats.stream:", settings.nats.stream)
@@ -34,7 +33,6 @@ def main() -> None:
     print("nats.durable_prefix:", settings.nats.durable_prefix)
     print("mcp_http.default_url:", settings.mcp_http.base_url())
     print("chromadb.synchronous:", settings.chromadb.synchronous)
-    print("supervisor.users_file:", settings.supervisor.users_file or "<default>")
     print("steward.mode:", settings.steward.mode)
     print("llm.model:", settings.llm.model or "<missing>")
     print("llm.base_url:", settings.llm.base_url or "<missing>")

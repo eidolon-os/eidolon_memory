@@ -2,8 +2,7 @@
 
 Runtime source of truth is eidolon_admin's ``GET /api/users``. Memory only
 consumes that registry and reconciles workers to the project-wide
-``spec.enabled`` flag. Explicit YAML paths are kept for tests and migration
-tooling, but are no longer the production control plane.
+``spec.enabled`` flag.
 """
 
 from __future__ import annotations
@@ -12,22 +11,12 @@ import json
 import os
 import urllib.error
 import urllib.request
-from pathlib import Path
 from urllib.parse import urljoin
 
-import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
 from eidolon.memory.config.palace_directory import validate_user_id
-from eidolon.memory.support.logging import get_logger
-
-log = get_logger(__name__)
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_CONFIG_DIR = _REPO_ROOT / "config"
-_DEFAULT_USERS_PATH = _CONFIG_DIR / "users.yaml"
-
 
 class UsersSourceUnavailable(RuntimeError):
     """Admin user registry could not be read.
@@ -40,11 +29,8 @@ class UsersSourceUnavailable(RuntimeError):
 class ConsolidatorUserConfig(BaseModel):
     """Phase 4 — per-user knobs for the background theme worker.
 
-    Opt-in by default (``enabled=False``) — adding a new user to ``users.yaml``
-    should not silently start an extra LLM-consuming daemon. Set
-    ``enabled: true`` per user to spawn ``eidolon-memory-consolidator``
-    alongside that user's ``agent_runner`` from within
-    ``eidolon-memory-supervisor``.
+    Opt-in by default (``enabled=False``) so adding a new registry user does
+    not silently start an extra LLM-consuming daemon.
     """
 
     enabled: bool = False
@@ -102,30 +88,6 @@ class UsersConfig(BaseModel):
         return next((u for u in self.users if u.id == user_id), None)
 
 
-def resolve_users_file_path(
-    settings: MemorySettings | None = None,
-    *,
-    path: str | Path | None = None,
-) -> Path:
-    """Apply the priority order documented in the module docstring."""
-    if path:
-        return Path(path).expanduser().resolve()
-
-    env = os.environ.get("EIDOLON_MEMORY_USERS_YAML", "").strip()
-    if env:
-        return Path(env).expanduser().resolve()
-
-    cfg = settings or get_memory_settings()
-    configured = (cfg.supervisor.users_file or "").strip()
-    if configured:
-        p = Path(configured).expanduser()
-        if not p.is_absolute():
-            p = _REPO_ROOT / p
-        return p.resolve()
-
-    return _DEFAULT_USERS_PATH.resolve()
-
-
 def resolve_admin_api_url(settings: MemorySettings | None = None) -> str:
     env_url = os.environ.get("EIDOLON_ADMIN_API_URL", "").strip()
     if env_url:
@@ -139,17 +101,6 @@ def resolve_admin_api_url(settings: MemorySettings | None = None) -> str:
     host = os.environ.get("EIDOLON_ADMIN_API_HOST", "127.0.0.1").strip() or "127.0.0.1"
     port = os.environ.get("EIDOLON_ADMIN_API_PORT", "9000").strip() or "9000"
     return f"http://{host}:{port}"
-
-
-def _legacy_yaml_source_enabled(
-    settings: MemorySettings | None,
-    path: str | Path | None,
-) -> bool:
-    if path:
-        return True
-    cfg = settings or get_memory_settings()
-    return bool((cfg.supervisor.users_file or "").strip())
-
 
 def _consolidator_from_admin(raw: dict) -> ConsolidatorUserConfig | None:
     if not isinstance(raw, dict):
@@ -212,46 +163,6 @@ def _load_users_from_admin_api(settings: MemorySettings | None = None) -> UsersC
     return UsersConfig(users=entries)
 
 
-def load_users_config(
-    settings: MemorySettings | None = None,
-    *,
-    path: str | Path | None = None,
-) -> UsersConfig:
-    """Read + validate users.
-
-    Production path reads admin's API. Explicit YAML path/env/settings are a
-    legacy/testing path and still return empty when missing.
-    """
-    if not _legacy_yaml_source_enabled(settings, path):
-        return _load_users_from_admin_api(settings)
-
-    resolved = resolve_users_file_path(settings, path=path)
-    if not resolved.is_file():
-        log.warning("users_yaml_missing", path=str(resolved))
-        return UsersConfig(users=[])
-    raw = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
-    return UsersConfig.model_validate(raw)
-
-
-def bundled_users_template_path() -> Path:
-    """Legacy template path.
-
-    The template file was removed when admin became the user registry owner;
-    this helper remains for old tooling/tests that import it.
-    """
-    return _CONFIG_DIR / "users.yaml.tpl"
-
-
-def ensure_users_yaml_exists(users_path: Path) -> bool:
-    """Legacy helper: create an empty users.yaml only when explicitly asked.
-
-    Runtime no longer seeds users from YAML; admin's registry API is the source
-    of truth. This remains to keep migration tooling from failing hard.
-    """
-    users_path = Path(users_path)
-    if users_path.is_file():
-        return False
-    users_path.parent.mkdir(parents=True, exist_ok=True)
-    users_path.write_text("users: []\n", encoding="utf-8")
-    log.info("legacy_users_yaml_empty_created", path=str(users_path))
-    return True
+def load_users_config(settings: MemorySettings | None = None) -> UsersConfig:
+    """Read and validate users from eidolon_admin's registry API."""
+    return _load_users_from_admin_api(settings)

@@ -1,7 +1,7 @@
 """Tests for the memory user control plane.
 
-Real file system (tmp_path for users.yaml + palace dirs + trash). Stub
-supervisor so we can drive worker_alive deterministically and verify the
+Real file system (tmp_path for palace dirs + trash). Stub supervisor so we
+can drive worker_alive deterministically and verify the
 cleanup path WITHOUT spawning real subprocesses.
 
 Memory no longer owns the user registry. It reads admin's registry, exposes
@@ -14,8 +14,8 @@ import asyncio
 from pathlib import Path
 
 import pytest
-import yaml
 
+from eidolon.memory.application import user_admin as user_admin_mod
 from eidolon.memory.application.user_admin import (
     PalaceCleanupFailed,
     PortConflict,
@@ -36,7 +36,7 @@ class _StubSupervisor:
 
     State-machine model:
       - ``alive``: which user_ids the stub claims have running workers
-      - on ``reconcile_now()``: re-read yaml, sync ``alive`` against
+      - on ``reconcile_now()``: re-read registry snapshot, sync ``alive`` against
         ``enabled_users``. This is the contract real Supervisor obeys:
         after reconcile, enabled users have workers, disabled don't.
 
@@ -46,9 +46,9 @@ class _StubSupervisor:
         the WorkerNotTerminated branch.
     """
 
-    def __init__(self, users_path: Path, palaces_root: Path) -> None:
-        self.users_path = users_path
+    def __init__(self, palaces_root: Path) -> None:
         self._palaces_root = palaces_root
+        self.registry = UsersConfig(users=[])
         self.alive: set[str] = set()
         self.reconcile_terminates_worker: bool = True
         self.reconcile_count: int = 0
@@ -58,7 +58,7 @@ class _StubSupervisor:
 
     async def reconcile_now(self) -> None:
         self.reconcile_count += 1
-        cfg = _read_users(self.users_path)
+        cfg = self.registry
         enabled_ids = {u.id for u in cfg.users if u.enabled}
         # bring enabled workers up
         self.alive |= enabled_ids
@@ -86,29 +86,19 @@ class _StubSupervisor:
         }
 
 
-# ---- helpers ----------------------------------------------------------------
-
-
-def _read_users(path: Path) -> UsersConfig:
-    if not path.is_file():
-        return UsersConfig(users=[])
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return UsersConfig.model_validate(raw)
-
-
-def _yaml_init(path: Path, *entries: UserEntry) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"users": [u.model_dump(mode="json") for u in entries]}
-    path.write_text(yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8")
+def _set_users(sup: _StubSupervisor, *entries: UserEntry) -> None:
+    sup.registry = UsersConfig(users=list(entries))
 
 
 @pytest.fixture
-def admin_env(tmp_path: Path) -> tuple[UserAdmin, _StubSupervisor, Path]:
-    users_yaml = tmp_path / "config" / "users.yaml"
+def admin_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[UserAdmin, _StubSupervisor, Path]:
     palaces_root = tmp_path / "palaces"
     trash_root = tmp_path / "trash"
-    _yaml_init(users_yaml)  # start empty
-    sup = _StubSupervisor(users_yaml, palaces_root)
+    sup = _StubSupervisor(palaces_root)
+    monkeypatch.setattr(user_admin_mod, "load_users_config", lambda: sup.registry)
     admin = UserAdmin(
         sup,
         trash_root=trash_root,
@@ -142,13 +132,13 @@ async def test_create_user_is_read_only(admin_env) -> None:
     admin, sup, _ = admin_env
     with pytest.raises(UserRegistryReadOnly):
         await admin.create_user(user_id="alice")
-    assert _read_users(sup.users_path).users == []
+    assert sup.registry.users == []
     assert sup.reconcile_count == 0
 
 
 async def test_reconcile_delegates_to_supervisor(admin_env) -> None:
     admin, sup, _ = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=True))
     await admin.reconcile()
     assert "alice" in sup.alive
     assert sup.reconcile_count == 1
@@ -156,7 +146,7 @@ async def test_reconcile_delegates_to_supervisor(admin_env) -> None:
 
 async def test_rebuild_index_job_succeeds(admin_env) -> None:
     admin, sup, _ = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=True))
 
     created = await admin.start_rebuild_index("alice")
     assert created["status"] == "pending"
@@ -177,7 +167,7 @@ async def test_rebuild_index_job_succeeds(admin_env) -> None:
 
 async def test_rebuild_index_job_failure_is_recorded(admin_env) -> None:
     admin, sup, _ = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=True))
     sup.rebuild_returncode = 2
 
     created = await admin.start_rebuild_index("alice")
@@ -196,7 +186,7 @@ async def test_rebuild_index_job_failure_is_recorded(admin_env) -> None:
 
 async def test_rebuild_index_rejects_duplicate_running_job(admin_env) -> None:
     admin, sup, _ = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=True))
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=True))
     sup.rebuild_wait = asyncio.Event()
 
     created = await admin.start_rebuild_index("alice")
@@ -222,7 +212,7 @@ async def test_delete_user_three_step_happy_path(admin_env) -> None:
     admin, sup, tmp_path = admin_env
     # Seed: admin has already disabled alice; a worker is still alive until
     # reconcile observes the registry and terminates it.
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=False))
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=False))
     sup.alive.add("alice")
     palace = tmp_path / "palaces" / "alice"
     palace.mkdir(parents=True)
@@ -239,9 +229,8 @@ async def test_delete_user_three_step_happy_path(admin_env) -> None:
     assert trash_dir.exists()
     assert (trash_dir / "chroma.sqlite3").read_bytes() == b"some data"
     # Registry ownership stays with admin; memory does not remove the row.
-    cfg = _read_users(sup.users_path)
-    assert len(cfg.users) == 1
-    assert cfg.users[0].enabled is False
+    assert len(sup.registry.users) == 1
+    assert sup.registry.users[0].enabled is False
 
 
 async def test_delete_user_missing_raises_404(admin_env) -> None:
@@ -256,16 +245,15 @@ async def test_delete_user_missing_raises_404(admin_env) -> None:
 async def test_delete_user_rolls_back_when_worker_wont_stop(admin_env) -> None:
     """Step 1 hangs (worker refuses to die) → raise without mutating registry."""
     admin, sup, _ = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=False))
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=False))
     sup.alive.add("alice")
     sup.reconcile_terminates_worker = False  # simulate wedged worker
 
     with pytest.raises(WorkerNotTerminated):
         await admin.delete_user("alice", worker_stop_timeout_s=0.1)
 
-    cfg = _read_users(sup.users_path)
-    assert len(cfg.users) == 1
-    assert cfg.users[0].enabled is False
+    assert len(sup.registry.users) == 1
+    assert sup.registry.users[0].enabled is False
     # Worker (in the simulation) is still alive.
     assert "alice" in sup.alive
 
@@ -275,7 +263,7 @@ async def test_delete_user_rolls_back_when_palace_trash_fails(
 ) -> None:
     """Step 2 fails (FS error moving palace) → worker remains stopped."""
     admin, sup, tmp_path = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=False))
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=False))
     sup.alive.add("alice")
     palace = tmp_path / "palaces" / "alice"
     palace.mkdir(parents=True)
@@ -291,8 +279,7 @@ async def test_delete_user_rolls_back_when_palace_trash_fails(
     with pytest.raises(PalaceCleanupFailed):
         await admin.delete_user("alice")
 
-    cfg = _read_users(sup.users_path)
-    assert cfg.users[0].enabled is False
+    assert sup.registry.users[0].enabled is False
     assert "alice" not in sup.alive
     # Palace still intact on disk (move never happened).
     assert palace.exists()
@@ -301,7 +288,7 @@ async def test_delete_user_rolls_back_when_palace_trash_fails(
 
 async def test_delete_user_without_palace_returns_success(admin_env) -> None:
     admin, sup, tmp_path = admin_env
-    _yaml_init(sup.users_path, UserEntry(id="alice", port=8030, enabled=False))
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=False))
     result = await admin.delete_user("alice")
     assert result == {
         "user_id": "alice",
@@ -310,9 +297,8 @@ async def test_delete_user_without_palace_returns_success(admin_env) -> None:
     }
     assert not (tmp_path / "palaces" / "alice").exists()
     assert "alice" not in sup.alive
-    cfg = _read_users(sup.users_path)
-    assert len(cfg.users) == 1
-    assert cfg.users[0].enabled is False
+    assert len(sup.registry.users) == 1
+    assert sup.registry.users[0].enabled is False
 
 
 # ---- list / get -----------------------------------------------------------
@@ -320,8 +306,8 @@ async def test_delete_user_without_palace_returns_success(admin_env) -> None:
 
 async def test_list_users_returns_health_per_user(admin_env) -> None:
     admin, sup, tmp_path = admin_env
-    _yaml_init(
-        sup.users_path,
+    _set_users(
+        sup,
         UserEntry(id="alice", port=8030, enabled=True),
         UserEntry(id="bob", port=8031, enabled=False),
     )

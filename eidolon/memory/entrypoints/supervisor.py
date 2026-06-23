@@ -1,12 +1,12 @@
 """Multi-user agent_runner supervisor (D1).
 
-Reads ``users.yaml``, eager-inits each enabled user's palace via the
+Reads eidolon_admin's user registry API, eager-inits each enabled user's palace via the
 ``ensure_palace_initialized`` helper (subprocess — never touches chromadb in
 this process), then spawns one ``eidolon-memory-agent --user-id=<id> --port=<P>``
 subprocess per user.
 
 Monitors children; restarts with exponential backoff on crash; degrades a user
-after repeated failures. Handles ``SIGHUP`` to re-read ``users.yaml`` and reconcile
+after repeated failures. Handles ``SIGHUP`` to re-read the registry and reconcile
 the running set (spawn new, terminate disabled / removed, restart on port change).
 
 Critical: this process **must never open chromadb** — forking that state into
@@ -38,7 +38,6 @@ from eidolon.memory.config.users import (
     UserEntry,
     UsersConfig,
     load_users_config,
-    resolve_users_file_path,
 )
 from eidolon.memory.entrypoints.admin_api import build_admin_api
 from eidolon.memory.infrastructure.mempalace_backend import (
@@ -242,12 +241,10 @@ class Supervisor:
     def __init__(
         self,
         settings: MemorySettings,
-        users_path: Path | None = None,
         *,
         eager_init: bool | None = None,
     ) -> None:
         self._settings = settings
-        self._users_path = users_path
         self._log_root = resolve_log_dir(settings)
         self._eager_init = (
             settings.supervisor.eager_init if eager_init is None else eager_init
@@ -264,10 +261,6 @@ class Supervisor:
     #
     # ``user_admin.UserAdmin`` drives the supervisor through these. Kept thin
     # and side-effect-free at the read end; the only writer is reconcile_now.
-
-    @property
-    def users_path(self) -> Path | None:
-        return self._users_path
 
     def is_worker_alive(self, user_id: str) -> bool:
         child = self._children.get(user_id)
@@ -381,7 +374,7 @@ class Supervisor:
     # -------------------- config loading --------------------
 
     def _read_users(self) -> UsersConfig:
-        return load_users_config(self._settings, path=self._users_path)
+        return load_users_config(self._settings)
 
     def _palace_for(self, user: UserEntry) -> Path:
         return resolve_palace_for_user(
@@ -432,7 +425,6 @@ class Supervisor:
         enabled = users.enabled_users()
         log.info(
             "supervisor_start",
-            users_path=str(self._users_path),
             enabled=len(enabled),
             eager_init=self._eager_init,
         )
@@ -549,7 +541,7 @@ class Supervisor:
                     child.record_failure(max_fail)
 
     async def _reconcile(self) -> None:
-        """Re-read users.yaml and align running set."""
+        """Re-read admin's registry and align running set."""
         try:
             users = self._read_users()
         except Exception as exc:
@@ -697,11 +689,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Multi-user agent_runner supervisor (D1)",
     )
     parser.add_argument(
-        "--users-file",
-        default="",
-        help="Legacy/testing override for users.yaml path.",
-    )
-    parser.add_argument(
         "--no-init",
         action="store_true",
         help="Skip eager mempalace init; rely on agent_runner's lazy init.",
@@ -723,15 +710,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     settings = get_memory_settings()
-    users_path = (
-        resolve_users_file_path(settings, path=args.users_file)
-        if args.users_file
-        else None
-    )
 
     supervisor = Supervisor(
         settings,
-        users_path,
         eager_init=(not args.no_init) and settings.supervisor.eager_init,
     )
 

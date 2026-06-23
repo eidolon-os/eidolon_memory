@@ -30,7 +30,7 @@
 ```
 ┌───────────────────────────────────────────────────────────────────┐
 │ eidolon-memory-supervisor  (Python,纯进程经理,subprocess.Popen)  │
-│   │  读 users.yaml,per-user fan-out;SIGHUP reconcile             │
+│   │  读 eidolon_admin registry,per-user fan-out;SIGHUP reconcile │
 │   ├─ eidolon-memory-agent --user-id=alice --port=8030 ────────────┤
 │   │     ├─ LiveKit pipeline (in-process recall)                    │
 │   │     ├─ MCP Streamable HTTP @ 127.0.0.1:8030/mcp               │
@@ -98,7 +98,7 @@ adapters/      具体 IO 实现
   mempalace_python_backend.py  真 chromadb;search_payload 解析
   fake_backend.py      内存假实现(单测)
 infrastructure/  NATS / stream / checkpoint / palace init / CPU 调优
-config/          settings.yaml + users.yaml + .env 加载
+config/          settings.yaml + .env 加载
 support/         logging / pydantic base
 ```
 
@@ -212,7 +212,7 @@ uv sync --extra dev
 # 2. 起 NATS(任何方式都行 — 不在本仓库 scope)
 nats-server -js &
 
-# 3a. 生产形态 — supervisor 读 users.yaml,自动 spawn 每个 enabled user 的 agent
+# 3a. 生产形态 — supervisor 读 eidolon_admin registry,自动 spawn 每个 enabled user 的 agent
 eidolon-memory-supervisor &
 eidolon-memory-discovery &
 # 配置改动后 SIGHUP supervisor: kill -HUP $(pgrep -f eidolon-memory-supervisor)
@@ -243,7 +243,7 @@ eidolon-memory-discovery &
 from mcp.client.streamable_http import streamable_http_client
 from mcp.client.session import ClientSession
 
-URL = "http://127.0.0.1:8030/mcp"   # users.yaml 里 alice 的 port
+URL = "http://127.0.0.1:8030/mcp"   # admin registry 里 alice 的 memory_port
 
 async with streamable_http_client(URL) as (read, write, _):
     async with ClientSession(read, write) as s:
@@ -322,7 +322,7 @@ eidolon-memory-discovery
 curl http://127.0.0.1:8020/api/discovery/agent-routing
 ```
 
-响应只包含 agent 路由需要的稳定契约，不暴露 `users_yaml`、`palace_path`、`pid`、`log_path`
+响应只包含 agent 路由需要的稳定契约，不暴露 `palace_path`、`pid`、`log_path`
 等运维字段。开发阶段不做 token 鉴权，`mcp_auth` 固定为 `{"type":"none"}`。
 
 ```json
@@ -469,28 +469,23 @@ await ingest_memory_fragment(locked_backend, MemoryFragment(
 
 ## 7. 多用户 / 进程管理
 
-### 7.1 users.yaml
+### 7.1 用户注册表
 
-每个 user 一条记录,声明端口和 enabled:
+用户注册表由 `eidolon_admin` 拥有并持久化到统一 registry DB:
 
-```yaml
-# 默认路径: config/users.yaml (init 从 config/users.yaml.tpl 复制)
-# (可由 settings.supervisor.users_file 或 EIDOLON_MEMORY_USERS_YAML 覆盖)
-users:
-  - id: alice
-    port: 8030
-    enabled: true
-  - id: bob
-    port: 8031
-    enabled: true
-  - id: charlie
-    port: 8032
-    enabled: false      # 关停 — palace 数据保留,翻 true 后即恢复
+```text
+~/eidolon/db/registry.sqlite3
 ```
 
-约束(`UsersConfig` pydantic 验证):
-- `id` 唯一
-- `port` 在 enabled 之间不重复
+Memory 只消费 admin 的只读视图:
+
+```text
+GET http://127.0.0.1:9000/api/users/registry
+```
+
+每个 user 的运行态字段包括 `user_id`、`enabled`、`memory_port`、`palace_path`
+和 consolidator 配置。新增、启停、端口与 consolidator 配置变更都通过
+`eidolon_admin /api/users` 完成。
 
 ### 7.2 Supervisor(纯 Python,不是 supervisord)
 
@@ -499,9 +494,9 @@ eidolon-memory-supervisor       # 前台
 ```
 
 行为:
-- 读 users.yaml,对每个 enabled user `subprocess.Popen` 起 `eidolon-memory-agent`
+- 读 admin registry,对每个 enabled user `subprocess.Popen` 起 `eidolon-memory-agent`
 - 5s poll 检查死掉的子进程,按 `[1, 2, 4, 8, 30]` s 退避重启,60s 内连续 5 次失败标记 degraded
-- `SIGHUP` → 重读 users.yaml,新增 user spawn / 删除 SIGTERM
+- `SIGHUP` → 重读 admin registry,新增 user spawn / 删除 SIGTERM
 - `SIGTERM` → 给每个子进程 30s grace,超时 SIGKILL
 
 **不依赖 launchd / systemd / supervisord** — 自己一份 ~400 行 Python。
@@ -516,15 +511,16 @@ eidolon-memory-agent --user-id default --port 8030
 
 ### 7.4 用户增删改
 
-直接编辑 `users.yaml`,然后:
+通过 `eidolon_admin /api/users` 管理用户。Admin 写入统一 registry DB 后会触发
+memory supervisor reconcile；也可以手动发送:
+
 ```bash
 kill -HUP $(pgrep -f eidolon-memory-supervisor)
 ```
-supervisor 收到 SIGHUP 会重读 yaml:新增 `enabled: true` 的行 → 自动 init palace
-+ spawn agent;现有 user 切到 `enabled: false` → SIGTERM 该 agent(palace 数据保留)。
 
-如需脚本化批量管理,直接调 `eidolon.memory.config.users_io` 模块的
-`upsert_user` / `update_enabled` / `remove_user`(fcntl flock 跨进程安全)。
+supervisor 收到 SIGHUP 会重读 admin registry:新增 `enabled=true` 的用户 →
+自动 init palace + spawn agent;现有 user 切到 `enabled=false` → SIGTERM 该
+agent(palace 数据保留)。
 
 ---
 
@@ -547,7 +543,7 @@ nats:
 
 mcp_http:
   host: "127.0.0.1"
-  port: 8030                     # 仅用于 ad-hoc 单用户;多用户走 users.yaml
+  port: 8030                     # 仅用于 ad-hoc 单用户;多用户走 admin registry
   path: "/mcp"
   bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN  # 值在 config/.env
 
@@ -577,7 +573,7 @@ chromadb:
   synchronous: FULL              # D3 hard-kill 持久性
 
 supervisor:
-  users_file: "config/users.yaml"
+  admin_api_url: "http://127.0.0.1:9000"
   eager_init: true
 ```
 
@@ -586,7 +582,7 @@ supervisor:
 | 变量 | 用途 |
 |------|------|
 | `EIDOLON_MEMORY_SETTINGS_YAML` | 主配置文件路径 |
-| `EIDOLON_MEMORY_USERS_YAML` | users.yaml 路径(覆盖 supervisor.users_file) |
+| `EIDOLON_ADMIN_API_URL` | admin registry API base URL |
 | `EIDOLON_MEMORY_PALACES_ROOT` | per-user palace 目录的父根 |
 | `EIDOLON_MEMORY_MCP_TOKEN` | MCP HTTP bearer token |
 | `EIDOLON_MEMORY_LLM_API_KEY` | steward LLM 密钥 |
@@ -609,11 +605,11 @@ supervisor:
 ## 9. 没有 Admin HTTP API
 
 本项目不再提供 Admin/UI 层。所有运维/调试能力(写 turn / 写 KG / 读召回 /
-列 MCP 工具 / 列 users.yaml)都通过 **MCP 工具**(§4)和 **NATS subject**(§5)
+列 MCP 工具 / memory routing discovery)都通过 **MCP 工具**(§4)和 **NATS subject**(§5)
 直接暴露,任何外部 gateway / 网关 / CLI 都可以照样消费,**不需要中间层**。
 
-需要自定义网关的话,从 `eidolon.memory.config.users_io` + MCP HTTP +
-`JetStreamTurnPublisher` 几块乐高直接拼,参考 `tests/memory/test_kg_*.py` 的用法。
+需要自定义网关的话,从 admin registry API + MCP HTTP + `JetStreamTurnPublisher`
+几块乐高直接拼,参考 `tests/memory/test_kg_*.py` 的用法。
 
 ---
 

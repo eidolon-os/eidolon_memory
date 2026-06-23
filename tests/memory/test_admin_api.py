@@ -16,9 +16,9 @@ import asyncio
 from pathlib import Path
 
 import pytest
-import yaml
 from fastapi.testclient import TestClient
 
+from eidolon.memory.application import user_admin as user_admin_mod
 from eidolon.memory.application.user_admin import UserAdmin
 from eidolon.memory.config.users import UserEntry, UsersConfig
 from eidolon.memory.entrypoints.admin_api import build_admin_api
@@ -27,14 +27,14 @@ from eidolon.memory.entrypoints.admin_api import build_admin_api
 class _StubSupervisor:
     """Same as in test_user_admin.py — duplicated for module isolation."""
 
-    def __init__(self, users_path: Path, palaces_root: Path) -> None:
-        self.users_path = users_path
+    def __init__(self, palaces_root: Path) -> None:
         self._palaces_root = palaces_root
+        self.registry = UsersConfig(users=[])
         self.alive: set[str] = set()
         self.rebuild_calls: list[tuple[str, Path]] = []
 
     async def reconcile_now(self) -> None:
-        cfg = _read_users(self.users_path)
+        cfg = self.registry
         enabled_ids = {u.id for u in cfg.users if u.enabled}
         self.alive |= enabled_ids
         self.alive -= {u for u in list(self.alive) if u not in enabled_ids}
@@ -57,24 +57,14 @@ class _StubSupervisor:
         }
 
 
-def _read_users(path: Path) -> UsersConfig:
-    if not path.is_file():
-        return UsersConfig(users=[])
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return UsersConfig.model_validate(raw)
-
-
-def _write_users(path: Path, *entries: UserEntry) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"users": [u.model_dump(mode="json") for u in entries]}
-    path.write_text(yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8")
+def _set_users(client: TestClient, *entries: UserEntry) -> None:
+    client.supervisor.registry = UsersConfig(users=list(entries))  # type: ignore[attr-defined]
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> TestClient:
-    users_yaml = tmp_path / "users.yaml"
-    _write_users(users_yaml)
-    sup = _StubSupervisor(users_yaml, tmp_path / "palaces")
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    sup = _StubSupervisor(tmp_path / "palaces")
+    monkeypatch.setattr(user_admin_mod, "load_users_config", lambda: sup.registry)
     admin = UserAdmin(
         sup,
         trash_root=tmp_path / "trash",
@@ -82,7 +72,6 @@ def client(tmp_path: Path) -> TestClient:
     )
     app = build_admin_api(admin)
     test_client = TestClient(app)
-    test_client.users_path = users_yaml  # type: ignore[attr-defined]
     test_client.supervisor = sup  # type: ignore[attr-defined]
     return test_client
 
@@ -113,10 +102,7 @@ def test_create_user_is_read_only(client: TestClient) -> None:
 
 
 def test_reconcile_starts_enabled_worker(client: TestClient) -> None:
-    _write_users(
-        client.users_path,  # type: ignore[attr-defined]
-        UserEntry(id="alice", port=8030, enabled=True),
-    )
+    _set_users(client, UserEntry(id="alice", port=8030, enabled=True))
     r = client.post("/api/admin/reconcile")
     assert r.status_code == 200
     assert r.json() == {"ok": True}
@@ -124,10 +110,7 @@ def test_reconcile_starts_enabled_worker(client: TestClient) -> None:
 
 
 def test_rebuild_index_starts_async_job(client: TestClient) -> None:
-    _write_users(
-        client.users_path,  # type: ignore[attr-defined]
-        UserEntry(id="alice", port=8030, enabled=True),
-    )
+    _set_users(client, UserEntry(id="alice", port=8030, enabled=True))
 
     r = client.post("/api/admin/users/alice/memory/rebuild-index")
     assert r.status_code == 202
@@ -161,10 +144,7 @@ def test_create_rejects_bad_user_id(client: TestClient) -> None:
 
 
 def test_create_duplicate_returns_409(client: TestClient) -> None:
-    _write_users(
-        client.users_path,  # type: ignore[attr-defined]
-        UserEntry(id="alice", port=8030, enabled=True),
-    )
+    _set_users(client, UserEntry(id="alice", port=8030, enabled=True))
     r = client.post("/api/admin/users", json={"user_id": "alice"})
     assert r.status_code == 409
     assert "read-only" in r.json()["detail"]
@@ -182,10 +162,7 @@ def test_get_missing_user_returns_404(client: TestClient) -> None:
 
 
 def test_delete_happy_path(client: TestClient) -> None:
-    _write_users(
-        client.users_path,  # type: ignore[attr-defined]
-        UserEntry(id="alice", port=8030, enabled=False),
-    )
+    _set_users(client, UserEntry(id="alice", port=8030, enabled=False))
     r = client.delete("/api/admin/users/alice")
     assert r.status_code == 200
     body = r.json()
@@ -205,8 +182,8 @@ def test_delete_missing_returns_404(client: TestClient) -> None:
 
 def test_list_with_consolidator_config(client: TestClient) -> None:
     """Consolidator config is read from the admin-owned registry."""
-    _write_users(
-        client.users_path,  # type: ignore[attr-defined]
+    _set_users(
+        client,
         UserEntry(
             id="alice",
             port=8030,

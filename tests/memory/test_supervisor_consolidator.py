@@ -7,7 +7,7 @@ Scope (in-process, no real subprocess):
     ``user.consolidator_enabled() is True``.
   * ``Supervisor.start`` does NOT spawn a consolidator when the block is
     absent or ``enabled=False``.
-  * Port change in users.yaml cascades a consolidator restart (its --mcp-url
+  * Port change in admin registry cascades a consolidator restart (its --mcp-url
     embeds the port; stale URL would silently break).
   * Reconcile flips: disable → terminate; enable → spawn.
 
@@ -25,12 +25,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import yaml
 
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.config.users import (
     ConsolidatorUserConfig,
     UserEntry,
+    UsersConfig,
 )
 from eidolon.memory.entrypoints.supervisor import (
     Supervisor,
@@ -47,7 +47,7 @@ def test_consolidator_cli_argv_has_all_knobs():
 
     The supervisor cannot communicate runtime config to the subprocess any
     other way (no shared filesystem state, no env vars per-user) — argv is
-    the contract. Drift between users.yaml and what the worker actually sees
+    the contract. Drift between admin registry and what the worker actually sees
     is the single biggest footgun this test guards against.
     """
     user = UserEntry(
@@ -124,17 +124,20 @@ def _patched_popen():
         yield p
 
 
-def _write_users_yaml(tmp_path: Path, users: list[dict]) -> Path:
-    p = tmp_path / "users.yaml"
-    p.write_text(yaml.safe_dump({"users": users}), encoding="utf-8")
-    return p
+def _patch_registry(monkeypatch, users: list[dict]) -> UsersConfig:
+    cfg = UsersConfig.model_validate({"users": users})
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor.load_users_config",
+        lambda _settings: cfg,
+    )
+    return cfg
 
 
-def _build_supervisor(tmp_path: Path, users_yaml: Path) -> Supervisor:
+def _build_supervisor(tmp_path: Path) -> Supervisor:
     # eager_init=False — Supervisor.start would otherwise try to spawn the
     # palace-init helper subprocess (which we don't want under unit-test mocks).
     settings = load_memory_settings()
-    return Supervisor(settings, users_yaml, eager_init=False)
+    return Supervisor(settings, eager_init=False)
 
 
 async def test_supervisor_skips_consolidator_when_disabled(
@@ -144,10 +147,10 @@ async def test_supervisor_skips_consolidator_when_disabled(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    yaml_path = _write_users_yaml(tmp_path, [
+    _patch_registry(monkeypatch, [
         {"id": "alice", "port": 9001, "enabled": True},  # no consolidator block
     ])
-    sup = _build_supervisor(tmp_path, yaml_path)
+    sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
         assert "alice" in sup._children
@@ -168,8 +171,8 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     open the existing collection before it can be rebuilt. Supervisor must use
     MemPalace's sqlite extraction path, which re-embeds into a fresh palace.
     """
-    yaml_path = _write_users_yaml(tmp_path, [])
-    sup = _build_supervisor(tmp_path, yaml_path)
+    _patch_registry(monkeypatch, [])
+    sup = _build_supervisor(tmp_path)
     palace_path = tmp_path / "palaces" / "alice"
     palace_path.mkdir(parents=True)
     kg_path = palace_path / "knowledge_graph.sqlite3"
@@ -242,13 +245,13 @@ async def test_supervisor_spawns_consolidator_when_enabled(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    yaml_path = _write_users_yaml(tmp_path, [
+    _patch_registry(monkeypatch, [
         {
             "id": "alice", "port": 9001, "enabled": True,
             "consolidator": {"enabled": True, "interval_hours": 6},
         },
     ])
-    sup = _build_supervisor(tmp_path, yaml_path)
+    sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
         assert "alice" in sup._children
@@ -276,14 +279,14 @@ async def test_supervisor_per_user_consolidator_opt_in(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    yaml_path = _write_users_yaml(tmp_path, [
+    _patch_registry(monkeypatch, [
         {
             "id": "alice", "port": 9001, "enabled": True,
             "consolidator": {"enabled": True},
         },
         {"id": "bob", "port": 9002, "enabled": True},  # no consolidator
     ])
-    sup = _build_supervisor(tmp_path, yaml_path)
+    sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
         assert set(sup._children) == {"alice", "bob"}
@@ -304,7 +307,7 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    yaml_path = _write_users_yaml(tmp_path, [
+    _patch_registry(monkeypatch, [
         {"id": "fast", "port": 9001, "enabled": True},
         {"id": "slow", "port": 9002, "enabled": True},
     ])
@@ -330,7 +333,7 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
     monkeypatch.setattr(_Child, "spawn", _spawn_spy)
 
     settings = load_memory_settings()
-    sup = Supervisor(settings, yaml_path, eager_init=True)
+    sup = Supervisor(settings, eager_init=True)
     start_task = asyncio.create_task(sup.start())
     try:
         await asyncio.wait_for(fast_spawned.wait(), timeout=0.5)
@@ -360,7 +363,7 @@ async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    yaml_path = _write_users_yaml(tmp_path, [
+    _patch_registry(monkeypatch, [
         {"id": "fast", "port": 9001, "enabled": True},
         {"id": "slow", "port": 9002, "enabled": True},
     ])
@@ -386,7 +389,7 @@ async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
     monkeypatch.setattr(_Child, "spawn", _spawn_spy)
 
     settings = load_memory_settings()
-    sup = Supervisor(settings, yaml_path, eager_init=True)
+    sup = Supervisor(settings, eager_init=True)
     reconcile_task = asyncio.create_task(sup._reconcile())
     try:
         await asyncio.wait_for(fast_spawned.wait(), timeout=0.5)
@@ -414,10 +417,10 @@ async def test_reconcile_restarts_degraded_dead_agent_child(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    yaml_path = _write_users_yaml(tmp_path, [
+    _patch_registry(monkeypatch, [
         {"id": "alice", "port": 9001, "enabled": True},
     ])
-    sup = _build_supervisor(tmp_path, yaml_path)
+    sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
         old = sup._children["alice"]
@@ -443,21 +446,25 @@ async def test_reconcile_disabling_consolidator_terminates_it(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    yaml_path = _write_users_yaml(tmp_path, [
+    cfg = _patch_registry(monkeypatch, [
         {
             "id": "alice", "port": 9001, "enabled": True,
             "consolidator": {"enabled": True},
         },
     ])
-    sup = _build_supervisor(tmp_path, yaml_path)
+    sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
         assert "alice" in sup._consolidators
-        # Rewrite yaml with consolidator disabled.
-        yaml_path.write_text(yaml.safe_dump({"users": [
-            {"id": "alice", "port": 9001, "enabled": True,
-             "consolidator": {"enabled": False}}
-        ]}), encoding="utf-8")
+        # Update registry with consolidator disabled.
+        cfg.users = UsersConfig.model_validate({"users": [
+            {
+                "id": "alice",
+                "port": 9001,
+                "enabled": True,
+                "consolidator": {"enabled": False},
+            }
+        ]}).users
         await sup._reconcile()
         assert "alice" in sup._children       # agent still alive
         assert "alice" not in sup._consolidators
@@ -474,13 +481,13 @@ async def test_reconcile_port_change_restarts_consolidator(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    yaml_path = _write_users_yaml(tmp_path, [
+    cfg = _patch_registry(monkeypatch, [
         {
             "id": "alice", "port": 9001, "enabled": True,
             "consolidator": {"enabled": True},
         },
     ])
-    sup = _build_supervisor(tmp_path, yaml_path)
+    sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
         first_cons = sup._consolidators["alice"]
@@ -491,10 +498,14 @@ async def test_reconcile_port_change_restarts_consolidator(
         assert "http://127.0.0.1:9001/mcp" in original_port_in_argv
 
         # Shift port to 9099.
-        yaml_path.write_text(yaml.safe_dump({"users": [
-            {"id": "alice", "port": 9099, "enabled": True,
-             "consolidator": {"enabled": True}}
-        ]}), encoding="utf-8")
+        cfg.users = UsersConfig.model_validate({"users": [
+            {
+                "id": "alice",
+                "port": 9099,
+                "enabled": True,
+                "consolidator": {"enabled": True},
+            }
+        ]}).users
         await sup._reconcile()
 
         # Consolidator MUST have been replaced (not just reconfigured).
@@ -519,13 +530,13 @@ async def test_stop_terminates_consolidators_before_agents(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    yaml_path = _write_users_yaml(tmp_path, [
+    _patch_registry(monkeypatch, [
         {
             "id": "alice", "port": 9001, "enabled": True,
             "consolidator": {"enabled": True},
         },
     ])
-    sup = _build_supervisor(tmp_path, yaml_path)
+    sup = _build_supervisor(tmp_path)
     await sup.start()
     cons_proc = sup._consolidators["alice"].proc
     agent_proc = sup._children["alice"].proc
