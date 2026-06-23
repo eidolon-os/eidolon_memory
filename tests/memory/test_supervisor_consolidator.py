@@ -38,6 +38,7 @@ from eidolon.memory.entrypoints.supervisor import (
     _Child,
     _consolidator_cli_argv,
 )
+from eidolon.memory.infrastructure.palace_init import PalaceInitError
 
 # ─── argv builder ──────────────────────────────────────────────────────────
 
@@ -434,6 +435,44 @@ async def test_reconcile_restarts_degraded_dead_agent_child(
         new = sup._children["alice"]
         assert new is not old
         assert _patched_popen.call_count == 2
+    finally:
+        await sup.stop()
+
+
+async def test_reconcile_retries_palace_init_failure(
+    tmp_path: Path, _patched_popen, monkeypatch,
+):
+    """An init failure should not strand an enabled user until manual SIGHUP."""
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
+        lambda _s: tmp_path / "logs",
+    )
+    _patch_registry(monkeypatch, [
+        {"id": "alice", "port": 9001, "enabled": True},
+    ])
+    attempts = {"alice": 0}
+
+    def _fake_init(user_id: str, _palace_path: Path, **_kwargs) -> None:
+        attempts[user_id] += 1
+        if attempts[user_id] == 1:
+            raise PalaceInitError("cold chroma startup")
+
+    monkeypatch.setattr(
+        "eidolon.memory.entrypoints.supervisor.ensure_palace_initialized",
+        _fake_init,
+    )
+    settings = load_memory_settings()
+    settings.supervisor.restart_backoff_seconds = [0]
+    sup = Supervisor(settings, eager_init=True)
+    try:
+        await sup._reconcile()
+        assert "alice" not in sup._children
+        assert "alice" in sup._init_failures
+
+        await sup._reconcile()
+        assert "alice" in sup._children
+        assert "alice" not in sup._init_failures
+        assert attempts["alice"] == 2
     finally:
         await sup.stop()
 

@@ -73,6 +73,9 @@ class _StubSupervisor:
     def palace_path_for(self, user: UserEntry) -> Path:
         return self._palaces_root / user.id
 
+    def palace_initialized(self, user: UserEntry) -> bool:
+        return self.palace_path_for(user).exists()
+
     async def rebuild_memory_index(self, user: UserEntry, *, log_path: Path) -> dict:
         self.rebuild_calls.append((user.id, log_path))
         if self.rebuild_wait is not None:

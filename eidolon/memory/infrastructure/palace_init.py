@@ -22,6 +22,9 @@ from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
+_MEMPALACE_INIT_TIMEOUT_SECONDS = 300.0
+_BACKEND_MATERIALIZE_TIMEOUT_SECONDS = 300.0
+
 
 class PalaceInitError(RuntimeError):
     """Raised when ``mempalace init`` exits non-zero or times out."""
@@ -71,7 +74,7 @@ def ensure_palace_initialized(
     *,
     backend: str = "chroma",
     env: dict[str, str] | None = None,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = _MEMPALACE_INIT_TIMEOUT_SECONDS,
 ) -> None:
     """Run ``mempalace init <palace_path>`` if the palace is not yet present.
 
@@ -176,15 +179,23 @@ def _materialize_backend_collection(
         "col.delete(ids=[probe]); "
         "print('ok')"
     )
-    completed = subprocess.run(
-        [sys.executable, "-c", code, str(palace_path), backend],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30.0,
-        env=env,
-        stdin=subprocess.DEVNULL,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", code, str(palace_path), backend],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_BACKEND_MATERIALIZE_TIMEOUT_SECONDS,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PalaceInitError(
+            f"{backend} collection materialization timed out after "
+            f"{_BACKEND_MATERIALIZE_TIMEOUT_SECONDS}s "
+            f"for {palace_path}: stdout={_snippet(exc.stdout)!r} "
+            f"stderr={_snippet(exc.stderr)!r}"
+        ) from exc
     if completed.returncode != 0:
         raise PalaceInitError(
             f"{backend} collection materialization failed for {palace_path}: "

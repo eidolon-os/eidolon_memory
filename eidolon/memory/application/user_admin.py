@@ -115,6 +115,10 @@ class _SupervisorProtocol(Protocol):
         """Where would this user's palace live on disk."""
         ...
 
+    def palace_initialized(self, user: UserEntry) -> bool:
+        """True when the selected MemPalace backend artifact is ready."""
+        ...
+
     async def rebuild_memory_index(self, user: UserEntry, *, log_path: Path) -> dict:
         """Stop this user's runtime, rebuild its MemPalace vector index, then
         reconcile the runtime back to the registry's desired state.
@@ -154,7 +158,7 @@ def allocate_port(existing: Iterable[UserEntry]) -> int:
 
 
 def user_to_view(
-    user: UserEntry, *, worker_alive: bool, palace_path: Path
+    user: UserEntry, *, worker_alive: bool, palace_path: Path, palace_initialized: bool
 ) -> dict:
     """The flat JSON shape the HTTP layer returns. Matches admin's
     ``UserView`` schema field-for-field — admin can ``model_validate(view)``
@@ -186,7 +190,7 @@ def user_to_view(
         "health": {
             "worker_running": worker_alive and user.enabled,
             "mcp_reachable": worker_alive and user.enabled,  # liveness conflates the two for now
-            "palace_initialized": palace_path.exists(),
+            "palace_initialized": palace_initialized,
             "note": "" if user.enabled else "user disabled by admin registry",
         },
         "active_agent_id": None,  # admin-side concept, memory doesn't know
@@ -269,6 +273,7 @@ class UserAdmin:
                 u,
                 worker_alive=self._sup.is_worker_alive(u.id),
                 palace_path=self._sup.palace_path_for(u),
+                palace_initialized=self._sup.palace_initialized(u),
             )
             for u in config.users
         ]
@@ -282,6 +287,7 @@ class UserAdmin:
             user,
             worker_alive=self._sup.is_worker_alive(user.id),
             palace_path=self._sup.palace_path_for(user),
+            palace_initialized=self._sup.palace_initialized(user),
         )
 
     async def reconcile(self) -> None:

@@ -25,6 +25,7 @@ import subprocess
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from eidolon.memory.application.user_admin import UserAdmin
@@ -47,6 +48,7 @@ from eidolon.memory.infrastructure.mempalace_backend import (
 from eidolon.memory.infrastructure.palace_init import (
     PalaceInitError,
     ensure_palace_initialized,
+    palace_is_initialized,
     _resolve_mempalace_cli,
 )
 from eidolon.memory.support.logging import get_logger
@@ -237,6 +239,38 @@ class _Child:
         return delay
 
 
+@dataclass
+class _InitFailure:
+    user: UserEntry
+    failure_times: deque[float] = field(default_factory=deque)
+    backoff_idx: int = 0
+    next_retry_at: float = 0.0
+    last_error: str = ""
+    degraded: bool = False
+
+    def record_failure(self, error: str, schedule: list[int], max_failures_per_minute: int) -> int:
+        now = time.monotonic()
+        self.last_error = error
+        self.failure_times.append(now)
+        while self.failure_times and now - self.failure_times[0] > _DEGRADED_MIN_INTERVAL:
+            self.failure_times.popleft()
+        if len(self.failure_times) >= max_failures_per_minute:
+            self.degraded = True
+            self.next_retry_at = float("inf")
+            return 0
+        delay = self.next_backoff(schedule)
+        self.next_retry_at = now + delay
+        return delay
+
+    def next_backoff(self, schedule: list[int]) -> int:
+        if not schedule:
+            return 5
+        idx = min(self.backoff_idx, len(schedule) - 1)
+        delay = schedule[idx]
+        self.backoff_idx += 1
+        return delay
+
+
 class Supervisor:
     def __init__(
         self,
@@ -251,6 +285,7 @@ class Supervisor:
         )
         self._children: dict[str, _Child] = {}            # agent_runner children
         self._consolidators: dict[str, _Child] = {}       # Phase 4: per-user theme worker
+        self._init_failures: dict[str, _InitFailure] = {}
         self._reload_event = asyncio.Event()
         self._stop_event = asyncio.Event()
         self._init_pool = ThreadPoolExecutor(
@@ -268,6 +303,12 @@ class Supervisor:
 
     def palace_path_for(self, user: UserEntry) -> Path:
         return self._palace_for(user)
+
+    def palace_initialized(self, user: UserEntry) -> bool:
+        return palace_is_initialized(
+            self._palace_for(user),
+            backend=selected_mempalace_backend(self._settings),
+        )
 
     async def reconcile_now(self) -> None:
         """Run one reconcile pass synchronously (await until children align).
@@ -415,8 +456,44 @@ class Supervisor:
                 return user.id, None
             except PalaceInitError as exc:
                 return user.id, str(exc)
+            except Exception as exc:  # noqa: BLE001 - keep one bad init from killing reconcile
+                return user.id, f"{type(exc).__name__}: {exc}"
 
         return await loop.run_in_executor(self._init_pool, _run)
+
+    def _record_init_failure(self, user: UserEntry, error: str) -> None:
+        failure = self._init_failures.get(user.id)
+        if failure is None:
+            failure = _InitFailure(user=user)
+            self._init_failures[user.id] = failure
+        else:
+            failure.user = user
+        delay = failure.record_failure(
+            error,
+            self._settings.supervisor.restart_backoff_seconds,
+            self._settings.supervisor.max_failures_per_minute,
+        )
+        if failure.degraded:
+            log.error(
+                "supervisor_init_degraded",
+                user_id=user.id,
+                failures_in_window=len(failure.failure_times),
+                error=error,
+            )
+            return
+        log.info(
+            "supervisor_init_retry_scheduled",
+            user_id=user.id,
+            delay_seconds=delay,
+            error=error,
+        )
+
+    def _init_retry_due(self) -> bool:
+        now = time.monotonic()
+        return any(
+            not failure.degraded and failure.next_retry_at <= now
+            for failure in self._init_failures.values()
+        )
 
     # -------------------- lifecycle --------------------
 
@@ -434,8 +511,12 @@ class Supervisor:
             user_id, err = await task
             if err is not None:
                 log.error("supervisor_palace_init_failed", user_id=user_id, error=err)
+                user = by_id.get(user_id)
+                if user is not None:
+                    self._record_init_failure(user, err)
                 continue
             user = by_id[user_id]
+            self._init_failures.pop(user.id, None)
             child = _Child(user, self._palace_for(user), self._log_root)
             child.spawn()
             self._children[user.id] = child
@@ -490,6 +571,8 @@ class Supervisor:
             while not self._stop_event.is_set():
                 if self._reload_event.is_set():
                     self._reload_event.clear()
+                    await self._reconcile()
+                elif self._init_retry_due():
                     await self._reconcile()
                 self._check_children()
                 try:
@@ -548,6 +631,9 @@ class Supervisor:
             log.error("supervisor_reload_failed", error=str(exc))
             return
         wanted = {u.id: u for u in users.enabled_users()}
+        for user_id in list(self._init_failures):
+            if user_id not in wanted:
+                self._init_failures.pop(user_id, None)
 
         # 1) Stop agent children not in wanted set, or whose port changed.
         #    A port change cascades: the consolidator's --mcp-url embeds the
@@ -579,6 +665,7 @@ class Supervisor:
         spawn_candidates = [
             u for u in wanted.values()
             if _agent_child_needs_spawn(self._children.get(u.id))
+            and _init_candidate_due(self._init_failures.get(u.id))
         ]
         if self._eager_init:
             by_id = {u.id: u for u in spawn_candidates}
@@ -593,9 +680,13 @@ class Supervisor:
                         user_id=user_id,
                         error=err,
                     )
+                    user_def = by_id.get(user_id)
+                    if user_def is not None:
+                        self._record_init_failure(user_def, err)
                     continue
                 user_def = by_id.get(user_id)
                 if user_def is not None:
+                    self._init_failures.pop(user_def.id, None)
                     self._ensure_agent_child(user_def)
         else:
             for user_def in spawn_candidates:
@@ -605,6 +696,7 @@ class Supervisor:
         for user_id, user_def in wanted.items():
             existing = self._children.get(user_id)
             if existing is not None and existing.is_alive() and not existing.degraded:
+                self._init_failures.pop(user_id, None)
                 existing.user = user_def
 
         # 3) Reconcile consolidators against the current wanted set:
@@ -681,6 +773,12 @@ class Supervisor:
 
 def _agent_child_needs_spawn(child: _Child | None) -> bool:
     return child is None or child.degraded or not child.is_alive()
+
+
+def _init_candidate_due(failure: _InitFailure | None) -> bool:
+    if failure is None:
+        return True
+    return not failure.degraded and failure.next_retry_at <= time.monotonic()
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
