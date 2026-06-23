@@ -22,6 +22,7 @@ logs/*
 reports/memory_perf_*/
 reports/memory_quality_*/
 reports/architecture_d1_baseline_*/
+**/.trash/
 
 # Transient SQLite WAL / SHM next to any chroma.sqlite3
 *.sqlite3-shm
