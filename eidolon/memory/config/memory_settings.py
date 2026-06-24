@@ -225,7 +225,8 @@ class McpHttpConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8030  # only used if CLI --port unset
     path: str = "/mcp"
-    stateless_http: bool = False
+    stateless_http: bool = True
+    json_response: bool = True
     bearer_token: str = ""
     bearer_token_env: str = "EIDOLON_MEMORY_MCP_TOKEN"
 

@@ -76,6 +76,7 @@ def build_control_plane_mcp(
         "port": port,
         "streamable_http_path": streamable_path,
         "stateless_http": cfg.stateless_http,
+        "json_response": cfg.json_response,
     }
     if lifespan is not None:
         mcp_kwargs["lifespan"] = lifespan

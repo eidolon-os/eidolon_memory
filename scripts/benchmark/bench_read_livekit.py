@@ -25,6 +25,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from eidolon_sdk.memory import MemoryActorContext
@@ -41,6 +42,10 @@ _DEFAULT_QUERIES = [
     "重要的事件",
     "生活习惯和偏好",
 ]
+
+
+def _local_http_client(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
+    return httpx.AsyncClient(headers=headers, timeout=timeout, auth=auth, trust_env=False)
 
 
 def _extract_records(call_result) -> list[dict]:
@@ -70,7 +75,11 @@ async def _run(
 
     # Warm up: first session creates the MCP session, which is dominated by
     # one-time handshake costs; skip its sample.
-    async with streamablehttp_client(url) as (read, write, _):
+    async with streamablehttp_client(url, httpx_client_factory=_local_http_client) as (
+        read,
+        write,
+        _,
+    ):
         async with ClientSession(read, write) as sess:
             await sess.initialize()
             # Re-use a single session to avoid HTTP/MCP setup cost per call;

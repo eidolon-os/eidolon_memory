@@ -29,6 +29,7 @@ async def probe_mcp_http(url: str, *, timeout_seconds: float = 1.5) -> bool:
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 timeout=httpx.Timeout(timeout_seconds),
+                trust_env=False,
             ) as client:
                 async with streamable_http_client(url, http_client=client) as (
                     read,

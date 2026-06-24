@@ -15,6 +15,8 @@ from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 def test_mcp_http_base_url_defaults() -> None:
     cfg = McpHttpConfig()
     assert cfg.base_url() == "http://127.0.0.1:8030/mcp"
+    assert cfg.stateless_http is True
+    assert cfg.json_response is True
 
 
 def test_mcp_http_base_url_port_override() -> None:
@@ -39,7 +41,7 @@ def test_build_control_plane_mcp_registers_tools(tmp_path) -> None:
     mcp = build_control_plane_mcp(
         backend,
         settings,
-        user_id="alice",
+        memory_space_id="default.alice.default",
         palace_path=str(tmp_path),
         host="127.0.0.1",
         port=9999,

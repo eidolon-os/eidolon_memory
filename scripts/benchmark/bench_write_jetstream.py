@@ -33,11 +33,16 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from eidolon_sdk.memory import MemoryActorContext
 
 from scripts.benchmark.report import percentiles, sla_pass  # noqa: E402
+
+
+def _local_http_client(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
+    return httpx.AsyncClient(headers=headers, timeout=timeout, auth=auth, trust_env=False)
 
 
 async def _wait_for_visible(
@@ -91,7 +96,11 @@ async def _run(
     nc = await nats.connect(nats_url)
     js = nc.jetstream()
 
-    async with streamablehttp_client(mcp_url) as (read, write, _):
+    async with streamablehttp_client(mcp_url, httpx_client_factory=_local_http_client) as (
+        read,
+        write,
+        _,
+    ):
         async with ClientSession(read, write) as sess:
             await sess.initialize()
 

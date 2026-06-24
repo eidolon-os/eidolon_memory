@@ -191,7 +191,10 @@ def _unwrap(result: Any) -> Any:
 
 @asynccontextmanager
 async def _mcp_session(url: str):
-    async with streamablehttp_client(url) as (r, w, _):
+    def _local_http_client(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
+        return httpx.AsyncClient(headers=headers, timeout=timeout, auth=auth, trust_env=False)
+
+    async with streamablehttp_client(url, httpx_client_factory=_local_http_client) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
             yield session
