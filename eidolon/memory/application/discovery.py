@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from eidolon_sdk.memory import MEMORY_COMMAND_BASE
+from eidolon_sdk.memory import MEMORY_COMMAND_BASE, MEMORY_CONVERSATION_TURN_BASE
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -48,9 +48,11 @@ def discovery_users(settings: MemorySettings) -> list[UserEntry]:
     enabled = load_users_config(settings).enabled_users()
     if enabled:
         return enabled
+    # Legacy single-user fallback. ``UserEntry.id`` is a memory_space_id
+    # (<tenant>.<owner_user>.<persona>), so the default space is fully qualified.
     return [
         UserEntry(
-            id="default",
+            id="default.default.default",
             port=settings.mcp_http.port,
             enabled=True,
         )
@@ -72,8 +74,10 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
         "nats": {
             "url": settings.nats.url,
             "stream": settings.nats.stream,
+            # ``user_id`` here is filled with the memory_space_id (UserEntry.id);
+            # source the base from the SDK so producers/consumers never drift.
             "turn_subject_template": (
-                f"{settings.nats.conversation_turn_subject_base}.{{user_id}}"
+                f"{MEMORY_CONVERSATION_TURN_BASE}.{{user_id}}"
             ),
             "cmd_subject_template": (
                 f"{MEMORY_COMMAND_BASE}.{{user_id}}"

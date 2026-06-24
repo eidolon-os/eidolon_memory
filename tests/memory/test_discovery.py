@@ -42,8 +42,8 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
         "load_users_config",
         lambda _settings: UsersConfig(
             users=[
-                UserEntry(id="alice", port=8030, enabled=True),
-                UserEntry(id="bob", port=8031, enabled=False),
+                UserEntry(id="default.alice.default", port=8030, enabled=True),
+                UserEntry(id="default.bob.default", port=8031, enabled=False),
             ]
         ),
     )
@@ -60,12 +60,12 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
     assert payload["nats"] == {
         "url": "nats://127.0.0.1:4222",
         "stream": "MEMORY_TURNS",
-        "turn_subject_template": "agent.memory.conversation.turn.{user_id}",
-        "cmd_subject_template": "agent.memory.cmd.{user_id}",
+        "turn_subject_template": "eidolon.memory.turn.{user_id}",
+        "cmd_subject_template": "eidolon.memory.cmd.{user_id}",
     }
     assert payload["users"] == [
         {
-            "user_id": "alice",
+            "user_id": "default.alice.default",
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:8030/mcp",
             "mcp_auth": {"type": "none"},
@@ -96,7 +96,7 @@ async def test_discovery_uses_default_user_when_registry_empty(
 
     assert payload["users"] == [
         {
-            "user_id": "default",
+            "user_id": "default.default.default",
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:8030/mcp",
             "mcp_auth": {"type": "none"},
@@ -111,7 +111,7 @@ async def test_discovery_http_route_allows_no_authorization(
     monkeypatch.setattr(
         discovery,
         "load_users_config",
-        lambda _settings: UsersConfig(users=[UserEntry(id="alice", port=8030)]),
+        lambda _settings: UsersConfig(users=[UserEntry(id="default.alice.default", port=8030)]),
     )
 
     async def fake_probe(url: str, *, timeout_seconds: float = 1.5) -> bool:

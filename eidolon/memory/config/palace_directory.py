@@ -15,28 +15,20 @@ Resolution order for :func:`resolve_palace_for_user`:
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
+
+# Single source of truth for the memory_space_id grammar lives in the SDK; the
+# path-injection guarantee here relies on that same validation. Re-exported so
+# existing callers keep importing it from this module.
+from eidolon_sdk.memory import validate_memory_space_id
 
 from eidolon.memory.config.memory_settings import MemorySettings
 
-_MEMORY_SPACE_ID_RE = re.compile(
-    r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}"
-    r"\.[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}"
-    r"\.[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
-)
-
-
-def validate_memory_space_id(memory_space_id: str) -> str:
-    """Reject unsafe memory-space ids; prevents path injection."""
-    mid = (memory_space_id or "").strip()
-    if not _MEMORY_SPACE_ID_RE.fullmatch(mid):
-        msg = (
-            f"invalid memory_space_id {memory_space_id!r}; "
-            "must match <tenant_id>.<owner_user_id>.<persona_id>"
-        )
-        raise ValueError(msg)
-    return mid
+__all__ = [
+    "validate_memory_space_id",
+    "resolve_palaces_root",
+    "resolve_palace_for_memory_space",
+]
 
 
 def resolve_palaces_root(settings: MemorySettings) -> Path:
