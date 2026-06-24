@@ -1,4 +1,4 @@
-"""Per-user palace resolution (D1)."""
+"""Per-memory-space palace resolution (D1)."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import yaml
 
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.config.palace_directory import (
-    resolve_palace_for_user,
+    resolve_palace_for_memory_space,
     resolve_palaces_root,
-    validate_user_id,
+    validate_memory_space_id,
 )
 
 
@@ -49,27 +49,34 @@ def test_resolve_palaces_root_env_wins_over_config(
     assert resolve_palaces_root(settings) == Path("/tmp/env-palaces").resolve()
 
 
-def test_resolve_palace_for_user_joins_root_and_id(
+def test_resolve_palace_for_memory_space_joins_root_and_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("EIDOLON_MEMORY_PALACES_ROOT", str(tmp_path))
     settings = load_memory_settings(_write_settings(tmp_path))
-    assert resolve_palace_for_user(settings, "alice") == (tmp_path / "alice").resolve()
+    assert resolve_palace_for_memory_space(
+        settings, "default.alice.mochi"
+    ) == (tmp_path / "default.alice.mochi").resolve()
 
 
-def test_resolve_palace_for_user_path_override(tmp_path: Path) -> None:
+def test_resolve_palace_for_memory_space_path_override(tmp_path: Path) -> None:
     settings = load_memory_settings(_write_settings(tmp_path))
-    p = resolve_palace_for_user(settings, "alice", path_override="/tmp/probe")
+    p = resolve_palace_for_memory_space(
+        settings, "default.alice.mochi", path_override="/tmp/probe"
+    )
     assert p == Path("/tmp/probe").resolve()
 
 
-def test_validate_user_id_rejects_path_separators() -> None:
+def test_validate_memory_space_id_rejects_path_separators() -> None:
     with pytest.raises(ValueError):
-        validate_user_id("../escape")
+        validate_memory_space_id("../escape")
     with pytest.raises(ValueError):
-        validate_user_id("alice/bob")
+        validate_memory_space_id("default.alice/bob.mochi")
+    with pytest.raises(ValueError):
+        validate_memory_space_id("alice")
 
 
-def test_validate_user_id_accepts_safe_chars() -> None:
-    assert validate_user_id("alice") == "alice"
-    assert validate_user_id("alice_123-test.dev") == "alice_123-test.dev"
+def test_validate_memory_space_id_accepts_safe_chars() -> None:
+    assert validate_memory_space_id("default.alice_123.mochi-test") == (
+        "default.alice_123.mochi-test"
+    )

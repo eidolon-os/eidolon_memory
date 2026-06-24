@@ -80,6 +80,14 @@ class LockedBackend(MemoryBackend):
         async with self._lock:
             return await self._inner.get_all(user_id, limit=limit, offset=offset)
 
+    async def get_by_source_turn_id(
+        self,
+        memory_space_id: str,
+        source_turn_id: str,
+    ) -> MemoryWireRecord | None:
+        async with self._lock:
+            return await self._inner.get_by_source_turn_id(memory_space_id, source_turn_id)
+
     async def delete(self, user_id: str, key: str) -> None:
         async with self._lock:
             await self._inner.delete(user_id, key)

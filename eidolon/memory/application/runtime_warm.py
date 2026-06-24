@@ -32,8 +32,12 @@ def _warm_sync(settings: MemorySettings, palace_path: str) -> None:
     from mempalace.searcher import search_memories
 
     backend = selected_mempalace_backend(settings)
+    if backend != "chroma":
+        log.info("runtime_warm_skip_non_chroma", backend=backend, palace=palace_path)
+        return
+
     sqlite = Path(palace_path) / "chroma.sqlite3"
-    if backend == "chroma" and sqlite.is_file():
+    if sqlite.is_file():
         mode = ensure_sqlite_wal(str(sqlite))
         log.info("chroma_sqlite_pragma", **mode)
 

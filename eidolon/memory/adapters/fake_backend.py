@@ -27,8 +27,8 @@ class FakeMemoryBackend:
         self.ingests: list[tuple[str, str, str, dict[str, Any] | None]] = []
         self.searches: list[tuple[str, str, int, str | None]] = []
 
-    def _doc_id(self, user_id: str, key: str) -> str:
-        return f"{user_id}::{key}"
+    def _doc_id(self, memory_space_id: str, key: str) -> str:
+        return f"{memory_space_id}::{key}"
 
     async def search(
         self,
@@ -42,7 +42,7 @@ class FakeMemoryBackend:
         hits: list[MemoryWireRecord] = []
         q = query.lower()
         for rec in self.docs.values():
-            if rec.metadata.get("wing", rec.user_id) != wing:
+            if rec.metadata.get("wing", rec.memory_space_id) != wing:
                 continue
             if room and rec.key != room:
                 continue
@@ -71,9 +71,9 @@ class FakeMemoryBackend:
         raw_meta.setdefault("indexed_at", now_iso)
         raw_meta.setdefault("filed_at", occurred_at)
         meta = {"source": "fake", **raw_meta, "wing": wing, "room": room}
-        did = self._doc_id(wing, room)
+        did = self._doc_id(str(raw_meta.get("memory_space_id") or wing), room)
         self.docs[did] = MemoryWireRecord(
-            user_id=wing,
+            memory_space_id=str(meta.get("memory_space_id") or wing),
             key=room,
             value=text,
             metadata=meta,
@@ -82,16 +82,22 @@ class FakeMemoryBackend:
     async def ingest_fragment(self, fragment: MemoryFragment) -> None:
         meta = {
             **fragment.metadata,
-            "fragment_id": fragment.fragment_id,
-            "user_id": fragment.user_id,
+            "memory_id": fragment.memory_id,
+            "memory_space_id": fragment.memory_space_id,
+            "scope": fragment.scope,
+            "visibility": fragment.visibility,
+            "source_device_id": fragment.source_device_id,
+            "target_device_id": fragment.target_device_id or "",
+            "source_instance_id": fragment.source_instance_id,
             "source_turn_id": fragment.source_turn_id,
-            "schema_version": "1",
+            "schema_version": "2",
             "session_id": fragment.session_id,
             "importance": fragment.importance,
             "confidence": fragment.confidence,
             "memory_type": fragment.memory_type,
             "privacy": fragment.privacy,
             "tags": fragment.tags,
+            "extensions": fragment.extensions,
         }
         if fragment.occurred_at:
             meta["occurred_at"] = fragment.occurred_at
@@ -102,22 +108,22 @@ class FakeMemoryBackend:
             metadata=meta,
         )
 
-    async def get(self, user_id: str, key: str) -> MemoryWireRecord | None:
-        did = self._doc_id(user_id, key)
+    async def get(self, memory_space_id: str, key: str) -> MemoryWireRecord | None:
+        did = self._doc_id(memory_space_id, key)
         return self.docs.get(did)
 
     async def get_all(
         self,
-        user_id: str,
+        memory_space_id: str,
         *,
         limit: int | None = None,
         offset: int | None = None,
     ) -> list[MemoryWireRecord]:
-        if not user_id.strip():
+        if not memory_space_id.strip():
             items = sorted(
                 self.docs.values(),
                 key=lambda r: (
-                    str(r.metadata.get("wing", r.user_id)),
+                    str(r.metadata.get("wing", r.memory_space_id)),
                     str(r.key),
                 ),
             )
@@ -129,15 +135,28 @@ class FakeMemoryBackend:
         filtered = [
             r
             for r in self.docs.values()
-            if r.metadata.get("user_id") == user_id
-            or r.user_id == user_id
-            or r.metadata.get("wing") == user_id
+            if r.metadata.get("memory_space_id") == memory_space_id
+            or r.memory_space_id == memory_space_id
         ]
         sliced = filtered[offset or 0 :]
         if limit is not None:
             sliced = sliced[:limit]
         return sliced
 
-    async def delete(self, user_id: str, key: str) -> None:
-        did = self._doc_id(user_id, key)
+    async def get_by_source_turn_id(
+        self,
+        memory_space_id: str,
+        source_turn_id: str,
+    ) -> MemoryWireRecord | None:
+        for rec in self.docs.values():
+            if rec.metadata.get("memory_space_id") != memory_space_id and (
+                rec.memory_space_id != memory_space_id
+            ):
+                continue
+            if rec.metadata.get("source_turn_id") == source_turn_id:
+                return rec
+        return None
+
+    async def delete(self, memory_space_id: str, key: str) -> None:
+        did = self._doc_id(memory_space_id, key)
         self.docs.pop(did, None)

@@ -64,7 +64,7 @@ def parse_search_tool_payload(data: Any) -> list[MemoryWireRecord]:
         updated_at = parse_memory_datetime(r.get("updated_at") or meta.get("updated_at"))
         out.append(
             MemoryWireRecord(
-                user_id=wing or "default",
+                memory_space_id=str(meta.get("memory_space_id") or wing or "default"),
                 key=room or "general",
                 value=value,
                 metadata=meta,

@@ -16,6 +16,7 @@ from typing import Any
 
 from eidolon_sdk.memory import (
     KG_PREDICATE_VALUES,
+    MemoryActorContext,
     SENSITIVE_PREDICATES,
     KgAddTripleCommand,
     KgInvalidateCommand,
@@ -45,7 +46,7 @@ def build_control_plane_mcp(
     backend: MemoryBackend,
     settings: MemorySettings,
     *,
-    user_id: str,
+    memory_space_id: str,
     palace_path: str,
     host: str,
     port: int,
@@ -79,21 +80,23 @@ def build_control_plane_mcp(
     if lifespan is not None:
         mcp_kwargs["lifespan"] = lifespan
 
-    mcp = FastMCP(f"eidolon-memory-{user_id}", **mcp_kwargs)
+    mcp = FastMCP(f"eidolon-memory-{memory_space_id}", **mcp_kwargs)
 
     @mcp.tool()
     async def eidolon_memory_search(
         query: str,
+        context: dict[str, Any],
         top_k: int = 5,
         wing: str | None = None,
         room: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Search this user's memory; ``user_id`` is bound by the agent runner."""
+        """Search this memory space using the supplied actor context."""
+        ctx = MemoryActorContext.model_validate(context)
         records = await search_all_wings_mcp_style(
             backend,
             settings,
             query=query,
-            user_id=user_id,
+            context=ctx,
             top_k=top_k,
             wing=wing,
             room=room,
@@ -105,6 +108,7 @@ def build_control_plane_mcp(
     @mcp.tool()
     async def eidolon_memory_recall_context(
         query: str,
+        context: dict[str, Any],
         top_k: int = 5,
         voice: bool = False,
         include_kg: bool | None = None,
@@ -118,12 +122,13 @@ def build_control_plane_mcp(
         ``include_kg`` defaults to settings.recall.kg_in_recall.
         ``include_sensitive_kg`` opt-in for health predicates.
         """
+        ctx = MemoryActorContext.model_validate(context)
         want_kg = settings.recall.kg_in_recall if include_kg is None else include_kg
         fused = await recall_with_kg_fusion(
             backend,
             settings,
             query=query,
-            user_id=user_id,
+            context=ctx,
             top_k=top_k,
             kg=kg if want_kg else None,
             for_voice=voice,
@@ -153,7 +158,7 @@ def build_control_plane_mcp(
         return {
             "backend": "mempalace-python",
             "mempalace_backend": mempalace_backend,
-            "user_id": user_id,
+            "memory_space_id": memory_space_id,
             "palace_path": palace_path,
             "palace_initialized": initialized,
             "ready": initialized,
@@ -169,10 +174,10 @@ def build_control_plane_mcp(
         offset: int = 0,
         include_private: bool = False,
     ) -> dict[str, Any]:
-        """Paginated listing of this user's drawers (Admin / IDE)."""
+        """Paginated listing of this memory space's drawers (Admin / IDE)."""
         lim = max(1, min(limit, 5000))
         off = max(0, offset)
-        rows = await backend.get_all(user_id, limit=lim, offset=off)
+        rows = await backend.get_all(memory_space_id, limit=lim, offset=off)
         filtered = [
             r for r in rows if row_visible_to_listing(r, include_private=include_private)
         ]
@@ -180,6 +185,22 @@ def build_control_plane_mcp(
             "records": [wire_record_to_public_dict(r) for r in filtered],
             "total_hint": len(filtered),
         }
+
+    @mcp.tool()
+    async def eidolon_memory_get_by_source_turn(
+        source_turn_id: str,
+        include_private: bool = False,
+    ) -> dict[str, Any]:
+        """Exact drawer lookup by ``source_turn_id`` for sync/write probes."""
+        turn_id = (source_turn_id or "").strip()
+        if not turn_id:
+            return {"record": None}
+        row = await backend.get_by_source_turn_id(memory_space_id, turn_id)
+        if row is None:
+            return {"record": None}
+        if not row_visible_to_listing(row, include_private=include_private):
+            return {"record": None}
+        return {"record": wire_record_to_public_dict(row)}
 
     @mcp.tool()
     async def eidolon_memory_hierarchy_snapshot(
@@ -219,19 +240,19 @@ def build_control_plane_mcp(
 
     if command_publisher is not None:
         _register_user_confirm_tool(
-            mcp, command_publisher=command_publisher, user_id=user_id,
+            mcp, command_publisher=command_publisher, memory_space_id=memory_space_id,
         )
 
     if kg is not None and command_publisher is not None:
         _register_kg_tools(
-            mcp, kg=kg, command_publisher=command_publisher, user_id=user_id
+            mcp, kg=kg, command_publisher=command_publisher, memory_space_id=memory_space_id
         )
 
     return mcp
 
 
 def _register_user_confirm_tool(
-    mcp: Any, *, command_publisher: Any, user_id: str,
+    mcp: Any, *, command_publisher: Any, memory_space_id: str,
 ) -> None:
     """Phase 5.2 — verbatim-write tool, bypasses steward.
 
@@ -248,6 +269,13 @@ def _register_user_confirm_tool(
         importance: int = 5,
         confidence: float = 0.99,
         tags: list[str] | None = None,
+        scope: str = "persona",
+        visibility: str = "all_devices",
+        source_device_id: str = "",
+        target_device_id: str | None = None,
+        source_instance_id: str = "",
+        session_id: str = "",
+        extensions: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Persist a user-confirmed fact verbatim, bypassing the LLM steward.
 
@@ -278,7 +306,7 @@ def _register_user_confirm_tool(
         request_id = uuid.uuid4().hex
         cmd = UserConfirmedFactCommand(
             request_id=request_id,
-            user_id=user_id,
+            memory_space_id=memory_space_id,
             issued_at=_now_iso(),
             issuer="agent",
             text=clean,
@@ -287,6 +315,13 @@ def _register_user_confirm_tool(
             importance=max(1, min(5, importance)),
             confidence=max(0.0, min(1.0, confidence)),
             tags=list(tags or []),
+            scope=scope,  # type: ignore[arg-type]
+            visibility=visibility,  # type: ignore[arg-type]
+            source_device_id=source_device_id,
+            target_device_id=target_device_id,
+            source_instance_id=source_instance_id,
+            session_id=session_id,
+            extensions=dict(extensions or {}),
         )
         await command_publisher.publish(cmd)
         return {
@@ -300,7 +335,9 @@ def _register_user_confirm_tool(
 # (thin shell here keeps entrypoints layer pure).
 
 
-def _register_kg_tools(mcp: Any, *, kg: Any, command_publisher: Any, user_id: str) -> None:
+def _register_kg_tools(
+    mcp: Any, *, kg: Any, command_publisher: Any, memory_space_id: str
+) -> None:
     """Register the 6 KG tools on the FastMCP instance (KG plan §3.3).
 
     Write tools publish to NATS (sync-feel polling for visibility); read tools
@@ -324,7 +361,7 @@ def _register_kg_tools(mcp: Any, *, kg: Any, command_publisher: Any, user_id: st
         request_id = uuid.uuid4().hex
         cmd = KgAddTripleCommand(
             request_id=request_id,
-            user_id=user_id,
+            memory_space_id=memory_space_id,
             issued_at=_now_iso(),
             subject=subject,
             predicate=predicate,
@@ -364,7 +401,7 @@ def _register_kg_tools(mcp: Any, *, kg: Any, command_publisher: Any, user_id: st
         ended_iso = ended or _now_iso()
         cmd = KgInvalidateCommand(
             request_id=request_id,
-            user_id=user_id,
+            memory_space_id=memory_space_id,
             issued_at=_now_iso(),
             subject=subject,
             predicate=predicate,

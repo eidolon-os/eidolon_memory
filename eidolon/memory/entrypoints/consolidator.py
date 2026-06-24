@@ -104,7 +104,7 @@ class Theme:
 async def _list_all_drawers(
     query_client: NatsMemoryQueryClient,
     *,
-    user_id: str,
+    memory_space_id: str,
     limit: int = 5000,
     page_size: int = 250,
 ) -> list[dict]:
@@ -120,7 +120,7 @@ async def _list_all_drawers(
     while len(out) < limit:
         take = min(page, limit - len(out))
         payload = await query_client.list_drawers(
-            user_id=user_id,
+            memory_space_id=memory_space_id,
             limit=take,
             offset=offset,
             include_private=False,
@@ -308,7 +308,7 @@ async def synthesize_themes_for_wing(
 async def publish_themes(
     themes: list[Theme],
     *,
-    user_id: str,
+    memory_space_id: str,
     window_days: int,
     publisher: JetStreamCommandPublisher,
 ) -> int:
@@ -319,10 +319,10 @@ async def publish_themes(
     """
     published = 0
     for theme in themes:
-        request_id = theme.idempotency_hash(user_id=user_id, window_days=window_days)
+        request_id = theme.idempotency_hash(user_id=memory_space_id, window_days=window_days)
         cmd = ConsolidatorIngestThemeCommand(
             request_id=request_id,
-            user_id=user_id,
+            memory_space_id=memory_space_id,
             issued_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             issuer="agent",
             text=theme.text,
@@ -383,10 +383,10 @@ async def consolidate_once(
     await query_client.connect()
     try:
         await query_client.wait_until_ready(
-            user_id=user_id,
+            memory_space_id=user_id,
             timeout_seconds=query_startup_wait_seconds,
         )
-        drawers = await _list_all_drawers(query_client, user_id=user_id)
+        drawers = await _list_all_drawers(query_client, memory_space_id=user_id)
         by_wing = group_drawers_by_wing(drawers, window_days=window_days)
 
         rows: list[dict[str, Any]] = []
@@ -412,7 +412,7 @@ async def consolidate_once(
             })
 
         published = await publish_themes(
-            all_themes, user_id=user_id, window_days=window_days, publisher=publisher,
+            all_themes, memory_space_id=user_id, window_days=window_days, publisher=publisher,
         )
         return {"themes_published": published, "wings": rows}
     finally:

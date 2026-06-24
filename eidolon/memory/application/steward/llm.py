@@ -62,7 +62,7 @@ class LiteLLMSteward:
         decision = await self.decide(turn)
         await apply_privacy_actions(
             backend,
-            user_id=turn.user_id or "default",
+            memory_space_id=turn.context.memory_space_id,
             actions=decision.privacy_actions,
         )
         if not decision.should_write:
@@ -93,13 +93,20 @@ class LiteLLMSteward:
 
     def _render_user_prompt(self, turn: ConversationTurnPayload) -> str:
         meta = json.dumps(turn.metadata or {}, ensure_ascii=False)
+        context = turn.context.model_dump(mode="json")
         return (
             "请分析下面这一轮对话并输出 JSON。\n\n"
             f"turn_id: {turn.turn_id}\n"
-            f"user_id: {turn.user_id or 'default'}\n"
-            f"session_id: {turn.session_id}\n"
+            f"context: {json.dumps(context, ensure_ascii=False)}\n"
             f"timestamp: {turn.timestamp}\n"
             f"metadata: {meta}\n\n"
+            "每个 fragments[] 必须包含 memory_space_id, scope, visibility, "
+            "source_device_id, target_device_id, source_instance_id, source_turn_id, "
+            "session_id, wing, room, content, memory_type, importance, confidence, "
+            "metadata, extensions。\n"
+            "scope 只能是 global/persona/agent/device/session；设备位置、能力、校准、"
+            "本地环境用 scope=device visibility=current_device；用户长期偏好、关系、"
+            "事实用 scope=persona visibility=all_devices。\n\n"
             f"[USER]\n{turn.user_text}\n\n"
             f"[ASSISTANT]\n{turn.assistant_text}\n"
         )

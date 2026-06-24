@@ -27,6 +27,7 @@ if str(_ROOT) not in sys.path:
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+from eidolon_sdk.memory import MemoryActorContext
 
 from scripts.benchmark.report import percentiles, sla_pass  # noqa: E402
 
@@ -53,7 +54,15 @@ def _extract_records(call_result) -> list[dict]:
     return data.get("records") or []
 
 
-async def _run(url: str, *, count: int, queries: list[str], voice: bool, with_kg: bool) -> dict:
+async def _run(
+    url: str,
+    *,
+    count: int,
+    queries: list[str],
+    voice: bool,
+    with_kg: bool,
+    context: MemoryActorContext,
+) -> dict:
     latencies_ms: list[float] = []
     errors = 0
     hit_count = 0
@@ -69,7 +78,13 @@ async def _run(url: str, *, count: int, queries: list[str], voice: bool, with_kg
             warm_q = rng.choice(queries)
             await sess.call_tool(
                 "eidolon_memory_recall_context",
-                arguments={"query": warm_q, "top_k": 5, "voice": voice, "include_kg": with_kg},
+                arguments={
+                    "query": warm_q,
+                    "context": context.model_dump(mode="json"),
+                    "top_k": 5,
+                    "voice": voice,
+                    "include_kg": with_kg,
+                },
             )
 
             for i in range(count):
@@ -78,7 +93,13 @@ async def _run(url: str, *, count: int, queries: list[str], voice: bool, with_kg
                 try:
                     res = await sess.call_tool(
                         "eidolon_memory_recall_context",
-                        arguments={"query": q, "top_k": 5, "voice": voice, "include_kg": with_kg},
+                        arguments={
+                            "query": q,
+                            "context": context.model_dump(mode="json"),
+                            "top_k": 5,
+                            "voice": voice,
+                            "include_kg": with_kg,
+                        },
                     )
                 except Exception:
                     errors += 1
@@ -115,6 +136,13 @@ def main() -> int:
         help="agent_runner control-plane MCP URL (default localhost:8030)",
     )
     parser.add_argument("--count", type=int, default=50)
+    parser.add_argument("--tenant-id", default="default")
+    parser.add_argument("--owner-user-id", default="bench")
+    parser.add_argument("--persona-id", default="mochi")
+    parser.add_argument("--agent-id", default="agent-bench")
+    parser.add_argument("--device-id", default="bench-device")
+    parser.add_argument("--instance-id", default="bench-runtime")
+    parser.add_argument("--session-id", default="bench-session")
     parser.add_argument(
         "--query",
         action="append",
@@ -139,12 +167,22 @@ def main() -> int:
     args = parser.parse_args()
 
     queries = args.query if args.query else _DEFAULT_QUERIES
+    context = MemoryActorContext(
+        tenant_id=args.tenant_id,
+        owner_user_id=args.owner_user_id,
+        persona_id=args.persona_id,
+        agent_id=args.agent_id,
+        device_id=args.device_id,
+        instance_id=args.instance_id,
+        session_id=args.session_id,
+    )
     row = asyncio.run(
         _run(
             args.url, count=args.count, queries=queries,
-            voice=args.voice, with_kg=args.with_kg,
+            voice=args.voice, with_kg=args.with_kg, context=context,
         )
     )
+    row["memory_space_id"] = context.memory_space_id
     row["mode"] = ("voice" if args.voice else "non-voice") + (
         "+kg" if args.with_kg else ""
     )

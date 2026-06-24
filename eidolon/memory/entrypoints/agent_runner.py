@@ -1,12 +1,12 @@
-"""Single-user agent runner (D1).
+"""Single-memory-space agent runner (D1).
 
-One ``eidolon-memory-agent --user-id=<id> --port=<P>`` process per user:
+One ``eidolon-memory-agent --memory-space-id=<id> --port=<P>`` process per memory space:
 
-* owns the only ``chromadb.PersistentClient`` pointing at the user's palace
+* owns the only ``chromadb.PersistentClient`` pointing at the memory-space palace
 * wraps that backend in ``LockedBackend`` so reads + writes share one
   ``asyncio.Lock``
 * hosts the FastMCP control-plane on the loopback port (Admin / Claude IDE)
-* runs the NATS JetStream subscriber for ``agent.memory.conversation.turn.<id>``
+* runs the NATS JetStream subscriber for ``eidolon.memory.turn.<id>``
 * runs the steward in-process (writes never leave this process)
 
 LiveKit pipelines that live in the same process call the recall path directly
@@ -18,13 +18,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import fcntl
 import json
+import os
 import signal
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from eidolon_sdk.memory import conversation_turn_subject, memory_command_subject
+from eidolon_sdk.memory import (
+    conversation_turn_subject,
+    memory_command_subject,
+    memory_sync_subject,
+)
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.application.working_memory import WorkingMemoryRing
@@ -36,17 +42,20 @@ from eidolon.memory.application.public_recall import wire_record_to_public_dict
 from eidolon.memory.application.steward import create_steward
 from eidolon.memory.application.turn_processor import (
     process_command_message,
+    process_sync_message,
     process_turn_message,
 )
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
+from eidolon.memory.config.memory_settings import resolve_run_dir
 from eidolon.memory.config.palace_directory import (
-    resolve_palace_for_user,
-    validate_user_id,
+    resolve_palace_for_memory_space,
+    validate_memory_space_id,
 )
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
 from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
 from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
+from eidolon.memory.infrastructure.nats.names import memory_consumer_name, nats_safe_name
 from eidolon.memory.infrastructure.nats.query import memory_list_drawers_query_subject
 from eidolon.memory.infrastructure.integrity import (
     IntegrityCheckFailed,
@@ -63,9 +72,40 @@ from eidolon.memory.infrastructure.mempalace_backend import (
 )
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
+from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _acquire_memory_space_process_lock(settings: MemorySettings, memory_space_id: str):
+    """Hold an exclusive process lock for one memory space.
+
+    This protects the JetStream durable-consumer ownership contract as well as
+    the palace single-owner rule. Starting two agent_runners for the same
+    memory_space_id can route writes to the wrong palace if one is a temporary
+    benchmark process, so fail fast instead.
+    """
+    run_dir = resolve_run_dir(settings)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = run_dir / f"eidolon-memory-agent-{nats_safe_name(memory_space_id)}.lock"
+    handle = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.seek(0)
+        holder = handle.read().strip()
+        handle.close()
+        msg = (
+            f"memory_space_id {memory_space_id!r} is already owned by another "
+            f"eidolon-memory-agent; lock={lock_path} holder={holder!r}"
+        )
+        raise RuntimeError(msg) from exc
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
 
 
 def _materialize_kg_file(kg_sqlite_path: Path) -> None:
@@ -88,7 +128,7 @@ def _materialize_kg_file(kg_sqlite_path: Path) -> None:
 
 async def _nats_subscriber_loop(
     *,
-    user_id: str,
+    memory_space_id: str,
     settings: MemorySettings,
     backend: Any,
     kg: Any,
@@ -100,11 +140,14 @@ async def _nats_subscriber_loop(
     """In-process JetStream pull-subscriber for both turn + command subjects."""
     import nats
 
-    durable_turn = f"{settings.nats.durable_prefix}-{user_id}"
-    durable_cmd = f"{settings.nats.durable_prefix}-cmd-{user_id}"
-    turn_subject = conversation_turn_subject(user_id)
-    cmd_subject = memory_command_subject(user_id)
-    query_subject = memory_list_drawers_query_subject(user_id)
+    durable_turn = memory_consumer_name(settings.nats.durable_prefix, memory_space_id)
+    durable_cmd = memory_consumer_name(settings.nats.durable_prefix, memory_space_id, role="cmd")
+    durable_sync = memory_consumer_name(settings.nats.durable_prefix, memory_space_id, role="sync")
+    turn_subject = conversation_turn_subject(memory_space_id)
+    cmd_subject = memory_command_subject(memory_space_id)
+    sync_subject = memory_sync_subject(memory_space_id)
+    query_subject = memory_list_drawers_query_subject(memory_space_id)
+    ledger = SyncLedger(Path(kg_sqlite).parent / "sync_ledger.sqlite3")
 
     steward = create_steward(settings)
     sync_every = max(1, settings.worker.sync_every_n_turns)
@@ -147,7 +190,7 @@ async def _nats_subscriber_loop(
             limit = max(1, min(int(payload.get("limit") or 500), 1000))
             offset = max(0, int(payload.get("offset") or 0))
             include_private = bool(payload.get("include_private", False))
-            rows = await backend.get_all(user_id, limit=limit, offset=offset)
+            rows = await backend.get_all(memory_space_id, limit=limit, offset=offset)
             filtered = [
                 row
                 for row in rows
@@ -162,7 +205,7 @@ async def _nats_subscriber_loop(
         except Exception as exc:  # noqa: BLE001 - responder returns typed error JSON
             log.warning(
                 "agent_runner_query_failed",
-                user_id=user_id,
+                memory_space_id=memory_space_id,
                 subject=query_subject,
                 error=str(exc),
                 error_type=type(exc).__name__,
@@ -194,15 +237,19 @@ async def _nats_subscriber_loop(
             psub_cmd = await js.pull_subscribe(
                 cmd_subject, durable=durable_cmd, stream=settings.nats.stream
             )
+            psub_sync = await js.pull_subscribe(
+                sync_subject, durable=durable_sync, stream=settings.nats.stream
+            )
             await nc.subscribe(query_subject, cb=_handle_list_drawers_query)
             await nc.flush()
             if ready is not None and not ready.is_set():
                 ready.set()
             log.info(
                 "agent_runner_nats_pull_subscribe",
-                user_id=user_id,
+                memory_space_id=memory_space_id,
                 turn_subject=turn_subject,
                 cmd_subject=cmd_subject,
+                sync_subject=sync_subject,
                 query_subject=query_subject,
                 stream=settings.nats.stream,
             )
@@ -219,14 +266,25 @@ async def _nats_subscriber_loop(
                             kg=kg,
                             settings=settings,
                             max_deliveries=settings.nats.worker_max_deliveries,
-                            expected_user_id=user_id,
+                            expected_memory_space_id=memory_space_id,
                         ),
                     )
                     await _drain(
                         psub_cmd,
                         lambda m: process_command_message(
                             m, backend=backend, kg=kg,
-                            expected_user_id=user_id, settings=settings,
+                            expected_memory_space_id=memory_space_id, settings=settings,
+                        ),
+                    )
+                    await _drain(
+                        psub_sync,
+                        lambda m: process_sync_message(
+                            m,
+                            steward=steward,
+                            backend=backend,
+                            ledger=ledger,
+                            settings=settings,
+                            expected_memory_space_id=memory_space_id,
                         ),
                     )
                 except TimeoutError:
@@ -261,13 +319,13 @@ async def _nats_subscriber_loop(
                     await nc.drain()
                 except Exception:
                     pass
-    log.info("agent_runner_nats_stopped", user_id=user_id)
+    log.info("agent_runner_nats_stopped", memory_space_id=memory_space_id)
 
 
 def _compose_starlette_lifespan(
     mcp: Any,
     *,
-    user_id: str,
+    memory_space_id: str,
     settings: MemorySettings,
     backend: Any,
     kg: Any,
@@ -283,40 +341,55 @@ def _compose_starlette_lifespan(
     stop_event = asyncio.Event()
     nats_ready_event = asyncio.Event()
     session_manager = mcp.session_manager
+    nats_disabled = os.environ.get("EIDOLON_MEMORY_DISABLE_NATS", "").strip() == "1"
 
     @asynccontextmanager
     async def _lifespan(_app: Any):
-        log.info("agent_runner_warm_start", user_id=user_id, palace=palace_path)
+        log.info("agent_runner_warm_start", memory_space_id=memory_space_id, palace=palace_path)
         try:
             await warm_palace_read_path(settings, palace_path, role="default")
-            log.info("agent_runner_warm_complete", user_id=user_id)
+            log.info("agent_runner_warm_complete", memory_space_id=memory_space_id)
         except Exception as exc:
-            log.warning("agent_runner_warm_failed", user_id=user_id, error=str(exc))
+            log.warning(
+                "agent_runner_warm_failed",
+                memory_space_id=memory_space_id,
+                error=str(exc),
+            )
 
-        sub_task = asyncio.create_task(
-            _nats_subscriber_loop(
-                user_id=user_id,
-                settings=settings,
-                backend=backend,
-                kg=kg,
-                palace_sqlite=palace_sqlite,
-                kg_sqlite=kg_sqlite,
-                stop=stop_event,
-                ready=nats_ready_event,
-            ),
-            name=f"nats-sub-{user_id}",
-        )
+        sub_task: asyncio.Task | None = None
+        if nats_disabled:
+            log.warning(
+                "agent_runner_nats_disabled",
+                memory_space_id=memory_space_id,
+                reason="EIDOLON_MEMORY_DISABLE_NATS=1",
+            )
+        else:
+            sub_task = asyncio.create_task(
+                _nats_subscriber_loop(
+                    memory_space_id=memory_space_id,
+                    settings=settings,
+                    backend=backend,
+                    kg=kg,
+                    palace_sqlite=palace_sqlite,
+                    kg_sqlite=kg_sqlite,
+                    stop=stop_event,
+                    ready=nats_ready_event,
+                ),
+                name=f"nats-sub-{memory_space_id}",
+            )
         try:
-            await asyncio.wait_for(nats_ready_event.wait(), timeout=30.0)
+            if not nats_disabled:
+                await asyncio.wait_for(nats_ready_event.wait(), timeout=30.0)
             async with session_manager.run():
                 yield
         finally:
             stop_event.set()
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(sub_task, timeout=5.0)
+                if sub_task is not None:
+                    await asyncio.wait_for(sub_task, timeout=5.0)
             with contextlib.suppress(Exception):
                 await command_publisher.close()
-            log.info("agent_runner_shutdown_complete", user_id=user_id)
+            log.info("agent_runner_shutdown_complete", memory_space_id=memory_space_id)
 
     return _lifespan
 
@@ -324,9 +397,9 @@ def _compose_starlette_lifespan(
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="eidolon-memory-agent",
-        description="Single-user memory agent runner (D1)",
+        description="Single-memory-space memory agent runner (D1)",
     )
-    parser.add_argument("--user-id", required=True, help="Bound user identifier")
+    parser.add_argument("--memory-space-id", required=True, help="Bound memory-space identifier")
     parser.add_argument(
         "--port",
         type=int,
@@ -341,23 +414,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--palace-path",
         default="",
-        help="Override palace directory (default ~/eidolon/palaces/<user_id>)",
+        help="Override palace directory (default ~/eidolon/palaces/<memory_space_id>)",
     )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    user_id = validate_user_id(args.user_id)
+    memory_space_id = validate_memory_space_id(args.memory_space_id)
     settings = get_memory_settings()
+    process_lock = _acquire_memory_space_process_lock(settings, memory_space_id)
     apply_mempalace_backend_env(settings)
     backend_name = selected_mempalace_backend(settings)
     apply_cpu_thread_env(settings, role="livekit")
 
     palace_path = (
-        resolve_palace_for_user(
+        resolve_palace_for_memory_space(
             settings,
-            user_id,
+            memory_space_id,
             path_override=args.palace_path or None,
         )
     )
@@ -370,7 +444,7 @@ def main(argv: list[str] | None = None) -> None:
         raise
 
     ensure_palace_initialized(
-        user_id,
+        memory_space_id,
         palace_path,
         backend=backend_name,
         env=mempalace_backend_env(settings),
@@ -395,7 +469,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             log.error(
                 "agent_runner_integrity_failed",
-                user_id=user_id,
+                memory_space_id=memory_space_id,
                 db=label,
                 palace=str(palace_path),
                 detail=report.detail,
@@ -432,7 +506,7 @@ def main(argv: list[str] | None = None) -> None:
     mcp = build_control_plane_mcp(
         backend,
         settings,
-        user_id=user_id,
+        memory_space_id=memory_space_id,
         palace_path=str(palace_path),
         host=host,
         port=port,
@@ -443,7 +517,7 @@ def main(argv: list[str] | None = None) -> None:
 
     log.info(
         "agent_runner_start",
-        user_id=user_id,
+        memory_space_id=memory_space_id,
         palace=str(palace_path),
         backend=backend_name,
         host=host,
@@ -451,7 +525,11 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     def _on_signal(signum: int, _frame: Any) -> None:  # pragma: no cover - signal path
-        log.info("agent_runner_signal_received", user_id=user_id, signum=signum)
+        log.info(
+            "agent_runner_signal_received",
+            memory_space_id=memory_space_id,
+            signum=signum,
+        )
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -467,7 +545,7 @@ def main(argv: list[str] | None = None) -> None:
     starlette_app = mcp.streamable_http_app()
     starlette_app.router.lifespan_context = _compose_starlette_lifespan(
         mcp,
-        user_id=user_id,
+        memory_space_id=memory_space_id,
         settings=settings,
         backend=backend,
         kg=kg,
@@ -483,7 +561,12 @@ def main(argv: list[str] | None = None) -> None:
         access_log=False,
     )
     server = uvicorn.Server(config)
-    asyncio.run(server.serve())
+    try:
+        asyncio.run(server.serve())
+    finally:
+        with contextlib.suppress(Exception):
+            fcntl.flock(process_lock.fileno(), fcntl.LOCK_UN)
+        process_lock.close()
 
 
 if __name__ == "__main__":

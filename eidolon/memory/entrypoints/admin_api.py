@@ -36,7 +36,8 @@ from eidolon.memory.application.user_admin import (
     UserAdmin,
     UserAdminError,
 )
-from eidolon.memory.config.users import ConsolidatorUserConfig, validate_user_id
+from eidolon.memory.config.palace_directory import validate_memory_space_id
+from eidolon.memory.config.users import ConsolidatorUserConfig
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -75,7 +76,7 @@ class CreateUserRequest(BaseModel):
     def _check_user_id(cls, v: str) -> str:
         # Reuse memory's existing canonical user-id validator so this stays
         # in sync with what supervisor / palace_directory accept.
-        return validate_user_id(v)
+        return validate_memory_space_id(v)
 
 
 # ---- factory --------------------------------------------------------------

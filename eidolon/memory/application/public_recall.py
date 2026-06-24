@@ -6,12 +6,13 @@ import asyncio
 import time
 from typing import Any
 
-from eidolon_sdk.memory import USER_CONFIRMED_ROOM_PREFIX
+from eidolon_sdk.memory import MemoryActorContext, USER_CONFIRMED_ROOM_PREFIX
 
 from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
 from eidolon.memory.adapters.search_payload import parse_search_tool_payload
 from eidolon.memory.application.kg_recall import query_kg_for_recall
+from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
 from eidolon.memory.config.memory_settings import MemorySettings
@@ -48,14 +49,17 @@ def wire_record_to_public_dict(rec: MemoryWireRecord) -> dict[str, Any]:
     return payload
 
 
-def recall_record_visible_for_user(rec: MemoryWireRecord, user_id: str) -> bool:
-    if rec.metadata.get("wing") == "Wing_Privacy" or rec.user_id == "Wing_Privacy":
-        return False
-    privacy = str(rec.metadata.get("privacy", "")).lower()
-    if privacy in {"private", "do_not_recall"}:
-        return False
-    meta_user = str(rec.metadata.get("user_id", ""))
-    return not meta_user or meta_user == user_id
+def recall_record_visible_for_context(
+    rec: MemoryWireRecord,
+    context: MemoryActorContext,
+    *,
+    include_private: bool = False,
+) -> bool:
+    return RecallPolicyRegistry.default().visible(
+        rec,
+        context=context,
+        include_private=include_private,
+    )
 
 
 # ``group_recall_context`` lives in :mod:`recall_renderer` so subsequent
@@ -104,11 +108,10 @@ async def recall_with_kg_fusion(
     settings: MemorySettings,
     *,
     query: str,
-    user_id: str,
+    context: MemoryActorContext,
     top_k: int,
     kg: object | None,
     for_voice: bool = False,
-    session_id: str = "",
     user_utterance: str = "",
     palace_path: str | None = None,
     include_sensitive_kg: bool = False,
@@ -125,12 +128,11 @@ async def recall_with_kg_fusion(
             backend,
             settings,
             query=query,
-            user_id=user_id,
+            context=context,
             top_k=top_k,
             wing=None,
             room=None,
             for_voice=for_voice,
-            session_id=session_id,
             user_utterance=user_utterance,
             palace_path=palace_path,
             raise_on_degraded=True,
@@ -197,6 +199,14 @@ async def recall_with_kg_fusion(
             others = [r for r in vector_records if not _is_user_confirmed(r)]
             vector_records = confirmed + others
 
+    registry = RecallPolicyRegistry.default()
+    vector_records = registry.rank(
+        vector_records,
+        context=context,
+        query=query,
+        top_k=max(top_k, len(vector_records)),
+    )
+
     # Phase 4 — Wing_Theme drawers always surface (when present). They
     # encode cross-time "what's been on your mind" overviews that don't
     # compete on cosine ranking with concrete fragments; they're meant
@@ -222,7 +232,10 @@ async def recall_with_kg_fusion(
     ring = getattr(backend, "working_memory", None)
     if ring is not None:
         try:
-            working_memory = await ring.snapshot()
+            working_memory = await ring.snapshot(
+                device_id=context.device_id,
+                session_id=context.session_id,
+            )
         except Exception as exc:  # noqa: BLE001 - never break recall
             log.warning("working_memory_snapshot_failed", error=str(exc))
 
@@ -338,20 +351,17 @@ async def search_all_wings_mcp_style(
     settings: MemorySettings,
     *,
     query: str,
-    user_id: str,
+    context: MemoryActorContext,
     top_k: int,
     wing: str | None,
     room: str | None,
     for_voice: bool = False,
-    session_id: str = "",
     user_utterance: str = "",
     palace_path: str | None = None,
     raise_on_degraded: bool = False,
 ) -> list[MemoryWireRecord]:
     """Search configured wings in parallel, filter, rank, and cap top_k."""
     wings = _resolve_wings(settings, wing=wing, for_voice=for_voice)
-    uid = user_id or "default"
-
     if (
         for_voice
         and wings
@@ -367,7 +377,7 @@ async def search_all_wings_mcp_style(
                 wings=wings,
                 room=room,
                 top_k=top_k,
-                user_id=uid,
+                context=context,
             )
         except BaseException as exc:
             if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
@@ -393,7 +403,10 @@ async def search_all_wings_mcp_style(
         async def _one(wing_id: str) -> list[MemoryWireRecord]:
             async with sem:
                 found = await backend.search(query, wing=wing_id, n_results=top_k, room=room)
-                return [r for r in found if recall_record_visible_for_user(r, uid)]
+                return [
+                    r for r in found
+                    if recall_record_visible_for_context(r, context)
+                ]
 
         batches = await asyncio.gather(*[_one(wid) for wid in wings], return_exceptions=True)
         hits = []
@@ -406,11 +419,17 @@ async def search_all_wings_mcp_style(
         hits = filter_voice_recall_hits(
             hits,
             settings,
-            session_id=session_id,
+            session_id=context.session_id,
             user_utterance=user_utterance,
         )
 
-    return rank_records_by_similarity(hits, top_k=top_k)
+    hits = rank_records_by_similarity(hits, top_k=max(top_k, len(hits)))
+    return RecallPolicyRegistry.default().rank(
+        hits,
+        context=context,
+        query=query,
+        top_k=top_k,
+    )
 
 
 async def _search_voice_shared_embedding(
@@ -422,7 +441,7 @@ async def _search_voice_shared_embedding(
     wings: list[str],
     room: str | None,
     top_k: int,
-    user_id: str,
+    context: MemoryActorContext,
 ) -> list[MemoryWireRecord]:
     """Voice fast-path: one ONNX embed, parallel ``collection.query`` per wing.
 
@@ -448,4 +467,4 @@ async def _search_voice_shared_embedding(
             records = await asyncio.to_thread(_run)
     else:
         records = await asyncio.to_thread(_run)
-    return [r for r in records if recall_record_visible_for_user(r, user_id)]
+    return [r for r in records if recall_record_visible_for_context(r, context)]

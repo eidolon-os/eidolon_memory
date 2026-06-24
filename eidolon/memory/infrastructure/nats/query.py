@@ -13,17 +13,17 @@ from typing import Any
 
 import nats
 from nats.errors import NoRespondersError, TimeoutError as NatsTimeoutError
-from eidolon_sdk.memory.subjects import validate_memory_subject_user_id
+from eidolon_sdk.memory.subjects import validate_memory_space_id
 
 from eidolon.memory.config.memory_settings import MemorySettings
 
-MEMORY_QUERY_BASE = "agent.memory.query"
+MEMORY_QUERY_BASE = "eidolon.memory.query"
 
 
-def memory_list_drawers_query_subject(user_id: str) -> str:
-    """Return the per-user NATS request subject for drawer snapshots."""
+def memory_list_drawers_query_subject(memory_space_id: str) -> str:
+    """Return the per-memory-space NATS request subject for drawer snapshots."""
 
-    return f"{MEMORY_QUERY_BASE}.{validate_memory_subject_user_id(user_id)}.list_drawers"
+    return f"{MEMORY_QUERY_BASE}.{validate_memory_space_id(memory_space_id)}.list_drawers"
 
 
 class MemoryQueryError(RuntimeError):
@@ -57,7 +57,7 @@ class NatsMemoryQueryClient:
     async def list_drawers(
         self,
         *,
-        user_id: str,
+        memory_space_id: str,
         limit: int,
         offset: int = 0,
         include_private: bool = False,
@@ -65,7 +65,7 @@ class NatsMemoryQueryClient:
         if self._nc is None:
             await self.connect()
         assert self._nc is not None
-        subject = memory_list_drawers_query_subject(user_id)
+        subject = memory_list_drawers_query_subject(memory_space_id)
         payload = {
             "limit": max(1, int(limit)),
             "offset": max(0, int(offset)),
@@ -88,7 +88,7 @@ class NatsMemoryQueryClient:
     async def wait_until_ready(
         self,
         *,
-        user_id: str,
+        memory_space_id: str,
         timeout_seconds: float = 300.0,
         poll_interval_seconds: float = 0.5,
     ) -> None:
@@ -100,7 +100,7 @@ class NatsMemoryQueryClient:
         while True:
             try:
                 await self.list_drawers(
-                    user_id=user_id,
+                    memory_space_id=memory_space_id,
                     limit=1,
                     offset=0,
                     include_private=False,

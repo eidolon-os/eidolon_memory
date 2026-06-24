@@ -18,6 +18,7 @@ from eidolon_sdk.memory import (
     USER_CONFIRMED_ROOM_PREFIX,
     ConversationTurnPayload,
     ConsolidatorIngestThemeCommand,
+    DeviceSyncBatchPayload,
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryCommandPayload,
@@ -59,11 +60,15 @@ def delivery_count(msg: Any) -> int:
     return int(getattr(meta, "num_delivered", None) or 1)
 
 
-async def _apply_privacy(backend: Any, user_id: str, actions: list) -> None:
+async def _apply_privacy(backend: Any, memory_space_id: str, actions: list) -> None:
     """Wrapper for the steward's privacy-action handler (delete / archive)."""
     if not actions:
         return
-    await apply_privacy_actions(backend, user_id=user_id, actions=actions)
+    await apply_privacy_actions(
+        backend,
+        memory_space_id=memory_space_id,
+        actions=actions,
+    )
 
 
 async def process_turn_message(
@@ -74,7 +79,7 @@ async def process_turn_message(
     kg: Any = None,
     settings: MemorySettings,
     max_deliveries: int,
-    expected_user_id: str | None = None,
+    expected_memory_space_id: str | None = None,
 ) -> None:
     """Decode + validate one turn, run steward, apply fragments + KG, ack / nak / DLQ.
 
@@ -92,11 +97,15 @@ async def process_turn_message(
         await msg.ack()
         return
 
-    if expected_user_id is not None and turn.user_id and turn.user_id != expected_user_id:
+    memory_space_id = turn.context.memory_space_id
+    if (
+        expected_memory_space_id is not None
+        and memory_space_id != expected_memory_space_id
+    ):
         log.error(
-            "turn_processor_user_id_mismatch",
-            expected=expected_user_id,
-            got=turn.user_id,
+            "turn_processor_memory_space_mismatch",
+            expected=expected_memory_space_id,
+            got=memory_space_id,
             turn_id=turn.turn_id,
         )
         await msg.ack()
@@ -132,14 +141,13 @@ async def process_turn_message(
             await msg.nak()
         return
 
-    fallback_user = turn.user_id or "default"
     turn_ts = turn.timestamp  # used as default valid_from / ended for triples
 
     # ── fragments + privacy (failure here NAKs — chroma is source of truth) ─
     fragments_written = 0
     try:
         # Privacy actions first; they may purge before we attempt new writes.
-        await _apply_privacy(backend, fallback_user, decision.privacy_actions)
+        await _apply_privacy(backend, memory_space_id, decision.privacy_actions)
         if decision.should_write:
             for fragment in decision.fragments:
                 stamped = (
@@ -230,7 +238,9 @@ async def process_turn_message(
     log.info(
         "turn_processed",
         turn_id=turn.turn_id,
-        user_id=turn.user_id,
+        memory_space_id=memory_space_id,
+        device_id=turn.context.device_id,
+        session_id=turn.context.session_id,
         should_write=decision.should_write,
         fragments=fragments_written,
         triples=kg_triples_added,
@@ -310,9 +320,9 @@ async def process_command_message(
     backend: Any,
     kg: Any,
     settings: MemorySettings,
-    expected_user_id: str | None = None,
+    expected_memory_space_id: str | None = None,
 ) -> None:
-    """Handle ``MemoryCommandPayload`` from ``agent.memory.cmd.<user_id>``.
+    """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_id>``.
 
     Commands are **always acked** after processing; the wrapper's idempotency
     layer (LockedKnowledgeGraph G1) keeps redelivery safe, and admin actions
@@ -332,6 +342,8 @@ async def process_command_message(
             cmd = ConsolidatorIngestThemeCommand.model_validate(raw)
         elif kind == "user_confirm_fact":
             cmd = UserConfirmedFactCommand.model_validate(raw)
+        elif kind == "device_sync_batch":
+            cmd = DeviceSyncBatchPayload.model_validate(raw)
         else:
             log.error("cmd_unknown_kind", kind=kind)
             await msg.ack()
@@ -341,11 +353,14 @@ async def process_command_message(
         await msg.ack()
         return
 
-    if expected_user_id is not None and cmd.user_id and cmd.user_id != expected_user_id:
+    if (
+        expected_memory_space_id is not None
+        and cmd.memory_space_id != expected_memory_space_id
+    ):
         log.error(
-            "cmd_user_id_mismatch",
-            expected=expected_user_id,
-            got=cmd.user_id,
+            "cmd_memory_space_mismatch",
+            expected=expected_memory_space_id,
+            got=cmd.memory_space_id,
             request_id=cmd.request_id,
         )
         await msg.ack()
@@ -404,9 +419,102 @@ async def process_command_message(
                 memory_type=cmd.memory_type,
                 confidence=cmd.confidence,
             )
+        elif isinstance(cmd, DeviceSyncBatchPayload):
+            log.info(
+                "cmd_device_sync_batch_ignored_on_cmd_subject",
+                request_id=cmd.request_id,
+                events=len(cmd.events),
+            )
     except Exception as exc:
         log.error("cmd_apply_failed", request_id=cmd.request_id, error=str(exc))
 
+    await msg.ack()
+
+
+async def process_sync_message(
+    msg: Any,
+    *,
+    steward: StewardProtocol,
+    backend: Any,
+    ledger: Any,
+    settings: MemorySettings,
+    expected_memory_space_id: str,
+) -> None:
+    """Handle ``DeviceSyncBatchPayload`` from ``eidolon.memory.sync.<space>``."""
+    del settings
+    try:
+        raw = json.loads(msg.data.decode("utf-8"))
+        batch = DeviceSyncBatchPayload.model_validate(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
+        log.error("sync_bad_payload", error=str(exc))
+        await msg.ack()
+        return
+
+    if batch.memory_space_id != expected_memory_space_id:
+        log.error(
+            "sync_memory_space_mismatch",
+            expected=expected_memory_space_id,
+            got=batch.memory_space_id,
+            request_id=batch.request_id,
+        )
+        await msg.ack()
+        return
+
+    synced = 0
+    skipped = 0
+    failed = 0
+    for event in batch.events:
+        if ledger.seen(
+            event_id=event.event_id,
+            idempotency_hash=event.idempotency_hash,
+        ):
+            skipped += 1
+            continue
+        try:
+            turn = ConversationTurnPayload.model_validate(event.turn)
+            if turn.context.memory_space_id != expected_memory_space_id:
+                raise ValueError("sync event turn memory_space_id mismatch")
+            if turn.context.device_id != batch.device_id:
+                raise ValueError("sync event turn device_id mismatch")
+
+            ring = getattr(backend, "working_memory", None)
+            if ring is not None:
+                await ring.append(turn)
+
+            decision = await steward.decide(turn)
+            await _apply_privacy(
+                backend,
+                expected_memory_space_id,
+                decision.privacy_actions,
+            )
+            for fragment in decision.fragments if decision.should_write else []:
+                stamped = (
+                    fragment
+                    if fragment.occurred_at
+                    else fragment.model_copy(update={"occurred_at": turn.timestamp})
+                )
+                await ingest_memory_fragment(backend, stamped)
+            ledger.mark_synced(
+                event_id=event.event_id,
+                device_id=batch.device_id,
+                instance_id=batch.instance_id,
+                turn_id=turn.turn_id,
+                idempotency_hash=event.idempotency_hash,
+            )
+            synced += 1
+        except Exception as exc:  # noqa: BLE001 - one bad offline event should not block batch
+            failed += 1
+            log.warning("sync_event_failed", event_id=event.event_id, error=str(exc))
+
+    log.info(
+        "sync_batch_processed",
+        request_id=batch.request_id,
+        memory_space_id=batch.memory_space_id,
+        device_id=batch.device_id,
+        synced=synced,
+        skipped=skipped,
+        failed=failed,
+    )
     await msg.ack()
 
 
@@ -421,11 +529,16 @@ async def _ingest_theme(backend: Any, cmd: "ConsolidatorIngestThemeCommand") -> 
 
     Idempotency: the deterministic ``key`` derived from ``cmd.request_id``
     means re-delivery of the same theme collapses to one drawer at the
-    chroma layer (its doc id = ``user_id::key``).
+    chroma layer.
     """
     fragment = MemoryFragment(
-        fragment_id=f"theme:{cmd.request_id}",
-        user_id=cmd.user_id,
+        memory_id=f"theme:{cmd.request_id}",
+        memory_space_id=cmd.memory_space_id,
+        scope="persona",
+        visibility="all_devices",
+        source_device_id="system",
+        target_device_id=None,
+        source_instance_id="consolidator",
         wing="Wing_Theme",
         room=f"theme:{cmd.request_id[:16]}",
         content=cmd.text,
@@ -459,11 +572,16 @@ async def _ingest_user_confirmed(
     cross-layer contract; do not rename without updating recall too.
 
     Idempotency: ``fragment_id = "userconfirm:<request_id>"``; chroma's
-    doc id = ``user_id::room`` collapses redelivery to one row.
+    deterministic ids collapse redelivery to one row.
     """
     fragment = MemoryFragment(
-        fragment_id=f"userconfirm:{cmd.request_id}",
-        user_id=cmd.user_id,
+        memory_id=f"userconfirm:{cmd.request_id}",
+        memory_space_id=cmd.memory_space_id,
+        scope=cmd.scope,
+        visibility=cmd.visibility,
+        source_device_id=cmd.source_device_id or "admin",
+        target_device_id=cmd.target_device_id,
+        source_instance_id=cmd.source_instance_id or cmd.issuer,
         wing=cmd.wing,
         room=f"{USER_CONFIRMED_ROOM_PREFIX}{cmd.request_id[:16]}",
         content=cmd.text,
@@ -472,12 +590,13 @@ async def _ingest_user_confirmed(
         confidence=cmd.confidence,
         occurred_at=cmd.issued_at,
         source_turn_id=f"user-confirmed:{cmd.request_id}",
-        session_id="user-confirmed",
+        session_id=cmd.session_id or "user-confirmed",
         tags=["user-confirmed", *cmd.tags],
         privacy="normal",
         metadata={
             "source": "user-confirmed",
             "request_id": cmd.request_id,
         },
+        extensions=cmd.extensions,
     )
     await ingest_memory_fragment(backend, fragment)

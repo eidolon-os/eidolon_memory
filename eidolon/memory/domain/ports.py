@@ -91,6 +91,13 @@ class MemoryAdmin(Protocol):
         whole palace (paginated via ``limit`` / ``offset``) for operational listing.
         """
 
+    async def get_by_source_turn_id(
+        self,
+        memory_space_id: str,
+        source_turn_id: str,
+    ) -> MemoryWireRecord | None:
+        """Exact lookup by steward/source turn id for sync and benchmark probes."""
+
     async def delete(self, user_id: str, key: str) -> None:
         """Delete by logical user_id + key when supported."""
 

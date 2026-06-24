@@ -37,6 +37,10 @@ EMOTION_RE = re.compile(r"(难过|焦虑|崩溃|开心|压力|孤独|害怕|委�
 WORK_RE = re.compile(r"(项目|会议|任务|deadline|同事|客户|老板|工作|学习|考试|论文|需求|bug)", re.I)
 HEALTH_RE = re.compile(r"(睡眠|失眠|生病|头痛|胃痛|运动|用药|医院|健康|疲惫|确诊|诊断|心理医生|诊疗)")
 PREFERENCE_RE = re.compile(r"(我喜欢|我讨厌|我习惯|我希望|我偏好|不喜欢|爱吃|喜欢吃)")
+DEVICE_RE = re.compile(
+    r"(这台设备|这个设备|本设备|客厅|卧室|书房|厨房|车机|车上|汽车|音箱|麦克风|摄像头|屏幕|校准|音量)"
+)
+CAPABILITY_RE = re.compile(r"(麦克风|摄像头|屏幕|音箱|控制灯|传感器|硬件|能力|校准|音量)")
 
 
 class RuleBasedSteward:
@@ -47,7 +51,6 @@ class RuleBasedSteward:
 
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         text = f"{turn.user_text}\n{turn.assistant_text}".strip()
-        user_id = turn.user_id or "default"
         timestamp = turn.timestamp or datetime.now(timezone.utc).isoformat()
         privacy_actions = self._privacy_actions(turn.user_text)
         if privacy_actions:
@@ -63,7 +66,7 @@ class RuleBasedSteward:
                 reason="对话主要是寒暄或没有长期记忆价值。",
             )
 
-        fragment = self._build_fragment(turn, user_id=user_id, timestamp=timestamp)
+        fragment = self._build_fragment(turn, timestamp=timestamp)
         if fragment.importance < self._settings.steward.min_importance_to_write:
             return StewardDecision(
                 should_write=False,
@@ -80,7 +83,7 @@ class RuleBasedSteward:
         decision = await self.decide(turn)
         await apply_privacy_actions(
             backend,
-            user_id=turn.user_id or "default",
+            memory_space_id=turn.context.memory_space_id,
             actions=decision.privacy_actions,
         )
         if not decision.should_write:
@@ -110,10 +113,13 @@ class RuleBasedSteward:
         self,
         turn: ConversationTurnPayload,
         *,
-        user_id: str,
         timestamp: str,
     ) -> MemoryFragment:
         text = turn.user_text.strip()
+        ctx = turn.context
+        scope = "device" if DEVICE_RE.search(text) else "persona"
+        visibility = "current_device" if scope == "device" else "all_devices"
+        extensions = _extensions_for_text(text)
         if INTERACTION_RE.search(text):
             wing = "Wing_Interaction"
             memory_type = "interaction"
@@ -156,7 +162,12 @@ class RuleBasedSteward:
             room = "event_general"
             importance = 3
         return MemoryFragment(
-            user_id=user_id,
+            memory_space_id=ctx.memory_space_id,
+            scope=scope,
+            visibility=visibility,
+            source_device_id=ctx.device_id,
+            target_device_id=ctx.device_id if scope == "device" else None,
+            source_instance_id=ctx.instance_id,
             wing=wing,
             room=room,
             content=f"用户提到：{text}",
@@ -165,12 +176,28 @@ class RuleBasedSteward:
             confidence=0.65,
             occurred_at=timestamp,
             source_turn_id=turn.turn_id,
-            session_id=turn.session_id,
+            session_id=ctx.session_id,
             tags=[memory_type],
             metadata=turn.metadata or {},
+            extensions=extensions,
         )
 
 
 def _first_match(pattern: re.Pattern[str], text: str) -> str:
     match = pattern.search(text)
     return match.group(0) if match else "general"
+
+
+def _extensions_for_text(text: str) -> dict[str, dict]:
+    extensions: dict[str, dict] = {}
+    location_re = re.compile(r"(客厅|卧室|书房|厨房|车上|车机|汽车)")
+    if location_re.search(text):
+        extensions["location"] = {
+            "room": _first_match(location_re, text),
+            "confidence": 0.8,
+        }
+    if re.search(r"(车机|车上|汽车|驾驶|开车|座椅|导航)", text):
+        extensions["vehicle"] = {"driving_context": True}
+    if CAPABILITY_RE.search(text):
+        extensions["capability"] = {"raw": _first_match(CAPABILITY_RE, text)}
+    return extensions

@@ -28,18 +28,18 @@ if str(_ROOT) not in sys.path:
 from eidolon.memory.adapters.locked_backend import LockedBackend  # noqa: E402
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend  # noqa: E402
 from eidolon.memory.config.memory_settings import get_memory_settings  # noqa: E402
-from eidolon.memory.config.palace_directory import resolve_palace_for_user  # noqa: E402
+from eidolon.memory.config.palace_directory import resolve_palace_for_memory_space  # noqa: E402
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized  # noqa: E402
 
 from scripts.benchmark.report import percentiles  # noqa: E402
 
 
-async def _run(*, count: int, user_id: str, synchronous: str) -> dict:
+async def _run(*, count: int, memory_space_id: str, synchronous: str) -> dict:
     settings = get_memory_settings()
     # Mutate in-process to flip the PRAGMA applied by MemPalacePythonBackend.__init__
     settings.chromadb.synchronous = synchronous
-    palace = resolve_palace_for_user(settings, user_id)
-    ensure_palace_initialized(user_id, palace)
+    palace = resolve_palace_for_memory_space(settings, memory_space_id)
+    ensure_palace_initialized(memory_space_id, palace)
 
     inner = MemPalacePythonBackend(settings, str(palace))
     backend = LockedBackend(inner)
@@ -57,7 +57,16 @@ async def _run(*, count: int, user_id: str, synchronous: str) -> dict:
             wing="Wing_Profile",
             room="profile_core",
             text=text,
-            metadata={"v10_bench": True, "user_id": user_id},
+            metadata={
+                "v10_bench": True,
+                "memory_space_id": memory_space_id,
+                "scope": "persona",
+                "visibility": "all_devices",
+                "source_device_id": "bench-device",
+                "source_instance_id": "bench_chroma_write",
+                "session_id": "bench",
+                "memory_type": "preference",
+            },
         )
         samples_ms.append((time.perf_counter() - t0) * 1000.0)
 
@@ -67,7 +76,7 @@ async def _run(*, count: int, user_id: str, synchronous: str) -> dict:
         "synchronous_actual_code": int(actual_sync),  # 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA
         "journal_mode_actual": str(journal_mode),
         "n": count,
-        "user_id": user_id,
+        "memory_space_id": memory_space_id,
         "palace": str(palace),
         "writes_per_second": round(count / (sum(samples_ms) / 1000.0), 1),
         "latency_ms": stats,
@@ -134,7 +143,7 @@ def _raw_sqlite_bench(palace_path: Path, *, count: int, synchronous: str) -> dic
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--count", type=int, default=200)
-    parser.add_argument("--user-id", default="bench-v10")
+    parser.add_argument("--memory-space-id", default="default.bench_v10.mochi")
     parser.add_argument(
         "--synchronous",
         choices=["NORMAL", "FULL"],
@@ -155,7 +164,9 @@ def main() -> int:
     results = []
     for mode in modes:
         print(f"[V10] running with synchronous={mode} (n={args.count})…")
-        row = asyncio.run(_run(count=args.count, user_id=args.user_id, synchronous=mode))
+        row = asyncio.run(
+            _run(count=args.count, memory_space_id=args.memory_space_id, synchronous=mode)
+        )
         results.append(row)
         print(_pretty(row))
 
@@ -185,10 +196,10 @@ def main() -> int:
 
     if args.raw_sqlite:
         from eidolon.memory.config.memory_settings import get_memory_settings
-        from eidolon.memory.config.palace_directory import resolve_palace_for_user
+        from eidolon.memory.config.palace_directory import resolve_palace_for_memory_space
 
         settings = get_memory_settings()
-        palace = resolve_palace_for_user(settings, args.user_id)
+        palace = resolve_palace_for_memory_space(settings, args.memory_space_id)
         raw_results = []
         for mode in modes:
             print(f"\n[V10 raw-sqlite] synchronous={mode} (n={args.count})…")

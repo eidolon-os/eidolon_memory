@@ -16,9 +16,9 @@ from eidolon.memory.config.memory_settings import (
     resolve_run_dir,
 )
 from eidolon.memory.config.palace_directory import (
-    resolve_palace_for_user,
+    resolve_palace_for_memory_space,
     resolve_palaces_root,
-    validate_user_id,
+    validate_memory_space_id,
 )
 
 __all__ = [
@@ -34,8 +34,8 @@ __all__ = [
     "load_memory_settings",
     "reset_memory_settings_cache",
     "resolve_log_dir",
-    "resolve_palace_for_user",
+    "resolve_palace_for_memory_space",
     "resolve_palaces_root",
     "resolve_run_dir",
-    "validate_user_id",
+    "validate_memory_space_id",
 ]

@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
-from eidolon.memory.config.palace_directory import validate_user_id
+from eidolon.memory.config.palace_directory import validate_memory_space_id
 
 class UsersSourceUnavailable(RuntimeError):
     """Admin user registry could not be read.
@@ -52,7 +52,7 @@ class UserEntry(BaseModel):
     @field_validator("id")
     @classmethod
     def _id_valid(cls, value: str) -> str:
-        return validate_user_id(value)
+        return validate_memory_space_id(value)
 
     def consolidator_enabled(self) -> bool:
         """Convenience: True iff a consolidator block exists AND is enabled."""
@@ -119,6 +119,13 @@ def _entry_from_admin_view(view: dict) -> UserEntry | None:
     if not isinstance(spec, dict):
         return None
     user_id = str(spec.get("user_id") or "").strip()
+    tenant_id = str(spec.get("tenant_id") or "default").strip() or "default"
+    persona_id = str(
+        spec.get("persona_id")
+        or view.get("active_agent_id")
+        or spec.get("active_agent_id")
+        or "default"
+    ).strip() or "default"
     port = int(spec.get("memory_port", 0) or 0)
     if port <= 0:
         raw_url = str(view.get("mcp_http_url") or "") if isinstance(view, dict) else ""
@@ -131,8 +138,9 @@ def _entry_from_admin_view(view: dict) -> UserEntry | None:
             port = 0
     if not user_id or port <= 0:
         return None
+    memory_space_id = f"{tenant_id}.{user_id}.{persona_id}"
     return UserEntry(
-        id=user_id,
+        id=memory_space_id,
         port=port,
         enabled=bool(spec.get("enabled", True)),
         palace_path=str(spec.get("palace_path") or ""),

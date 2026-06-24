@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from eidolon_sdk.memory import MemoryActorContext
+
 from eidolon.memory.application.public_recall import (
     group_recall_context,
     recall_with_kg_fusion,
@@ -42,15 +44,13 @@ class LiveKitRecallService:
         self,
         query: str,
         *,
-        user_id: str = "default",
-        session_id: str = "",
+        context: MemoryActorContext,
         top_k: int | None = None,
     ) -> str:
         """Return grouped context text; fail-fast → empty string on timeout/error."""
         result = await self.recall_context_with_records(
             query,
-            user_id=user_id,
-            session_id=session_id,
+            context=context,
             top_k=top_k,
         )
         return result["context"]
@@ -59,8 +59,7 @@ class LiveKitRecallService:
         self,
         query: str,
         *,
-        user_id: str = "default",
-        session_id: str = "",
+        context: MemoryActorContext,
         top_k: int | None = None,
     ) -> dict[str, Any]:
         k = top_k if top_k is not None else self._settings.recall.top_k
@@ -71,11 +70,10 @@ class LiveKitRecallService:
                     self._backend,
                     self._settings,
                     query=query,
-                    user_id=user_id,
+                    context=context,
                     top_k=k,
                     kg=self._kg,
                     for_voice=True,
-                    session_id=session_id,
                     user_utterance=query,
                     palace_path=self._palace_path,
                 ),

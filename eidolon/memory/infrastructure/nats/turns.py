@@ -1,4 +1,4 @@
-"""Publish completed conversation turns to NATS JetStream (D1: per-user subject)."""
+"""Publish completed conversation turns to NATS JetStream."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ log = get_logger(__name__)
 
 
 class JetStreamTurnPublisher:
-    """Connects to NATS and publishes ``ConversationTurnPayload`` per user_id subject."""
+    """Connects to NATS and publishes ``ConversationTurnPayload`` per memory space."""
 
     def __init__(self, *, nats_url: str, stream_name: str) -> None:
         self._url = nats_url
@@ -42,14 +42,14 @@ class JetStreamTurnPublisher:
         self._js = None
 
     async def publish_turn(self, payload: ConversationTurnPayload) -> None:
-        """Publish ``payload`` to ``agent.memory.conversation.turn.<payload.user_id>``."""
+        """Publish ``payload`` to ``eidolon.memory.turn.<memory_space_id>``."""
         if self._js is None:
             await self.connect()
         assert self._js is not None
-        user_id = (payload.user_id or "").strip()
-        if not user_id:
-            msg = "ConversationTurnPayload.user_id is required for per-user routing"
+        memory_space_id = (payload.context.memory_space_id or "").strip()
+        if not memory_space_id:
+            msg = "ConversationTurnPayload.context.memory_space_id is required for routing"
             raise ValueError(msg)
-        subject = conversation_turn_subject(user_id)
+        subject = conversation_turn_subject(memory_space_id)
         body = json.dumps(payload.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
         await self._js.publish(subject, body)

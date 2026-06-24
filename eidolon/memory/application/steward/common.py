@@ -24,13 +24,13 @@ def normalize_content(text: str) -> str:
 
 def stable_fragment_id(
     *,
-    user_id: str,
+    memory_space_id: str,
     source_turn_id: str,
     index: int,
     content: str,
 ) -> str:
     """Create a deterministic fragment id for retry-safe writes."""
-    raw = f"{user_id}\n{source_turn_id}\n{index}\n{normalize_content(content)}"
+    raw = f"{memory_space_id}\n{source_turn_id}\n{index}\n{normalize_content(content)}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -47,23 +47,31 @@ def finalize_fragments(fragments: list[MemoryFragment], *, steward: str) -> list
     """Fill stable ids and metadata used by all steward implementations."""
     out: list[MemoryFragment] = []
     for index, frag in enumerate(fragments):
-        if not frag.fragment_id:
-            frag.fragment_id = stable_fragment_id(
-                user_id=frag.user_id,
+        if not frag.memory_id:
+            frag.memory_id = stable_fragment_id(
+                memory_space_id=frag.memory_space_id,
                 source_turn_id=frag.source_turn_id,
                 index=index,
                 content=frag.content,
             )
         frag.metadata = {
             **frag.metadata,
-            "fragment_id": frag.fragment_id,
+            "memory_id": frag.memory_id,
+            "memory_space_id": frag.memory_space_id,
+            "scope": frag.scope,
+            "visibility": frag.visibility,
+            "source_device_id": frag.source_device_id,
+            "target_device_id": frag.target_device_id or "",
+            "source_instance_id": frag.source_instance_id,
             "source_turn_id": frag.source_turn_id,
-            "schema_version": "1",
+            "session_id": frag.session_id,
+            "schema_version": "2",
             "steward": steward,
             "importance": frag.importance,
             "confidence": frag.confidence,
             "memory_type": frag.memory_type,
             "privacy": frag.privacy,
+            "extensions": frag.extensions,
         }
         out.append(frag)
     return out
@@ -72,7 +80,7 @@ def finalize_fragments(fragments: list[MemoryFragment], *, steward: str) -> list
 async def apply_privacy_actions(
     backend: MemoryBackend,
     *,
-    user_id: str,
+    memory_space_id: str,
     actions: list[PrivacyAction],
 ) -> None:
     """Best-effort archive/delete handling for privacy requests."""
@@ -81,7 +89,7 @@ async def apply_privacy_actions(
             continue
         room = safe_room_token(action.target, prefix="privacy")
         try:
-            await backend.delete(user_id, room)
+            await backend.delete(memory_space_id, room)
         except MemoryBackendUnsupported as exc:
             log.warning(
                 "privacy_action_backend_unsupported",

@@ -22,7 +22,7 @@ log = get_logger(__name__)
 
 
 class JetStreamCommandPublisher:
-    """Connects to NATS and publishes ``MemoryCommandPayload`` per user_id subject."""
+    """Connects to NATS and publishes ``MemoryCommandPayload`` per memory space."""
 
     def __init__(self, *, nats_url: str, stream_name: str) -> None:
         self._url = nats_url
@@ -48,14 +48,14 @@ class JetStreamCommandPublisher:
         self._js = None
 
     async def publish(self, payload: MemoryCommandPayload) -> None:
-        """Publish ``payload`` to ``agent.memory.cmd.<payload.user_id>``."""
+        """Publish ``payload`` to ``eidolon.memory.cmd.<payload.memory_space_id>``."""
         if self._js is None:
             await self.connect()
         assert self._js is not None
-        user_id = (payload.user_id or "").strip()
-        if not user_id:
-            msg = "MemoryCommandPayload.user_id is required for per-user routing"
+        memory_space_id = (payload.memory_space_id or "").strip()
+        if not memory_space_id:
+            msg = "MemoryCommandPayload.memory_space_id is required for routing"
             raise ValueError(msg)
-        subject = memory_command_subject(user_id)
+        subject = memory_command_subject(memory_space_id)
         body = json.dumps(payload.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
         await self._js.publish(subject, body)

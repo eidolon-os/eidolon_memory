@@ -2,26 +2,20 @@
 """W-01: JetStream publish → agent_runner ingest → recall-visible latency (D1).
 
 For each turn:
-  * generate a unique token + ConversationTurnPayload for ``--user-id``
-  * publish to ``agent.memory.conversation.turn.<user_id>``
+  * generate a unique token + ConversationTurnPayload for ``--memory-space-id``
+  * publish to ``eidolon.memory.turn.<memory_space_id>``
   * record publish-ack latency
-  * poll the agent_runner's MCP ``eidolon_memory_recall_context`` until the
-    token shows up; record end-to-end (publish → recall-visible) latency.
+  * poll the agent_runner's MCP ``eidolon_memory_get_by_source_turn`` until
+    the drawer with ``metadata.source_turn_id == turn_id`` shows up; record end-to-end
+    (publish → backend-visible) latency.
 
 End-to-end includes steward LLM time (large + variable). The benchmark reports
 publish-ack and e2e separately so both can be inspected.
 
-KNOWN LIMITATION (2026-05-24 review):
-   Steward in ``llm`` mode SUMMARIZES turns into semantic fragments — the
-   ``标记 <token>`` marker in user_text is typically stripped by the LLM
-   summarization step, so token-based search will time out even though the
-   fragment was correctly written. To observe true e2e visibility latency,
-   either:
-     1. run with steward.mode=rule or noop (preserves verbatim content)
-     2. search by metadata.iter / source instead of free-text token
-     3. accept that ``timeouts > 0`` does NOT mean writes failed; cross-check
-        with ``eidolon_memory_list`` to confirm fragment count.
-   This is a bench-script design issue, not a service-level failure.
+The visibility check deliberately uses exact lookup by ``source_turn_id``
+instead of semantic recall by random token or bounded list scans. That keeps
+W-01 focused on JetStream → agent ingest → backend readability; recall ranking
+quality is covered by R-01 and B-03.
 """
 
 from __future__ import annotations
@@ -41,22 +35,25 @@ if str(_ROOT) not in sys.path:
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+from eidolon_sdk.memory import MemoryActorContext
 
 from scripts.benchmark.report import percentiles, sla_pass  # noqa: E402
 
 
-async def _wait_for_recall(
+async def _wait_for_visible(
     sess: ClientSession,
     *,
-    token: str,
+    turn_id: str,
     deadline: float,
 ) -> float | None:
-    """Poll ``recall_context`` until ``token`` appears in any record value."""
+    """Poll exact lookup until ``source_turn_id`` is visible."""
     while time.monotonic() < deadline:
         try:
             res = await sess.call_tool(
-                "eidolon_memory_recall_context",
-                arguments={"query": token, "top_k": 5},
+                "eidolon_memory_get_by_source_turn",
+                arguments={
+                    "source_turn_id": turn_id,
+                },
             )
         except Exception:
             await asyncio.sleep(0.5)
@@ -67,9 +64,8 @@ async def _wait_for_recall(
                 data = json.loads(text)
             except json.JSONDecodeError:
                 data = {}
-            for rec in data.get("records") or []:
-                if token in (rec.get("value") or ""):
-                    return time.monotonic()
+            if data.get("record") is not None:
+                return time.monotonic()
         await asyncio.sleep(0.4)
     return None
 
@@ -77,7 +73,7 @@ async def _wait_for_recall(
 async def _run(
     *,
     count: int,
-    user_id: str,
+    context: MemoryActorContext,
     nats_url: str,
     stream: str,
     mcp_url: str,
@@ -87,7 +83,7 @@ async def _run(
 
     from eidolon_sdk.memory import ConversationTurnPayload, conversation_turn_subject
 
-    subject = conversation_turn_subject(user_id)
+    subject = conversation_turn_subject(context.memory_space_id)
     publish_ms: list[float] = []
     e2e_ms: list[float] = []
     timeouts = 0
@@ -101,10 +97,10 @@ async def _run(
 
             for i in range(count):
                 token = f"bench-w-{uuid.uuid4().hex[:10]}"
+                turn_id = uuid.uuid4().hex
                 turn = ConversationTurnPayload(
-                    turn_id=uuid.uuid4().hex,
-                    user_id=user_id,
-                    session_id="bench-w",
+                    turn_id=turn_id,
+                    context=context.model_copy(update={"session_id": "bench-w"}),
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     user_text=(
                         f"我最近一直在听 Acquired 这档播客，特别是关于半导体的那几期。"
@@ -122,7 +118,11 @@ async def _run(
 
                 t1 = time.monotonic()
                 deadline = t1 + e2e_timeout_seconds
-                got = await _wait_for_recall(sess, token=token, deadline=deadline)
+                got = await _wait_for_visible(
+                    sess,
+                    turn_id=turn_id,
+                    deadline=deadline,
+                )
                 if got is None:
                     timeouts += 1
                 else:
@@ -132,29 +132,35 @@ async def _run(
 
     pub = percentiles(publish_ms)
     e2e = percentiles(e2e_ms)
+    ok = (
+        timeouts == 0
+        and e2e.get("count", 0) == count
+        and sla_pass(pub.get("p50", 9e9), pub.get("p95", 9e9), p50_max=20, p95_max=50)
+        and e2e.get("p95", 9e9) <= 10000
+    )
     return {
         "id": "W-01",
         "n": count,
-        "user_id": user_id,
+        "memory_space_id": context.memory_space_id,
         "subject": subject,
         "timeouts": timeouts,
         "publish_ms": pub,
         "e2e_visible_ms": e2e,
         "sla_publish_p95_ms": 50,
         "sla_e2e_visible_p95_ms": 10000,  # steward LLM dominated; conservative
-        "sla": "PASS"
-        if (
-            sla_pass(pub.get("p50", 9e9), pub.get("p95", 9e9), p50_max=20, p95_max=50)
-            and (e2e.get("p95", 9e9) <= 10000)
-        )
-        else "FAIL",
+        "sla": "PASS" if ok else "FAIL",
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--count", type=int, default=5)
-    parser.add_argument("--user-id", default="bench")
+    parser.add_argument("--tenant-id", default="default")
+    parser.add_argument("--owner-user-id", default="bench")
+    parser.add_argument("--persona-id", default="mochi")
+    parser.add_argument("--agent-id", default="agent-bench")
+    parser.add_argument("--device-id", default="bench-device")
+    parser.add_argument("--instance-id", default="bench-runtime")
     parser.add_argument(
         "--mcp-url",
         default="http://127.0.0.1:8030/mcp",
@@ -172,10 +178,19 @@ def main() -> int:
     from eidolon.memory.config.memory_settings import get_memory_settings
 
     s = get_memory_settings()
+    context = MemoryActorContext(
+        tenant_id=args.tenant_id,
+        owner_user_id=args.owner_user_id,
+        persona_id=args.persona_id,
+        agent_id=args.agent_id,
+        device_id=args.device_id,
+        instance_id=args.instance_id,
+        session_id="bench-w",
+    )
     row = asyncio.run(
         _run(
             count=args.count,
-            user_id=args.user_id,
+            context=context,
             nats_url=s.nats.url,
             stream=s.nats.stream,
             mcp_url=args.mcp_url,

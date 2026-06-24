@@ -34,7 +34,7 @@ from eidolon.memory.config.memory_settings import (
     get_memory_settings,
     resolve_log_dir,
 )
-from eidolon.memory.config.palace_directory import resolve_palace_for_user
+from eidolon.memory.config.palace_directory import resolve_palace_for_memory_space
 from eidolon.memory.config.users import (
     UserEntry,
     UsersConfig,
@@ -88,7 +88,7 @@ def _restore_sqlite_database(source: Path, dest: Path) -> None:
 
 
 def _agent_cli_argv(user: UserEntry, palace_path: Path) -> list[str]:
-    argv = [_AGENT_CLI, "--user-id", user.id, "--port", str(user.port)]
+    argv = [_AGENT_CLI, "--memory-space-id", user.id, "--port", str(user.port)]
     if user.palace_path:
         argv += ["--palace-path", str(palace_path)]
     return argv
@@ -417,7 +417,7 @@ class Supervisor:
         return load_users_config(self._settings)
 
     def _palace_for(self, user: UserEntry) -> Path:
-        return resolve_palace_for_user(
+        return resolve_palace_for_memory_space(
             self._settings,
             user.id,
             path_override=user.palace_path or None,

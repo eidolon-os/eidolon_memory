@@ -31,7 +31,7 @@ costs 200 KB total. Forget any growth concern.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
+from collections import defaultdict, deque
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
@@ -47,7 +47,7 @@ class WorkingMemoryRing:
     invariant the rest of the read/write path relies on.
     """
 
-    __slots__ = ("_buf", "_lock", "_maxlen")
+    __slots__ = ("_bufs", "_lock", "_maxlen")
 
     def __init__(self, *, maxlen: int, lock: asyncio.Lock) -> None:
         if maxlen < 0:
@@ -56,7 +56,9 @@ class WorkingMemoryRing:
         # ``deque(maxlen=0)`` exists but silently drops everything — we keep
         # it as the canonical "disabled" sentinel so callers can pass the
         # config value verbatim without branching.
-        self._buf: deque[ConversationTurnPayload] = deque(maxlen=max(0, maxlen))
+        self._bufs: dict[tuple[str, str], deque[ConversationTurnPayload]] = defaultdict(
+            lambda: deque(maxlen=max(0, maxlen))
+        )
         self._lock = lock
         self._maxlen = maxlen
 
@@ -76,10 +78,16 @@ class WorkingMemoryRing:
         """
         if not self.enabled:
             return
+        key = (turn.context.device_id, turn.context.session_id)
         async with self._lock:
-            self._buf.append(turn)
+            self._bufs[key].append(turn)
 
-    async def snapshot(self) -> list[ConversationTurnPayload]:
+    async def snapshot(
+        self,
+        *,
+        device_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list[ConversationTurnPayload]:
         """Return a shallow-deepcopy of the current ring contents.
 
         The deepcopy is intentional: callers (renderer / MCP envelope)
@@ -90,9 +98,15 @@ class WorkingMemoryRing:
         if not self.enabled:
             return []
         async with self._lock:
-            return [deepcopy(t) for t in self._buf]
+            if device_id is not None and session_id is not None:
+                return [deepcopy(t) for t in self._bufs.get((device_id, session_id), [])]
+            turns: list[ConversationTurnPayload] = []
+            for buf in self._bufs.values():
+                turns.extend(buf)
+            turns.sort(key=lambda t: t.timestamp)
+            return [deepcopy(t) for t in turns[-self._maxlen :]]
 
     async def clear(self) -> None:
         """Drop all turns. Used on session boundaries (TBD) and in tests."""
         async with self._lock:
-            self._buf.clear()
+            self._bufs.clear()
