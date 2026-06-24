@@ -36,3 +36,4 @@ reports/architecture_d1_baseline_*/
 *_副本.*
 *_copy.*
 reports/e2e_*/
+reports/*

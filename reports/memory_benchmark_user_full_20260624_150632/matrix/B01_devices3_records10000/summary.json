@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-06-24T07:06:42Z",
+  "memory_space_id": "default.benchmark.default",
+  "records": 10000,
+  "devices": 3,
+  "benchmarks": [
+    {
+      "id": "B-01",
+      "latency_ms": {
+        "p50": 10.280874994350597,
+        "p95": 13.717791007366031,
+        "p99": 21.827999997185543,
+        "mean": 10.852084199432284
+      },
+      "other_device_leakage": 0
+    },
+    {
+      "id": "B-02",
+      "events": 1000,
+      "write_latency_ms": {
+        "p50": 0.3345830045873299,
+        "p95": 0.42558299901429564,
+        "p99": 1.0256670066155493,
+        "mean": 0.3505336162925232
+      },
+      "duplicates_seen": 1000,
+      "duplicate_scan_ms": 69.94900001154747
+    },
+    {
+      "id": "B-03",
+      "persona_hit_rate": 1.0,
+      "current_device_precision": 1.0,
+      "other_device_leakage": 0
+    },
+    {
+      "id": "B-04",
+      "base_mean_ms": 10.03492899981211,
+      "extension_mean_ms": 9.869977148628095,
+      "overhead_pct": -1.6437769633158614
+    }
+  ]
+}
