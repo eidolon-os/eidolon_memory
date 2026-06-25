@@ -11,12 +11,12 @@ Three layers of contract to verify:
 
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from eidolon_sdk.memory import MemoryActorContext, UserConfirmedFactCommand
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
@@ -26,10 +26,23 @@ from eidolon.memory.application.turn_processor import (
     process_command_message,
 )
 from eidolon.memory.config.memory_settings import load_memory_settings
-from eidolon_sdk.memory import UserConfirmedFactCommand
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 pytestmark = pytest.mark.asyncio
+
+MEMORY_SPACE_ID = "default.alice.default"
+
+
+def _actor_context() -> MemoryActorContext:
+    return MemoryActorContext(
+        tenant_id="default",
+        owner_user_id="alice",
+        persona_id="default",
+        agent_id="agent",
+        device_id="device",
+        instance_id="instance",
+        session_id="s1",
+    )
 
 
 # ─── Schema ────────────────────────────────────────────────────────────────
@@ -37,7 +50,7 @@ pytestmark = pytest.mark.asyncio
 
 def test_cmd_defaults():
     cmd = UserConfirmedFactCommand(
-        request_id="r1", user_id="alice",
+        request_id="r1", memory_space_id=MEMORY_SPACE_ID,
         issued_at="2026-05-26T00:00:00Z", issuer="agent",
         text="我喝乌龙茶不喝咖啡", wing="Wing_Profile",
     )
@@ -53,7 +66,7 @@ def test_cmd_rejects_empty_text():
     import pydantic
     with pytest.raises(pydantic.ValidationError):
         UserConfirmedFactCommand(
-            request_id="r1", user_id="alice",
+            request_id="r1", memory_space_id=MEMORY_SPACE_ID,
             issued_at="2026-05-26T00:00:00Z",
             text="", wing="Wing_Profile",
         )
@@ -62,7 +75,7 @@ def test_cmd_rejects_empty_text():
 def test_cmd_validates_importance_and_confidence_bounds():
     import pydantic
     base = dict(
-        request_id="r1", user_id="alice",
+        request_id="r1", memory_space_id=MEMORY_SPACE_ID,
         issued_at="2026-05-26T00:00:00Z",
         text="x", wing="Wing_Profile",
     )
@@ -76,7 +89,7 @@ def test_cmd_replay_safe_without_optional_fields():
     """Older callers may not send ``tags`` / ``memory_type`` — defaults kick in."""
     raw = {
         "kind": "user_confirm_fact",
-        "request_id": "r1", "user_id": "alice",
+        "request_id": "r1", "memory_space_id": MEMORY_SPACE_ID,
         "issued_at": "2026-05-26T00:00:00Z", "issuer": "agent",
         "text": "verbatim", "wing": "Wing_Profile",
     }
@@ -92,7 +105,7 @@ async def test_ingest_writes_verbatim_drawer_with_source_marker():
     """The drawer the user wrote MUST land verbatim, NOT paraphrased."""
     backend = LockedBackend(FakeMemoryBackend())
     cmd = UserConfirmedFactCommand(
-        request_id="abc123", user_id="alice",
+        request_id="abc123", memory_space_id=MEMORY_SPACE_ID,
         issued_at="2026-05-26T00:00:00Z", issuer="agent",
         text="我喝乌龙茶不喝咖啡", wing="Wing_Profile",
         memory_type="preference",
@@ -124,7 +137,7 @@ async def test_ingest_idempotent_on_redelivery():
     """Same request_id → same fragment_id → chroma dedups."""
     backend = LockedBackend(FakeMemoryBackend())
     cmd = UserConfirmedFactCommand(
-        request_id="dedup-key", user_id="alice",
+        request_id="dedup-key", memory_space_id=MEMORY_SPACE_ID,
         issued_at="2026-05-26T00:00:00Z",
         text="x", wing="Wing_Profile",
     )
@@ -142,7 +155,7 @@ async def test_process_command_message_dispatches_user_confirm():
     backend = LockedBackend(FakeMemoryBackend())
     payload = {
         "kind": "user_confirm_fact",
-        "request_id": "wire-1", "user_id": "alice",
+        "request_id": "wire-1", "memory_space_id": MEMORY_SPACE_ID,
         "issued_at": "2026-05-26T00:00:00Z", "issuer": "agent",
         "text": "wire-shaped confirm", "wing": "Wing_Profile",
     }
@@ -152,7 +165,8 @@ async def test_process_command_message_dispatches_user_confirm():
     )
     settings = load_memory_settings()
     await process_command_message(
-        msg, backend=backend, kg=None, settings=settings, expected_user_id="alice",
+        msg, backend=backend, kg=None, settings=settings,
+        expected_memory_space_id=MEMORY_SPACE_ID,
     )
     docs = list(backend._inner.docs.values())
     assert len(docs) == 1
@@ -160,13 +174,13 @@ async def test_process_command_message_dispatches_user_confirm():
     msg.ack.assert_awaited()
 
 
-async def test_process_command_message_user_id_mismatch_ignored():
-    """Cross-user replay (cmd from another user_id) is dropped at the cmd
+async def test_process_command_message_memory_space_mismatch_ignored():
+    """Cross-space replay is dropped at the cmd
     dispatcher (existing guard); user-confirm inherits the same protection."""
     backend = LockedBackend(FakeMemoryBackend())
     payload = {
         "kind": "user_confirm_fact",
-        "request_id": "wire-2", "user_id": "bob",   # mismatch
+        "request_id": "wire-2", "memory_space_id": "default.bob.default",
         "issued_at": "2026-05-26T00:00:00Z", "issuer": "agent",
         "text": "should not land", "wing": "Wing_Profile",
     }
@@ -176,7 +190,8 @@ async def test_process_command_message_user_id_mismatch_ignored():
     )
     settings = load_memory_settings()
     await process_command_message(
-        msg, backend=backend, kg=None, settings=settings, expected_user_id="alice",
+        msg, backend=backend, kg=None, settings=settings,
+        expected_memory_space_id=MEMORY_SPACE_ID,
     )
     assert backend._inner.docs == {}
     msg.ack.assert_awaited()  # acked anyway — bad routing is not a NAK
@@ -190,7 +205,7 @@ def _rec(value: str, *, source: str | None = None) -> MemoryWireRecord:
     if source:
         meta["source"] = source
     return MemoryWireRecord(
-        user_id="alice", key=f"k-{abs(hash((value, source))) % 10_000}",
+        memory_space_id=MEMORY_SPACE_ID, key=f"k-{abs(hash((value, source))) % 10_000}",
         value=value, metadata=meta,
     )
 
@@ -203,7 +218,10 @@ async def test_recall_pins_user_confirmed_ahead_of_regular():
     wing = next(w.id for w in settings.wings if w.id != "Wing_Privacy")
 
     async def _seed(key: str, text: str, *, source: str | None = None) -> None:
-        meta: dict[str, object] = {"memory_type": "preference"}
+        meta: dict[str, object] = {
+            "memory_space_id": MEMORY_SPACE_ID,
+            "memory_type": "preference",
+        }
         if source:
             meta["source"] = source
         await backend.ingest_text(
@@ -217,7 +235,7 @@ async def test_recall_pins_user_confirmed_ahead_of_regular():
     result = await recall_with_kg_fusion(
         backend, settings,
         query="用户",        # FakeBackend substring filter → all three returned
-        user_id=wing, top_k=5,
+        context=_actor_context(), top_k=5,
         kg=None, for_voice=False,
     )
     values = [r.value for r in result["vector"]]
@@ -234,11 +252,11 @@ async def test_recall_unchanged_when_no_user_confirmed_present():
     for i, text in enumerate(["alpha", "beta", "gamma"]):
         await backend.ingest_text(
             wing=wing, room=f"k{i}", text=f"用户 {text}",
-            metadata={"memory_type": "preference"},
+            metadata={"memory_space_id": MEMORY_SPACE_ID, "memory_type": "preference"},
         )
     result = await recall_with_kg_fusion(
         backend, settings,
-        query="用户", user_id=wing, top_k=5, kg=None, for_voice=False,
+        query="用户", context=_actor_context(), top_k=5, kg=None, for_voice=False,
     )
     # No user-confirmed → no reordering; only assertion is non-empty + no errors.
     assert len(result["vector"]) == 3
@@ -255,20 +273,28 @@ async def test_recall_pins_multiple_user_confirmed_then_others():
     # Two user-confirmed + one regular.
     await backend.ingest_text(
         wing=wing, room="reg-1", text="用户散步",
-        metadata={"memory_type": "preference"},
+        metadata={"memory_space_id": MEMORY_SPACE_ID, "memory_type": "preference"},
     )
     await backend.ingest_text(
         wing=wing, room="conf-A", text="用户喝乌龙茶",
-        metadata={"memory_type": "preference", "source": "user-confirmed"},
+        metadata={
+            "memory_space_id": MEMORY_SPACE_ID,
+            "memory_type": "preference",
+            "source": "user-confirmed",
+        },
     )
     await backend.ingest_text(
         wing=wing, room="conf-B", text="用户吃素",
-        metadata={"memory_type": "preference", "source": "user-confirmed"},
+        metadata={
+            "memory_space_id": MEMORY_SPACE_ID,
+            "memory_type": "preference",
+            "source": "user-confirmed",
+        },
     )
 
     result = await recall_with_kg_fusion(
         backend, settings,
-        query="用户", user_id=wing, top_k=5, kg=None, for_voice=False,
+        query="用户", context=_actor_context(), top_k=5, kg=None, for_voice=False,
     )
     sources = [(r.metadata or {}).get("source") for r in result["vector"]]
     # Two user-confirmed first (any order), then the regular one.

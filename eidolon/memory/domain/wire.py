@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 def parse_memory_datetime(value: Any) -> datetime | None:
@@ -56,7 +56,7 @@ def derive_memory_time(
 class MemoryWireRecord(BaseModel):
     """Wire shape aligned with ``MemoryRecord`` for NATS / JSON payloads."""
 
-    memory_space_id: str = Field(validation_alias=AliasChoices("memory_space_id", "user_id"))
+    memory_space_id: str
     key: str
     value: Any
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -82,7 +82,7 @@ class MemoryWireRecord(BaseModel):
 
     @property
     def user_id(self) -> str:
-        """Compatibility shim for lower-level MemPalace fields during migration."""
+        """Lower-level MemPalace adapters still name the tenant field ``user_id``."""
 
         return self.memory_space_id
 

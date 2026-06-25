@@ -200,11 +200,11 @@ class SupervisorConfig(BaseModel):
 class NatsConfig(BaseModel):
     url: str = "nats://localhost:4222"
     stream: str = "MEMORY_TURNS"
-    # NATS subject = <base>.<memory_space_id>. The live subscriber and SDK helpers
-    # own the base (``eidolon.memory.turn``); this default is kept only for the
-    # discovery advertiser and must track ``MEMORY_CONVERSATION_TURN_BASE``.
+    # NATS subject = <base>.<memory_space_token>. The SDK helpers own token
+    # encoding; this default is kept only for the discovery advertiser and must
+    # track ``MEMORY_CONVERSATION_TURN_BASE``.
     conversation_turn_subject_base: str = "eidolon.memory.turn"
-    durable_prefix: str = "eidolon-memory-agent"  # per-user durable = <prefix>-<user_id>
+    durable_prefix: str = "eidolon-memory-agent"
     stream_max_age_seconds: int = 86400 * 14
     stream_max_msgs: int = 5000
     stream_max_bytes: int = 536_870_912

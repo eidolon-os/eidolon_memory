@@ -18,8 +18,8 @@ flags (``is_alive``, ``returncode``) are emulated on the mock.
 from __future__ import annotations
 
 import asyncio
-import subprocess
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -40,6 +40,11 @@ from eidolon.memory.entrypoints.supervisor import (
 )
 from eidolon.memory.infrastructure.palace_init import PalaceInitError
 
+ALICE_SPACE = "default.alice.mochi"
+BOB_SPACE = "default.bob.mochi"
+FAST_SPACE = "default.fast.mochi"
+SLOW_SPACE = "default.slow.mochi"
+
 # ─── argv builder ──────────────────────────────────────────────────────────
 
 
@@ -52,7 +57,7 @@ def test_consolidator_cli_argv_has_all_knobs():
     is the single biggest footgun this test guards against.
     """
     user = UserEntry(
-        id="alice", port=9001, enabled=True,
+        id=ALICE_SPACE, port=9001, enabled=True,
         consolidator=ConsolidatorUserConfig(
             enabled=True,
             interval_hours=8,
@@ -63,7 +68,7 @@ def test_consolidator_cli_argv_has_all_knobs():
     )
     argv = _consolidator_cli_argv(user)
     assert argv[0] == "eidolon-memory-consolidator"
-    assert ["--user-id", "alice"] == argv[1:3]
+    assert ["--memory-space-id", ALICE_SPACE] == argv[1:3]
     assert "--mcp-url" not in argv
     # All per-user knobs propagate.
     flat = " ".join(argv)
@@ -76,7 +81,7 @@ def test_consolidator_cli_argv_has_all_knobs():
 def test_consolidator_cli_argv_rejects_disabled_user():
     """Calling the argv builder on a non-enabled user is a programmer
     error — the supervisor's spawn path must check first."""
-    user = UserEntry(id="alice", port=9001, enabled=True, consolidator=None)
+    user = UserEntry(id=ALICE_SPACE, port=9001, enabled=True, consolidator=None)
     with pytest.raises(AssertionError):
         _consolidator_cli_argv(user)
 
@@ -84,7 +89,7 @@ def test_consolidator_cli_argv_rejects_disabled_user():
 def test_agent_argv_unaffected_by_consolidator_block():
     """The consolidator config must not leak into agent_runner's argv."""
     user = UserEntry(
-        id="alice", port=9001, enabled=True,
+        id=ALICE_SPACE, port=9001, enabled=True,
         consolidator=ConsolidatorUserConfig(enabled=True),
     )
     argv = _agent_cli_argv(user, palace_path=Path("/tmp/p"))
@@ -147,12 +152,12 @@ async def test_supervisor_skips_consolidator_when_disabled(
         lambda _s: tmp_path / "logs",
     )
     _patch_registry(monkeypatch, [
-        {"id": "alice", "port": 9001, "enabled": True},  # no consolidator block
+        {"id": ALICE_SPACE, "port": 9001, "enabled": True},  # no consolidator block
     ])
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
-        assert "alice" in sup._children
+        assert ALICE_SPACE in sup._children
         assert sup._consolidators == {}
         # subprocess.Popen was called exactly once — only for agent_runner.
         assert _patched_popen.call_count == 1
@@ -172,7 +177,7 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     """
     _patch_registry(monkeypatch, [])
     sup = _build_supervisor(tmp_path)
-    palace_path = tmp_path / "palaces" / "alice"
+    palace_path = tmp_path / "palaces" / ALICE_SPACE
     palace_path.mkdir(parents=True)
     kg_path = palace_path / "knowledge_graph.sqlite3"
     conn = sqlite3.connect(kg_path)
@@ -183,7 +188,7 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     finally:
         conn.close()
     user = UserEntry(
-        id="alice",
+        id=ALICE_SPACE,
         port=9001,
         enabled=True,
         palace_path=str(palace_path),
@@ -218,7 +223,7 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
         "--backend",
         "chroma",
         "--palace",
-        str(tmp_path / "palaces" / "alice"),
+        str(tmp_path / "palaces" / ALICE_SPACE),
         "repair",
         "--mode",
         "from-sqlite",
@@ -246,15 +251,15 @@ async def test_supervisor_spawns_consolidator_when_enabled(
     )
     _patch_registry(monkeypatch, [
         {
-            "id": "alice", "port": 9001, "enabled": True,
+            "id": ALICE_SPACE, "port": 9001, "enabled": True,
             "consolidator": {"enabled": True, "interval_hours": 6},
         },
     ])
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
-        assert "alice" in sup._children
-        assert "alice" in sup._consolidators
+        assert ALICE_SPACE in sup._children
+        assert ALICE_SPACE in sup._consolidators
         # Two subprocess spawns: agent + consolidator.
         assert _patched_popen.call_count == 2
         argv_list = [c.args[0] for c in _patched_popen.call_args_list]
@@ -278,16 +283,16 @@ async def test_supervisor_per_user_consolidator_opt_in(
     )
     _patch_registry(monkeypatch, [
         {
-            "id": "alice", "port": 9001, "enabled": True,
+            "id": ALICE_SPACE, "port": 9001, "enabled": True,
             "consolidator": {"enabled": True},
         },
-        {"id": "bob", "port": 9002, "enabled": True},  # no consolidator
+        {"id": BOB_SPACE, "port": 9002, "enabled": True},  # no consolidator
     ])
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
-        assert set(sup._children) == {"alice", "bob"}
-        assert set(sup._consolidators) == {"alice"}
+        assert set(sup._children) == {ALICE_SPACE, BOB_SPACE}
+        assert set(sup._consolidators) == {ALICE_SPACE}
         assert _patched_popen.call_count == 3  # 2 agents + 1 consolidator
     finally:
         await sup.stop()
@@ -305,12 +310,12 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
         lambda _s: tmp_path / "logs",
     )
     _patch_registry(monkeypatch, [
-        {"id": "fast", "port": 9001, "enabled": True},
-        {"id": "slow", "port": 9002, "enabled": True},
+        {"id": FAST_SPACE, "port": 9001, "enabled": True},
+        {"id": SLOW_SPACE, "port": 9002, "enabled": True},
     ])
 
     def _fake_init(user_id: str, _palace_path: Path, **_kwargs) -> None:
-        if user_id == "slow":
+        if user_id == SLOW_SPACE:
             time.sleep(0.3)
 
     monkeypatch.setattr(
@@ -324,7 +329,7 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
 
     def _spawn_spy(self: _Child) -> None:
         real_spawn(self)
-        if self.user.id == "fast":
+        if self.user.id == FAST_SPACE:
             loop.call_soon(fast_spawned.set)
 
     monkeypatch.setattr(_Child, "spawn", _spawn_spy)
@@ -334,12 +339,12 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
     start_task = asyncio.create_task(sup.start())
     try:
         await asyncio.wait_for(fast_spawned.wait(), timeout=0.5)
-        assert "fast" in sup._children
-        assert "slow" not in sup._children
+        assert FAST_SPACE in sup._children
+        assert SLOW_SPACE not in sup._children
         assert not start_task.done()
 
         await start_task
-        assert set(sup._children) == {"fast", "slow"}
+        assert set(sup._children) == {FAST_SPACE, SLOW_SPACE}
     finally:
         if not start_task.done():
             start_task.cancel()
@@ -361,12 +366,12 @@ async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
         lambda _s: tmp_path / "logs",
     )
     _patch_registry(monkeypatch, [
-        {"id": "fast", "port": 9001, "enabled": True},
-        {"id": "slow", "port": 9002, "enabled": True},
+        {"id": FAST_SPACE, "port": 9001, "enabled": True},
+        {"id": SLOW_SPACE, "port": 9002, "enabled": True},
     ])
 
     def _fake_init(user_id: str, _palace_path: Path, **_kwargs) -> None:
-        if user_id == "slow":
+        if user_id == SLOW_SPACE:
             time.sleep(0.3)
 
     monkeypatch.setattr(
@@ -380,7 +385,7 @@ async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
 
     def _spawn_spy(self: _Child) -> None:
         real_spawn(self)
-        if self.user.id == "fast":
+        if self.user.id == FAST_SPACE:
             loop.call_soon(fast_spawned.set)
 
     monkeypatch.setattr(_Child, "spawn", _spawn_spy)
@@ -390,12 +395,12 @@ async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
     reconcile_task = asyncio.create_task(sup._reconcile())
     try:
         await asyncio.wait_for(fast_spawned.wait(), timeout=0.5)
-        assert "fast" in sup._children
-        assert "slow" not in sup._children
+        assert FAST_SPACE in sup._children
+        assert SLOW_SPACE not in sup._children
         assert not reconcile_task.done()
 
         await reconcile_task
-        assert set(sup._children) == {"fast", "slow"}
+        assert set(sup._children) == {FAST_SPACE, SLOW_SPACE}
     finally:
         if not reconcile_task.done():
             reconcile_task.cancel()
@@ -415,12 +420,12 @@ async def test_reconcile_restarts_degraded_dead_agent_child(
         lambda _s: tmp_path / "logs",
     )
     _patch_registry(monkeypatch, [
-        {"id": "alice", "port": 9001, "enabled": True},
+        {"id": ALICE_SPACE, "port": 9001, "enabled": True},
     ])
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
-        old = sup._children["alice"]
+        old = sup._children[ALICE_SPACE]
         assert old.proc is not None
         old.proc.poll.return_value = 1
         old.proc.returncode = 1
@@ -428,7 +433,7 @@ async def test_reconcile_restarts_degraded_dead_agent_child(
 
         await sup._reconcile()
 
-        new = sup._children["alice"]
+        new = sup._children[ALICE_SPACE]
         assert new is not old
         assert _patched_popen.call_count == 2
     finally:
@@ -444,9 +449,9 @@ async def test_reconcile_retries_palace_init_failure(
         lambda _s: tmp_path / "logs",
     )
     _patch_registry(monkeypatch, [
-        {"id": "alice", "port": 9001, "enabled": True},
+        {"id": ALICE_SPACE, "port": 9001, "enabled": True},
     ])
-    attempts = {"alice": 0}
+    attempts = {ALICE_SPACE: 0}
 
     def _fake_init(user_id: str, _palace_path: Path, **_kwargs) -> None:
         attempts[user_id] += 1
@@ -462,13 +467,13 @@ async def test_reconcile_retries_palace_init_failure(
     sup = Supervisor(settings, eager_init=True)
     try:
         await sup._reconcile()
-        assert "alice" not in sup._children
-        assert "alice" in sup._init_failures
+        assert ALICE_SPACE not in sup._children
+        assert ALICE_SPACE in sup._init_failures
 
         await sup._reconcile()
-        assert "alice" in sup._children
-        assert "alice" not in sup._init_failures
-        assert attempts["alice"] == 2
+        assert ALICE_SPACE in sup._children
+        assert ALICE_SPACE not in sup._init_failures
+        assert attempts[ALICE_SPACE] == 2
     finally:
         await sup.stop()
 
@@ -483,26 +488,26 @@ async def test_reconcile_disabling_consolidator_terminates_it(
     )
     cfg = _patch_registry(monkeypatch, [
         {
-            "id": "alice", "port": 9001, "enabled": True,
+            "id": ALICE_SPACE, "port": 9001, "enabled": True,
             "consolidator": {"enabled": True},
         },
     ])
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
-        assert "alice" in sup._consolidators
+        assert ALICE_SPACE in sup._consolidators
         # Update registry with consolidator disabled.
         cfg.users = UsersConfig.model_validate({"users": [
             {
-                "id": "alice",
+                "id": ALICE_SPACE,
                 "port": 9001,
                 "enabled": True,
                 "consolidator": {"enabled": False},
             }
         ]}).users
         await sup._reconcile()
-        assert "alice" in sup._children       # agent still alive
-        assert "alice" not in sup._consolidators
+        assert ALICE_SPACE in sup._children       # agent still alive
+        assert ALICE_SPACE not in sup._consolidators
     finally:
         await sup.stop()
 
@@ -518,14 +523,14 @@ async def test_reconcile_port_change_restarts_consolidator(
     )
     cfg = _patch_registry(monkeypatch, [
         {
-            "id": "alice", "port": 9001, "enabled": True,
+            "id": ALICE_SPACE, "port": 9001, "enabled": True,
             "consolidator": {"enabled": True},
         },
     ])
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
-        first_cons = sup._consolidators["alice"]
+        first_cons = sup._consolidators[ALICE_SPACE]
         original_cons_argv = next(
             a for a in [c.args[0] for c in _patched_popen.call_args_list]
             if a[0] == "eidolon-memory-consolidator"
@@ -535,7 +540,7 @@ async def test_reconcile_port_change_restarts_consolidator(
         # Shift port to 9099.
         cfg.users = UsersConfig.model_validate({"users": [
             {
-                "id": "alice",
+                "id": ALICE_SPACE,
                 "port": 9099,
                 "enabled": True,
                 "consolidator": {"enabled": True},
@@ -544,7 +549,7 @@ async def test_reconcile_port_change_restarts_consolidator(
         await sup._reconcile()
 
         # Consolidator MUST have been replaced (not just reconfigured).
-        new_cons = sup._consolidators["alice"]
+        new_cons = sup._consolidators[ALICE_SPACE]
         assert new_cons is not first_cons
 
         # And the latest spawn carries the new port.
@@ -566,14 +571,14 @@ async def test_stop_terminates_consolidators_before_agents(
     )
     _patch_registry(monkeypatch, [
         {
-            "id": "alice", "port": 9001, "enabled": True,
+            "id": ALICE_SPACE, "port": 9001, "enabled": True,
             "consolidator": {"enabled": True},
         },
     ])
     sup = _build_supervisor(tmp_path)
     await sup.start()
-    cons_proc = sup._consolidators["alice"].proc
-    agent_proc = sup._children["alice"].proc
+    cons_proc = sup._consolidators[ALICE_SPACE].proc
+    agent_proc = sup._children[ALICE_SPACE].proc
 
     await sup.stop()
     # Both got ``terminate()`` called; we just check both dicts cleared.

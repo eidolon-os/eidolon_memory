@@ -22,7 +22,6 @@ def _settings() -> MemorySettings:
             "nats": {
                 "url": "nats://127.0.0.1:4222",
                 "stream": "MEMORY_TURNS",
-                "conversation_turn_subject_base": "agent.memory.conversation.turn",
             },
             "mcp_http": {"host": "127.0.0.1", "port": 8030, "path": "/mcp"},
             "discovery_http": {
@@ -60,12 +59,16 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
     assert payload["nats"] == {
         "url": "nats://127.0.0.1:4222",
         "stream": "MEMORY_TURNS",
-        "turn_subject_template": "eidolon.memory.turn.{user_id}",
-        "cmd_subject_template": "eidolon.memory.cmd.{user_id}",
+        "turn_subject_template": "eidolon.memory.turn.{memory_space_token}",
+        "cmd_subject_template": "eidolon.memory.cmd.{memory_space_token}",
     }
     assert payload["users"] == [
         {
-            "user_id": "default.alice.default",
+            "memory_space_id": "default.alice.default",
+            "tenant_id": "default",
+            "owner_user_id": "alice",
+            "companion_id": "default",
+            "persona_id": "default",
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:8030/mcp",
             "mcp_auth": {"type": "none"},
@@ -96,7 +99,11 @@ async def test_discovery_uses_default_user_when_registry_empty(
 
     assert payload["users"] == [
         {
-            "user_id": "default.default.default",
+            "memory_space_id": "default.default.default",
+            "tenant_id": "default",
+            "owner_user_id": "default",
+            "companion_id": "default",
+            "persona_id": "default",
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:8030/mcp",
             "mcp_auth": {"type": "none"},

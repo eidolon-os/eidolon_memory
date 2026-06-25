@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
 from eidolon_sdk.memory import all_memory_stream_patterns
+from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
 
 from eidolon.memory.config.memory_settings import MemorySettings
 

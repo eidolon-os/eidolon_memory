@@ -6,7 +6,7 @@ One ``eidolon-memory-agent --memory-space-id=<id> --port=<P>`` process per memor
 * wraps that backend in ``LockedBackend`` so reads + writes share one
   ``asyncio.Lock``
 * hosts the FastMCP control-plane on the loopback port (Admin / Claude IDE)
-* runs the NATS JetStream subscriber for ``eidolon.memory.turn.<id>``
+* runs the NATS JetStream subscriber for ``eidolon.memory.turn.<memory_space_token>``
 * runs the steward in-process (writes never leave this process)
 
 LiveKit pipelines that live in the same process call the recall path directly

@@ -6,10 +6,10 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from eidolon_sdk.memory import ConversationTurnPayload, MemoryActorContext
 
 from eidolon.memory.application.steward.llm import LiteLLMSteward
 from eidolon.memory.config.memory_settings import MemorySettings, load_memory_settings
-from eidolon_sdk.memory import ConversationTurnPayload
 
 
 def _settings_local_llm() -> MemorySettings:
@@ -20,11 +20,18 @@ def _settings_local_llm() -> MemorySettings:
 def _turn() -> ConversationTurnPayload:
     return ConversationTurnPayload(
         turn_id="t1",
+        context=MemoryActorContext(
+            tenant_id="default",
+            owner_user_id="u1",
+            persona_id="default",
+            agent_id="agent",
+            device_id="device",
+            instance_id="instance",
+            session_id="s1",
+        ),
         user_text="我喜欢晚上听轻音乐放松",
         assistant_text="我会记得这能帮你放松。",
         timestamp="2026-05-14T20:00:00+08:00",
-        session_id="s1",
-        user_id="u1",
     )
 
 
@@ -40,7 +47,9 @@ async def test_llm_steward_accepts_valid_json(monkeypatch: pytest.MonkeyPatch):
                           "should_write": true,
                           "reason": "有长期偏好",
                           "fragments": [{
-                            "user_id": "u1",
+                            "memory_space_id": "default.u1.default",
+                            "source_device_id": "device",
+                            "source_instance_id": "instance",
                             "wing": "Wing_Profile",
                             "room": "profile_core",
                             "content": "用户喜欢晚上听轻音乐放松。",
@@ -65,7 +74,7 @@ async def test_llm_steward_accepts_valid_json(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
     decision = await LiteLLMSteward(_settings_local_llm()).decide(_turn())
     assert decision.should_write
-    assert decision.fragments[0].fragment_id
+    assert decision.fragments[0].memory_id
     assert decision.fragments[0].metadata["steward"] == "llm"
 
 

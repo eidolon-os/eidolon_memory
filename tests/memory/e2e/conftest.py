@@ -26,6 +26,13 @@ import httpx
 import nats
 import pytest
 import pytest_asyncio
+from eidolon_sdk.memory import (
+    MemoryActorContext,
+    conversation_turn_subject,
+    derive_memory_space_id,
+    memory_command_subject,
+    validate_memory_space_id,
+)
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
@@ -33,6 +40,13 @@ _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _REPORTS_ROOT = _REPO_ROOT / "reports"
 _NATS_DATA_FALLBACK = Path.home() / "eidolon" / "data" / "nats-jetstream-e2e"
+
+
+def _e2e_memory_space_id(value: str) -> str:
+    try:
+        return validate_memory_space_id(value)
+    except ValueError:
+        return derive_memory_space_id("default", value, "default")
 
 
 def tail_file(path: Path, *, max_chars: int = 4000) -> str:
@@ -132,7 +146,7 @@ def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
 
 
 async def _delete_e2e_durables(nats_url: str, user_id: str) -> None:
-    """Reset the JetStream state for ``user_id`` so the next spawn starts
+    """Reset the JetStream state for ``memory_space_id`` so the next spawn starts
     from a virgin subscription with no stale messages.
 
     Three steps, each best-effort:
@@ -162,8 +176,8 @@ async def _delete_e2e_durables(nats_url: str, user_id: str) -> None:
                 pass
         # 2) purge stream messages on this user's subjects
         for subject in (
-            f"agent.memory.conversation.turn.{user_id}",
-            f"agent.memory.cmd.{user_id}",
+            conversation_turn_subject(user_id),
+            memory_command_subject(user_id),
         ):
             try:
                 await js.purge_stream("MEMORY_TURNS", subject=subject)
@@ -200,8 +214,9 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                env_overrides: dict[str, str] | None = None,
                palace_root_override: Path | None = None,
                extra_settings: dict[str, Any] | None = None) -> _AgentHandle:
+        memory_space_id = _e2e_memory_space_id(user_id)
         palace_root = palace_root_override or palaces_root
-        palace_dir = palace_root / user_id
+        palace_dir = palace_root / memory_space_id
         if palace_dir.exists():
             shutil.rmtree(palace_dir)
         # Wipe any stale JetStream state for this user — prior crashes or
@@ -218,20 +233,20 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                     import threading
                     t = threading.Thread(
                         target=lambda: asyncio.new_event_loop().run_until_complete(
-                            _delete_e2e_durables(live_nats, user_id)
+                            _delete_e2e_durables(live_nats, memory_space_id)
                         )
                     )
                     t.start()
                     t.join(timeout=10)
                 else:
-                    loop.run_until_complete(_delete_e2e_durables(live_nats, user_id))
+                    loop.run_until_complete(_delete_e2e_durables(live_nats, memory_space_id))
             except RuntimeError:
-                asyncio.run(_delete_e2e_durables(live_nats, user_id))
+                asyncio.run(_delete_e2e_durables(live_nats, memory_space_id))
         except Exception:  # noqa: BLE001 - best-effort cleanup
             pass
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        log_dir = _REPORTS_ROOT / f"e2e_{user_id}_{ts}"
+        log_dir = _REPORTS_ROOT / f"e2e_{memory_space_id}_{ts}"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "agent_runner.log"
 
@@ -246,7 +261,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         # Write a per-spawn settings yaml so tests can override steward.mode
         # without touching the user's local config/settings.yaml.
         import yaml
-        settings_path = tmp_settings_dir / f"{user_id}.yaml"
+        settings_path = tmp_settings_dir / f"{memory_space_id}.yaml"
         settings_doc: dict[str, Any] = {
             "steward": {"mode": steward_mode},
             "mcp_http": {"host": "127.0.0.1", "port": port},
@@ -298,7 +313,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
 
         with log_path.open("ab") as log_fp:
             proc = subprocess.Popen(
-                [str(agent_cli), "--user-id", user_id, "--port", str(port)],
+                [str(agent_cli), "--memory-space-id", memory_space_id, "--port", str(port)],
                 stdout=log_fp,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -312,13 +327,13 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
             except subprocess.TimeoutExpired:
                 proc.kill()
             pytest.fail(
-                f"agent_runner --user-id {user_id} --port {port} failed to "
+                f"agent_runner --memory-space-id {memory_space_id} --port {port} failed to "
                 f"bind healthy MCP within 45s.\n"
                 f"agent log ({log_path}) tail:\n{tail_file(log_path)}"
             )
 
         handle = _AgentHandle(
-            user_id=user_id,
+            user_id=memory_space_id,
             port=port,
             mcp_url=f"http://127.0.0.1:{port}/mcp",
             nats_url=live_nats,
@@ -444,23 +459,31 @@ async def nats_publish_turn(
     session_id: str = "e2e",
     metadata: dict[str, Any] | None = None,
 ) -> str:
-    """Publish a ConversationTurnPayload to ``agent.memory.conversation.turn.<user_id>``.
+    """Publish a ConversationTurnPayload to ``eidolon.memory.turn.<memory_space_id>``.
 
     Returns the turn_id (caller can use it for later poll).
     """
+    memory_space_id = _e2e_memory_space_id(user_id)
+    tenant_id, owner_user_id, persona_id = memory_space_id.split(".", 2)
+    context = MemoryActorContext(
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        persona_id=persona_id,
+        agent_id="e2e",
+        device_id="e2e",
+        instance_id="e2e",
+        session_id=session_id,
+    )
     payload: dict[str, Any] = {
         "turn_id": turn_id or uuid.uuid4().hex,
-        "user_id": user_id,
-        "session_id": session_id,
+        "context": context.model_dump(mode="json"),
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "user_text": user_text,
         "assistant_text": assistant_text,
     }
     if metadata is not None:
         payload["metadata"] = metadata
-    await _nats_publish(
-        nats_url, f"agent.memory.conversation.turn.{user_id}", payload
-    )
+    await _nats_publish(nats_url, conversation_turn_subject(memory_space_id), payload)
     return payload["turn_id"]
 
 
@@ -470,10 +493,11 @@ def _now_iso_z() -> str:
 
 def _base_cmd(user_id: str, kind: str, request_id: str | None) -> dict[str, Any]:
     """Shared scaffolding for ``MemoryCommandPayload`` JSON bodies."""
+    memory_space_id = _e2e_memory_space_id(user_id)
     return {
         "kind": kind,
         "request_id": request_id or uuid.uuid4().hex,
-        "user_id": user_id,
+        "memory_space_id": memory_space_id,
         "issued_at": _now_iso_z(),
         "issuer": "admin",
     }
@@ -492,7 +516,7 @@ async def nats_publish_kg_add_triple(
     adapter_name: str = "e2e",
     request_id: str | None = None,
 ) -> str:
-    """Publish a ``KgAddTripleCommand`` to ``agent.memory.cmd.<user_id>``.
+    """Publish a ``KgAddTripleCommand`` to ``eidolon.memory.cmd.<memory_space_id>``.
 
     Mirrors the admin / agent KG-write channel — the only durable way to add
     a triple outside the steward (without bypassing JetStream, which would
@@ -510,7 +534,11 @@ async def nats_publish_kg_add_triple(
         payload["valid_from"] = valid_from
     if valid_to is not None:
         payload["valid_to"] = valid_to
-    await _nats_publish(nats_url, f"agent.memory.cmd.{user_id}", payload)
+    await _nats_publish(
+        nats_url,
+        memory_command_subject(str(payload["memory_space_id"])),
+        payload,
+    )
     return str(payload["request_id"])
 
 
@@ -524,7 +552,7 @@ async def nats_publish_kg_invalidate(
     ended: str | None = None,
     request_id: str | None = None,
 ) -> str:
-    """Publish a ``KgInvalidateCommand`` to ``agent.memory.cmd.<user_id>``.
+    """Publish a ``KgInvalidateCommand`` to ``eidolon.memory.cmd.<memory_space_id>``.
 
     Mirrors the admin path that closes (``valid_to`` set) a triple — the
     same cmd subject as adds, dispatched on ``kind="kg_invalidate"``.
@@ -537,7 +565,11 @@ async def nats_publish_kg_invalidate(
     })
     if ended is not None:
         payload["ended"] = ended
-    await _nats_publish(nats_url, f"agent.memory.cmd.{user_id}", payload)
+    await _nats_publish(
+        nats_url,
+        memory_command_subject(str(payload["memory_space_id"])),
+        payload,
+    )
     return str(payload["request_id"])
 
 
@@ -563,7 +595,11 @@ async def nats_publish_user_confirm(
         "wing": wing,
         "memory_type": memory_type,
     })
-    await _nats_publish(nats_url, f"agent.memory.cmd.{user_id}", payload)
+    await _nats_publish(
+        nats_url,
+        memory_command_subject(str(payload["memory_space_id"])),
+        payload,
+    )
     return str(payload["request_id"])
 
 

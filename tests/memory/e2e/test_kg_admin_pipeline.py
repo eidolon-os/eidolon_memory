@@ -2,7 +2,7 @@
 
 Architectural edges asserted in one cohesive scenario:
 
-    W7  NATS ``agent.memory.cmd.<uid>`` → ``process_command_message`` →
+    W7  NATS ``eidolon.memory.cmd.<memory_space_id>`` → ``process_command_message`` →
         ``LockedKnowledgeGraph.add_triple``  (admin / agent write channel)
 
     R4  ``recall_with_kg_fusion`` → ``match_entities_for_query`` →

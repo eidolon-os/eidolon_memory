@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
 from eidolon.memory.config.palace_directory import validate_memory_space_id
 
+
 class UsersSourceUnavailable(RuntimeError):
     """Admin user registry could not be read.
 
@@ -122,8 +123,6 @@ def _entry_from_admin_view(view: dict) -> UserEntry | None:
     tenant_id = str(spec.get("tenant_id") or "default").strip() or "default"
     persona_id = str(
         spec.get("persona_id")
-        or view.get("active_agent_id")
-        or spec.get("active_agent_id")
         or "default"
     ).strip() or "default"
     port = int(spec.get("memory_port", 0) or 0)

@@ -12,6 +12,9 @@ import pytest
 
 pytestmark = pytest.mark.asyncio
 
+SPACE = "default.alice.default"
+OTHER_SPACE = "default.bob.default"
+
 
 @pytest.fixture
 def kg_setup(tmp_path: Path):
@@ -51,7 +54,7 @@ async def test_command_add_triple_flow(kg_setup) -> None:
         {
             "kind": "kg_add_triple",
             "request_id": "r1",
-            "user_id": "alice",
+            "memory_space_id": SPACE,
             "issued_at": "2026-05-19T10:00:00Z",
             "subject": "alice",
             "predicate": "likes",
@@ -63,7 +66,7 @@ async def test_command_add_triple_flow(kg_setup) -> None:
         backend=None,
         kg=kg_setup,
         settings=get_memory_settings(),
-        expected_user_id="alice",
+        expected_memory_space_id=SPACE,
     )
     assert msg.ack_calls == ["ack"]
 
@@ -84,7 +87,7 @@ async def test_command_invalidate_flow(kg_setup) -> None:
         {
             "kind": "kg_invalidate",
             "request_id": "r2",
-            "user_id": "alice",
+            "memory_space_id": SPACE,
             "issued_at": "2026-05-19T10:00:00Z",
             "subject": "alice",
             "predicate": "likes",
@@ -97,7 +100,7 @@ async def test_command_invalidate_flow(kg_setup) -> None:
         backend=None,
         kg=kg_setup,
         settings=get_memory_settings(),
-        expected_user_id="alice",
+        expected_memory_space_id=SPACE,
     )
     assert msg.ack_calls == ["ack"]
     applied = await kg_setup.find_invalidation_applied(
@@ -121,7 +124,7 @@ async def test_command_bad_payload_acked_not_raised(kg_setup) -> None:
         backend=None,
         kg=kg_setup,
         settings=get_memory_settings(),
-        expected_user_id="alice",
+        expected_memory_space_id=SPACE,
     )
     assert msg.ack.await_count == 1
 
@@ -134,7 +137,7 @@ async def test_command_user_id_mismatch_acked(kg_setup) -> None:
         {
             "kind": "kg_add_triple",
             "request_id": "x",
-            "user_id": "bob",          # mismatch
+            "memory_space_id": OTHER_SPACE,          # mismatch
             "issued_at": "2026-05-19T10:00:00Z",
             "subject": "self",
             "predicate": "likes",
@@ -146,7 +149,7 @@ async def test_command_user_id_mismatch_acked(kg_setup) -> None:
         backend=None,
         kg=kg_setup,
         settings=get_memory_settings(),
-        expected_user_id="alice",
+        expected_memory_space_id=SPACE,
     )
     assert msg.ack_calls == ["ack"]
     # Did not apply to KG
@@ -161,7 +164,7 @@ async def test_command_unknown_kind_acked(kg_setup) -> None:
     msg = _stub_msg({"kind": "not_a_real_kind", "request_id": "?"})
     await process_command_message(
         msg, backend=None, kg=kg_setup,
-        settings=get_memory_settings(), expected_user_id="alice",
+        settings=get_memory_settings(), expected_memory_space_id=SPACE,
     )
     assert msg.ack_calls == ["ack"]
 
@@ -172,7 +175,10 @@ async def test_subject_helpers() -> None:
         memory_command_subject,
     )
 
-    assert memory_command_subject("alice") == "agent.memory.cmd.alice"
+    assert memory_command_subject("default.alice.default") == (
+        "eidolon.memory.cmd.b64_ZGVmYXVsdC5hbGljZS5kZWZhdWx0"
+    )
     patterns = all_memory_stream_patterns()
-    assert "agent.memory.conversation.turn.>" in patterns
-    assert "agent.memory.cmd.>" in patterns
+    assert "eidolon.memory.turn.*" in patterns
+    assert "eidolon.memory.cmd.*" in patterns
+    assert "eidolon.memory.sync.*" in patterns

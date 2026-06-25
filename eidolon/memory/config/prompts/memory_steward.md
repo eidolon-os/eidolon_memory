@@ -121,7 +121,9 @@
   "fragments": [
     {
       "fragment_id": "",
-      "user_id": "string",
+      "memory_space_id": "tenant.owner_user.companion",
+      "source_device_id": "string",
+      "source_instance_id": "string",
       "wing": "Wing_Profile",
       "room": "profile_core",
       "content": "用户喜欢在晚上独处时听轻音乐放松。",

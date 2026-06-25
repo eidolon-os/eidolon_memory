@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 from eidolon.memory.application.recall_rerank import (
     DEFAULT_RRF_K,
     _rrf_fuse,
@@ -21,7 +19,7 @@ from eidolon.memory.domain.wire import MemoryWireRecord
 
 def _rec(text: str, key: str | None = None) -> MemoryWireRecord:
     return MemoryWireRecord(
-        user_id="u1",
+        memory_space_id="default.u1.default",
         key=key or f"k-{abs(hash(text)) % 100000}",
         value=text,
         metadata={"memory_type": "preference"},
@@ -134,7 +132,7 @@ def test_rerank_preserves_metadata():
     user-confirmed will read metadata fields downstream."""
     hits = [
         MemoryWireRecord(
-            user_id="u1",
+            memory_space_id="default.u1.default",
             key=f"k{i}",
             value=f"text {i}",
             metadata={"memory_type": "profile", "similarity": 0.9 - i * 0.1},
@@ -188,7 +186,7 @@ def test_rerank_handles_empty_query_string():
 def test_rerank_handles_corpus_all_empty_values():
     """Records with empty `value` → BM25 corpus is degenerate → cosine fallback."""
     hits = [
-        MemoryWireRecord(user_id="u1", key=f"k{i}", value="", metadata={})
+        MemoryWireRecord(memory_space_id="default.u1.default", key=f"k{i}", value="", metadata={})
         for i in range(3)
     ]
     out = rerank_bm25_rrf("query", hits, top_k=3)

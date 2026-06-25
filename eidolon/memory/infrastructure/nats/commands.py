@@ -48,7 +48,7 @@ class JetStreamCommandPublisher:
         self._js = None
 
     async def publish(self, payload: MemoryCommandPayload) -> None:
-        """Publish ``payload`` to ``eidolon.memory.cmd.<payload.memory_space_id>``."""
+        """Publish ``payload`` to ``eidolon.memory.cmd.<memory_space_token>``."""
         if self._js is None:
             await self.connect()
         assert self._js is not None

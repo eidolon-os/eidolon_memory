@@ -43,11 +43,28 @@ def kg(backend, tmp_path: Path):
     locked.close()
 
 
-def _turn_payload(*, user_id: str = "alice", turn_id: str | None = None, **kwargs) -> dict:
+MEMORY_SPACE_ID = "default.alice.default"
+
+
+def _turn_payload(
+    *,
+    memory_space_id: str = MEMORY_SPACE_ID,
+    turn_id: str | None = None,
+    **kwargs,
+) -> dict:
+    tenant_id, owner_user_id, persona_id = memory_space_id.split(".", 2)
     return {
         "turn_id": turn_id or uuid.uuid4().hex,
-        "user_id": user_id,
-        "session_id": kwargs.get("session_id", "s1"),
+        "context": {
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "persona_id": persona_id,
+            "agent_id": kwargs.get("agent_id", "agent"),
+            "device_id": kwargs.get("device_id", "device"),
+            "instance_id": kwargs.get("instance_id", "instance"),
+            "session_id": kwargs.get("session_id", "s1"),
+            "memory_space_id": memory_space_id,
+        },
         "timestamp": kwargs.get("timestamp", "2026-05-19T10:00:00Z"),
         "user_text": kwargs.get("user_text", "hello"),
         "assistant_text": kwargs.get("assistant_text", "hi"),
@@ -96,7 +113,9 @@ async def test_kg_failure_does_not_block_chat_ack(settings, backend):
     bad_kg.invalidate = AsyncMock(return_value=0)
 
     fragment = MemoryFragment(
-        fragment_id="f1", user_id="alice", wing="Wing_Profile", room="profile_core",
+        fragment_id="f1", memory_space_id=MEMORY_SPACE_ID,
+        source_device_id="device", source_instance_id="instance",
+        wing="Wing_Profile", room="profile_core",
         content="user likes tea", memory_type="preference",
         importance=4, confidence=0.95,
         source_turn_id="t1", session_id="s1",
@@ -109,7 +128,7 @@ async def test_kg_failure_does_not_block_chat_ack(settings, backend):
         fragments=[fragment], triples=[triple], invalidations=[],
     )
 
-    msg = _stub_msg(_turn_payload(user_id="alice"))
+    msg = _stub_msg(_turn_payload())
     await process_turn_message(
         msg,
         steward=_make_steward(decision),
@@ -117,7 +136,7 @@ async def test_kg_failure_does_not_block_chat_ack(settings, backend):
         kg=bad_kg,
         settings=settings,
         max_deliveries=3,
-        expected_user_id="alice",
+        expected_memory_space_id=MEMORY_SPACE_ID,
     )
     # ack despite KG failure
     assert msg.ack_calls == ["ack"]
@@ -140,7 +159,9 @@ async def test_chroma_failure_naks_below_max_deliveries(settings, kg):
     bad_backend.ingest_fragment = AsyncMock(side_effect=RuntimeError("chroma corrupt"))
     bad_backend.delete = AsyncMock()
     fragment = MemoryFragment(
-        fragment_id="f1", user_id="alice", wing="Wing_Profile", room="r",
+        fragment_id="f1", memory_space_id=MEMORY_SPACE_ID,
+        source_device_id="device", source_instance_id="instance",
+        wing="Wing_Profile", room="r",
         content="x", memory_type="preference", importance=4, confidence=0.9,
         source_turn_id="t1", session_id="s1",
     )
@@ -154,7 +175,7 @@ async def test_chroma_failure_naks_below_max_deliveries(settings, kg):
         kg=kg,
         settings=settings,
         max_deliveries=3,
-        expected_user_id="alice",
+        expected_memory_space_id=MEMORY_SPACE_ID,
     )
     assert msg.nak_calls == ["nak"]
     assert msg.ack_calls == []
@@ -179,7 +200,7 @@ async def test_replay_of_same_turn_does_not_duplicate_triples(settings, backend,
         msg = _stub_msg(payload)
         await process_turn_message(
             msg, steward=steward, backend=backend, kg=kg,
-            settings=settings, max_deliveries=3, expected_user_id="alice",
+            settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
         )
         assert msg.ack_calls == ["ack"]
 
@@ -205,7 +226,7 @@ async def test_low_confidence_triples_skipped(settings, backend, kg):
     msg = _stub_msg(_turn_payload())
     await process_turn_message(
         msg, steward=_make_steward(decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_user_id="alice",
+        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
     stats = await kg.stats()
     assert stats["triples_total"] == 1
@@ -232,7 +253,7 @@ async def test_invalidation_applies_before_new_triple(settings, backend, kg):
     msg1 = _stub_msg(_turn_payload(turn_id="seed"))
     await process_turn_message(
         msg1, steward=_make_steward(seed_decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_user_id="alice",
+        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
 
     # New turn changes mind.
@@ -244,7 +265,7 @@ async def test_invalidation_applies_before_new_triple(settings, backend, kg):
     msg2 = _stub_msg(_turn_payload(turn_id="change"))
     await process_turn_message(
         msg2, steward=_make_steward(change_decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_user_id="alice",
+        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
 
     coffee = [r for r in await kg.query_entity("self") if r.object == "coffee"]
@@ -272,7 +293,7 @@ async def test_privacy_actions_skip_kg(settings, backend, kg):
     msg = _stub_msg(_turn_payload())
     await process_turn_message(
         msg, steward=_make_steward(decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_user_id="alice",
+        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
     stats = await kg.stats()
     assert stats["triples_total"] == 0
@@ -324,7 +345,7 @@ async def test_steward_output_with_health_predicate_propagates(settings, backend
     msg = _stub_msg(_turn_payload())
     await process_turn_message(
         msg, steward=_make_steward(decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_user_id="alice",
+        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
 
     # default query (read-side) excludes sensitive predicates (KG plan §3.3 G2)

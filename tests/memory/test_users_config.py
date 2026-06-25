@@ -52,9 +52,9 @@ def test_load_users_from_admin_registry(monkeypatch: pytest.MonkeyPatch) -> None
     )
 
     cfg = load_users_config()
-    assert [u.id for u in cfg.users] == ["alice", "bob"]
-    assert {u.id for u in cfg.enabled_users()} == {"alice"}
-    assert cfg.find("bob").enabled is False
+    assert [u.id for u in cfg.users] == ["default.alice.default", "default.bob.default"]
+    assert {u.id for u in cfg.enabled_users()} == {"default.alice.default"}
+    assert cfg.find("default.bob.default").enabled is False
 
 
 def test_load_users_falls_back_to_mcp_url_port(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -71,7 +71,7 @@ def test_load_users_falls_back_to_mcp_url_port(monkeypatch: pytest.MonkeyPatch) 
     )
 
     cfg = load_users_config()
-    assert cfg.find("alice").port == 8030
+    assert cfg.find("default.alice.default").port == 8030
 
 
 def test_duplicate_user_id_rejected() -> None:
@@ -79,8 +79,8 @@ def test_duplicate_user_id_rejected() -> None:
         UsersConfig.model_validate(
             {
                 "users": [
-                    {"id": "alice", "port": 8030},
-                    {"id": "alice", "port": 8031},
+                    {"id": "default.alice.default", "port": 8030},
+                    {"id": "default.alice.default", "port": 8031},
                 ]
             }
         )
@@ -91,8 +91,8 @@ def test_enabled_port_collision_rejected() -> None:
         UsersConfig.model_validate(
             {
                 "users": [
-                    {"id": "alice", "port": 8030, "enabled": True},
-                    {"id": "bob", "port": 8030, "enabled": True},
+                    {"id": "default.alice.default", "port": 8030, "enabled": True},
+                    {"id": "default.bob.default", "port": 8030, "enabled": True},
                 ]
             }
         )
@@ -102,8 +102,8 @@ def test_disabled_users_skip_port_collision() -> None:
     cfg = UsersConfig.model_validate(
         {
             "users": [
-                {"id": "alice", "port": 8030, "enabled": True},
-                {"id": "bob", "port": 8030, "enabled": False},
+                {"id": "default.alice.default", "port": 8030, "enabled": True},
+                {"id": "default.bob.default", "port": 8030, "enabled": False},
             ]
         }
     )
@@ -120,7 +120,7 @@ def test_user_consolidator_enabled_with_overrides() -> None:
         {
             "users": [
                 {
-                    "id": "alice",
+                    "id": "default.alice.default",
                     "port": 8030,
                     "consolidator": {
                         "enabled": True,
@@ -132,7 +132,7 @@ def test_user_consolidator_enabled_with_overrides() -> None:
                 }
             ]
         }
-    ).find("alice")
+    ).find("default.alice.default")
     assert user is not None
     assert user.consolidator_enabled() is True
     assert user.consolidator.interval_hours == 12

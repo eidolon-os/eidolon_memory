@@ -12,8 +12,9 @@ import json
 from typing import Any
 
 import nats
-from nats.errors import NoRespondersError, TimeoutError as NatsTimeoutError
-from eidolon_sdk.memory.subjects import validate_memory_space_id
+from eidolon_sdk.memory.subjects import memory_space_subject_token
+from nats.errors import NoRespondersError
+from nats.errors import TimeoutError as NatsTimeoutError
 
 from eidolon.memory.config.memory_settings import MemorySettings
 
@@ -23,7 +24,7 @@ MEMORY_QUERY_BASE = "eidolon.memory.query"
 def memory_list_drawers_query_subject(memory_space_id: str) -> str:
     """Return the per-memory-space NATS request subject for drawer snapshots."""
 
-    return f"{MEMORY_QUERY_BASE}.{validate_memory_space_id(memory_space_id)}.list_drawers"
+    return f"{MEMORY_QUERY_BASE}.{memory_space_subject_token(memory_space_id)}.list_drawers"
 
 
 class MemoryQueryError(RuntimeError):

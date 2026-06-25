@@ -12,12 +12,12 @@ The corresponding e2e (real NATS + MCP) lives in
 
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from eidolon_sdk.memory import ConversationTurnPayload, MemoryActorContext
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
@@ -26,21 +26,33 @@ from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.application.turn_processor import process_turn_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
-from eidolon_sdk.memory import ConversationTurnPayload
 from eidolon.memory.domain.steward import StewardDecision
 
 pytestmark = pytest.mark.asyncio
+
+MEMORY_SPACE_ID = "default.alice.default"
+
+
+def _actor_context(*, session_id: str = "unit") -> MemoryActorContext:
+    return MemoryActorContext(
+        tenant_id="default",
+        owner_user_id="alice",
+        persona_id="default",
+        agent_id="agent",
+        device_id="device",
+        instance_id="instance",
+        session_id=session_id,
+    )
 
 
 def _turn_msg(turn_id: str, user_text: str, assistant_text: str = "") -> SimpleNamespace:
     """Build a JetStream-shaped msg double that ``process_turn_message`` accepts."""
     payload = ConversationTurnPayload(
         turn_id=turn_id,
+        context=_actor_context(),
         user_text=user_text,
         assistant_text=assistant_text,
         timestamp="2026-05-25T00:00:00Z",
-        session_id="unit",
-        user_id="alice",
     ).model_dump()
     return SimpleNamespace(
         data=json.dumps(payload).encode("utf-8"),
@@ -69,7 +81,7 @@ async def test_turn_processor_appends_turn_to_ring():
     msg = _turn_msg("t1", "刚才说啥来着", "你问我了 X")
     await process_turn_message(
         msg, steward=steward, backend=backend, kg=None,
-        settings=settings, max_deliveries=3, expected_user_id="alice",
+        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
 
     snap = await backend.working_memory.snapshot()
@@ -93,7 +105,7 @@ async def test_turn_processor_steward_failure_still_appends_to_ring():
     try:
         await process_turn_message(
             msg, steward=steward, backend=backend, kg=None,
-            settings=settings, max_deliveries=3, expected_user_id="alice",
+            settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
         )
     except Exception:
         pass  # whatever the worker chose — we care about the ring state
@@ -115,7 +127,7 @@ async def test_turn_processor_bad_payload_does_not_append():
     )
     await process_turn_message(
         bad_msg, steward=steward, backend=backend, kg=None,
-        settings=settings, max_deliveries=3, expected_user_id="alice",
+        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
 
     assert await backend.working_memory.snapshot() == []
@@ -131,13 +143,14 @@ async def test_recall_fusion_returns_working_memory_snapshot():
     await backend.working_memory.append(
         ConversationTurnPayload(
             turn_id="t-recent", user_text="刚刚的事", assistant_text="嗯嗯",
-            timestamp="2026-05-25T00:00:00Z", session_id="s", user_id="alice",
+            context=_actor_context(session_id="s"),
+            timestamp="2026-05-25T00:00:00Z",
         )
     )
     settings = load_memory_settings()
     result = await recall_with_kg_fusion(
         backend, settings,
-        query="任何查询", user_id="alice", top_k=3,
+        query="任何查询", context=_actor_context(session_id="s"), top_k=3,
         kg=None, for_voice=False,
     )
     assert "working_memory" in result
@@ -152,7 +165,7 @@ async def test_recall_fusion_returns_empty_working_memory_when_disabled():
     settings = load_memory_settings()
     result = await recall_with_kg_fusion(
         backend, settings,
-        query="任何", user_id="alice", top_k=3,
+        query="任何", context=_actor_context(), top_k=3,
         kg=None, for_voice=False,
     )
     assert result["working_memory"] == []
@@ -164,7 +177,8 @@ async def test_recall_fusion_returns_empty_working_memory_when_disabled():
 def _turn(i: int, user="u", asst="a") -> ConversationTurnPayload:
     return ConversationTurnPayload(
         turn_id=f"t-{i}", user_text=f"{user}-{i}", assistant_text=f"{asst}-{i}",
-        timestamp="2026-05-25T00:00:00Z", session_id="s", user_id="alice",
+        context=_actor_context(session_id="s"),
+        timestamp="2026-05-25T00:00:00Z",
     )
 
 
@@ -202,7 +216,8 @@ def test_renderer_truncates_long_turn_text():
     """A 1000-char user paste must not blow the LLM context."""
     big_turn = ConversationTurnPayload(
         turn_id="t-big", user_text="X" * 1000, assistant_text="Y",
-        timestamp="2026-05-25T00:00:00Z", session_id="s", user_id="alice",
+        context=_actor_context(session_id="s"),
+        timestamp="2026-05-25T00:00:00Z",
     )
     out = group_recall_context(records=[], kg_triples=None, working_memory=[big_turn])
     # Truncation marker present; full 1000-char string is NOT.
@@ -217,7 +232,7 @@ def test_renderer_working_memory_then_kg_then_vector_order():
     turns = [_turn(0, "继续", "好")]
     vector = [
         MemoryWireRecord(
-            user_id="alice", key="k1", value="用户喜欢茶",
+            memory_space_id=MEMORY_SPACE_ID, key="k1", value="用户喜欢茶",
             metadata={"memory_type": "preference"},
         )
     ]

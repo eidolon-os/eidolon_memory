@@ -12,7 +12,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from eidolon_sdk.memory import MEMORY_COMMAND_BASE, MEMORY_CONVERSATION_TURN_BASE
+from eidolon_sdk.memory import (
+    MEMORY_COMMAND_BASE,
+    MEMORY_CONVERSATION_TURN_BASE,
+    validate_memory_space_id,
+)
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -20,6 +24,14 @@ from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.config.users import UserEntry, load_users_config
 
 DISCOVERY_VERSION = 1
+
+
+def _memory_space_parts(memory_space_id: str) -> tuple[str, str, str]:
+    """Return tenant, owner user, and companion ids from a memory-space id."""
+
+    validated = validate_memory_space_id(memory_space_id)
+    tenant_id, owner_user_id, companion_id = validated.split(".", 2)
+    return tenant_id, owner_user_id, companion_id
 
 
 async def probe_mcp_http(url: str, *, timeout_seconds: float = 1.5) -> bool:
@@ -75,23 +87,26 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
         "nats": {
             "url": settings.nats.url,
             "stream": settings.nats.stream,
-            # ``user_id`` here is filled with the memory_space_id (UserEntry.id);
-            # source the base from the SDK so producers/consumers never drift.
             "turn_subject_template": (
-                f"{MEMORY_CONVERSATION_TURN_BASE}.{{user_id}}"
+                f"{MEMORY_CONVERSATION_TURN_BASE}.{{memory_space_token}}"
             ),
             "cmd_subject_template": (
-                f"{MEMORY_COMMAND_BASE}.{{user_id}}"
+                f"{MEMORY_COMMAND_BASE}.{{memory_space_token}}"
             ),
         },
         "users": [
             {
-                "user_id": user.id,
+                "memory_space_id": user.id,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "companion_id": companion_id,
+                "persona_id": companion_id,
                 "enabled": user.enabled,
                 "mcp_http_url": settings.mcp_http.base_url(port=user.port),
                 "mcp_auth": {"type": "none"},
                 "agent_reachable": reachable,
             }
             for user, reachable in zip(users, reachability, strict=True)
+            for tenant_id, owner_user_id, companion_id in [_memory_space_parts(user.id)]
         ],
     }

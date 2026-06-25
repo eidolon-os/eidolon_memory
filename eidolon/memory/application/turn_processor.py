@@ -322,7 +322,7 @@ async def process_command_message(
     settings: MemorySettings,
     expected_memory_space_id: str | None = None,
 ) -> None:
-    """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_id>``.
+    """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_token>``.
 
     Commands are **always acked** after processing; the wrapper's idempotency
     layer (LockedKnowledgeGraph G1) keeps redelivery safe, and admin actions
@@ -440,7 +440,7 @@ async def process_sync_message(
     settings: MemorySettings,
     expected_memory_space_id: str,
 ) -> None:
-    """Handle ``DeviceSyncBatchPayload`` from ``eidolon.memory.sync.<space>``."""
+    """Handle ``DeviceSyncBatchPayload`` from ``eidolon.memory.sync.<memory_space_token>``."""
     del settings
     try:
         raw = json.loads(msg.data.decode("utf-8"))

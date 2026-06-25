@@ -16,8 +16,23 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from eidolon_sdk.memory import MemoryActorContext
 
 pytestmark = pytest.mark.asyncio
+
+MEMORY_SPACE_ID = "default.alice.default"
+
+
+def _actor_context() -> MemoryActorContext:
+    return MemoryActorContext(
+        tenant_id="default",
+        owner_user_id="alice",
+        persona_id="default",
+        agent_id="agent",
+        device_id="device",
+        instance_id="instance",
+        session_id="s1",
+    )
 
 
 @pytest.fixture
@@ -42,16 +57,25 @@ def stack(tmp_path: Path):
 
 def _turn_payload(
     *,
-    user_id: str = "alice",
+    memory_space_id: str = MEMORY_SPACE_ID,
     turn_id: str | None = None,
     user_text: str = "我喜欢喝茶",
     assistant_text: str = "好的，记住了",
     timestamp: str = "2026-05-19T10:00:00Z",
 ) -> dict:
+    tenant_id, owner_user_id, persona_id = memory_space_id.split(".", 2)
     return {
         "turn_id": turn_id or uuid.uuid4().hex,
-        "user_id": user_id,
-        "session_id": "s1",
+        "context": {
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "persona_id": persona_id,
+            "agent_id": "agent",
+            "device_id": "device",
+            "instance_id": "instance",
+            "session_id": "s1",
+            "memory_space_id": memory_space_id,
+        },
         "timestamp": timestamp,
         "user_text": user_text,
         "assistant_text": assistant_text,
@@ -102,7 +126,9 @@ async def test_turn_to_recall_closed_loop(stack) -> None:
 
     fragment = MemoryFragment(
         fragment_id="f1",
-        user_id="alice",
+        memory_space_id=MEMORY_SPACE_ID,
+        source_device_id="device",
+        source_instance_id="instance",
         wing="Wing_Profile",
         room="profile_core",
         content="user likes tea",
@@ -130,7 +156,7 @@ async def test_turn_to_recall_closed_loop(stack) -> None:
         kg=kg,
         settings=settings,
         max_deliveries=3,
-        expected_user_id="alice",
+        expected_memory_space_id=MEMORY_SPACE_ID,
     )
     assert msg.ack_calls == ["ack"]
 
@@ -139,7 +165,7 @@ async def test_turn_to_recall_closed_loop(stack) -> None:
         backend,
         settings,
         query="self likes tea",
-        user_id="alice",
+        context=_actor_context(),
         top_k=5,
         kg=kg,
         for_voice=False,
@@ -162,15 +188,16 @@ async def test_admin_command_to_recall_closed_loop(stack) -> None:
     """The admin / IDE path publishes ``KgAddTripleCommand`` (no steward).
     Worker applies it; subsequent recall picks it up identically.
     """
+    from eidolon_sdk.memory import KgAddTripleCommand
+
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.application.turn_processor import process_command_message
-    from eidolon_sdk.memory import KgAddTripleCommand
 
     backend, kg, settings = stack
 
     cmd = KgAddTripleCommand(
         request_id=uuid.uuid4().hex,
-        user_id="alice",
+        memory_space_id=MEMORY_SPACE_ID,
         issued_at="2026-05-19T10:01:00Z",
         subject="self",
         predicate="practices",
@@ -187,13 +214,13 @@ async def test_admin_command_to_recall_closed_loop(stack) -> None:
         backend=backend,
         kg=kg,
         settings=settings,
-        expected_user_id="alice",
+        expected_memory_space_id=MEMORY_SPACE_ID,
     )
     assert msg.ack_calls == ["ack"]
     fused = await recall_with_kg_fusion(
         backend, settings,
         query="self practices meditation",
-        user_id="alice", top_k=5,
+        context=_actor_context(), top_k=5,
         kg=kg, for_voice=False,
     )
     assert any(
@@ -226,7 +253,7 @@ async def test_change_of_mind_invalidation_visible_via_recall(stack) -> None:
     await process_turn_message(
         msg1, steward=_stub_steward(seed_decision),
         backend=backend, kg=kg, settings=settings,
-        max_deliveries=3, expected_user_id="alice",
+        max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
     assert msg1.ack_calls == ["ack"]
 
@@ -244,13 +271,13 @@ async def test_change_of_mind_invalidation_visible_via_recall(stack) -> None:
     await process_turn_message(
         msg2, steward=_stub_steward(change_decision),
         backend=backend, kg=kg, settings=settings,
-        max_deliveries=3, expected_user_id="alice",
+        max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
     assert msg2.ack_calls == ["ack"]
     fused = await recall_with_kg_fusion(
         backend, settings,
         query="self likes",
-        user_id="alice", top_k=5,
+        context=_actor_context(), top_k=5,
         kg=kg, for_voice=False,
     )
     objects = {(t.predicate, t.object) for t in fused["kg"]}
@@ -285,14 +312,14 @@ async def test_sensitive_predicate_hidden_from_default_recall(stack) -> None:
     await process_turn_message(
         msg, steward=_stub_steward(decision),
         backend=backend, kg=kg, settings=settings,
-        max_deliveries=3, expected_user_id="alice",
+        max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
     assert msg.ack_calls == ["ack"]
     # default — sensitive filtered
     fused = await recall_with_kg_fusion(
         backend, settings,
         query="self anxiety",
-        user_id="alice", top_k=5,
+        context=_actor_context(), top_k=5,
         kg=kg, for_voice=False,
         include_sensitive_kg=False,
     )
@@ -304,7 +331,7 @@ async def test_sensitive_predicate_hidden_from_default_recall(stack) -> None:
     fused2 = await recall_with_kg_fusion(
         backend, settings,
         query="self anxiety",
-        user_id="alice", top_k=5,
+        context=_actor_context(), top_k=5,
         kg=kg, for_voice=False,
         include_sensitive_kg=True,
     )
@@ -339,13 +366,13 @@ async def test_replay_does_not_duplicate_in_recall(stack) -> None:
         await process_turn_message(
             msg, steward=steward,
             backend=backend, kg=kg, settings=settings,
-            max_deliveries=3, expected_user_id="alice",
+            max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
         )
         assert msg.ack_calls == ["ack"]
     fused = await recall_with_kg_fusion(
         backend, settings,
         query="self practices yoga",
-        user_id="alice", top_k=5,
+        context=_actor_context(), top_k=5,
         kg=kg, for_voice=False,
     )
     yoga = [t for t in fused["kg"]

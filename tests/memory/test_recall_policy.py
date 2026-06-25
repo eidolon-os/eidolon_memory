@@ -13,8 +13,12 @@ def test_taboo_filtered(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
     settings = load_memory_settings()
     hits = [
-        MemoryWireRecord(user_id="a", key="b", value="keep", metadata={"room_status": "active"}),
-        MemoryWireRecord(user_id="a", key="c", value="gone", metadata={"room_status": "taboo"}),
+        MemoryWireRecord(
+            memory_space_id="a", key="b", value="keep", metadata={"room_status": "active"}
+        ),
+        MemoryWireRecord(
+            memory_space_id="a", key="c", value="gone", metadata={"room_status": "taboo"}
+        ),
     ]
     out = apply_recall_policy(hits, settings)
     assert len(out) == 1
@@ -25,7 +29,7 @@ def test_top_k_cap(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
     settings = load_memory_settings()
     hits = [
-        MemoryWireRecord(user_id="a", key=str(i), value=str(i), metadata={})
+        MemoryWireRecord(memory_space_id="a", key=str(i), value=str(i), metadata={})
         for i in range(20)
     ]
     out = apply_recall_policy(hits, settings)

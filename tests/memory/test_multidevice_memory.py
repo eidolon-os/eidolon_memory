@@ -15,11 +15,11 @@ from eidolon_sdk.memory import (
     memory_sync_subject,
 )
 
+from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.application.turn_processor import process_sync_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing
-from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.wire import MemoryWireRecord
@@ -58,27 +58,27 @@ def test_memory_space_subjects_are_new_contract() -> None:
     ctx = _ctx()
     assert ctx.memory_space_id == "default.alice.mochi"
     assert conversation_turn_subject(ctx.memory_space_id) == (
-        "eidolon.memory.turn.default.alice.mochi"
+        "eidolon.memory.turn.b64_ZGVmYXVsdC5hbGljZS5tb2NoaQ"
     )
     assert memory_command_subject(ctx.memory_space_id) == (
-        "eidolon.memory.cmd.default.alice.mochi"
+        "eidolon.memory.cmd.b64_ZGVmYXVsdC5hbGljZS5tb2NoaQ"
     )
     assert memory_sync_subject(ctx.memory_space_id) == (
-        "eidolon.memory.sync.default.alice.mochi"
+        "eidolon.memory.sync.b64_ZGVmYXVsdC5hbGljZS5tb2NoaQ"
     )
 
 
 def test_dotted_memory_space_id_is_sanitized_for_jetstream_consumer_names() -> None:
-    assert nats_safe_name("default.benchmark.default") == "default_benchmark_default"
     assert (
         memory_consumer_name("eidolon-memory-agent", "default.benchmark.default")
-        == "eidolon-memory-agent-default_benchmark_default"
+        == "eidolon-memory-agent-b64_ZGVmYXVsdC5iZW5jaG1hcmsuZGVmYXVsdA"
     )
     assert "." not in memory_consumer_name(
         "eidolon-memory-agent",
         "default.benchmark.default",
         role="sync",
     )
+    assert nats_safe_name("default.benchmark.default") == "default_benchmark_default"
 
 
 def test_fragment_extensions_validate_namespace() -> None:

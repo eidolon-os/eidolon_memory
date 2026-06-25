@@ -42,7 +42,7 @@ class JetStreamTurnPublisher:
         self._js = None
 
     async def publish_turn(self, payload: ConversationTurnPayload) -> None:
-        """Publish ``payload`` to ``eidolon.memory.turn.<memory_space_id>``."""
+        """Publish ``payload`` to ``eidolon.memory.turn.<memory_space_token>``."""
         if self._js is None:
             await self.connect()
         assert self._js is not None

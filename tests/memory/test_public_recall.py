@@ -3,15 +3,30 @@
 from __future__ import annotations
 
 import pytest
+from eidolon_sdk.memory import MemoryActorContext
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import (
     group_recall_context,
-    recall_record_visible_for_user,
+    recall_record_visible_for_context,
     recall_with_kg_fusion,
     search_all_wings_mcp_style,
 )
 from eidolon.memory.config.memory_settings import get_memory_settings
+
+MEMORY_SPACE_ID = "default.alice.default"
+
+
+def _context(owner_user_id: str = "alice") -> MemoryActorContext:
+    return MemoryActorContext(
+        tenant_id="default",
+        owner_user_id=owner_user_id,
+        persona_id="default",
+        agent_id="agent",
+        device_id="device",
+        instance_id="instance",
+        session_id="s1",
+    )
 
 
 @pytest.mark.asyncio
@@ -24,20 +39,20 @@ async def test_search_all_wings_matches_mcp_visibility():
         wing=profile.id,
         room="profile_core",
         text="alice drinks tea in morning",
-        metadata={"user_id": "alice"},
+        metadata={"memory_space_id": MEMORY_SPACE_ID},
     )
     await backend.ingest_text(
         wing=profile.id,
         room="private_note",
         text="classified",
-        metadata={"user_id": "alice", "privacy": "private"},
+        metadata={"memory_space_id": MEMORY_SPACE_ID, "privacy": "private"},
     )
 
     out = await search_all_wings_mcp_style(
         backend,
         settings,
         query="tea",
-        user_id="alice",
+        context=_context(),
         top_k=5,
         wing=None,
         room=None,
@@ -50,7 +65,7 @@ async def test_search_all_wings_matches_mcp_visibility():
         backend,
         settings,
         query="tea",
-        user_id="bob",
+        context=_context("bob"),
         top_k=5,
         wing=None,
         room=None,
@@ -62,18 +77,18 @@ def test_visible_filters_privacy_metadata():
     from eidolon.memory.domain.wire import MemoryWireRecord
 
     rec = MemoryWireRecord(
-        user_id="Wing_Profile",
+        memory_space_id=MEMORY_SPACE_ID,
         key="k",
         value="x",
-        metadata={"user_id": "u1"},
+        metadata={"memory_space_id": MEMORY_SPACE_ID},
     )
-    assert recall_record_visible_for_user(rec, "u1")
+    assert recall_record_visible_for_context(rec, _context())
     priv = rec.model_copy(
         update={
             "metadata": {**rec.metadata, "privacy": "private"},
         }
     )
-    assert not recall_record_visible_for_user(priv, "u1")
+    assert not recall_record_visible_for_context(priv, _context())
 
 
 @pytest.mark.asyncio
@@ -82,7 +97,7 @@ async def test_group_recall_context_non_empty_when_hits():
 
     hits = [
         MemoryWireRecord(
-            user_id="Wing_Event",
+            memory_space_id=MEMORY_SPACE_ID,
             key="ev",
             value="travel to sea",
             metadata={"memory_type": "event"},
@@ -108,9 +123,10 @@ async def test_single_wing_voice_uses_shared_embedding_path(monkeypatch):
         wings: list[str],
         room: str | None,
         top_k: int,
-        user_id: str,
+        context: MemoryActorContext,
     ):
         del backend
+        assert context.memory_space_id == MEMORY_SPACE_ID
         calls.append(list(wings))
         return []
 
@@ -122,7 +138,7 @@ async def test_single_wing_voice_uses_shared_embedding_path(monkeypatch):
         backend,
         settings,
         query="test",
-        user_id="alice",
+        context=_context(),
         top_k=3,
         wing="Wing_Profile",
         room=None,
@@ -155,7 +171,7 @@ async def test_voice_shared_embedding_failure_degrades_to_empty(monkeypatch):
         backend,
         settings,
         query="test",
-        user_id="alice",
+        context=_context(),
         top_k=3,
         wing="Wing_Profile",
         room=None,
@@ -185,7 +201,7 @@ async def test_recall_fusion_marks_degraded_when_voice_fast_path_fails(monkeypat
         backend,
         settings,
         query="test",
-        user_id="alice",
+        context=_context(),
         top_k=3,
         kg=None,
         for_voice=True,

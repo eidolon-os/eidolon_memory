@@ -9,7 +9,7 @@ A *separate process* from ``eidolon-memory-agent`` that:
   3. Asks an LLM to distil 0–3 high-level themes per wing (skipping
      ``Wing_Theme`` itself and ``Wing_Privacy``).
   4. Publishes each surviving theme back as a ``ConsolidatorIngestThemeCommand``
-     on ``agent.memory.cmd.<user_id>``. The agent_runner picks it up, writes
+     on ``eidolon.memory.cmd.<memory_space_token>``. The agent_runner picks it up, writes
      it as a ``Wing_Theme`` drawer (no steward involvement — themes are
      already structured output).
 
@@ -23,7 +23,7 @@ Why a separate process
     layer — chat memory continues untouched.
 
 CLI
-  eidolon-memory-consolidator --user-id alice [--once | --interval-hours 6]
+  eidolon-memory-consolidator --memory-space-id default.alice.default [--once | --interval-hours 6]
                               [--window-days 30] [--min-drawers 3]
 
 The ``--once`` flag is what tests / cron use. Without it the worker loops
@@ -38,7 +38,6 @@ import hashlib
 import json
 import re
 import sys
-import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -81,16 +80,16 @@ class Theme:
     confidence: float
     source_drawer_ids: list[str]
 
-    def idempotency_hash(self, *, user_id: str, window_days: int) -> str:
+    def idempotency_hash(self, *, memory_space_id: str, window_days: int) -> str:
         """Deterministic key so re-running the worker on the same input is a no-op.
 
-        Composition: user_id + wing + window + sorted drawer ids. Any change
+        Composition: memory_space_id + wing + window + sorted drawer ids. Any change
         to the input set (new drawer, deleted drawer, different window) flips
         the hash and produces a new theme; identical input collapses at the
         chroma layer via the ``fragment_id``.
         """
         body = "|".join([
-            user_id, self.underlying_wing, str(window_days),
+            memory_space_id, self.underlying_wing, str(window_days),
             ",".join(sorted(self.source_drawer_ids)),
         ])
         return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
@@ -319,7 +318,10 @@ async def publish_themes(
     """
     published = 0
     for theme in themes:
-        request_id = theme.idempotency_hash(user_id=memory_space_id, window_days=window_days)
+        request_id = theme.idempotency_hash(
+            memory_space_id=memory_space_id,
+            window_days=window_days,
+        )
         cmd = ConsolidatorIngestThemeCommand(
             request_id=request_id,
             memory_space_id=memory_space_id,
@@ -346,7 +348,7 @@ async def publish_themes(
 
 async def consolidate_once(
     *,
-    user_id: str,
+    memory_space_id: str,
     settings: MemorySettings,
     window_days: int = 30,
     min_drawers: int = 3,
@@ -383,10 +385,10 @@ async def consolidate_once(
     await query_client.connect()
     try:
         await query_client.wait_until_ready(
-            memory_space_id=user_id,
+            memory_space_id=memory_space_id,
             timeout_seconds=query_startup_wait_seconds,
         )
-        drawers = await _list_all_drawers(query_client, memory_space_id=user_id)
+        drawers = await _list_all_drawers(query_client, memory_space_id=memory_space_id)
         by_wing = group_drawers_by_wing(drawers, window_days=window_days)
 
         rows: list[dict[str, Any]] = []
@@ -412,7 +414,10 @@ async def consolidate_once(
             })
 
         published = await publish_themes(
-            all_themes, memory_space_id=user_id, window_days=window_days, publisher=publisher,
+            all_themes,
+            memory_space_id=memory_space_id,
+            window_days=window_days,
+            publisher=publisher,
         )
         return {"themes_published": published, "wings": rows}
     finally:
@@ -424,7 +429,7 @@ async def _run(args: argparse.Namespace) -> int:
     settings = get_memory_settings()
     if args.once:
         result = await consolidate_once(
-            user_id=args.user_id,
+            memory_space_id=args.memory_space_id,
             settings=settings,
             window_days=args.window_days,
             min_drawers=args.min_drawers,
@@ -444,7 +449,7 @@ async def _run(args: argparse.Namespace) -> int:
     while True:
         try:
             await consolidate_once(
-                user_id=args.user_id,
+                memory_space_id=args.memory_space_id,
                 settings=settings,
                 window_days=args.window_days,
                 min_drawers=args.min_drawers,
@@ -459,10 +464,10 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Consolidation worker — distil cross-time themes per user."
+        description="Consolidation worker — distil cross-time themes per memory space."
     )
-    parser.add_argument("--user-id", required=True,
-                        help="Which user's palace to consolidate")
+    parser.add_argument("--memory-space-id", required=True,
+                        help="Which memory space to consolidate")
     parser.add_argument("--mcp-url", default="",
                         help=argparse.SUPPRESS)  # deprecated; reads now use NATS query
     parser.add_argument("--once", action="store_true",

@@ -2,7 +2,7 @@
 
 Reads eidolon_admin's user registry API, eager-inits each enabled user's palace via the
 ``ensure_palace_initialized`` helper (subprocess — never touches chromadb in
-this process), then spawns one ``eidolon-memory-agent --user-id=<id> --port=<P>``
+this process), then spawns one ``eidolon-memory-agent --memory-space-id=<id> --port=<P>``
 subprocess per user.
 
 Monitors children; restarts with exponential backoff on crash; degrades a user
@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import signal
 import shutil
+import signal
 import sqlite3
 import subprocess
 import time
@@ -47,9 +47,9 @@ from eidolon.memory.infrastructure.mempalace_backend import (
 )
 from eidolon.memory.infrastructure.palace_init import (
     PalaceInitError,
+    _resolve_mempalace_cli,
     ensure_palace_initialized,
     palace_is_initialized,
-    _resolve_mempalace_cli,
 )
 from eidolon.memory.support.logging import get_logger
 
@@ -105,7 +105,7 @@ def _consolidator_cli_argv(user: UserEntry) -> list[str]:
     )
     return [
         _CONSOLIDATOR_CLI,
-        "--user-id", user.id,
+        "--memory-space-id", user.id,
         "--interval-hours", str(cfg.interval_hours),
         "--window-days", str(cfg.window_days),
         "--min-drawers", str(cfg.min_drawers),

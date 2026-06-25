@@ -15,13 +15,12 @@ on a live LLM endpoint and live in ``tests/memory/e2e/``.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from eidolon_sdk.memory import ConsolidatorIngestThemeCommand, MemoryActorContext
 from nats.errors import NoRespondersError
-from eidolon_sdk.memory import ConsolidatorIngestThemeCommand
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
@@ -48,8 +47,8 @@ def test_idempotency_hash_stable_for_same_input():
                source_drawer_ids=["d1", "d2", "d3"])
     t2 = Theme(text="DIFFERENT TEXT", underlying_wing="Wing_Work", confidence=0.5,
                source_drawer_ids=["d2", "d3", "d1"])  # order-independent
-    h1 = t1.idempotency_hash(user_id="alice", window_days=30)
-    h2 = t2.idempotency_hash(user_id="alice", window_days=30)
+    h1 = t1.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
+    h2 = t2.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
     assert h1 == h2, "hash must depend only on input drawer set, not theme content"
 
 
@@ -59,8 +58,8 @@ def test_idempotency_hash_changes_on_new_drawer():
                  source_drawer_ids=["d1", "d2"])
     extended = Theme(text="x", underlying_wing="Wing_Work", confidence=0.8,
                      source_drawer_ids=["d1", "d2", "d3"])
-    h1 = base.idempotency_hash(user_id="alice", window_days=30)
-    h2 = extended.idempotency_hash(user_id="alice", window_days=30)
+    h1 = base.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
+    h2 = extended.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
     assert h1 != h2
 
 
@@ -68,12 +67,12 @@ def test_idempotency_hash_isolates_user_and_window():
     """Same drawers under different (user, window) → different hashes."""
     t = Theme(text="x", underlying_wing="W", confidence=0.8, source_drawer_ids=["d1"])
     assert (
-        t.idempotency_hash(user_id="alice", window_days=30)
-        != t.idempotency_hash(user_id="bob", window_days=30)
+        t.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
+        != t.idempotency_hash(memory_space_id="default.bob.mochi", window_days=30)
     )
     assert (
-        t.idempotency_hash(user_id="alice", window_days=30)
-        != t.idempotency_hash(user_id="alice", window_days=7)
+        t.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
+        != t.idempotency_hash(memory_space_id="default.alice.mochi", window_days=7)
     )
 
 
@@ -84,7 +83,7 @@ def _drawer(*, wing: str, age_days: float, value: str = "x") -> dict:
     """Build a ``eidolon_memory_list``-shaped record dict."""
     created = datetime.now(timezone.utc) - timedelta(days=age_days)
     return {
-        "user_id": "alice",
+        "memory_space_id": "default.alice.mochi",
         "key": f"k-{wing}-{age_days}",
         "value": value,
         "created_at": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -119,7 +118,7 @@ def test_group_drawers_filters_to_themable_wings():
 def test_group_drawers_keeps_drawers_with_missing_timestamp():
     """Better to over-include than under-include for theme synthesis."""
     rec = {
-        "user_id": "alice", "key": "k1", "value": "x",
+        "memory_space_id": "default.alice.mochi", "key": "k1", "value": "x",
         "created_at": None,
         "metadata": {"wing": "Wing_Life"},
     }
@@ -146,14 +145,14 @@ async def test_list_all_drawers_reads_pages_from_query_client():
 
     rows = await _list_all_drawers(
         client,  # type: ignore[arg-type]
-        user_id="alice",
+        memory_space_id="default.alice.mochi",
         limit=5,
         page_size=2,
     )
 
     assert [r["key"] for r in rows] == ["k0", "k1", "k2", "k3", "k4"]
     assert [c["offset"] for c in client.calls] == [0, 2, 4]
-    assert all(c["user_id"] == "alice" for c in client.calls)
+    assert all(c["memory_space_id"] == "default.alice.mochi" for c in client.calls)
 
 
 async def test_query_client_wait_until_ready_retries_no_responders(monkeypatch):
@@ -180,7 +179,7 @@ async def test_query_client_wait_until_ready_retries_no_responders(monkeypatch):
     client = _FakeQueryClient()
 
     await client.wait_until_ready(
-        user_id="alice",
+        memory_space_id="default.alice.mochi",
         timeout_seconds=1.0,
         poll_interval_seconds=0.01,
     )
@@ -226,7 +225,7 @@ async def test_ingest_theme_writes_wing_theme_drawer():
     backend = LockedBackend(FakeMemoryBackend())
     cmd = ConsolidatorIngestThemeCommand(
         request_id="abc123def456",
-        user_id="alice",
+        memory_space_id="default.alice.mochi",
         issued_at="2026-05-26T00:00:00Z",
         issuer="agent",
         text="近三周你担心妈妈失眠。",
@@ -262,7 +261,7 @@ async def test_ingest_theme_idempotent_on_redelivery():
     """Same request_id → same fragment_id → chroma layer dedups."""
     backend = LockedBackend(FakeMemoryBackend())
     cmd = ConsolidatorIngestThemeCommand(
-        request_id="dedup-key", user_id="alice",
+        request_id="dedup-key", memory_space_id="default.alice.mochi",
         issued_at="2026-05-26T00:00:00Z", issuer="agent",
         text="主题 A", underlying_wing="Wing_Work",
     )
@@ -279,7 +278,7 @@ async def test_ingest_theme_idempotent_on_redelivery():
 
 def _theme_record(text: str, *, underlying_wing: str = "Wing_Work") -> MemoryWireRecord:
     return MemoryWireRecord(
-        user_id="alice", key=f"theme-{abs(hash(text)) % 10000}",
+        memory_space_id="default.alice.mochi", key=f"theme-{abs(hash(text)) % 10000}",
         value=text,
         metadata={
             "wing": "Wing_Theme",
@@ -292,7 +291,7 @@ def _theme_record(text: str, *, underlying_wing: str = "Wing_Work") -> MemoryWir
 
 def _normal_record(text: str, *, memory_type: str = "preference") -> MemoryWireRecord:
     return MemoryWireRecord(
-        user_id="alice", key=f"frag-{abs(hash(text)) % 10000}",
+        memory_space_id="default.alice.mochi", key=f"frag-{abs(hash(text)) % 10000}",
         value=text,
         metadata={"memory_type": memory_type, "wing": "Wing_Profile"},
     )
@@ -317,7 +316,16 @@ def test_renderer_themes_after_working_memory_before_vector():
     from eidolon_sdk.memory import ConversationTurnPayload
     wm = [ConversationTurnPayload(
         turn_id="t1", user_text="u", assistant_text="a",
-        timestamp="2026-05-26T00:00:00Z", session_id="s", user_id="alice",
+        timestamp="2026-05-26T00:00:00Z",
+        context=MemoryActorContext(
+            tenant_id="default",
+            owner_user_id="alice",
+            persona_id="mochi",
+            agent_id="agent-1",
+            device_id="device-1",
+            instance_id="instance-1",
+            session_id="s",
+        ),
     )]
     themes = [_theme_record("Theme A")]
     vectors = [_normal_record("vector content")]
@@ -354,7 +362,7 @@ def test_renderer_theme_detection_by_source_marker():
     """If ``metadata.wing`` is missing but ``source=consolidator`` is set,
     the record still routes to [主题] (defensive — survives wing renames)."""
     rec = MemoryWireRecord(
-        user_id="alice", key="x",
+        memory_space_id="default.alice.mochi", key="x",
         value="theme content",
         metadata={"source": "consolidator", "memory_type": "profile"},
     )
@@ -369,7 +377,7 @@ def test_consolidator_command_pydantic_defaults():
     """Old JetStream payloads without ``window_days`` / ``source_drawer_ids``
     must validate using defaults."""
     cmd = ConsolidatorIngestThemeCommand(
-        request_id="r", user_id="alice",
+        request_id="r", memory_space_id="default.alice.mochi",
         issued_at="2026-05-26T00:00:00Z", issuer="agent",
         text="theme", underlying_wing="Wing_Work",
     )
@@ -421,7 +429,7 @@ async def test_fetch_themes_applies_similarity_floor():
     summaries don't leak onto out-of-scope queries (the negative-category
     -20pp regression). Hits without a similarity field are kept (fakes)."""
     from unittest.mock import AsyncMock
-    from types import SimpleNamespace
+
     from eidolon.memory.application.public_recall import _fetch_themes
     from eidolon.memory.config.memory_settings import load_memory_settings
     from eidolon.memory.domain.wire import MemoryWireRecord
@@ -432,7 +440,7 @@ async def test_fetch_themes_applies_similarity_floor():
 
     def _theme(val, sim):
         return MemoryWireRecord(
-            user_id="Wing_Theme", key=f"k-{val}", value=val,
+            memory_space_id="default.alice.mochi", key=f"k-{val}", value=val,
             metadata={"wing": "Wing_Theme", "similarity": sim},
         )
 
@@ -448,7 +456,7 @@ async def test_fetch_themes_applies_similarity_floor():
 
 async def test_fetch_themes_floor_zero_disables():
     from unittest.mock import AsyncMock
-    from types import SimpleNamespace
+
     from eidolon.memory.application.public_recall import _fetch_themes
     from eidolon.memory.config.memory_settings import load_memory_settings
     from eidolon.memory.domain.wire import MemoryWireRecord
@@ -457,7 +465,7 @@ async def test_fetch_themes_floor_zero_disables():
     settings.recall.theme_top_k = 5
     settings.recall.theme_min_similarity = 0.0  # disabled
     backend = SimpleNamespace(search=AsyncMock(return_value=[
-        MemoryWireRecord(user_id="Wing_Theme", key="k", value="low",
+        MemoryWireRecord(memory_space_id="Wing_Theme", key="k", value="low",
                          metadata={"wing": "Wing_Theme", "similarity": 0.1}),
     ]))
     out = await _fetch_themes(backend, "q", settings)

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from eidolon_sdk.memory import (
     KG_PREDICATE_VALUES,
     SENSITIVE_PREDICATES,
@@ -12,6 +10,8 @@ from eidolon_sdk.memory import (
     KgInvalidateCommand,
     MemoryCommandPayload,
 )
+from pydantic import ValidationError
+
 from eidolon.memory.domain.kg import (
     KgInvalidationAction,
     KgTripleAction,
@@ -64,7 +64,7 @@ def test_command_discriminator_round_trip_add() -> None:
     payload = {
         "kind": "kg_add_triple",
         "request_id": "abc123",
-        "user_id": "alice",
+        "memory_space_id": "default.alice.default",
         "issued_at": "2026-05-19T10:00:00+00:00",
         "subject": "self",
         "predicate": "likes",
@@ -79,7 +79,7 @@ def test_command_discriminator_round_trip_invalidate() -> None:
     payload = {
         "kind": "kg_invalidate",
         "request_id": "def456",
-        "user_id": "alice",
+        "memory_space_id": "default.alice.default",
         "issued_at": "2026-05-19T11:00:00+00:00",
         "subject": "self",
         "predicate": "likes",
@@ -92,7 +92,7 @@ def test_command_discriminator_round_trip_invalidate() -> None:
 def test_memory_command_payload_union_routing() -> None:
     add: MemoryCommandPayload = KgAddTripleCommand(
         request_id="r1",
-        user_id="alice",
+        memory_space_id="default.alice.default",
         issued_at="2026-05-19T10:00:00+00:00",
         subject="self",
         predicate="likes",

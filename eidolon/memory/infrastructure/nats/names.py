@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import re
 
+from eidolon_sdk.memory import memory_space_subject_token
+
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
@@ -27,7 +29,7 @@ def nats_safe_name(value: str, *, max_length: int = 180) -> str:
 
 
 def memory_consumer_name(prefix: str, memory_space_id: str, *, role: str = "turn") -> str:
-    suffix = nats_safe_name(memory_space_id)
+    suffix = memory_space_subject_token(memory_space_id)
     if role == "turn":
         return nats_safe_name(f"{prefix}-{suffix}")
     return nats_safe_name(f"{prefix}-{role}-{suffix}")

@@ -6,7 +6,7 @@ End-to-end edges:
        ↑ chat layer (existing Phase 0-3 plumbing)
 
     Subprocess (separate from agent_runner):
-       eidolon-memory-consolidator --user-id X --once
+       eidolon-memory-consolidator --memory-space-id X --once
          → NATS query agent_runner (read drawers)
          → LLM (theme synthesis per wing)
          → NATS publish ConsolidatorIngestThemeCommand × N
@@ -69,10 +69,12 @@ def _require_llm():
     # Probe the actual endpoint so the test fails fast (skip) rather than
     # spending 90s talking to a dead endpoint. Run on a fresh loop so we
     # don't fight pytest-asyncio's outer loop.
-    from eidolon.memory.config.memory_settings import (
-        load_memory_settings, reset_memory_settings_cache,
-    )
     import litellm
+
+    from eidolon.memory.config.memory_settings import (
+        load_memory_settings,
+        reset_memory_settings_cache,
+    )
     reset_memory_settings_cache()
     settings = load_memory_settings()
     probe_loop = asyncio.new_event_loop()
@@ -135,7 +137,7 @@ def _run_consolidator(
                     env[k] = v.strip()
     with log_path.open("ab") as log_fp:
         return subprocess.run(
-            [str(cli), "--user-id", user_id,
+            [str(cli), "--memory-space-id", user_id,
              "--once", "--min-drawers", "2", "--min-confidence", "0.5"],
             stdout=log_fp, stderr=subprocess.STDOUT, env=env,
             timeout=timeout_s,
