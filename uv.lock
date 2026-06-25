@@ -621,7 +621,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "eidolon-sdk", directory = "../eidolon_sdk" },
+    { name = "eidolon-sdk", editable = "../eidolon_sdk" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "faststream", extras = ["nats"], specifier = ">=0.5" },
     { name = "httpx", specifier = ">=0.27" },
@@ -642,7 +642,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "eidolon-sdk"
 version = "0.1.0"
-source = { directory = "../eidolon_sdk" }
+source = { editable = "../eidolon_sdk" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "cryptography" },
