@@ -469,15 +469,14 @@ await ingest_memory_fragment(locked_backend, MemoryFragment(
 
 ## 7. 多用户 / 进程管理
 
-### 7.1 用户注册表
+### 7.1 用户 / 主权数据入口
 
-用户注册表由 `eidolon_admin` 拥有并持久化到统一 registry DB:
+用户、companion、设备授权等主权数据由 `eidolon_data` 统一管理。默认本地
+SQLite 路径为 `~/eidolon/data/eidolon.sqlite3`，可通过
+`EIDOLON_DATA_SQLITE_PATH` 覆盖。
 
-```text
-~/eidolon/db/registry.sqlite3
-```
-
-Memory 只消费 admin 的只读视图:
+Memory 作为记忆引擎不拥有用户注册表。跨进程读取时消费 admin / data 的只读
+视图；同进程组合时由运行时注入 `DataStore(memory_engine=...)`。
 
 ```text
 GET http://127.0.0.1:9000/api/users/registry

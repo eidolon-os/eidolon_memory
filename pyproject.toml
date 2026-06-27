@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "eidolon-sdk",
+    "eidolon-data",
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "faststream[nats]>=0.5",
@@ -28,10 +29,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.4"]
 
 [tool.uv.sources]
 eidolon-sdk = { path = "../eidolon_sdk", editable = true }
+eidolon-data = { path = "../eidolon_data", editable = true }
 
 [project.scripts]
 eidolon-memory-agent = "eidolon.memory.entrypoints.agent_runner:main"
