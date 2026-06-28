@@ -41,8 +41,20 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
         "load_users_config",
         lambda _settings: UsersConfig(
             users=[
-                UserEntry(id="default.alice.default", port=8030, enabled=True),
-                UserEntry(id="default.bob.default", port=8031, enabled=False),
+                UserEntry(
+                    id="r:benchmark:default",
+                    owner_id="benchmark",
+                    companion_id="test",
+                    port=8030,
+                    enabled=True,
+                ),
+                UserEntry(
+                    id="r:benchmark:study",
+                    owner_id="benchmark",
+                    companion_id="study",
+                    port=8031,
+                    enabled=False,
+                ),
             ]
         ),
     )
@@ -64,11 +76,10 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
     }
     assert payload["users"] == [
         {
-            "memory_space_id": "default.alice.default",
-            "tenant_id": "default",
-            "owner_user_id": "alice",
-            "companion_id": "default",
-            "persona_id": "default",
+            "memory_space_id": "r:benchmark:default",
+            "memory_realm_id": "r:benchmark:default",
+            "owner_id": "benchmark",
+            "companion_id": "test",
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:8030/mcp",
             "mcp_auth": {"type": "none"},
@@ -76,7 +87,14 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
         }
     ]
     raw = json.dumps(payload)
-    for forbidden in ("palace_path", "pid", "log_path"):
+    for forbidden in (
+        "tenant_id",
+        "owner_user_id",
+        "persona_id",
+        "palace_path",
+        "pid",
+        "log_path",
+    ):
         assert forbidden not in raw
 
 
@@ -99,11 +117,10 @@ async def test_discovery_uses_default_user_when_registry_empty(
 
     assert payload["users"] == [
         {
-            "memory_space_id": "default.default.default",
-            "tenant_id": "default",
-            "owner_user_id": "default",
-            "companion_id": "default",
-            "persona_id": "default",
+            "memory_space_id": "default",
+            "memory_realm_id": "default",
+            "owner_id": None,
+            "companion_id": None,
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:8030/mcp",
             "mcp_auth": {"type": "none"},
@@ -118,7 +135,16 @@ async def test_discovery_http_route_allows_no_authorization(
     monkeypatch.setattr(
         discovery,
         "load_users_config",
-        lambda _settings: UsersConfig(users=[UserEntry(id="default.alice.default", port=8030)]),
+        lambda _settings: UsersConfig(
+            users=[
+                UserEntry(
+                    id="r:benchmark:default",
+                    owner_id="benchmark",
+                    companion_id="test",
+                    port=8030,
+                )
+            ]
+        ),
     )
 
     async def fake_probe(url: str, *, timeout_seconds: float = 1.5) -> bool:

@@ -1,8 +1,8 @@
-"""Load and validate the admin-owned user registry for memory runtime.
+"""Load and validate admin-owned memory realm routing for memory runtime.
 
-Runtime source of truth is eidolon_admin's ``GET /api/users``. Memory only
-consumes that registry and reconciles workers to the project-wide
-``spec.enabled`` flag.
+Runtime source of truth is eidolon_admin's owner workspace data. Memory only
+consumes active owners, active companions, and active memory realms; it does
+not derive routes from tenant/user identifiers.
 """
 
 from __future__ import annotations
@@ -11,7 +11,8 @@ import json
 import os
 import urllib.error
 import urllib.request
-from urllib.parse import urljoin
+from hashlib import sha256
+from urllib.parse import quote, urljoin, urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -20,10 +21,10 @@ from eidolon.memory.config.palace_directory import validate_memory_space_id
 
 
 class UsersSourceUnavailable(RuntimeError):
-    """Admin user registry could not be read.
+    """Admin owner workspace data could not be read.
 
     Supervisor treats this as "do not change the current runtime set" instead
-    of an empty user list, so an admin/API blip does not stop every worker.
+    of an empty realm list, so an admin/API blip does not stop every worker.
     """
 
 
@@ -71,13 +72,13 @@ class UsersConfig(BaseModel):
         seen_ports: dict[int, str] = {}
         for u in self.users:
             if u.id in seen_ids:
-                msg = f"user registry: duplicate user id {u.id!r}"
+                msg = f"memory realm registry: duplicate realm id {u.id!r}"
                 raise ValueError(msg)
             seen_ids.add(u.id)
             if u.enabled:
                 if u.port in seen_ports:
                     msg = (
-                        f"user registry: port {u.port} collision between "
+                        f"memory realm registry: port {u.port} collision between "
                         f"{seen_ports[u.port]!r} and {u.id!r} (both enabled)"
                     )
                     raise ValueError(msg)
@@ -117,62 +118,154 @@ def _consolidator_from_admin(raw: dict) -> ConsolidatorUserConfig | None:
     )
 
 
-def _entry_from_admin_view(view: dict) -> UserEntry | None:
-    spec = view.get("spec") if isinstance(view, dict) and "spec" in view else view
-    if not isinstance(spec, dict):
-        return None
-    memory_space_id = str(
-        spec.get("memory_realm_id")
-        or spec.get("memory_space_id")
-        or spec.get("user_id")
-        or ""
-    ).strip()
-    port = int(spec.get("memory_port", 0) or 0)
-    if port <= 0:
-        raw_url = str(view.get("mcp_http_url") or "") if isinstance(view, dict) else ""
-        try:
-            from urllib.parse import urlparse
+def _load_json(url: str, *, timeout: float) -> dict:
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        raw = json.loads(resp.read().decode("utf-8"))
+    return raw if isinstance(raw, dict) else {}
 
-            parsed = urlparse(raw_url)
-            port = parsed.port or 0
-        except Exception:  # noqa: BLE001
+
+def _configured_port(config: dict) -> int:
+    if not isinstance(config, dict):
+        return 0
+    for key in ("mcp_port", "port"):
+        try:
+            port = int(config.get(key, 0) or 0)
+        except (TypeError, ValueError):
             port = 0
-    if not memory_space_id or port <= 0:
+        if 1 <= port <= 65535:
+            return port
+    raw_url = str(config.get("mcp_http_url") or "").strip()
+    if raw_url:
+        try:
+            return urlparse(raw_url).port or 0
+        except Exception:  # noqa: BLE001
+            return 0
+    return 0
+
+
+def _stable_realm_port(realm_id: str, *, base_port: int, used_ports: set[int]) -> int:
+    base = min(max(base_port, 1), 65535)
+    span = min(2000, 65535 - base + 1)
+    seed = int.from_bytes(sha256(realm_id.encode("utf-8")).digest()[:8], "big")
+    for offset in range(span):
+        port = base + ((seed + offset) % span)
+        if port not in used_ports:
+            return port
+    for port in range(1, 65536):
+        if port not in used_ports:
+            return port
+    raise ValueError("no free MCP port available for memory realm")
+
+
+def _entry_from_memory_realm(
+    realm: dict,
+    *,
+    owner: dict,
+    companion: dict,
+    port: int,
+) -> UserEntry | None:
+    realm_id = str(realm.get("realm_id") or "").strip()
+    owner_id = str(realm.get("owner_id") or owner.get("owner_id") or "").strip()
+    companion_id = str(
+        realm.get("companion_id") or companion.get("companion_id") or ""
+    ).strip()
+    if not realm_id or not owner_id or not companion_id:
         return None
+    config = realm.get("engine_config_json") or {}
     return UserEntry(
-        id=memory_space_id,
-        owner_id=str(spec.get("owner_id") or "").strip() or None,
-        companion_id=str(spec.get("companion_id") or "").strip() or None,
+        id=realm_id,
+        owner_id=owner_id,
+        companion_id=companion_id,
         port=port,
-        enabled=bool(spec.get("enabled", True)),
-        palace_path=str(spec.get("palace_path") or ""),
-        consolidator=_consolidator_from_admin(spec.get("consolidator") or {}),
+        enabled=(
+            str(owner.get("status") or "").lower() == "active"
+            and str(companion.get("status") or "").lower() == "active"
+            and str(realm.get("status") or "").lower() == "active"
+        ),
+        palace_path=str(config.get("palace_path") or ""),
+        consolidator=_consolidator_from_admin(config.get("consolidator") or {}),
     )
 
 
-def _load_users_from_admin_api(settings: MemorySettings | None = None) -> UsersConfig:
+def _load_memory_realms_from_admin_api(settings: MemorySettings | None = None) -> UsersConfig:
     cfg = settings or get_memory_settings()
     base_url = resolve_admin_api_url(cfg)
     timeout = cfg.supervisor.admin_api_timeout_seconds
-    url = urljoin(base_url.rstrip("/") + "/", "api/users/registry")
+    owners_url = urljoin(base_url.rstrip("/") + "/", "api/owners")
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
+        owners_payload = _load_json(owners_url, timeout=timeout)
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise UsersSourceUnavailable(
-            f"admin user registry unavailable at {url}: {exc}"
+            f"admin owner registry unavailable at {owners_url}: {exc}"
         ) from exc
 
-    entries = []
-    for view in raw.get("users", []) or []:
-        if not isinstance(view, dict):
+    entries: list[UserEntry] = []
+    used_ports: set[int] = set()
+    owners = sorted(
+        [owner for owner in owners_payload.get("owners", []) or [] if isinstance(owner, dict)],
+        key=lambda item: str(item.get("owner_id") or ""),
+    )
+    for owner in owners:
+        if str(owner.get("status") or "").lower() != "active":
             continue
-        entry = _entry_from_admin_view(view)
-        if entry is not None:
-            entries.append(entry)
+        owner_id = str(owner.get("owner_id") or "").strip()
+        if not owner_id:
+            continue
+        quoted_owner_id = quote(owner_id, safe="")
+        companions_url = urljoin(
+            base_url.rstrip("/") + "/",
+            f"api/owners/{quoted_owner_id}/companions",
+        )
+        realms_url = urljoin(
+            base_url.rstrip("/") + "/",
+            f"api/owners/{quoted_owner_id}/memory-realms",
+        )
+        try:
+            companions_payload = _load_json(companions_url, timeout=timeout)
+            realms_payload = _load_json(realms_url, timeout=timeout)
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise UsersSourceUnavailable(
+                f"admin owner workspace unavailable for {owner_id!r}: {exc}"
+            ) from exc
+
+        companions = {
+            str(companion.get("companion_id") or ""): companion
+            for companion in companions_payload.get("companions", []) or []
+            if isinstance(companion, dict)
+        }
+        realms = sorted(
+            [
+                realm
+                for realm in realms_payload.get("memory_realms", []) or []
+                if isinstance(realm, dict)
+            ],
+            key=lambda item: str(item.get("realm_id") or ""),
+        )
+        for realm in realms:
+            companion_id = str(realm.get("companion_id") or "").strip()
+            companion = companions.get(companion_id)
+            if companion is None:
+                continue
+            config = realm.get("engine_config_json") or {}
+            port = _configured_port(config)
+            if port <= 0 or port in used_ports:
+                port = _stable_realm_port(
+                    str(realm.get("realm_id") or ""),
+                    base_port=cfg.mcp_http.port,
+                    used_ports=used_ports,
+                )
+            used_ports.add(port)
+            entry = _entry_from_memory_realm(
+                realm,
+                owner=owner,
+                companion=companion,
+                port=port,
+            )
+            if entry is not None:
+                entries.append(entry)
     return UsersConfig(users=entries)
 
 
 def load_users_config(settings: MemorySettings | None = None) -> UsersConfig:
-    """Read and validate users from eidolon_admin's registry API."""
-    return _load_users_from_admin_api(settings)
+    """Read and validate memory realms from eidolon_admin's owner APIs."""
+    return _load_memory_realms_from_admin_api(settings)
