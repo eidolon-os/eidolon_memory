@@ -43,6 +43,8 @@ class ConsolidatorUserConfig(BaseModel):
 
 class UserEntry(BaseModel):
     id: str
+    owner_id: str | None = None
+    companion_id: str | None = None
     port: int = Field(ge=1, le=65535)
     enabled: bool = True
     palace_path: str = ""  # absolute override; empty = use default per-user palace
@@ -119,12 +121,12 @@ def _entry_from_admin_view(view: dict) -> UserEntry | None:
     spec = view.get("spec") if isinstance(view, dict) and "spec" in view else view
     if not isinstance(spec, dict):
         return None
-    user_id = str(spec.get("user_id") or "").strip()
-    tenant_id = str(spec.get("tenant_id") or "default").strip() or "default"
-    persona_id = str(
-        spec.get("persona_id")
-        or "default"
-    ).strip() or "default"
+    memory_space_id = str(
+        spec.get("memory_realm_id")
+        or spec.get("memory_space_id")
+        or spec.get("user_id")
+        or ""
+    ).strip()
     port = int(spec.get("memory_port", 0) or 0)
     if port <= 0:
         raw_url = str(view.get("mcp_http_url") or "") if isinstance(view, dict) else ""
@@ -135,11 +137,12 @@ def _entry_from_admin_view(view: dict) -> UserEntry | None:
             port = parsed.port or 0
         except Exception:  # noqa: BLE001
             port = 0
-    if not user_id or port <= 0:
+    if not memory_space_id or port <= 0:
         return None
-    memory_space_id = f"{tenant_id}.{user_id}.{persona_id}"
     return UserEntry(
         id=memory_space_id,
+        owner_id=str(spec.get("owner_id") or "").strip() or None,
+        companion_id=str(spec.get("companion_id") or "").strip() or None,
         port=port,
         enabled=bool(spec.get("enabled", True)),
         palace_path=str(spec.get("palace_path") or ""),

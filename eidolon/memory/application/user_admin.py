@@ -160,21 +160,18 @@ def allocate_port(existing: Iterable[UserEntry]) -> int:
 def user_to_view(
     user: UserEntry, *, worker_alive: bool, palace_path: Path, palace_initialized: bool
 ) -> dict:
-    """The flat JSON shape the HTTP layer returns. Matches admin's
-    ``UserView`` schema field-for-field — admin can ``model_validate(view)``
-    on this dict.
+    """The flat JSON shape the HTTP layer returns.
 
-    ``mcp_http_url`` (added 29.K): the user-worker's MCP endpoint.
+    ``mcp_http_url`` is the realm worker's MCP endpoint.
     Memory is authoritative for port assignment, so we expose the URL
-    here rather than make admin synthesize from convention. Channel
-    eventually receives this via /api/resolve and dials it for tools.
+    here rather than make admin synthesize from convention.
     """
     return {
         "spec": {
-            "user_id": user.id,
-            # memory has no tenant concept — admin tags users with a tenant
-            # at its own bookkeeping layer; memory always returns "default".
-            "tenant_id": "default",
+            "memory_realm_id": user.id,
+            "memory_space_id": user.id,
+            "owner_id": user.owner_id,
+            "companion_id": user.companion_id,
             "display_name": user.id,  # memory has no display name field today
             "enabled": user.enabled,
             "palace_path": user.palace_path,
@@ -191,14 +188,9 @@ def user_to_view(
             "worker_running": worker_alive and user.enabled,
             "mcp_reachable": worker_alive and user.enabled,  # liveness conflates the two for now
             "palace_initialized": palace_initialized,
-            "note": "" if user.enabled else "user disabled by admin registry",
+            "note": "" if user.enabled else "memory realm disabled by admin registry",
         },
-        "active_agent_id": None,  # admin-side concept, memory doesn't know
-        "agent_ids": [],  # ditto
-        # Runtime addressing — admin needs this to compose ResolvedContext
-        # for channel without a second round-trip. Memory's MCP path is
-        # always /mcp and the host is loopback (sub-projects co-locate
-        # with admin in the dev stack).
+        "companion_ids": [user.companion_id] if user.companion_id else [],
         "mcp_http_url": f"http://127.0.0.1:{user.port}/mcp",
     }
 
