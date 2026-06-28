@@ -35,12 +35,10 @@ MEMORY_SPACE_ID = "default.alice.default"
 
 def _actor_context(*, session_id: str = "unit") -> MemoryActorContext:
     return MemoryActorContext(
-        tenant_id="default",
-        owner_user_id="alice",
-        persona_id="default",
-        agent_id="agent",
+        memory_realm_id=MEMORY_SPACE_ID,
+        owner_id="alice",
+        companion_id="default",
         device_id="device",
-        instance_id="instance",
         session_id=session_id,
     )
 

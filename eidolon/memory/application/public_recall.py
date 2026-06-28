@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -79,6 +80,8 @@ from eidolon.memory.application.recall_renderer import group_recall_context  # n
 #     keeps the specific-fact top_k clean while themes still surface via
 #     their own channel.
 _FANOUT_EXCLUDED_WINGS = frozenset({"Wing_Privacy", "Wing_Theme"})
+_EXACT_SCAN_LIMIT = 5000
+_VOICE_EXACT_SCAN_LIMIT = 250
 
 
 def _resolve_wings(
@@ -101,6 +104,138 @@ def _effective_wing_parallel(settings: MemorySettings, *, for_voice: bool) -> in
     if explicit > 0:
         return explicit
     return max(1, min(4, __import__("os").cpu_count() or 4 // 2))
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _query_terms(query: str) -> list[str]:
+    q = _normalize_text(query)
+    if not q:
+        return []
+    terms: set[str] = {q}
+    terms.update(t for t in re.findall(r"[a-z0-9_@\-.]{2,}", q) if t)
+    cjk = re.sub(r"[^\u3400-\u9fff]+", "", q)
+    for n in range(2, min(8, len(cjk)) + 1):
+        for i in range(0, len(cjk) - n + 1):
+            term = cjk[i : i + n]
+            if term not in {"什么", "哪里", "怎么", "时候", "这个", "那个"}:
+                terms.add(term)
+    return sorted(terms, key=lambda item: (-len(item), item))
+
+
+def _record_search_blob(record: MemoryWireRecord) -> str:
+    meta = record.metadata or {}
+    return _normalize_text(
+        " ".join(
+            [
+                str(record.value or ""),
+                str(record.key or ""),
+                str(meta.get("wing") or ""),
+                str(meta.get("room") or ""),
+                str(meta.get("tags") or ""),
+            ]
+        )
+    )
+
+
+def _lexical_score(record: MemoryWireRecord, *, query: str, terms: list[str]) -> float:
+    blob = _record_search_blob(record)
+    if not blob:
+        return 0.0
+    q = _normalize_text(query)
+    score = 0.0
+    if q and q in blob:
+        score += 100.0 + min(len(q), 40)
+    for term in terms:
+        if term and term in blob:
+            score += min(len(term), 12)
+    return score
+
+
+async def _exact_lexical_fallback(
+    backend: MemoryReader,
+    *,
+    query: str,
+    context: MemoryActorContext,
+    wings: list[str],
+    room: str | None,
+    top_k: int,
+    scan_limit: int,
+) -> list[MemoryWireRecord]:
+    """Bounded exact scan for real-time freshness and vector-search degradation.
+
+    Chroma/MemPalace vector search can lag, fail, or miss short entity queries.
+    ``get_all`` is the same single-owner backend surface used by admin listing,
+    so it sees newly committed drawers immediately while respecting the same
+    process lock. The scan is intentionally capped; vector remains the primary
+    scalable retrieval path.
+    """
+    get_all = getattr(backend, "get_all", None)
+    if get_all is None:
+        return []
+    terms = _query_terms(query)
+    if not terms:
+        return []
+    try:
+        rows = await get_all(context.memory_space_id, limit=scan_limit, offset=0)
+    except Exception as exc:  # noqa: BLE001 - fallback must not break recall
+        log.warning(
+            "exact_lexical_fallback_failed",
+            memory_space_id=context.memory_space_id,
+            query_len=len(query or ""),
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        return []
+
+    wing_set = set(wings)
+    scored: list[tuple[float, MemoryWireRecord]] = []
+    for row in rows:
+        meta = row.metadata or {}
+        row_wing = str(meta.get("wing") or "")
+        row_room = str(meta.get("room") or row.key or "")
+        if wing_set and row_wing not in wing_set:
+            continue
+        if room and row_room != room and row.key != room:
+            continue
+        if not recall_record_visible_for_context(row, context):
+            continue
+        score = _lexical_score(row, query=query, terms=terms)
+        if score <= 0:
+            continue
+        enriched_meta = {
+            **meta,
+            "retrieval": "lexical_fallback",
+            "similarity": min(0.99, score / 120.0),
+            "_lexical_score": score,
+        }
+        scored.append((score, row.model_copy(update={"metadata": enriched_meta})))
+
+    scored.sort(
+        key=lambda item: (
+            item[0],
+            item[1].memory_time or item[1].created_at,
+        ),
+        reverse=True,
+    )
+    return [row for _score, row in scored[: max(1, top_k)]]
+
+
+def _merge_unique_records(
+    primary: list[MemoryWireRecord],
+    fallback: list[MemoryWireRecord],
+) -> list[MemoryWireRecord]:
+    seen: set[tuple[str, str]] = set()
+    merged: list[MemoryWireRecord] = []
+    for row in [*primary, *fallback]:
+        ident = (row.memory_space_id, row.key)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        merged.append(row)
+    return merged
 
 
 async def recall_with_kg_fusion(
@@ -145,9 +280,7 @@ async def recall_with_kg_fusion(
         # a more generous window because admin/IDE callers don't share the
         # LiveKit deadline and the vector path may saturate the to_thread
         # executor with ONNX work for many seconds on a cold first call.
-        kg_timeout = (
-            settings.recall.kg_timeout_seconds if for_voice else 1.0
-        )
+        kg_timeout = settings.recall.kg_timeout_seconds if for_voice else 1.0
         kg_task = asyncio.create_task(
             _kg_path_with_timeout(
                 kg,
@@ -219,9 +352,7 @@ async def recall_with_kg_fusion(
         existing_keys = {r.key for r in vector_records}
         # Themes go first in the merged list so the renderer's split-by-
         # `_is_theme_record` puts the [主题] section in front naturally.
-        merged: list[MemoryWireRecord] = [
-            r for r in theme_records if r.key not in existing_keys
-        ]
+        merged: list[MemoryWireRecord] = [r for r in theme_records if r.key not in existing_keys]
         merged.extend(vector_records)
         vector_records = merged
 
@@ -263,7 +394,10 @@ async def _fetch_themes(
         return []
     try:
         hits = await backend.search(
-            query, wing="Wing_Theme", n_results=cap, room=None,
+            query,
+            wing="Wing_Theme",
+            n_results=cap,
+            room=None,
         )
     except Exception as exc:  # noqa: BLE001 - never break recall
         log.warning("theme_fetch_failed", error=str(exc))
@@ -305,6 +439,7 @@ async def _kg_path_with_timeout(
     """
     t0 = time.monotonic()
     try:
+
         async def _inner():
             candidates = await kg.match_entities_for_query(query, cap=max_entities)
             if not candidates:
@@ -362,12 +497,8 @@ async def search_all_wings_mcp_style(
 ) -> list[MemoryWireRecord]:
     """Search configured wings in parallel, filter, rank, and cap top_k."""
     wings = _resolve_wings(settings, wing=wing, for_voice=for_voice)
-    if (
-        for_voice
-        and wings
-        and settings.runtime.read.shared_query_embedding
-        and palace_path
-    ):
+    vector_degraded = False
+    if for_voice and wings and settings.runtime.read.shared_query_embedding and palace_path:
         try:
             hits = await _search_voice_shared_embedding(
                 palace_path,
@@ -396,24 +527,61 @@ async def search_all_wings_mcp_style(
                 error_type=type(exc).__name__,
             )
             hits = []
+            vector_degraded = True
     else:
         parallel = _effective_wing_parallel(settings, for_voice=for_voice)
         sem = asyncio.Semaphore(parallel)
 
         async def _one(wing_id: str) -> list[MemoryWireRecord]:
             async with sem:
-                found = await backend.search(query, wing=wing_id, n_results=top_k, room=room)
-                return [
-                    r for r in found
-                    if recall_record_visible_for_context(r, context)
-                ]
+                found = await backend.search(
+                    query,
+                    wing=wing_id,
+                    n_results=top_k,
+                    room=room,
+                )
+                return [r for r in found if recall_record_visible_for_context(r, context)]
 
         batches = await asyncio.gather(*[_one(wid) for wid in wings], return_exceptions=True)
         hits = []
-        for batch in batches:
+        for wing_id, batch in zip(wings, batches, strict=False):
             if isinstance(batch, BaseException):
+                vector_degraded = True
+                log.warning(
+                    "vector_wing_search_failed",
+                    memory_space_id=context.memory_space_id,
+                    wing=wing_id,
+                    query_len=len(query or ""),
+                    error=str(batch),
+                    error_type=type(batch).__name__,
+                )
                 continue
             hits.extend(batch)
+
+    if len(hits) < top_k:
+        exact_hits = await _exact_lexical_fallback(
+            backend,
+            query=query,
+            context=context,
+            wings=wings,
+            room=room,
+            top_k=top_k,
+            scan_limit=_VOICE_EXACT_SCAN_LIMIT if for_voice else _EXACT_SCAN_LIMIT,
+        )
+        if exact_hits:
+            log.info(
+                "exact_lexical_fallback_hit",
+                memory_space_id=context.memory_space_id,
+                query_len=len(query or ""),
+                hit_count=len(exact_hits),
+                vector_hit_count=len(hits),
+                vector_degraded=vector_degraded,
+                for_voice=for_voice,
+            )
+            hits = _merge_unique_records(hits, exact_hits)
+
+    if vector_degraded and raise_on_degraded and not hits:
+        raise MemoryBackendUnavailable("vector search degraded and exact fallback found no hits")
 
     if for_voice:
         hits = filter_voice_recall_hits(
@@ -450,6 +618,7 @@ async def _search_voice_shared_embedding(
     single-writer-single-reader contract. Non-locked backends (tests) fall back
     to running unlocked.
     """
+
     def _run() -> list[MemoryWireRecord]:
         raw = search_memories_shared_embedding(
             query,

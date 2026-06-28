@@ -33,20 +33,23 @@ from eidolon_sdk.memory import (
 )
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
-from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
-from eidolon.memory.application.runtime_warm import warm_palace_read_path
 from eidolon.memory.application.privacy_filter import row_visible_to_listing
 from eidolon.memory.application.public_recall import wire_record_to_public_dict
+from eidolon.memory.application.runtime_warm import warm_palace_read_path
 from eidolon.memory.application.steward import create_steward
 from eidolon.memory.application.turn_processor import (
     process_command_message,
     process_sync_message,
     process_turn_message,
 )
-from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
-from eidolon.memory.config.memory_settings import resolve_run_dir
+from eidolon.memory.application.working_memory import WorkingMemoryRing
+from eidolon.memory.config.memory_settings import (
+    MemorySettings,
+    get_memory_settings,
+    resolve_run_dir,
+)
 from eidolon.memory.config.palace_directory import (
     resolve_palace_for_memory_space,
     validate_memory_space_id,
@@ -54,9 +57,6 @@ from eidolon.memory.config.palace_directory import (
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
 from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
-from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
-from eidolon.memory.infrastructure.nats.names import memory_consumer_name, nats_safe_name
-from eidolon.memory.infrastructure.nats.query import memory_list_drawers_query_subject
 from eidolon.memory.infrastructure.integrity import (
     IntegrityCheckFailed,
     PalaceLocationError,
@@ -70,6 +70,9 @@ from eidolon.memory.infrastructure.mempalace_backend import (
     selected_mempalace_backend,
     vector_sqlite_integrity_targets,
 )
+from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
+from eidolon.memory.infrastructure.nats.names import memory_consumer_name, nats_safe_name
+from eidolon.memory.infrastructure.nats.query import memory_list_drawers_query_subject
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
@@ -192,9 +195,7 @@ async def _nats_subscriber_loop(
             include_private = bool(payload.get("include_private", False))
             rows = await backend.get_all(memory_space_id, limit=limit, offset=offset)
             filtered = [
-                row
-                for row in rows
-                if row_visible_to_listing(row, include_private=include_private)
+                row for row in rows if row_visible_to_listing(row, include_private=include_private)
             ]
             response = {
                 "records": [wire_record_to_public_dict(row) for row in filtered],
@@ -226,7 +227,7 @@ async def _nats_subscriber_loop(
         try:
             nc = await nats.connect(
                 settings.nats.url,
-                max_reconnect_attempts=-1,   # infinite connection-level retries
+                max_reconnect_attempts=-1,  # infinite connection-level retries
                 reconnect_time_wait=2,
             )
             js = nc.jetstream()
@@ -272,8 +273,11 @@ async def _nats_subscriber_loop(
                     await _drain(
                         psub_cmd,
                         lambda m: process_command_message(
-                            m, backend=backend, kg=kg,
-                            expected_memory_space_id=memory_space_id, settings=settings,
+                            m,
+                            backend=backend,
+                            kg=kg,
+                            expected_memory_space_id=memory_space_id,
+                            settings=settings,
                         ),
                     )
                     await _drain(
@@ -296,9 +300,7 @@ async def _nats_subscriber_loop(
                         await asyncio.to_thread(
                             checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
                         )
-                    await asyncio.to_thread(
-                        checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE"
-                    )
+                    await asyncio.to_thread(checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE")
                     await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
                     writes_since_checkpoint = 0
         except Exception as exc:  # noqa: BLE001 - any connection/sub failure → reconnect
@@ -308,7 +310,8 @@ async def _nats_subscriber_loop(
                 break
             log.warning(
                 "agent_runner_nats_reconnect",
-                error=str(exc), error_type=type(exc).__name__,
+                error=str(exc),
+                error_type=type(exc).__name__,
                 retry_in_s=reconnect_delay,
             )
             await asyncio.sleep(reconnect_delay)
@@ -334,9 +337,7 @@ def _compose_starlette_lifespan(
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
     backend_name = selected_mempalace_backend(settings)
-    palace_sqlite = (
-        str(Path(palace_path) / "chroma.sqlite3") if backend_name == "chroma" else None
-    )
+    palace_sqlite = str(Path(palace_path) / "chroma.sqlite3") if backend_name == "chroma" else None
     kg_sqlite = str(Path(palace_path) / "knowledge_graph.sqlite3")
     stop_event = asyncio.Event()
     nats_ready_event = asyncio.Event()
@@ -414,7 +415,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--palace-path",
         default="",
-        help="Override palace directory (default ~/eidolon/palaces/<memory_space_id>)",
+        help="Override palace directory (default ~/eidolon/memory/mempalaces/<memory_space_id>)",
     )
     return parser.parse_args(argv)
 
@@ -428,12 +429,10 @@ def main(argv: list[str] | None = None) -> None:
     backend_name = selected_mempalace_backend(settings)
     apply_cpu_thread_env(settings, role="livekit")
 
-    palace_path = (
-        resolve_palace_for_memory_space(
-            settings,
-            memory_space_id,
-            path_override=args.palace_path or None,
-        )
+    palace_path = resolve_palace_for_memory_space(
+        settings,
+        memory_space_id,
+        path_override=args.palace_path or None,
     )
 
     # D4: deployment-location guard (iCloud / Dropbox / NFS / SMB)

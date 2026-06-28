@@ -25,12 +25,10 @@ MEMORY_SPACE_ID = "default.alice.default"
 
 def _actor_context() -> MemoryActorContext:
     return MemoryActorContext(
-        tenant_id="default",
-        owner_user_id="alice",
-        persona_id="default",
-        agent_id="agent",
+        memory_realm_id=MEMORY_SPACE_ID,
+        owner_id="alice",
+        companion_id="default",
         device_id="device",
-        instance_id="instance",
         session_id="s1",
     )
 
@@ -63,16 +61,13 @@ def _turn_payload(
     assistant_text: str = "好的，记住了",
     timestamp: str = "2026-05-19T10:00:00Z",
 ) -> dict:
-    tenant_id, owner_user_id, persona_id = memory_space_id.split(".", 2)
     return {
         "turn_id": turn_id or uuid.uuid4().hex,
         "context": {
-            "tenant_id": tenant_id,
-            "owner_user_id": owner_user_id,
-            "persona_id": persona_id,
-            "agent_id": "agent",
+            "memory_realm_id": memory_space_id,
+            "owner_id": "alice",
+            "companion_id": "default",
             "device_id": "device",
-            "instance_id": "instance",
             "session_id": "s1",
             "memory_space_id": memory_space_id,
         },

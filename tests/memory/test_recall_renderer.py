@@ -7,8 +7,6 @@ Fusion / wing fan-out / KG routing are tested elsewhere.
 
 from __future__ import annotations
 
-import pytest
-
 from eidolon.memory.application.recall_renderer import (
     _DEFAULT_GROUP,
     _WING_GROUP_MAP,
@@ -19,9 +17,9 @@ from eidolon.memory.domain.kg import KgTripleRecord
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 
-def _rec(memory_type: str, value: str, user_id: str = "u1") -> MemoryWireRecord:
+def _rec(memory_type: str, value: str, memory_space_id: str = "u1") -> MemoryWireRecord:
     return MemoryWireRecord(
-        user_id=user_id,
+        memory_space_id=memory_space_id,
         key=f"k-{abs(hash((memory_type, value))) % 10000}",
         value=value,
         metadata={"memory_type": memory_type},
@@ -51,7 +49,7 @@ def test_unknown_memory_type_falls_back_to_lifestyle():
 def test_vector_memory_renders_canonical_date_when_available():
     records = [
         MemoryWireRecord(
-            user_id="u1",
+            memory_space_id="u1",
             key="k-time",
             value="铁锤今天去洗澡",
             metadata={

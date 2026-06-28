@@ -11,9 +11,9 @@ import json
 import os
 import urllib.error
 import urllib.request
-from hashlib import sha256
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, urljoin
 
+from eidolon_sdk.memory import stable_memory_realm_port
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
@@ -48,7 +48,6 @@ class UserEntry(BaseModel):
     companion_id: str | None = None
     port: int = Field(ge=1, le=65535)
     enabled: bool = True
-    palace_path: str = ""  # absolute override; empty = use default per-user palace
     # Phase 4 — optional. ``None`` (the default) means "no consolidator for
     # this user"; explicit ``ConsolidatorUserConfig`` is the opt-in marker.
     consolidator: ConsolidatorUserConfig | None = None
@@ -106,6 +105,7 @@ def resolve_admin_api_url(settings: MemorySettings | None = None) -> str:
     port = os.environ.get("EIDOLON_ADMIN_API_PORT", "9000").strip() or "9000"
     return f"http://{host}:{port}"
 
+
 def _consolidator_from_admin(raw: dict) -> ConsolidatorUserConfig | None:
     if not isinstance(raw, dict):
         return None
@@ -124,37 +124,12 @@ def _load_json(url: str, *, timeout: float) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _configured_port(config: dict) -> int:
-    if not isinstance(config, dict):
-        return 0
-    for key in ("mcp_port", "port"):
-        try:
-            port = int(config.get(key, 0) or 0)
-        except (TypeError, ValueError):
-            port = 0
-        if 1 <= port <= 65535:
-            return port
-    raw_url = str(config.get("mcp_http_url") or "").strip()
-    if raw_url:
-        try:
-            return urlparse(raw_url).port or 0
-        except Exception:  # noqa: BLE001
-            return 0
-    return 0
-
-
 def _stable_realm_port(realm_id: str, *, base_port: int, used_ports: set[int]) -> int:
-    base = min(max(base_port, 1), 65535)
-    span = min(2000, 65535 - base + 1)
-    seed = int.from_bytes(sha256(realm_id.encode("utf-8")).digest()[:8], "big")
-    for offset in range(span):
-        port = base + ((seed + offset) % span)
-        if port not in used_ports:
-            return port
-    for port in range(1, 65536):
-        if port not in used_ports:
-            return port
-    raise ValueError("no free MCP port available for memory realm")
+    return stable_memory_realm_port(
+        realm_id,
+        base_port=base_port,
+        used_ports=used_ports,
+    )
 
 
 def _entry_from_memory_realm(
@@ -166,9 +141,7 @@ def _entry_from_memory_realm(
 ) -> UserEntry | None:
     realm_id = str(realm.get("realm_id") or "").strip()
     owner_id = str(realm.get("owner_id") or owner.get("owner_id") or "").strip()
-    companion_id = str(
-        realm.get("companion_id") or companion.get("companion_id") or ""
-    ).strip()
+    companion_id = str(realm.get("companion_id") or companion.get("companion_id") or "").strip()
     if not realm_id or not owner_id or not companion_id:
         return None
     config = realm.get("engine_config_json") or {}
@@ -182,7 +155,6 @@ def _entry_from_memory_realm(
             and str(companion.get("status") or "").lower() == "active"
             and str(realm.get("status") or "").lower() == "active"
         ),
-        palace_path=str(config.get("palace_path") or ""),
         consolidator=_consolidator_from_admin(config.get("consolidator") or {}),
     )
 
@@ -246,14 +218,11 @@ def _load_memory_realms_from_admin_api(settings: MemorySettings | None = None) -
             companion = companions.get(companion_id)
             if companion is None:
                 continue
-            config = realm.get("engine_config_json") or {}
-            port = _configured_port(config)
-            if port <= 0 or port in used_ports:
-                port = _stable_realm_port(
-                    str(realm.get("realm_id") or ""),
-                    base_port=cfg.mcp_http.port,
-                    used_ports=used_ports,
-                )
+            port = _stable_realm_port(
+                str(realm.get("realm_id") or ""),
+                base_port=cfg.mcp_http.port,
+                used_ports=used_ports,
+            )
             used_ports.add(port)
             entry = _entry_from_memory_realm(
                 realm,

@@ -30,13 +30,13 @@ def test_vector_fields_derives_similarity_from_distance():
 def test_rank_records_by_similarity_descending():
     hits = [
         MemoryWireRecord(
-            user_id="Wing_Life",
+            memory_space_id="Wing_Life",
             key="a",
             value="far",
             metadata={"similarity": 0.2},
         ),
         MemoryWireRecord(
-            user_id="Wig_Life",
+            memory_space_id="Wing_Life",
             key="b",
             value="铁锤",
             metadata={"similarity": 0.8},

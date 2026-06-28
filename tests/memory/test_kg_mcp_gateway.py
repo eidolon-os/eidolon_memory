@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -31,7 +30,7 @@ def mcp_with_kg(tmp_path: Path):
     mcp = build_control_plane_mcp(
         backend,
         settings,
-        user_id="alice",
+        memory_space_id="default.alice.default",
         palace_path=str(tmp_path),
         host="127.0.0.1",
         port=9999,
@@ -67,7 +66,7 @@ async def test_kg_tools_omitted_without_publisher(tmp_path: Path) -> None:
     mcp = build_control_plane_mcp(
         FakeMemoryBackend(),
         settings,
-        user_id="alice",
+        memory_space_id="default.alice.default",
         palace_path=str(tmp_path),
         host="127.0.0.1",
         port=9999,
@@ -79,7 +78,10 @@ async def test_kg_tools_omitted_without_publisher(tmp_path: Path) -> None:
 
 async def test_kg_predicates_tool_returns_whitelist(mcp_with_kg) -> None:
     mcp, _, _ = mcp_with_kg
-    tool = next(t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_kg_predicates")
+    tool = next(
+        t for t in mcp._tool_manager.list_tools()
+        if t.name == "eidolon_memory_kg_predicates"
+    )
     result = await tool.fn()
     assert "likes" in result["predicates"]
     assert "has_health_condition" in result["sensitive"]

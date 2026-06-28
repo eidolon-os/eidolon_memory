@@ -6,6 +6,7 @@ import json
 from io import BytesIO
 
 import pytest
+from eidolon_sdk.memory import stable_memory_realm_port
 
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.config.users import UsersConfig, load_users_config
@@ -65,8 +66,6 @@ def test_load_memory_realms_from_owner_workspace(monkeypatch: pytest.MonkeyPatch
                         "companion_id": "test",
                         "status": "active",
                         "engine_config_json": {
-                            "mcp_port": 8035,
-                            "palace_path": "/tmp/palace",
                             "consolidator": {"enabled": True, "interval_hours": 8},
                         },
                     },
@@ -75,14 +74,14 @@ def test_load_memory_realms_from_owner_workspace(monkeypatch: pytest.MonkeyPatch
                         "owner_id": "benchmark",
                         "companion_id": "old",
                         "status": "active",
-                        "engine_config_json": {"mcp_port": 8036},
+                        "engine_config_json": {},
                     },
                     {
                         "realm_id": "r:benchmark:orphan",
                         "owner_id": "benchmark",
                         "companion_id": "missing",
                         "status": "active",
-                        "engine_config_json": {"mcp_port": 8037},
+                        "engine_config_json": {},
                     },
                 ]
             },
@@ -95,9 +94,12 @@ def test_load_memory_realms_from_owner_workspace(monkeypatch: pytest.MonkeyPatch
     assert default is not None
     assert default.owner_id == "benchmark"
     assert default.companion_id == "test"
-    assert default.port == 8035
+    assert default.port == stable_memory_realm_port(
+        "r:benchmark:default",
+        base_port=8030,
+        used_ports=set(),
+    )
     assert default.enabled is True
-    assert default.palace_path == "/tmp/palace"
     assert default.consolidator is not None
     assert default.consolidator.enabled is True
     assert default.consolidator.interval_hours == 8
@@ -138,21 +140,19 @@ def test_load_memory_realms_assigns_stable_ports(monkeypatch: pytest.MonkeyPatch
 
     first = load_users_config(_settings())
     second = load_users_config(_settings())
-    assert [(u.id, u.port) for u in first.users] == [
-        (u.id, u.port) for u in second.users
-    ]
+    assert [(u.id, u.port) for u in first.users] == [(u.id, u.port) for u in second.users]
     assert len({u.port for u in first.users}) == 2
     assert all(8030 <= u.port <= 10029 for u in first.users)
 
 
-def test_load_memory_realms_reads_port_from_mcp_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_memory_realms_ignores_runtime_route_in_engine_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     base = "http://127.0.0.1:9000"
     _urlopen_routes(
         monkeypatch,
         {
-            f"{base}/api/owners": {
-                "owners": [{"owner_id": "benchmark", "status": "active"}]
-            },
+            f"{base}/api/owners": {"owners": [{"owner_id": "benchmark", "status": "active"}]},
             f"{base}/api/owners/benchmark/companions": {
                 "companions": [{"companion_id": "test", "status": "active"}]
             },
@@ -164,7 +164,8 @@ def test_load_memory_realms_reads_port_from_mcp_url(monkeypatch: pytest.MonkeyPa
                         "companion_id": "test",
                         "status": "active",
                         "engine_config_json": {
-                            "mcp_http_url": "http://127.0.0.1:8041/mcp"
+                            "mcp_http_url": "http://127.0.0.1:8041/mcp",
+                            "palace_path": "/tmp/legacy-palace",
                         },
                     }
                 ]
@@ -173,7 +174,11 @@ def test_load_memory_realms_reads_port_from_mcp_url(monkeypatch: pytest.MonkeyPa
     )
 
     cfg = load_users_config(_settings())
-    assert cfg.find("r:benchmark:default").port == 8041
+    assert cfg.find("r:benchmark:default").port == stable_memory_realm_port(
+        "r:benchmark:default",
+        base_port=8030,
+        used_ports=set(),
+    )
 
 
 def test_duplicate_user_id_rejected() -> None:

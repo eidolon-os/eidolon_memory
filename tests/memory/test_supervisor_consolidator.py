@@ -57,7 +57,9 @@ def test_consolidator_cli_argv_has_all_knobs():
     is the single biggest footgun this test guards against.
     """
     user = UserEntry(
-        id=ALICE_SPACE, port=9001, enabled=True,
+        id=ALICE_SPACE,
+        port=9001,
+        enabled=True,
         consolidator=ConsolidatorUserConfig(
             enabled=True,
             interval_hours=8,
@@ -89,13 +91,16 @@ def test_consolidator_cli_argv_rejects_disabled_user():
 def test_agent_argv_unaffected_by_consolidator_block():
     """The consolidator config must not leak into agent_runner's argv."""
     user = UserEntry(
-        id=ALICE_SPACE, port=9001, enabled=True,
+        id=ALICE_SPACE,
+        port=9001,
+        enabled=True,
         consolidator=ConsolidatorUserConfig(enabled=True),
     )
     argv = _agent_cli_argv(user, palace_path=Path("/tmp/p"))
     # No consolidator flags in agent argv.
     assert all("interval" not in a for a in argv)
     assert all("min-confidence" not in a for a in argv)
+    assert "--palace-path" not in argv
 
 
 # ─── Supervisor spawn behaviour (mocked subprocess) ────────────────────────
@@ -115,7 +120,7 @@ def _patched_popen():
         counter["pid"] += 1
         m = MagicMock()
         m.pid = counter["pid"]
-        m.poll.return_value = None      # alive
+        m.poll.return_value = None  # alive
         m.returncode = None
         m.wait.return_value = 0
         # ``terminate`` is best-effort; tests don't assert on it
@@ -141,19 +146,31 @@ def _build_supervisor(tmp_path: Path) -> Supervisor:
     # eager_init=False — Supervisor.start would otherwise try to spawn the
     # palace-init helper subprocess (which we don't want under unit-test mocks).
     settings = load_memory_settings()
+    settings = settings.model_copy(
+        update={
+            "runtime": settings.runtime.model_copy(
+                update={"palaces_root": str(tmp_path / "palaces")}
+            )
+        }
+    )
     return Supervisor(settings, eager_init=False)
 
 
 async def test_supervisor_skips_consolidator_when_disabled(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     monkeypatch.setattr(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    _patch_registry(monkeypatch, [
-        {"id": ALICE_SPACE, "port": 9001, "enabled": True},  # no consolidator block
-    ])
+    _patch_registry(
+        monkeypatch,
+        [
+            {"id": ALICE_SPACE, "port": 9001, "enabled": True},  # no consolidator block
+        ],
+    )
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
@@ -177,7 +194,12 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     """
     _patch_registry(monkeypatch, [])
     sup = _build_supervisor(tmp_path)
-    palace_path = tmp_path / "palaces" / ALICE_SPACE
+    user = UserEntry(
+        id=ALICE_SPACE,
+        port=9001,
+        enabled=True,
+    )
+    palace_path = sup.palace_path_for(user)
     palace_path.mkdir(parents=True)
     kg_path = palace_path / "knowledge_graph.sqlite3"
     conn = sqlite3.connect(kg_path)
@@ -187,12 +209,6 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
         conn.commit()
     finally:
         conn.close()
-    user = UserEntry(
-        id=ALICE_SPACE,
-        port=9001,
-        enabled=True,
-        palace_path=str(palace_path),
-    )
     captured: dict[str, object] = {}
 
     class _Proc:
@@ -223,7 +239,7 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
         "--backend",
         "chroma",
         "--palace",
-        str(tmp_path / "palaces" / ALICE_SPACE),
+        str(palace_path),
         "repair",
         "--mode",
         "from-sqlite",
@@ -243,18 +259,25 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
 
 
 async def test_supervisor_spawns_consolidator_when_enabled(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     monkeypatch.setattr(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    _patch_registry(monkeypatch, [
-        {
-            "id": ALICE_SPACE, "port": 9001, "enabled": True,
-            "consolidator": {"enabled": True, "interval_hours": 6},
-        },
-    ])
+    _patch_registry(
+        monkeypatch,
+        [
+            {
+                "id": ALICE_SPACE,
+                "port": 9001,
+                "enabled": True,
+                "consolidator": {"enabled": True, "interval_hours": 6},
+            },
+        ],
+    )
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
@@ -265,7 +288,8 @@ async def test_supervisor_spawns_consolidator_when_enabled(
         argv_list = [c.args[0] for c in _patched_popen.call_args_list]
         kinds = [a[0] for a in argv_list]
         assert sorted(kinds) == [
-            "eidolon-memory-agent", "eidolon-memory-consolidator",
+            "eidolon-memory-agent",
+            "eidolon-memory-consolidator",
         ]
         cons_argv = next(a for a in argv_list if a[0] == "eidolon-memory-consolidator")
         assert "--mcp-url" not in cons_argv
@@ -274,20 +298,27 @@ async def test_supervisor_spawns_consolidator_when_enabled(
 
 
 async def test_supervisor_per_user_consolidator_opt_in(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     """Two users — only one with consolidator: only one consolidator spawns."""
     monkeypatch.setattr(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    _patch_registry(monkeypatch, [
-        {
-            "id": ALICE_SPACE, "port": 9001, "enabled": True,
-            "consolidator": {"enabled": True},
-        },
-        {"id": BOB_SPACE, "port": 9002, "enabled": True},  # no consolidator
-    ])
+    _patch_registry(
+        monkeypatch,
+        [
+            {
+                "id": ALICE_SPACE,
+                "port": 9001,
+                "enabled": True,
+                "consolidator": {"enabled": True},
+            },
+            {"id": BOB_SPACE, "port": 9002, "enabled": True},  # no consolidator
+        ],
+    )
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
@@ -299,7 +330,9 @@ async def test_supervisor_per_user_consolidator_opt_in(
 
 
 async def test_start_spawns_ready_user_before_slow_init_finishes(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     """One slow/bad user's palace init must not block healthy users from
     getting a worker. This protects stack restart latency in multi-user dev
@@ -309,10 +342,13 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    _patch_registry(monkeypatch, [
-        {"id": FAST_SPACE, "port": 9001, "enabled": True},
-        {"id": SLOW_SPACE, "port": 9002, "enabled": True},
-    ])
+    _patch_registry(
+        monkeypatch,
+        [
+            {"id": FAST_SPACE, "port": 9001, "enabled": True},
+            {"id": SLOW_SPACE, "port": 9002, "enabled": True},
+        ],
+    )
 
     def _fake_init(user_id: str, _palace_path: Path, **_kwargs) -> None:
         if user_id == SLOW_SPACE:
@@ -354,7 +390,9 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
 
 
 async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     """SIGHUP reconcile must stream init completions just like cold start.
 
@@ -365,10 +403,13 @@ async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    _patch_registry(monkeypatch, [
-        {"id": FAST_SPACE, "port": 9001, "enabled": True},
-        {"id": SLOW_SPACE, "port": 9002, "enabled": True},
-    ])
+    _patch_registry(
+        monkeypatch,
+        [
+            {"id": FAST_SPACE, "port": 9001, "enabled": True},
+            {"id": SLOW_SPACE, "port": 9002, "enabled": True},
+        ],
+    )
 
     def _fake_init(user_id: str, _palace_path: Path, **_kwargs) -> None:
         if user_id == SLOW_SPACE:
@@ -410,7 +451,9 @@ async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
 
 
 async def test_reconcile_restarts_degraded_dead_agent_child(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     """A degraded dead child is a stopped runtime, not a valid alignment.
     Operator/admin reconcile should discard it and spawn a fresh worker.
@@ -419,9 +462,12 @@ async def test_reconcile_restarts_degraded_dead_agent_child(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    _patch_registry(monkeypatch, [
-        {"id": ALICE_SPACE, "port": 9001, "enabled": True},
-    ])
+    _patch_registry(
+        monkeypatch,
+        [
+            {"id": ALICE_SPACE, "port": 9001, "enabled": True},
+        ],
+    )
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
@@ -441,16 +487,21 @@ async def test_reconcile_restarts_degraded_dead_agent_child(
 
 
 async def test_reconcile_retries_palace_init_failure(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     """An init failure should not strand an enabled user until manual SIGHUP."""
     monkeypatch.setattr(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    _patch_registry(monkeypatch, [
-        {"id": ALICE_SPACE, "port": 9001, "enabled": True},
-    ])
+    _patch_registry(
+        monkeypatch,
+        [
+            {"id": ALICE_SPACE, "port": 9001, "enabled": True},
+        ],
+    )
     attempts = {ALICE_SPACE: 0}
 
     def _fake_init(user_id: str, _palace_path: Path, **_kwargs) -> None:
@@ -479,41 +530,54 @@ async def test_reconcile_retries_palace_init_failure(
 
 
 async def test_reconcile_disabling_consolidator_terminates_it(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     """Flip ``consolidator.enabled: true → false`` + SIGHUP semantics → kill."""
     monkeypatch.setattr(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    cfg = _patch_registry(monkeypatch, [
-        {
-            "id": ALICE_SPACE, "port": 9001, "enabled": True,
-            "consolidator": {"enabled": True},
-        },
-    ])
+    cfg = _patch_registry(
+        monkeypatch,
+        [
+            {
+                "id": ALICE_SPACE,
+                "port": 9001,
+                "enabled": True,
+                "consolidator": {"enabled": True},
+            },
+        ],
+    )
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
         assert ALICE_SPACE in sup._consolidators
         # Update registry with consolidator disabled.
-        cfg.users = UsersConfig.model_validate({"users": [
+        cfg.users = UsersConfig.model_validate(
             {
-                "id": ALICE_SPACE,
-                "port": 9001,
-                "enabled": True,
-                "consolidator": {"enabled": False},
+                "users": [
+                    {
+                        "id": ALICE_SPACE,
+                        "port": 9001,
+                        "enabled": True,
+                        "consolidator": {"enabled": False},
+                    }
+                ]
             }
-        ]}).users
+        ).users
         await sup._reconcile()
-        assert ALICE_SPACE in sup._children       # agent still alive
+        assert ALICE_SPACE in sup._children  # agent still alive
         assert ALICE_SPACE not in sup._consolidators
     finally:
         await sup.stop()
 
 
 async def test_reconcile_port_change_restarts_consolidator(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     """If the user's agent port shifts, restart the dependent consolidator
     after the fresh agent child is up."""
@@ -521,31 +585,41 @@ async def test_reconcile_port_change_restarts_consolidator(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    cfg = _patch_registry(monkeypatch, [
-        {
-            "id": ALICE_SPACE, "port": 9001, "enabled": True,
-            "consolidator": {"enabled": True},
-        },
-    ])
+    cfg = _patch_registry(
+        monkeypatch,
+        [
+            {
+                "id": ALICE_SPACE,
+                "port": 9001,
+                "enabled": True,
+                "consolidator": {"enabled": True},
+            },
+        ],
+    )
     sup = _build_supervisor(tmp_path)
     await sup.start()
     try:
         first_cons = sup._consolidators[ALICE_SPACE]
         original_cons_argv = next(
-            a for a in [c.args[0] for c in _patched_popen.call_args_list]
+            a
+            for a in [c.args[0] for c in _patched_popen.call_args_list]
             if a[0] == "eidolon-memory-consolidator"
         )
         assert "--mcp-url" not in original_cons_argv
 
         # Shift port to 9099.
-        cfg.users = UsersConfig.model_validate({"users": [
+        cfg.users = UsersConfig.model_validate(
             {
-                "id": ALICE_SPACE,
-                "port": 9099,
-                "enabled": True,
-                "consolidator": {"enabled": True},
+                "users": [
+                    {
+                        "id": ALICE_SPACE,
+                        "port": 9099,
+                        "enabled": True,
+                        "consolidator": {"enabled": True},
+                    }
+                ]
             }
-        ]}).users
+        ).users
         await sup._reconcile()
 
         # Consolidator MUST have been replaced (not just reconfigured).
@@ -561,7 +635,9 @@ async def test_reconcile_port_change_restarts_consolidator(
 
 
 async def test_stop_terminates_consolidators_before_agents(
-    tmp_path: Path, _patched_popen, monkeypatch,
+    tmp_path: Path,
+    _patched_popen,
+    monkeypatch,
 ):
     """Order matters: consolidators are read-side, kill them first; agents
     get the full grace window for NATS drain + WAL checkpoint."""
@@ -569,12 +645,17 @@ async def test_stop_terminates_consolidators_before_agents(
         "eidolon.memory.entrypoints.supervisor.resolve_log_dir",
         lambda _s: tmp_path / "logs",
     )
-    _patch_registry(monkeypatch, [
-        {
-            "id": ALICE_SPACE, "port": 9001, "enabled": True,
-            "consolidator": {"enabled": True},
-        },
-    ])
+    _patch_registry(
+        monkeypatch,
+        [
+            {
+                "id": ALICE_SPACE,
+                "port": 9001,
+                "enabled": True,
+                "consolidator": {"enabled": True},
+            },
+        ],
+    )
     sup = _build_supervisor(tmp_path)
     await sup.start()
     cons_proc = sup._consolidators[ALICE_SPACE].proc

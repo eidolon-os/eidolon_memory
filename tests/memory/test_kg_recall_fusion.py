@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from eidolon_sdk.memory import MemoryActorContext
 
 pytestmark = pytest.mark.asyncio
+
+
+def _ctx(memory_realm_id: str = "default.alice.default") -> MemoryActorContext:
+    return MemoryActorContext(
+        memory_realm_id=memory_realm_id,
+        owner_id="alice",
+        companion_id="default",
+        device_id="device",
+        session_id="unit",
+    )
 
 
 # ─── Entity routing — KG facade owns the naming-convention bridge ────────
@@ -36,6 +45,7 @@ async def _seed_entities(kg, names_with_types: list[tuple[str, str]]) -> None:
 async def test_match_entities_bare_name_substring(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
     from mempalace.knowledge_graph import KnowledgeGraph
+
     from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 
     kg = LockedKnowledgeGraph(
@@ -57,6 +67,7 @@ async def test_match_entities_prefix_stripped(tmp_path: Path) -> None:
     """
     pytest.importorskip("mempalace")
     from mempalace.knowledge_graph import KnowledgeGraph
+
     from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 
     kg = LockedKnowledgeGraph(
@@ -82,6 +93,7 @@ async def test_match_entities_prefix_stripped(tmp_path: Path) -> None:
 async def test_match_entities_cap_respected(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
     from mempalace.knowledge_graph import KnowledgeGraph
+
     from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 
     kg = LockedKnowledgeGraph(
@@ -101,6 +113,7 @@ async def test_match_entities_prefers_longer(tmp_path: Path) -> None:
     """
     pytest.importorskip("mempalace")
     from mempalace.knowledge_graph import KnowledgeGraph
+
     from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 
     kg = LockedKnowledgeGraph(
@@ -119,6 +132,7 @@ async def test_match_entities_prefers_longer(tmp_path: Path) -> None:
 async def test_match_entities_empty_query(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
     from mempalace.knowledge_graph import KnowledgeGraph
+
     from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 
     kg = LockedKnowledgeGraph(
@@ -268,7 +282,7 @@ async def test_fusion_kg_path_fires_on_entity_hit(fusion_setup) -> None:
     result = await recall_with_kg_fusion(
         backend, settings,
         query="self likes tea",
-        user_id="alice", top_k=5,
+        context=_ctx(), top_k=5,
         kg=kg,
         for_voice=False,
     )
@@ -288,7 +302,7 @@ async def test_fusion_kg_path_skipped_when_no_entity_match(fusion_setup) -> None
     result = await recall_with_kg_fusion(
         backend, settings,
         query="今天天气怎么样",
-        user_id="alice", top_k=5,
+        context=_ctx(), top_k=5,
         kg=kg,
         for_voice=False,
     )
@@ -309,7 +323,7 @@ async def test_fusion_kg_disabled_via_settings(fusion_setup) -> None:
     result = await recall_with_kg_fusion(
         backend, settings,
         query="self likes tea",
-        user_id="alice", top_k=5,
+        context=_ctx(), top_k=5,
         kg=kg,
         for_voice=False,
     )
@@ -342,7 +356,7 @@ async def test_fusion_kg_timeout_degrades_silently(fusion_setup) -> None:
     result = await recall_with_kg_fusion(
         backend, settings,
         query="self likes tea",
-        user_id="alice", top_k=5,
+        context=_ctx(), top_k=5,
         kg=slow_kg,
         for_voice=True,  # voice path uses the strict kg_timeout_seconds
     )
@@ -429,7 +443,7 @@ async def test_recall_with_rerank_is_invoked_in_pipeline(
     result = await public_recall.recall_with_kg_fusion(
         backend, settings,
         query="用户",      # matches all 3 in FakeBackend
-        user_id=wing, top_k=3,
+        context=_ctx(wing), top_k=3,
         kg=None,
         for_voice=False,
     )
@@ -471,7 +485,7 @@ async def test_recall_with_rerank_can_be_disabled_via_settings(
     result = await public_recall.recall_with_kg_fusion(
         backend, settings,
         query="用户",      # substring-matches all 3 seeded docs
-        user_id=wing, top_k=3,
+        context=_ctx(wing), top_k=3,
         kg=None,
         for_voice=False,
     )
@@ -508,7 +522,7 @@ async def test_recall_kg_triples_ordered_by_confidence(fusion_setup) -> None:
     result = await recall_with_kg_fusion(
         backend, settings,
         query="self likes tea",
-        user_id="alice", top_k=5,
+        context=_ctx(), top_k=5,
         kg=kg,
         for_voice=False,
     )
@@ -548,7 +562,7 @@ async def test_recall_with_alias_query_hits_kg_via_mentions(fusion_setup) -> Non
     result = await recall_with_kg_fusion(
         backend, settings,
         query="我妈最近怎样",         # natural-language alias only
-        user_id="alice", top_k=5,
+        context=_ctx(), top_k=5,
         kg=kg,
         for_voice=False,
     )

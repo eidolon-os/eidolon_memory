@@ -17,6 +17,7 @@ Why a separate module (not put it in supervisor.py):
     plane can be unit-tested with a stub supervisor protocol, while the
     real supervisor stays focused on subprocess management.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -174,7 +175,7 @@ def user_to_view(
             "companion_id": user.companion_id,
             "display_name": user.id,  # memory has no display name field today
             "enabled": user.enabled,
-            "palace_path": user.palace_path,
+            "palace_path": str(palace_path),
             "consolidator": {
                 "enabled": user.consolidator.enabled if user.consolidator else False,
                 "interval_hours": user.consolidator.interval_hours if user.consolidator else 6.0,
@@ -301,10 +302,10 @@ class UserAdmin:
                 raise UserNotFound(f"memory realm {memory_realm_id!r} not found")
 
             for existing in self._rebuild_jobs.values():
-                if (
-                    existing.memory_realm_id == memory_realm_id
-                    and existing.status in {"pending", "running"}
-                ):
+                if existing.memory_realm_id == memory_realm_id and existing.status in {
+                    "pending",
+                    "running",
+                }:
                     raise RebuildAlreadyRunning(
                         "memory index rebuild for realm "
                         f"{memory_realm_id!r} is already {existing.status}"
@@ -335,9 +336,7 @@ class UserAdmin:
             raise RebuildJobNotFound(f"memory index rebuild job {job_id!r} not found")
         return job.to_view()
 
-    def list_rebuild_index_jobs(
-        self, *, memory_realm_id: str | None = None
-    ) -> list[dict]:
+    def list_rebuild_index_jobs(self, *, memory_realm_id: str | None = None) -> list[dict]:
         jobs = self._rebuild_jobs.values()
         if memory_realm_id is not None:
             jobs = [j for j in jobs if j.memory_realm_id == memory_realm_id]
@@ -450,9 +449,7 @@ class UserAdmin:
                         trash_target = self._trash_palace(palace_path, user_id)
                 except Exception as exc:  # noqa: BLE001 - need broad to drive rollback
                     log.exception("user_admin_palace_cleanup_failed", user_id=user_id)
-                    raise PalaceCleanupFailed(
-                        f"palace cleanup failed: {exc}"
-                    ) from exc
+                    raise PalaceCleanupFailed(f"palace cleanup failed: {exc}") from exc
 
             # Final reconcile so any UI status reads are consistent.
             await self._sup.reconcile_now()

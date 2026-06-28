@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from eidolon_sdk.memory import (
@@ -29,12 +29,10 @@ from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 
 def _ctx(device_id: str = "device-a", session_id: str = "session-a") -> MemoryActorContext:
     return MemoryActorContext(
-        tenant_id="default",
-        owner_user_id="alice",
-        persona_id="mochi",
-        agent_id="agent-mochi",
+        memory_realm_id="default.alice.mochi",
+        owner_id="alice",
+        companion_id="mochi",
         device_id=device_id,
-        instance_id=f"{device_id}-runtime",
         session_id=session_id,
     )
 
@@ -48,7 +46,7 @@ def _turn(
     return ConversationTurnPayload(
         turn_id=uuid.uuid4().hex,
         context=_ctx(device_id=device_id, session_id=session_id),
-        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        timestamp=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         user_text=text,
         assistant_text="记下了。",
     )
@@ -89,7 +87,7 @@ def test_fragment_extensions_validate_namespace() -> None:
         visibility="current_device",
         source_device_id=ctx.device_id,
         target_device_id=ctx.device_id,
-        source_instance_id=ctx.instance_id,
+        source_instance_id=ctx.companion_id,
         source_turn_id="turn-1",
         session_id=ctx.session_id,
         wing="Wing_Life",
@@ -108,7 +106,7 @@ def test_fragment_extensions_validate_namespace() -> None:
             scope="device",
             visibility="current_device",
             source_device_id=ctx.device_id,
-            source_instance_id=ctx.instance_id,
+            source_instance_id=ctx.companion_id,
             source_turn_id="turn-1",
             session_id=ctx.session_id,
             wing="Wing_Life",
@@ -130,7 +128,7 @@ async def test_backend_can_lookup_fragment_by_source_turn_id() -> None:
         scope="persona",
         visibility="all_devices",
         source_device_id=ctx.device_id,
-        source_instance_id=ctx.instance_id,
+        source_instance_id=ctx.companion_id,
         source_turn_id="turn-exact-1",
         session_id=ctx.session_id,
         wing="Wing_Profile",
@@ -250,7 +248,7 @@ async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
     batch = DeviceSyncBatchPayload(
         request_id="sync-1",
         memory_space_id=_ctx().memory_space_id,
-        issued_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        issued_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         issuer="agent",
         device_id="device-a",
         instance_id="device-a-runtime",

@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from eidolon.memory.application.query_embedding import embed_query_vector
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
 
 
@@ -27,8 +28,6 @@ def search_memories_shared_embedding(
         raise MemoryBackendUnavailable("mempalace package is not installed") from exc
 
     if query_embedding is None:
-        from eidolon.memory.application.query_embedding import embed_query_vector
-
         embedding = embed_query_vector(query)
     else:
         embedding = query_embedding

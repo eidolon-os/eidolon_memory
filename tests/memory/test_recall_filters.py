@@ -14,7 +14,7 @@ def test_exclude_duplicate_utterance() -> None:
     )
     hits = [
         MemoryWireRecord(
-            user_id="Wing_Profile",
+            memory_space_id="Wing_Profile",
             key="k",
             value="Hello World",
             metadata={},

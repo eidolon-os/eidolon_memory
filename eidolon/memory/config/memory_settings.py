@@ -33,9 +33,7 @@ _SHIPPED_EXAMPLE_SETTINGS_PATH = _CONFIG_DIR / "settings.example.yaml"
 class RecallPolicy(BaseModel):
     top_k: int = 5
     livekit_timeout_seconds: float = 0.3
-    filter_taboo_statuses: list[str] = Field(
-        default_factory=lambda: ["taboo", "archived"]
-    )
+    filter_taboo_statuses: list[str] = Field(default_factory=lambda: ["taboo", "archived"])
     voice_wings: list[str] = Field(default_factory=list)
     exclude_recent_minutes: int = 10
     exclude_current_session: bool = True
@@ -124,9 +122,9 @@ class RuntimeConfig(BaseModel):
     so the repo only ships code.
     """
 
-    palaces_root: str = ""  # default ~/eidolon/palaces; env EIDOLON_MEMORY_PALACES_ROOT
-    log_dir: str = ""       # default ~/eidolon/logs;   env EIDOLON_MEMORY_LOG_DIR
-    run_dir: str = ""       # default ~/eidolon/run;    env EIDOLON_MEMORY_RUN_DIR
+    palaces_root: str = ""  # default ~/eidolon/memory/mempalaces; env EIDOLON_MEMORY_PALACES_ROOT
+    log_dir: str = ""  # default ~/eidolon/logs;   env EIDOLON_MEMORY_LOG_DIR
+    run_dir: str = ""  # default ~/eidolon/run;    env EIDOLON_MEMORY_RUN_DIR
     read: ReadRuntimeConfig = Field(default_factory=ReadRuntimeConfig)
     # Phase 2 — in-memory short-term continuity ring. 0 disables; reasonable
     # values are 5-20. Each turn is ~1-2KB so even maxlen=20 is <40KB per user.
@@ -186,9 +184,7 @@ class SupervisorConfig(BaseModel):
     admin_api_url: str = ""
     admin_api_timeout_seconds: float = 5.0
     eager_init: bool = True  # on startup, mempalace init each enabled user (parallel<=4)
-    restart_backoff_seconds: list[int] = Field(
-        default_factory=lambda: [1, 2, 4, 8, 30]
-    )
+    restart_backoff_seconds: list[int] = Field(default_factory=lambda: [1, 2, 4, 8, 30])
     max_failures_per_minute: int = 5  # disable user beyond this rate
     # Admin HTTP control surface bound inside the supervisor process. Admin
     # talks to this to create/delete users without going through SIGHUP. The
@@ -339,9 +335,8 @@ class MemorySettings(BaseModel):
             msg = "steward prompt template not found"
             raise FileNotFoundError(msg)
         template = path.read_text(encoding="utf-8")
-        return (
-            template.replace("{{ wings_block }}", self.wings_prompt_block())
-            .replace("{{ locale }}", locale)
+        return template.replace("{{ wings_block }}", self.wings_prompt_block()).replace(
+            "{{ locale }}", locale
         )
 
 

@@ -71,6 +71,76 @@ async def test_search_all_wings_matches_mcp_visibility():
     assert out2 == []
 
 
+@pytest.mark.asyncio
+async def test_search_exact_fallback_recalls_short_name_fact_when_vector_empty():
+    settings = get_memory_settings()
+
+    class EmptyVectorBackend(FakeMemoryBackend):
+        async def search(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self.searches.append((args, kwargs))
+            return []
+
+    backend = EmptyVectorBackend()
+    await backend.ingest_text(
+        wing="Wing_Profile",
+        room="profile_core",
+        text="用户的名字是曼森。",
+        metadata={
+            "memory_space_id": MEMORY_SPACE_ID,
+            "scope": "persona",
+            "visibility": "all_devices",
+        },
+    )
+
+    out = await search_all_wings_mcp_style(
+        backend,
+        settings,
+        query="我叫什么名字",
+        context=_context(),
+        top_k=5,
+        wing=None,
+        room=None,
+    )
+
+    assert len(out) == 1
+    assert out[0].value == "用户的名字是曼森。"
+    assert out[0].metadata["retrieval"] == "lexical_fallback"
+
+
+@pytest.mark.asyncio
+async def test_search_exact_fallback_survives_vector_backend_error():
+    settings = get_memory_settings()
+
+    class BrokenVectorBackend(FakeMemoryBackend):
+        async def search(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise RuntimeError("vector index unavailable")
+
+    backend = BrokenVectorBackend()
+    await backend.ingest_text(
+        wing="Wing_Profile",
+        room="profile_core",
+        text="用户的名字是曼森。",
+        metadata={
+            "memory_space_id": MEMORY_SPACE_ID,
+            "scope": "persona",
+            "visibility": "all_devices",
+        },
+    )
+
+    out = await search_all_wings_mcp_style(
+        backend,
+        settings,
+        query="曼森",
+        context=_context(),
+        top_k=5,
+        wing="Wing_Profile",
+        room="profile_core",
+    )
+
+    assert [r.value for r in out] == ["用户的名字是曼森。"]
+    assert out[0].metadata["retrieval"] == "lexical_fallback"
+
+
 def test_visible_filters_privacy_metadata():
     from eidolon.memory.domain.wire import MemoryWireRecord
 

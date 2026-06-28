@@ -15,7 +15,7 @@ on a live LLM endpoint and live in ``tests/memory/e2e/``.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -81,7 +81,7 @@ def test_idempotency_hash_isolates_user_and_window():
 
 def _drawer(*, wing: str, age_days: float, value: str = "x") -> dict:
     """Build a ``eidolon_memory_list``-shaped record dict."""
-    created = datetime.now(timezone.utc) - timedelta(days=age_days)
+    created = datetime.now(UTC) - timedelta(days=age_days)
     return {
         "memory_space_id": "default.alice.mochi",
         "key": f"k-{wing}-{age_days}",
@@ -318,12 +318,10 @@ def test_renderer_themes_after_working_memory_before_vector():
         turn_id="t1", user_text="u", assistant_text="a",
         timestamp="2026-05-26T00:00:00Z",
         context=MemoryActorContext(
-            tenant_id="default",
-            owner_user_id="alice",
-            persona_id="mochi",
-            agent_id="agent-1",
+            memory_realm_id="default.alice.mochi",
+            owner_id="alice",
+            companion_id="mochi",
             device_id="device-1",
-            instance_id="instance-1",
             session_id="s",
         ),
     )]

@@ -1,4 +1,4 @@
-"""Fake backend get_all semantics (tenant = metadata.user_id OR wing legacy)."""
+"""Fake backend get_all semantics (memory_space_id OR wing legacy)."""
 
 from __future__ import annotations
 
@@ -17,18 +17,16 @@ async def test_get_all_legacy_wing_only_tenant_match():
 
 
 @pytest.mark.asyncio
-async def test_get_all_steward_like_metadata_user_id():
+async def test_get_all_steward_like_metadata_memory_space_id():
     b = FakeMemoryBackend()
     await b.ingest_text(
         wing="Wing_Profile",
         room="profile_core",
         text="prefers dark mode",
-        metadata={"user_id": "carol"},
+        metadata={"memory_space_id": "default.carol.default"},
     )
-    by_user = await b.get_all("carol")
-    assert len(by_user) == 1
-    by_wing = await b.get_all("Wing_Profile")
-    assert len(by_wing) == 1
+    by_space = await b.get_all("default.carol.default")
+    assert len(by_space) == 1
 
 
 @pytest.mark.asyncio

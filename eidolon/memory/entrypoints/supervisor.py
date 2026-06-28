@@ -88,10 +88,8 @@ def _restore_sqlite_database(source: Path, dest: Path) -> None:
 
 
 def _agent_cli_argv(user: UserEntry, palace_path: Path) -> list[str]:
-    argv = [_AGENT_CLI, "--memory-space-id", user.id, "--port", str(user.port)]
-    if user.palace_path:
-        argv += ["--palace-path", str(palace_path)]
-    return argv
+    del palace_path
+    return [_AGENT_CLI, "--memory-space-id", user.id, "--port", str(user.port)]
 
 
 def _consolidator_cli_argv(user: UserEntry) -> list[str]:
@@ -105,11 +103,16 @@ def _consolidator_cli_argv(user: UserEntry) -> list[str]:
     )
     return [
         _CONSOLIDATOR_CLI,
-        "--memory-space-id", user.id,
-        "--interval-hours", str(cfg.interval_hours),
-        "--window-days", str(cfg.window_days),
-        "--min-drawers", str(cfg.min_drawers),
-        "--min-confidence", str(cfg.min_confidence),
+        "--memory-space-id",
+        user.id,
+        "--interval-hours",
+        str(cfg.interval_hours),
+        "--window-days",
+        str(cfg.window_days),
+        "--min-drawers",
+        str(cfg.min_drawers),
+        "--min-confidence",
+        str(cfg.min_confidence),
     ]
 
 
@@ -157,7 +160,9 @@ class _Child:
 
     def spawn(self) -> None:
         self.log_path, self._log_fh = _open_child_log(
-            self.log_root, self.user.id, prefix=self.kind,
+            self.log_root,
+            self.user.id,
+            prefix=self.kind,
         )
         argv = self._build_argv()
         log.info(
@@ -185,7 +190,9 @@ class _Child:
             return
         log.info(
             "supervisor_terminate",
-            user_id=self.user.id, kind=self.kind, pid=self.proc.pid,
+            user_id=self.user.id,
+            kind=self.kind,
+            pid=self.proc.pid,
         )
         try:
             self.proc.terminate()
@@ -196,7 +203,9 @@ class _Child:
         except subprocess.TimeoutExpired:
             log.warning(
                 "supervisor_kill",
-                user_id=self.user.id, kind=self.kind, pid=self.proc.pid,
+                user_id=self.user.id,
+                kind=self.kind,
+                pid=self.proc.pid,
             )
             try:
                 self.proc.kill()
@@ -225,7 +234,8 @@ class _Child:
             self.degraded = True
             log.error(
                 "supervisor_user_degraded",
-                user_id=self.user.id, kind=self.kind,
+                user_id=self.user.id,
+                kind=self.kind,
                 failures_in_window=len(self.failure_times),
             )
 
@@ -279,17 +289,13 @@ class Supervisor:
     ) -> None:
         self._settings = settings
         self._log_root = resolve_log_dir(settings)
-        self._eager_init = (
-            settings.supervisor.eager_init if eager_init is None else eager_init
-        )
-        self._children: dict[str, _Child] = {}            # agent_runner children
-        self._consolidators: dict[str, _Child] = {}       # Phase 4: per-user theme worker
+        self._eager_init = settings.supervisor.eager_init if eager_init is None else eager_init
+        self._children: dict[str, _Child] = {}  # agent_runner children
+        self._consolidators: dict[str, _Child] = {}  # Phase 4: per-user theme worker
         self._init_failures: dict[str, _InitFailure] = {}
         self._reload_event = asyncio.Event()
         self._stop_event = asyncio.Event()
-        self._init_pool = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="supervisor-init"
-        )
+        self._init_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="supervisor-init")
 
     # -------------------- public surface for the admin HTTP layer --------------------
     #
@@ -338,9 +344,7 @@ class Supervisor:
 
         kg_path = palace_path / "knowledge_graph.sqlite3"
         kg_backup_path = log_path.with_suffix(".knowledge_graph.sqlite3")
-        kg_backed_up = await asyncio.to_thread(
-            _backup_sqlite_database, kg_path, kg_backup_path
-        )
+        kg_backed_up = await asyncio.to_thread(_backup_sqlite_database, kg_path, kg_backup_path)
 
         cli = _resolve_mempalace_cli()
         cmd = [
@@ -367,7 +371,7 @@ class Supervisor:
                 (
                     f"\n[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
                     f"running: {' '.join(cmd)}\n"
-                ).encode("utf-8")
+                ).encode()
             )
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -378,20 +382,17 @@ class Supervisor:
             )
             returncode = await proc.wait()
             if returncode == 0 and kg_backed_up:
-                await asyncio.to_thread(
-                    _restore_sqlite_database, kg_backup_path, kg_path
-                )
+                await asyncio.to_thread(_restore_sqlite_database, kg_backup_path, kg_path)
                 fh.write(
                     (
                         f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
                         f"kg-restored: {kg_path}\n"
-                    ).encode("utf-8")
+                    ).encode()
                 )
             fh.write(
                 (
-                    f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
-                    f"exit: {returncode}\n"
-                ).encode("utf-8")
+                    f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] exit: {returncode}\n"
+                ).encode()
             )
 
         await self._reconcile()
@@ -420,7 +421,6 @@ class Supervisor:
         return resolve_palace_for_memory_space(
             self._settings,
             user.id,
-            path_override=user.palace_path or None,
         )
 
     async def _init_users_parallel(self, users: list[UserEntry]) -> set[str]:
@@ -533,7 +533,10 @@ class Supervisor:
         if existing is not None and existing.is_alive():
             return
         child = _Child(
-            user, self._palace_for(user), self._log_root, kind="consolidator",
+            user,
+            self._palace_for(user),
+            self._log_root,
+            kind="consolidator",
         )
         try:
             child.spawn()
@@ -541,7 +544,8 @@ class Supervisor:
         except Exception as exc:  # noqa: BLE001 - never block agent spawn
             log.error(
                 "supervisor_consolidator_spawn_failed",
-                user_id=user.id, error=str(exc),
+                user_id=user.id,
+                error=str(exc),
             )
 
     async def stop(self) -> None:
@@ -600,7 +604,9 @@ class Supervisor:
                 rc = child.proc.returncode if child.proc else None
                 log.warning(
                     "supervisor_child_exited",
-                    user_id=child.user.id, kind=child.kind, returncode=rc,
+                    user_id=child.user.id,
+                    kind=child.kind,
+                    returncode=rc,
                 )
                 child._close_log()
                 child.record_failure(max_fail)
@@ -609,7 +615,9 @@ class Supervisor:
                 delay = child.next_backoff(backoff)
                 log.info(
                     "supervisor_restart_scheduled",
-                    user_id=child.user.id, kind=child.kind, delay_seconds=delay,
+                    user_id=child.user.id,
+                    kind=child.kind,
+                    delay_seconds=delay,
                 )
                 # Sleep here is OK; the supervisor loop is otherwise idle.
                 time.sleep(delay)
@@ -618,7 +626,9 @@ class Supervisor:
                 except Exception as exc:
                     log.error(
                         "supervisor_spawn_failed",
-                        user_id=child.user.id, kind=child.kind, error=str(exc),
+                        user_id=child.user.id,
+                        kind=child.kind,
+                        error=str(exc),
                     )
                     child.record_failure(max_fail)
 
@@ -661,15 +671,14 @@ class Supervisor:
         #    init results as they arrive so one slow/bad palace does not block
         #    unrelated users from getting a worker during SIGHUP reconcile.
         spawn_candidates = [
-            u for u in wanted.values()
+            u
+            for u in wanted.values()
             if _agent_child_needs_spawn(self._children.get(u.id))
             and _init_candidate_due(self._init_failures.get(u.id))
         ]
         if self._eager_init:
             by_id = {u.id: u for u in spawn_candidates}
-            init_tasks = [
-                asyncio.create_task(self._init_user(u)) for u in spawn_candidates
-            ]
+            init_tasks = [asyncio.create_task(self._init_user(u)) for u in spawn_candidates]
             for task in asyncio.as_completed(init_tasks):
                 user_id, err = await task
                 if err is not None:
@@ -718,7 +727,8 @@ class Supervisor:
                 continue
             if wanted_def.consolidator != c_child.user.consolidator:
                 log.info(
-                    "supervisor_reload_consolidator_config_change", user_id=user_id,
+                    "supervisor_reload_consolidator_config_change",
+                    user_id=user_id,
                 )
                 self._terminate_consolidator(user_id)
         for user_id, user_def in wanted.items():
@@ -855,7 +865,8 @@ def main(argv: list[str] | None = None) -> None:
         # Watchdog: if either task finishes first (supervisor stop → graceful;
         # uvicorn crash → bad), cancel the other so we don't dangle.
         done, pending = await asyncio.wait(
-            {sv_task, api_task}, return_when=asyncio.FIRST_COMPLETED,
+            {sv_task, api_task},
+            return_when=asyncio.FIRST_COMPLETED,
         )
         for task in done:
             if task is sv_task:
