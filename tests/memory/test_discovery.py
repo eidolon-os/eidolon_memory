@@ -74,7 +74,7 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
         "turn_subject_template": "eidolon.memory.turn.{memory_space_token}",
         "cmd_subject_template": "eidolon.memory.cmd.{memory_space_token}",
     }
-    assert payload["users"] == [
+    assert payload["memory_realms"] == [
         {
             "memory_space_id": "r:benchmark:default",
             "memory_realm_id": "r:benchmark:default",
@@ -115,7 +115,7 @@ async def test_discovery_uses_default_user_when_registry_empty(
 
     payload = await discovery.build_agent_routing_discovery(_settings())
 
-    assert payload["users"] == [
+    assert payload["memory_realms"] == [
         {
             "memory_space_id": "default",
             "memory_realm_id": "default",
@@ -160,8 +160,8 @@ async def test_discovery_http_route_allows_no_authorization(
 
     assert res.status_code == 200
     payload = res.json()
-    assert payload["users"][0]["mcp_auth"] == {"type": "none"}
-    assert payload["users"][0]["agent_reachable"] is True
+    assert payload["memory_realms"][0]["mcp_auth"] == {"type": "none"}
+    assert payload["memory_realms"][0]["agent_reachable"] is True
 
 
 async def test_discovery_http_unknown_path_returns_404() -> None:

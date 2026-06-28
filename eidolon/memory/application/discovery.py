@@ -47,7 +47,7 @@ async def probe_mcp_http(url: str, *, timeout_seconds: float = 1.5) -> bool:
         return False
 
 
-def discovery_users(settings: MemorySettings) -> list[UserEntry]:
+def discovery_memory_realms(settings: MemorySettings) -> list[UserEntry]:
     """Return memory realms exposed to agents, with a dev fallback."""
     enabled = load_users_config(settings).enabled_users()
     if enabled:
@@ -63,11 +63,11 @@ def discovery_users(settings: MemorySettings) -> list[UserEntry]:
 
 async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, Any]:
     """Build the stable discovery response consumed by eidolon-agent."""
-    users = discovery_users(settings)
+    realms = discovery_memory_realms(settings)
     reachability = await asyncio.gather(
         *[
-            probe_mcp_http(settings.mcp_http.base_url(port=user.port))
-            for user in users
+            probe_mcp_http(settings.mcp_http.base_url(port=realm.port))
+            for realm in realms
         ]
     )
     return {
@@ -83,17 +83,17 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
                 f"{MEMORY_COMMAND_BASE}.{{memory_space_token}}"
             ),
         },
-        "users": [
+        "memory_realms": [
             {
-                "memory_space_id": validate_memory_space_id(user.id),
-                "memory_realm_id": validate_memory_space_id(user.id),
-                "owner_id": user.owner_id,
-                "companion_id": user.companion_id,
-                "enabled": user.enabled,
-                "mcp_http_url": settings.mcp_http.base_url(port=user.port),
+                "memory_space_id": validate_memory_space_id(realm.id),
+                "memory_realm_id": validate_memory_space_id(realm.id),
+                "owner_id": realm.owner_id,
+                "companion_id": realm.companion_id,
+                "enabled": realm.enabled,
+                "mcp_http_url": settings.mcp_http.base_url(port=realm.port),
                 "mcp_auth": {"type": "none"},
                 "agent_reachable": reachable,
             }
-            for user, reachable in zip(users, reachability, strict=True)
+            for realm, reachable in zip(realms, reachability, strict=True)
         ],
     }
