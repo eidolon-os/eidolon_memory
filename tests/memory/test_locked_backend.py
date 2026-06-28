@@ -65,8 +65,11 @@ async def test_locked_backend_serializes_concurrent_writes() -> None:
 async def test_locked_backend_ingest_fragment_route() -> None:
     backend = LockedBackend(FakeMemoryBackend())
     fragment = MemoryFragment(
-        fragment_id="frag1",
-        user_id="alice",
+        memory_id="frag1",
+        memory_space_id="r:alice:default",
+        memory_realm_id="r:alice:default",
+        owner_id="alice",
+        companion_id="test",
         wing="Wing_Profile",
         room="profile_core",
         content="hello",

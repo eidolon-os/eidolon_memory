@@ -120,8 +120,8 @@
   "reason": "30 字内说明",
   "fragments": [
     {
-      "fragment_id": "",
-      "memory_space_id": "tenant.owner_user.companion",
+      "memory_id": "",
+      "memory_space_id": "r:owner:realm",
       "source_device_id": "string",
       "source_instance_id": "string",
       "wing": "Wing_Profile",
@@ -182,6 +182,7 @@
 - `confidence` 是 0 到 1 的数字
 - `predicate` 必须取自上方白名单
 - 不要捏造关系；不确定就不输出
+- `memory_space_id/source_device_id/source_instance_id/source_turn_id/session_id` 会由 worker 使用 turn context 覆盖；不要自行构造 `owner_id/companion_id/memory_realm_id`
 
 ## mentions（可选 — 自然语言别名 ↔ canonical entity）
 

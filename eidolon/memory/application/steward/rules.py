@@ -77,7 +77,12 @@ class RuleBasedSteward:
                 should_write=False,
                 reason="内容信号较弱，低于最小写入重要性阈值。",
             )
-        fragments = finalize_fragments([fragment], steward="rules")
+        fragments = finalize_fragments(
+            [fragment],
+            steward="rules",
+            context=turn.context,
+            source_turn_id=turn.turn_id,
+        )
         return StewardDecision(
             should_write=True,
             reason="规则管家识别到可用于未来陪伴的个人记忆。",

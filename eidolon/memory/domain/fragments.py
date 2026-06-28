@@ -23,6 +23,9 @@ class MemoryFragment(BaseEidolonModel):
 
     memory_id: str = ""
     memory_space_id: str
+    memory_realm_id: str | None = None
+    owner_id: str | None = None
+    companion_id: str | None = None
     scope: MemoryScope = "persona"
     visibility: MemoryVisibility = "all_devices"
     source_device_id: str | None = None
@@ -57,7 +60,14 @@ class MemoryFragment(BaseEidolonModel):
             raise ValueError(msg)
         return value
 
-    @field_validator("source_device_id", "source_instance_id", "session_id")
+    @field_validator(
+        "memory_realm_id",
+        "owner_id",
+        "companion_id",
+        "source_device_id",
+        "source_instance_id",
+        "session_id",
+    )
     @classmethod
     def _optional_text(cls, value: str | None) -> str | None:
         if value is None:

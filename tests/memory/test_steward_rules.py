@@ -66,7 +66,11 @@ async def test_rules_work_wing(monkeypatch: pytest.MonkeyPatch):
     assert decision.should_write
     assert decision.fragments[0].wing == "Wing_Work"
     assert decision.fragments[0].memory_space_id == "r:benchmark:default"
+    assert decision.fragments[0].memory_realm_id == "r:benchmark:default"
+    assert decision.fragments[0].owner_id == "benchmark"
+    assert decision.fragments[0].companion_id == "test"
     assert decision.fragments[0].source_instance_id == "test"
+    assert decision.fragments[0].metadata["source_companion_id"] == "test"
 
 
 @pytest.mark.asyncio
@@ -81,6 +85,8 @@ async def test_rules_realm_only_context_does_not_require_device(
     assert decision.should_write
     fragment = decision.fragments[0]
     assert fragment.memory_space_id == "r:benchmark:default"
+    assert fragment.memory_realm_id == "r:benchmark:default"
+    assert fragment.companion_id == "test"
     assert fragment.scope == "persona"
     assert fragment.visibility == "all_devices"
     assert fragment.source_device_id is None

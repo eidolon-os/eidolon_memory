@@ -6,7 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from eidolon_sdk.memory import ConversationTurnPayload, MemoryActorContext
+from eidolon_sdk.memory import ConversationTurnPayload, build_memory_actor_context
 
 from eidolon.memory.application.steward.llm import LiteLLMSteward
 from eidolon.memory.config.memory_settings import MemorySettings, load_memory_settings
@@ -20,13 +20,11 @@ def _settings_local_llm() -> MemorySettings:
 def _turn() -> ConversationTurnPayload:
     return ConversationTurnPayload(
         turn_id="t1",
-        context=MemoryActorContext(
-            tenant_id="default",
-            owner_user_id="u1",
-            persona_id="default",
-            agent_id="agent",
+        context=build_memory_actor_context(
+            owner_id="benchmark",
+            companion_id="test",
+            memory_realm_id="r:benchmark:default",
             device_id="device",
-            instance_id="instance",
             session_id="s1",
         ),
         user_text="我喜欢晚上听轻音乐放松",
@@ -47,9 +45,9 @@ async def test_llm_steward_accepts_valid_json(monkeypatch: pytest.MonkeyPatch):
                           "should_write": true,
                           "reason": "有长期偏好",
                           "fragments": [{
-                            "memory_space_id": "default.u1.default",
-                            "source_device_id": "device",
-                            "source_instance_id": "instance",
+                            "memory_space_id": "wrong.realm",
+                            "source_device_id": "wrong-device",
+                            "source_instance_id": "wrong-companion",
                             "wing": "Wing_Profile",
                             "room": "profile_core",
                             "content": "用户喜欢晚上听轻音乐放松。",
@@ -76,6 +74,16 @@ async def test_llm_steward_accepts_valid_json(monkeypatch: pytest.MonkeyPatch):
     assert decision.should_write
     assert decision.fragments[0].memory_id
     assert decision.fragments[0].metadata["steward"] == "llm"
+    assert decision.fragments[0].memory_space_id == "r:benchmark:default"
+    assert decision.fragments[0].memory_realm_id == "r:benchmark:default"
+    assert decision.fragments[0].owner_id == "benchmark"
+    assert decision.fragments[0].companion_id == "test"
+    assert decision.fragments[0].source_device_id == "device"
+    assert decision.fragments[0].source_instance_id == "test"
+    assert decision.fragments[0].metadata["owner_id"] == "benchmark"
+    assert decision.fragments[0].metadata["companion_id"] == "test"
+    assert decision.fragments[0].metadata["memory_realm_id"] == "r:benchmark:default"
+    assert decision.fragments[0].metadata["source_companion_id"] == "test"
 
 
 @pytest.mark.asyncio

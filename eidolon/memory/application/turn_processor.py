@@ -26,7 +26,10 @@ from eidolon_sdk.memory import (
 )
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
-from eidolon.memory.application.steward.common import apply_privacy_actions
+from eidolon.memory.application.steward.common import (
+    apply_privacy_actions,
+    stamp_fragment_identity,
+)
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.steward import StewardDecision
@@ -150,6 +153,11 @@ async def process_turn_message(
         await _apply_privacy(backend, memory_space_id, decision.privacy_actions)
         if decision.should_write:
             for fragment in decision.fragments:
+                fragment = stamp_fragment_identity(
+                    fragment,
+                    context=turn.context,
+                    source_turn_id=turn.turn_id,
+                )
                 stamped = (
                     fragment
                     if fragment.occurred_at
@@ -534,6 +542,7 @@ async def _ingest_theme(backend: Any, cmd: "ConsolidatorIngestThemeCommand") -> 
     fragment = MemoryFragment(
         memory_id=f"theme:{cmd.request_id}",
         memory_space_id=cmd.memory_space_id,
+        memory_realm_id=cmd.memory_space_id,
         scope="persona",
         visibility="all_devices",
         source_device_id="system",
@@ -577,6 +586,8 @@ async def _ingest_user_confirmed(
     fragment = MemoryFragment(
         memory_id=f"userconfirm:{cmd.request_id}",
         memory_space_id=cmd.memory_space_id,
+        memory_realm_id=cmd.memory_space_id,
+        companion_id=cmd.source_instance_id or None,
         scope=cmd.scope,
         visibility=cmd.visibility,
         source_device_id=cmd.source_device_id or "admin",

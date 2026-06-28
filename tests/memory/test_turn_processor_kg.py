@@ -43,7 +43,7 @@ def kg(backend, tmp_path: Path):
     locked.close()
 
 
-MEMORY_SPACE_ID = "default.alice.default"
+MEMORY_SPACE_ID = "r:alice:default"
 
 
 def _turn_payload(
@@ -52,18 +52,14 @@ def _turn_payload(
     turn_id: str | None = None,
     **kwargs,
 ) -> dict:
-    tenant_id, owner_user_id, persona_id = memory_space_id.split(".", 2)
     return {
         "turn_id": turn_id or uuid.uuid4().hex,
         "context": {
-            "tenant_id": tenant_id,
-            "owner_user_id": owner_user_id,
-            "persona_id": persona_id,
-            "agent_id": kwargs.get("agent_id", "agent"),
+            "owner_id": kwargs.get("owner_id", "alice"),
+            "companion_id": kwargs.get("companion_id", "test"),
+            "memory_realm_id": memory_space_id,
             "device_id": kwargs.get("device_id", "device"),
-            "instance_id": kwargs.get("instance_id", "instance"),
             "session_id": kwargs.get("session_id", "s1"),
-            "memory_space_id": memory_space_id,
         },
         "timestamp": kwargs.get("timestamp", "2026-05-19T10:00:00Z"),
         "user_text": kwargs.get("user_text", "hello"),
@@ -113,8 +109,8 @@ async def test_kg_failure_does_not_block_chat_ack(settings, backend):
     bad_kg.invalidate = AsyncMock(return_value=0)
 
     fragment = MemoryFragment(
-        fragment_id="f1", memory_space_id=MEMORY_SPACE_ID,
-        source_device_id="device", source_instance_id="instance",
+        memory_id="f1", memory_space_id="wrong.realm",
+        source_device_id="wrong-device", source_instance_id="wrong-companion",
         wing="Wing_Profile", room="profile_core",
         content="user likes tea", memory_type="preference",
         importance=4, confidence=0.95,
@@ -144,6 +140,12 @@ async def test_kg_failure_does_not_block_chat_ack(settings, backend):
     # fragment did make it
     rows = await backend.get_all("")
     assert any("user likes tea" in (r.value or "") for r in rows)
+    row = next(r for r in rows if "user likes tea" in (r.value or ""))
+    assert row.metadata["owner_id"] == "alice"
+    assert row.metadata["companion_id"] == "test"
+    assert row.metadata["memory_realm_id"] == MEMORY_SPACE_ID
+    assert row.metadata["source_device_id"] == "device"
+    assert row.metadata["source_instance_id"] == "test"
 
 
 # ─── G7: chroma failure NAKs (fragment is source of truth) ────────────────
@@ -159,7 +161,7 @@ async def test_chroma_failure_naks_below_max_deliveries(settings, kg):
     bad_backend.ingest_fragment = AsyncMock(side_effect=RuntimeError("chroma corrupt"))
     bad_backend.delete = AsyncMock()
     fragment = MemoryFragment(
-        fragment_id="f1", memory_space_id=MEMORY_SPACE_ID,
+        memory_id="f1", memory_space_id=MEMORY_SPACE_ID,
         source_device_id="device", source_instance_id="instance",
         wing="Wing_Profile", room="r",
         content="x", memory_type="preference", importance=4, confidence=0.9,

@@ -43,10 +43,53 @@ def safe_room_token(text: str, *, prefix: str = "topic") -> str:
     return f"{prefix}_{cleaned[:48]}"
 
 
-def finalize_fragments(fragments: list[MemoryFragment], *, steward: str) -> list[MemoryFragment]:
+def stamp_fragment_identity(
+    fragment: MemoryFragment,
+    *,
+    context: object,
+    source_turn_id: str | None = None,
+) -> MemoryFragment:
+    """Stamp runtime identity from the authoritative turn context."""
+
+    memory_realm_id = str(getattr(context, "memory_realm_id", "") or "").strip()
+    memory_space_id = str(getattr(context, "memory_space_id", "") or "").strip()
+    if not memory_space_id:
+        memory_space_id = memory_realm_id
+    owner_id = getattr(context, "owner_id", None)
+    companion_id = getattr(context, "companion_id", None)
+    device_id = getattr(context, "device_id", None)
+    session_id = getattr(context, "session_id", None)
+    updates = {
+        "memory_space_id": memory_space_id,
+        "memory_realm_id": memory_realm_id or memory_space_id,
+        "owner_id": owner_id,
+        "companion_id": companion_id,
+        "source_device_id": device_id,
+        "source_instance_id": companion_id,
+        "source_turn_id": source_turn_id or fragment.source_turn_id,
+        "session_id": session_id,
+    }
+    if fragment.scope == "device" and not fragment.target_device_id:
+        updates["target_device_id"] = device_id
+    return fragment.model_copy(update=updates)
+
+
+def finalize_fragments(
+    fragments: list[MemoryFragment],
+    *,
+    steward: str,
+    context: object | None = None,
+    source_turn_id: str | None = None,
+) -> list[MemoryFragment]:
     """Fill stable ids and metadata used by all steward implementations."""
     out: list[MemoryFragment] = []
     for index, frag in enumerate(fragments):
+        if context is not None:
+            frag = stamp_fragment_identity(
+                frag,
+                context=context,
+                source_turn_id=source_turn_id,
+            )
         if not frag.memory_id:
             frag.memory_id = stable_fragment_id(
                 memory_space_id=frag.memory_space_id,
@@ -58,11 +101,15 @@ def finalize_fragments(fragments: list[MemoryFragment], *, steward: str) -> list
             **frag.metadata,
             "memory_id": frag.memory_id,
             "memory_space_id": frag.memory_space_id,
+            "memory_realm_id": frag.memory_realm_id or frag.memory_space_id,
+            "owner_id": frag.owner_id or "",
+            "companion_id": frag.companion_id or "",
             "scope": frag.scope,
             "visibility": frag.visibility,
             "source_device_id": frag.source_device_id or "",
             "target_device_id": frag.target_device_id or "",
             "source_instance_id": frag.source_instance_id or "",
+            "source_companion_id": frag.companion_id or frag.source_instance_id or "",
             "source_turn_id": frag.source_turn_id,
             "session_id": frag.session_id or "",
             "schema_version": "2",
