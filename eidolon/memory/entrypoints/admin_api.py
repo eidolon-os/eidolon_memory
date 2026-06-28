@@ -13,21 +13,19 @@ process for now — admin and agent talk to discovery for routing
 reads. Write operations on users go through this HTTP surface.
 
 Routes:
-    GET    /api/admin/users                  list all (with health)
-    GET    /api/admin/users/{user_id}        single detail
+    GET    /api/admin/realms                 list all (with health)
+    GET    /api/admin/realms/{memory_realm_id}
+                                                single detail
     POST   /api/admin/reconcile              re-read admin registry
-    POST   /api/admin/users/{user_id}/memory/rebuild-index
+    POST   /api/admin/realms/{memory_realm_id}/memory/rebuild-index
                                                 async rebuild vector index
     GET    /api/admin/memory/rebuild-index/{job_id}
                                                 rebuild job status
-    DELETE /api/admin/users/{user_id}        clean up memory-owned palace data
 
 All admin endpoints are namespaced under ``/api/admin`` and bound to
 ``settings.supervisor_http.host:port`` (config addition in this phase).
 """
 from __future__ import annotations
-
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -66,10 +64,10 @@ class _ConsolidatorIn(BaseModel):
 class CreateUserRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=64)
     # Optional explicit port; if None, user_admin auto-allocates from a range.
-    port: Optional[int] = Field(None, ge=1, le=65535)
+    port: int | None = Field(None, ge=1, le=65535)
     enabled: bool = False
     palace_path: str = ""
-    consolidator: Optional[_ConsolidatorIn] = None
+    consolidator: _ConsolidatorIn | None = None
 
     @field_validator("user_id")
     @classmethod
@@ -98,24 +96,27 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
         openapi_url=None,
     )
 
-    @app.get("/api/admin/users")
-    async def list_users(_request: Request) -> dict:
+    @app.get("/api/admin/realms")
+    async def list_realms(_request: Request) -> dict:
         users = user_admin.list_users()
-        return {"users": users, "memory_available": True}
+        return {"realms": users, "memory_available": True}
 
-    @app.get("/api/admin/users/{user_id}")
-    async def get_user(user_id: str, _request: Request) -> dict:
+    @app.get("/api/admin/realms/{memory_realm_id}")
+    async def get_realm(memory_realm_id: str, _request: Request) -> dict:
         try:
-            return user_admin.get_user(user_id)
+            return user_admin.get_user(memory_realm_id)
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-    @app.post("/api/admin/users", status_code=201)
+    @app.post("/api/admin/realms", status_code=201)
     async def create_user(body: CreateUserRequest) -> dict:
         del body
         raise HTTPException(
             status_code=409,
-            detail="memory user registry is read-only; create users through eidolon_admin /api/users",
+            detail=(
+                "memory realm registry is read-only; create realms through "
+                "eidolon_admin owner workspace APIs"
+            ),
         )
 
     @app.post("/api/admin/reconcile")
@@ -126,10 +127,10 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-    @app.post("/api/admin/users/{user_id}/memory/rebuild-index", status_code=202)
-    async def rebuild_memory_index(user_id: str) -> dict:
+    @app.post("/api/admin/realms/{memory_realm_id}/memory/rebuild-index", status_code=202)
+    async def rebuild_memory_index(memory_realm_id: str) -> dict:
         try:
-            return await user_admin.start_rebuild_index(user_id)
+            return await user_admin.start_rebuild_index(memory_realm_id)
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
@@ -140,16 +141,13 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-    @app.get("/api/admin/users/{user_id}/memory/rebuild-index")
-    async def list_user_rebuild_memory_index_jobs(user_id: str) -> dict:
-        return {"jobs": user_admin.list_rebuild_index_jobs(user_id=user_id)}
-
-    @app.delete("/api/admin/users/{user_id}")
-    async def delete_user(user_id: str, purge: bool = False) -> dict:
-        try:
-            return await user_admin.delete_user(user_id, purge_palace=purge)
-        except UserAdminError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    @app.get("/api/admin/realms/{memory_realm_id}/memory/rebuild-index")
+    async def list_realm_rebuild_memory_index_jobs(memory_realm_id: str) -> dict:
+        return {
+            "jobs": user_admin.list_rebuild_index_jobs(
+                memory_realm_id=memory_realm_id
+            )
+        }
 
     @app.get("/api/admin/health")
     async def health() -> dict:

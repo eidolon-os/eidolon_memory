@@ -198,7 +198,7 @@ def user_to_view(
 @dataclass
 class RebuildIndexJob:
     job_id: str
-    user_id: str
+    memory_realm_id: str
     status: str
     log_path: Path
     created_at: datetime
@@ -210,7 +210,7 @@ class RebuildIndexJob:
     def to_view(self) -> dict:
         return {
             "job_id": self.job_id,
-            "user_id": self.user_id,
+            "memory_realm_id": self.memory_realm_id,
             "status": self.status,
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -292,26 +292,30 @@ class UserAdmin:
 
     # -------------------- memory index rebuild --------------------
 
-    async def start_rebuild_index(self, user_id: str) -> dict:
-        """Create an async job that rebuilds one user's MemPalace vector index."""
+    async def start_rebuild_index(self, memory_realm_id: str) -> dict:
+        """Create an async job that rebuilds one memory realm's MemPalace vector index."""
         async with self._lock:
             config = load_users_config()
-            entry = config.find(user_id)
+            entry = config.find(memory_realm_id)
             if entry is None:
-                raise UserNotFound(f"user {user_id!r} not found")
+                raise UserNotFound(f"memory realm {memory_realm_id!r} not found")
 
             for existing in self._rebuild_jobs.values():
-                if existing.user_id == user_id and existing.status in {"pending", "running"}:
+                if (
+                    existing.memory_realm_id == memory_realm_id
+                    and existing.status in {"pending", "running"}
+                ):
                     raise RebuildAlreadyRunning(
-                        f"memory index rebuild for user {user_id!r} is already {existing.status}"
+                        "memory index rebuild for realm "
+                        f"{memory_realm_id!r} is already {existing.status}"
                     )
 
             now = datetime.now(UTC)
-            job_id = f"rebuild-{user_id}-{uuid.uuid4().hex[:10]}"
+            job_id = f"rebuild-{memory_realm_id}-{uuid.uuid4().hex[:10]}"
             log_path = self._maintenance_log_root / f"{job_id}.log"
             job = RebuildIndexJob(
                 job_id=job_id,
-                user_id=user_id,
+                memory_realm_id=memory_realm_id,
                 status="pending",
                 created_at=now,
                 log_path=log_path,
@@ -319,7 +323,7 @@ class UserAdmin:
             self._rebuild_jobs[job_id] = job
             task = asyncio.create_task(
                 self._run_rebuild_index_job(job_id, entry),
-                name=f"memory_rebuild_index:{user_id}",
+                name=f"memory_rebuild_index:{memory_realm_id}",
             )
             self._rebuild_tasks[job_id] = task
             task.add_done_callback(lambda _task, jid=job_id: self._rebuild_tasks.pop(jid, None))
@@ -331,10 +335,12 @@ class UserAdmin:
             raise RebuildJobNotFound(f"memory index rebuild job {job_id!r} not found")
         return job.to_view()
 
-    def list_rebuild_index_jobs(self, *, user_id: str | None = None) -> list[dict]:
+    def list_rebuild_index_jobs(
+        self, *, memory_realm_id: str | None = None
+    ) -> list[dict]:
         jobs = self._rebuild_jobs.values()
-        if user_id is not None:
-            jobs = [j for j in jobs if j.user_id == user_id]
+        if memory_realm_id is not None:
+            jobs = [j for j in jobs if j.memory_realm_id == memory_realm_id]
         return [j.to_view() for j in sorted(jobs, key=lambda j: j.created_at, reverse=True)]
 
     async def _run_rebuild_index_job(self, job_id: str, entry: UserEntry) -> None:

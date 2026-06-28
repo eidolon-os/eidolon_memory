@@ -350,7 +350,7 @@ async def test_list_users_returns_health_per_user(admin_env) -> None:
     (tmp_path / "palaces" / "alice").mkdir(parents=True)
 
     views = admin.list_users()
-    by_id = {v["spec"]["user_id"]: v for v in views}
+    by_id = {v["spec"]["memory_realm_id"]: v for v in views}
     assert by_id["alice"]["health"]["worker_running"] is True
     assert by_id["alice"]["health"]["palace_initialized"] is True
     assert by_id["bob"]["health"]["worker_running"] is False
