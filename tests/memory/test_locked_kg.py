@@ -40,6 +40,21 @@ async def test_add_triple_basic_round_trip(kg_pair) -> None:
     assert any(r.predicate == "likes" and r.object == "coffee" for r in records)
 
 
+async def test_add_triple_normalizes_python_utc_datetime(kg_pair) -> None:
+    await kg_pair.add_triple(
+        subject="self",
+        predicate="works_at",
+        object="changzhou",
+        valid_from="2026-06-28T11:41:17.964620+00:00",
+        source_turn_id="turn-time",
+        adapter_name="test",
+    )
+
+    records = await kg_pair.query_entity("self")
+    triple = next(r for r in records if r.predicate == "works_at")
+    assert triple.valid_from == "2026-06-28T11:41:17Z"
+
+
 async def test_add_triple_idempotent_same_turn(kg_pair) -> None:
     """G1: replay of the same source_turn_id must not create duplicates."""
     t1 = await kg_pair.add_triple(

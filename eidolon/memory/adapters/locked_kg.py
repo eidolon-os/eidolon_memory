@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -48,6 +49,35 @@ def _now_iso() -> str:
     canonical form — KG queries compare timestamps as strings.
     """
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _canonical_temporal(value: str | None) -> str | None:
+    """Return a KG-safe temporal string or preserve unknown inputs.
+
+    MemPalace accepts date-only values and UTC datetimes without microseconds
+    using a trailing ``Z``. Agent and SDK payloads may carry Python ISO strings
+    such as ``2026-06-28T11:41:17.964620+00:00``; normalize those at the KG
+    boundary so every upstream writer gets the same contract.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if _DATE_ONLY_RE.match(text):
+        return text
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class LockedKnowledgeGraph:
@@ -120,7 +150,8 @@ class LockedKnowledgeGraph:
           - Combined: replay-after-invalidation does **not** re-add the same
             fact, because the source_turn_id check fires first.
         """
-        vf = valid_from or _now_iso()
+        vf = _canonical_temporal(valid_from) or _now_iso()
+        vt = _canonical_temporal(valid_to)
 
         async with self._lock:
             # 1) source-id dedup (handles invalidate-then-replay edge case)
@@ -136,7 +167,7 @@ class LockedKnowledgeGraph:
             return await asyncio.to_thread(
                 self._inner.add_triple,
                 subject, predicate, object,
-                vf, valid_to, confidence,
+                vf, vt, confidence,
                 None,         # source_closet
                 None,         # source_file
                 source_turn_id,
@@ -155,7 +186,7 @@ class LockedKnowledgeGraph:
 
         Returns number of rows updated (0 = no matching active triple).
         """
-        ended_iso = ended or _now_iso()
+        ended_iso = _canonical_temporal(ended) or _now_iso()
         async with self._lock:
             return await asyncio.to_thread(
                 self._invalidate_count, subject, predicate, object, ended_iso
@@ -175,7 +206,7 @@ class LockedKnowledgeGraph:
         if direction not in {"outgoing", "incoming", "both"}:
             msg = f"direction must be outgoing|incoming|both, got {direction!r}"
             raise ValueError(msg)
-        as_of_iso = as_of or _now_iso()
+        as_of_iso = _canonical_temporal(as_of) or _now_iso()
         async with self._lock:
             rows = await asyncio.to_thread(
                 self._query_entity_rows, name, as_of_iso, direction
@@ -197,7 +228,7 @@ class LockedKnowledgeGraph:
         """
         if not names:
             return []
-        as_of_iso = as_of or _now_iso()
+        as_of_iso = _canonical_temporal(as_of) or _now_iso()
         async with self._lock:
             rows = await asyncio.to_thread(
                 self._query_combined_rows, names, as_of_iso, limit_per_entity
@@ -216,7 +247,11 @@ class LockedKnowledgeGraph:
         """Chronological events; entity-scoped if name given, else global."""
         async with self._lock:
             rows = await asyncio.to_thread(
-                self._timeline_rows, entity_name, since, until, limit
+                self._timeline_rows,
+                entity_name,
+                _canonical_temporal(since),
+                _canonical_temporal(until),
+                limit,
             )
         return _filter_sensitive(rows, include_sensitive)
 

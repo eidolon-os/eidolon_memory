@@ -78,6 +78,8 @@ class WorkingMemoryRing:
         """
         if not self.enabled:
             return
+        if not turn.context.device_id or not turn.context.session_id:
+            return
         key = (turn.context.device_id, turn.context.session_id)
         async with self._lock:
             self._bufs[key].append(turn)

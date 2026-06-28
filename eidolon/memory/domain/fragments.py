@@ -25,11 +25,11 @@ class MemoryFragment(BaseEidolonModel):
     memory_space_id: str
     scope: MemoryScope = "persona"
     visibility: MemoryVisibility = "all_devices"
-    source_device_id: str
+    source_device_id: str | None = None
     target_device_id: str | None = None
-    source_instance_id: str
+    source_instance_id: str | None = None
     source_turn_id: str
-    session_id: str
+    session_id: str | None = None
     wing: str
     room: str
     content: str
@@ -44,10 +44,7 @@ class MemoryFragment(BaseEidolonModel):
 
     @field_validator(
         "memory_space_id",
-        "source_device_id",
-        "source_instance_id",
         "source_turn_id",
-        "session_id",
         "wing",
         "room",
         "content",
@@ -59,6 +56,14 @@ class MemoryFragment(BaseEidolonModel):
             msg = "memory fragment field cannot be blank"
             raise ValueError(msg)
         return value
+
+    @field_validator("source_device_id", "source_instance_id", "session_id")
+    @classmethod
+    def _optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
 
     @field_validator("extensions")
     @classmethod

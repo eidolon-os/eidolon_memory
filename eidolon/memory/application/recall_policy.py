@@ -70,7 +70,7 @@ class RecallPolicyRegistry:
         self._extension_policies[namespace] = policy
 
     @classmethod
-    def default(cls) -> "RecallPolicyRegistry":
+    def default(cls) -> RecallPolicyRegistry:
         registry = cls()
         registry.register("location", LocationRecallPolicy())
         return registry
@@ -98,7 +98,10 @@ class RecallPolicyRegistry:
         if visibility == "private" and not include_private:
             return False
         if visibility == "current_device":
-            return context.device_id in {source_device, target_device}
+            return bool(context.device_id) and context.device_id in {
+                source_device,
+                target_device,
+            }
         return True
 
     def rendered(
@@ -114,7 +117,10 @@ class RecallPolicyRegistry:
         if str(meta.get("scope") or "") == "device":
             source_device = str(meta.get("source_device_id") or "")
             target_device = str(meta.get("target_device_id") or "")
-            return context.device_id in {source_device, target_device}
+            return bool(context.device_id) and context.device_id in {
+                source_device,
+                target_device,
+            }
         return True
 
     def score(
@@ -129,9 +135,13 @@ class RecallPolicyRegistry:
         source_device = str(meta.get("source_device_id") or "")
         target_device = str(meta.get("target_device_id") or "")
         session_id = str(meta.get("session_id") or "")
-        if session_id and session_id == context.session_id:
+        if context.session_id and session_id and session_id == context.session_id:
             score = 1.0
-        elif scope == "device" and context.device_id in {source_device, target_device}:
+        elif (
+            scope == "device"
+            and bool(context.device_id)
+            and context.device_id in {source_device, target_device}
+        ):
             score = 0.9
         elif scope in {"global", "persona"}:
             score = 0.75

@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +29,7 @@ log = get_logger(__name__)
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class MemPalacePythonBackend(MemoryBackend):
@@ -191,12 +191,12 @@ class MemPalacePythonBackend(MemoryBackend):
             "memory_space_id": fragment.memory_space_id,
             "scope": fragment.scope,
             "visibility": fragment.visibility,
-            "source_device_id": fragment.source_device_id,
+            "source_device_id": fragment.source_device_id or "",
             "target_device_id": fragment.target_device_id or "",
-            "source_instance_id": fragment.source_instance_id,
+            "source_instance_id": fragment.source_instance_id or "",
             "source_turn_id": fragment.source_turn_id,
             "schema_version": "2",
-            "session_id": fragment.session_id,
+            "session_id": fragment.session_id or "",
             "importance": fragment.importance,
             "confidence": fragment.confidence,
             "memory_type": fragment.memory_type,

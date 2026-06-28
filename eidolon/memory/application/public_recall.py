@@ -6,14 +6,14 @@ import asyncio
 import time
 from typing import Any
 
-from eidolon_sdk.memory import MemoryActorContext, USER_CONFIRMED_ROOM_PREFIX
+from eidolon_sdk.memory import USER_CONFIRMED_ROOM_PREFIX, MemoryActorContext
 
 from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
 from eidolon.memory.adapters.search_payload import parse_search_tool_payload
 from eidolon.memory.application.kg_recall import query_kg_for_recall
-from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
+from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
@@ -419,7 +419,7 @@ async def search_all_wings_mcp_style(
         hits = filter_voice_recall_hits(
             hits,
             settings,
-            session_id=context.session_id,
+            session_id=context.session_id or "",
             user_utterance=user_utterance,
         )
 

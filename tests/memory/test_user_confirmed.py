@@ -30,17 +30,15 @@ from eidolon.memory.domain.wire import MemoryWireRecord
 
 pytestmark = pytest.mark.asyncio
 
-MEMORY_SPACE_ID = "default.alice.default"
+MEMORY_SPACE_ID = "r:alice:default"
 
 
 def _actor_context() -> MemoryActorContext:
     return MemoryActorContext(
-        tenant_id="default",
-        owner_user_id="alice",
-        persona_id="default",
-        agent_id="agent",
+        owner_id="alice",
+        companion_id="companion-default",
+        memory_realm_id=MEMORY_SPACE_ID,
         device_id="device",
-        instance_id="instance",
         session_id="s1",
     )
 

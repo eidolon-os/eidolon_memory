@@ -9,9 +9,9 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from eidolon_sdk.memory import ConversationTurnPayload, build_memory_actor_context
 
 from eidolon.memory.application.working_memory import WorkingMemoryRing
-from eidolon_sdk.memory import ConversationTurnPayload
 
 pytestmark = pytest.mark.asyncio
 
@@ -19,11 +19,16 @@ pytestmark = pytest.mark.asyncio
 def _turn(i: int) -> ConversationTurnPayload:
     return ConversationTurnPayload(
         turn_id=f"t-{i}",
+        context=build_memory_actor_context(
+            memory_realm_id="default.alice.default",
+            owner_id="alice",
+            companion_id="default",
+            device_id="device",
+            session_id="unit",
+        ),
         user_text=f"user {i}",
         assistant_text=f"asst {i}",
         timestamp="2026-05-25T00:00:00Z",
-        session_id="unit",
-        user_id="alice",
     )
 
 

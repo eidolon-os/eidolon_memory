@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from eidolon_sdk.memory import MemoryActorContext
+from eidolon_sdk.memory import MemoryActorContext, build_memory_actor_context
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import (
@@ -18,13 +18,11 @@ MEMORY_SPACE_ID = "default.alice.default"
 
 
 def _context(owner_user_id: str = "alice") -> MemoryActorContext:
-    return MemoryActorContext(
-        tenant_id="default",
-        owner_user_id=owner_user_id,
-        persona_id="default",
-        agent_id="agent",
+    return build_memory_actor_context(
+        memory_realm_id=f"default.{owner_user_id}.default",
+        owner_id=owner_user_id,
+        companion_id="default",
         device_id="device",
-        instance_id="instance",
         session_id="s1",
     )
 

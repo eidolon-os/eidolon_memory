@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from eidolon.memory.domain.fragments import MemoryFragment
@@ -60,7 +60,7 @@ class FakeMemoryBackend:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         self.ingests.append((wing, room, text, metadata))
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         # Default ``source="fake"`` only when the caller didn't set one — don't
         # silently discard caller-provided metadata (e.g. Phase 5.2 writes
         # ``source="user-confirmed"``, which recall ranking keys off). ``wing``
@@ -86,12 +86,12 @@ class FakeMemoryBackend:
             "memory_space_id": fragment.memory_space_id,
             "scope": fragment.scope,
             "visibility": fragment.visibility,
-            "source_device_id": fragment.source_device_id,
+            "source_device_id": fragment.source_device_id or "",
             "target_device_id": fragment.target_device_id or "",
-            "source_instance_id": fragment.source_instance_id,
+            "source_instance_id": fragment.source_instance_id or "",
             "source_turn_id": fragment.source_turn_id,
             "schema_version": "2",
-            "session_id": fragment.session_id,
+            "session_id": fragment.session_id or "",
             "importance": fragment.importance,
             "confidence": fragment.confidence,
             "memory_type": fragment.memory_type,

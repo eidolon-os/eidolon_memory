@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from eidolon_sdk.memory import ConversationTurnPayload
@@ -14,17 +14,18 @@ from eidolon.memory.application.steward.common import (
     finalize_fragments,
     safe_room_token,
 )
+from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
-
-from eidolon.memory.config.memory_settings import MemorySettings
 
 if TYPE_CHECKING:
     from eidolon.memory.domain.ports import MemoryBackend
 
 SMALLTALK_RE = re.compile(r"^(你好|嗨|哈喽|hello|hi|早安|晚安|谢谢|嗯嗯|好的|ok)[。！!.\s]*$", re.I)
 
-PRIVACY_RE = re.compile(r"(不要记住|别记|别记录|不用记|忘掉|删掉|删除|抹掉|不要再提|以后别提|别再说)")
+PRIVACY_RE = re.compile(
+    r"(不要记住|别记|别记录|不用记|忘掉|删掉|删除|抹掉|不要再提|以后别提|别再说)"
+)
 INTERACTION_RE = re.compile(
     r"(叫我|昵称|专属梗|不要[说道]教|别爹|抱我|语气|希望你|对AI|跟AI|助手你|机器人你|人机|陪我)"
 )
@@ -32,10 +33,14 @@ FUTURE_RE = re.compile(
     r"(梦想|目标|愿望|想去|bucket|清单|计划|三年内|五年内|将来|立志|新年|决心|考研|上岸|开一家|开一间)",
     re.I,
 )
-RELATION_RE = re.compile(r"(妈妈|爸爸|母亲|父亲|伴侣|老婆|老公|男朋友|女朋友|朋友|同事|孩子|宠物|猫|狗)")
+RELATION_RE = re.compile(
+    r"(妈妈|爸爸|母亲|父亲|伴侣|老婆|老公|男朋友|女朋友|朋友|同事|孩子|宠物|猫|狗)"
+)
 EMOTION_RE = re.compile(r"(难过|焦虑|崩溃|开心|压力|孤独|害怕|委屈|失落|抑郁|兴奋|安心)")
 WORK_RE = re.compile(r"(项目|会议|任务|deadline|同事|客户|老板|工作|学习|考试|论文|需求|bug)", re.I)
-HEALTH_RE = re.compile(r"(睡眠|失眠|生病|头痛|胃痛|运动|用药|医院|健康|疲惫|确诊|诊断|心理医生|诊疗)")
+HEALTH_RE = re.compile(
+    r"(睡眠|失眠|生病|头痛|胃痛|运动|用药|医院|健康|疲惫|确诊|诊断|心理医生|诊疗)"
+)
 PREFERENCE_RE = re.compile(r"(我喜欢|我讨厌|我习惯|我希望|我偏好|不喜欢|爱吃|喜欢吃)")
 DEVICE_RE = re.compile(
     r"(这台设备|这个设备|本设备|客厅|卧室|书房|厨房|车机|车上|汽车|音箱|麦克风|摄像头|屏幕|校准|音量)"
@@ -51,7 +56,7 @@ class RuleBasedSteward:
 
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         text = f"{turn.user_text}\n{turn.assistant_text}".strip()
-        timestamp = turn.timestamp or datetime.now(timezone.utc).isoformat()
+        timestamp = turn.timestamp or datetime.now(UTC).isoformat()
         privacy_actions = self._privacy_actions(turn.user_text)
         if privacy_actions:
             return StewardDecision(
@@ -117,7 +122,8 @@ class RuleBasedSteward:
     ) -> MemoryFragment:
         text = turn.user_text.strip()
         ctx = turn.context
-        scope = "device" if DEVICE_RE.search(text) else "persona"
+        has_device = bool(ctx.device_id)
+        scope = "device" if has_device and DEVICE_RE.search(text) else "persona"
         visibility = "current_device" if scope == "device" else "all_devices"
         extensions = _extensions_for_text(text)
         if INTERACTION_RE.search(text):
@@ -167,7 +173,7 @@ class RuleBasedSteward:
             visibility=visibility,
             source_device_id=ctx.device_id,
             target_device_id=ctx.device_id if scope == "device" else None,
-            source_instance_id=ctx.instance_id,
+            source_instance_id=ctx.companion_id,
             wing=wing,
             room=room,
             content=f"用户提到：{text}",
