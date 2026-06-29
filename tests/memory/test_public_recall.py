@@ -7,11 +7,11 @@ from eidolon_sdk.memory import MemoryActorContext, build_memory_actor_context
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import (
-    group_recall_context,
     recall_record_visible_for_context,
     recall_with_kg_fusion,
     search_all_wings_mcp_style,
 )
+from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.config.memory_settings import get_memory_settings
 
 MEMORY_SPACE_ID = "default.alice.default"

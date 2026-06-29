@@ -13,10 +13,10 @@ from typing import Any
 from eidolon_sdk.memory import MemoryActorContext
 
 from eidolon.memory.application.public_recall import (
-    group_recall_context,
     recall_with_kg_fusion,
     wire_record_to_public_dict,
 )
+from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.support.logging import get_logger

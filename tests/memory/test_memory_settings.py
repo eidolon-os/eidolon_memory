@@ -27,25 +27,17 @@ def test_get_memory_settings_is_cached(tmp_path: Path, monkeypatch: pytest.Monke
     assert a is b
 
 
-def test_yaml_wings_ignored_in_favor_of_canonical(tmp_path: Path, caplog):
-    """Yaml ``wings:`` is no longer authoritative — silently dropped (with a
-    deprecation log) in favor of CANONICAL_WINGS so old local yaml files
-    don't break the loader.
-    """
-    from eidolon.memory.domain.wings import CANONICAL_WING_IDS
-
+def test_yaml_wings_rejected(tmp_path: Path):
     bad_or_stale = {
         "wings": [
-            {"id": "W1", "display_name": "ignored"},
-            {"id": "W1", "display_name": "still ignored, no dup error"},
+            {"id": "W1", "display_name": "old config field"},
         ],
         "nats": {"url": "nats://127.0.0.1:4222"},
     }
     p = tmp_path / "stale.yaml"
     p.write_text(yaml.dump(bad_or_stale), encoding="utf-8")
-    settings = load_memory_settings(p)
-    # Returned wings are exactly CANONICAL — yaml input had no effect.
-    assert {w.id for w in settings.wings} == CANONICAL_WING_IDS
+    with pytest.raises(ValueError, match="wings"):
+        load_memory_settings(p)
 
 
 def test_inline_llm_api_key_rejected(tmp_path: Path):
@@ -126,7 +118,6 @@ def test_resolve_log_dir_env_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     p = _write_yaml(
         tmp_path,
         {
-            "wings": [{"id": "W1", "display_name": "x"}],
             "runtime": {"log_dir": "/tmp/cfg-logs", "run_dir": "/tmp/cfg-run"},
         },
     )

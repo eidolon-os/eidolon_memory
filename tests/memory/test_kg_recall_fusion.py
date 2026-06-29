@@ -366,7 +366,7 @@ async def test_fusion_kg_timeout_degrades_silently(fusion_setup) -> None:
 
 
 async def test_group_recall_context_appends_kg_section() -> None:
-    from eidolon.memory.application.public_recall import group_recall_context
+    from eidolon.memory.application.recall_renderer import group_recall_context
     from eidolon.memory.domain.kg import KgTripleRecord
 
     triple = KgTripleRecord(

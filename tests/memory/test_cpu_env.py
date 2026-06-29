@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from eidolon.memory.config.memory_settings import MemorySettings, ReadRuntimeConfig, WingDefinition
+from eidolon.memory.config.memory_settings import MemorySettings, ReadRuntimeConfig
 from eidolon.memory.infrastructure.cpu_env import (
     apply_cpu_thread_env,
     recommend_max_wing_parallel,
@@ -16,7 +16,6 @@ from eidolon.memory.infrastructure.cpu_env import (
 
 def _settings() -> MemorySettings:
     return MemorySettings(
-        wings=[WingDefinition(id="Wing_Profile", display_name="p")],
         runtime=__import__(
             "eidolon.memory.config.memory_settings", fromlist=["RuntimeConfig"]
         ).RuntimeConfig(

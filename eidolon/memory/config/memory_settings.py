@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from eidolon.memory.domain.wings import CANONICAL_WINGS, WingDefinition
 from eidolon.memory.support.logging import get_logger
@@ -278,6 +278,8 @@ class MemorySettings(BaseModel):
     - default values on the sub-config classes for everything else
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     recall: RecallPolicy = Field(default_factory=RecallPolicy)
     steward: StewardConfig = Field(default_factory=StewardConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
@@ -290,25 +292,6 @@ class MemorySettings(BaseModel):
     nats: NatsConfig = Field(default_factory=NatsConfig)
     mcp_http: McpHttpConfig = Field(default_factory=McpHttpConfig)
     discovery_http: DiscoveryHttpConfig = Field(default_factory=DiscoveryHttpConfig)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_legacy_wings(cls, data: Any) -> Any:
-        """Older settings yaml carried a ``wings:`` section. The wing
-        taxonomy is now a product contract in :data:`CANONICAL_WINGS` — silently
-        drop the yaml field with a log so users can clean their config at
-        leisure. Never raise: backward compat for existing local yaml.
-        """
-        if isinstance(data, dict) and "wings" in data:
-            log.warning(
-                "memory_settings_wings_deprecated",
-                hint=(
-                    "yaml 'wings' is ignored — see eidolon.memory.domain.wings."
-                    "CANONICAL_WINGS. Remove the section from your yaml."
-                ),
-            )
-            data = {k: v for k, v in data.items() if k != "wings"}
-        return data
 
     @property
     def wings(self) -> list[WingDefinition]:

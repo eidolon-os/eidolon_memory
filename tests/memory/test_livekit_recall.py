@@ -12,7 +12,6 @@ from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.config.memory_settings import (
     MemorySettings,
     RecallPolicy,
-    WingDefinition,
 )
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
 from eidolon.memory.domain.wire import MemoryWireRecord
@@ -20,10 +19,6 @@ from eidolon.memory.domain.wire import MemoryWireRecord
 
 def _settings() -> MemorySettings:
     return MemorySettings(
-        wings=[
-            WingDefinition(id="Wing_Profile", display_name="p"),
-            WingDefinition(id="Wing_Privacy", display_name="x"),
-        ],
         recall=RecallPolicy(
             livekit_timeout_seconds=0.2,
             voice_wings=["Wing_Profile"],

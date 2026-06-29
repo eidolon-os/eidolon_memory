@@ -1,4 +1,4 @@
-"""Fake backend get_all semantics (memory_space_id OR wing legacy)."""
+"""Fake backend get_all semantics."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 
 
 @pytest.mark.asyncio
-async def test_get_all_legacy_wing_only_tenant_match():
+async def test_get_all_ingest_text_default_memory_space_match():
     b = FakeMemoryBackend()
     await b.ingest_text(wing="default", room="general", text="nats_style", metadata=None)
     rows = await b.get_all("default")

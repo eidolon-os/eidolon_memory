@@ -110,10 +110,8 @@ async def test_turn_to_recall_closed_loop(stack) -> None:
     """A conversation turn whose steward extracts 'self likes tea' must
     surface as a KG triple in a subsequent ``recall_with_kg_fusion`` call.
     """
-    from eidolon.memory.application.public_recall import (
-        group_recall_context,
-        recall_with_kg_fusion,
-    )
+    from eidolon.memory.application.public_recall import recall_with_kg_fusion
+    from eidolon.memory.application.recall_renderer import group_recall_context
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.fragments import MemoryFragment
     from eidolon.memory.domain.kg import KgTripleAction

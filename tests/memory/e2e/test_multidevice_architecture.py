@@ -12,10 +12,8 @@ from eidolon_sdk.memory import (
 )
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
-from eidolon.memory.application.public_recall import (
-    group_recall_context,
-    search_all_wings_mcp_style,
-)
+from eidolon.memory.application.public_recall import search_all_wings_mcp_style
+from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.application.turn_processor import process_turn_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing

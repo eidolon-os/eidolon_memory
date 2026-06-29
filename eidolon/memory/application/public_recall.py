@@ -63,12 +63,6 @@ def recall_record_visible_for_context(
     )
 
 
-# ``group_recall_context`` lives in :mod:`recall_renderer` so subsequent
-# phases (working memory, themes) can extend rendering without touching the
-# fusion logic in this module. Re-exported here for backward compat with
-# callers that import from ``public_recall``.
-from eidolon.memory.application.recall_renderer import group_recall_context  # noqa: E402, F401
-
 # Wings excluded from the default competitive vector fan-out.
 #   Wing_Privacy — never recalled (privacy boundary).
 #   Wing_Theme   — Phase 4.1: themes are a SEPARATE retrieval channel

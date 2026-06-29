@@ -123,9 +123,3 @@ def test_kg_only_no_vector_renders_only_kg_section():
 def test_empty_kg_triples_list_treated_same_as_none():
     records = [_rec("life", "x")]
     assert group_recall_context(records, kg_triples=[]) == group_recall_context(records)
-
-
-def test_backwards_compat_import_from_public_recall():
-    """Phase 0/1 callers import from public_recall; verify re-export works."""
-    from eidolon.memory.application.public_recall import group_recall_context as old_path
-    assert old_path is group_recall_context
