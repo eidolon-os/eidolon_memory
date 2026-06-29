@@ -18,10 +18,17 @@ config/users.yaml
 **/users.yaml.lock
 logs/*
 
-# Local-only perf / baseline reports (only fixtures under reports/bench_palace/ are tracked)
+# Benchmark artifacts
+benchmarks/runs/
+benchmark/runs/
+reports/benchmark*/
+reports/*benchmark*/
+reports/*_benchmark_*/
 reports/memory_perf_*/
 reports/memory_quality_*/
+reports/memory_multi_device_*/
 reports/architecture_d1_baseline_*/
+reports/e2e_*/
 **/.trash/
 
 # Transient SQLite WAL / SHM next to any chroma.sqlite3
@@ -35,5 +42,4 @@ reports/architecture_d1_baseline_*/
 # Finder backup copies ("_副本" = "Copy of …")
 *_副本.*
 *_copy.*
-reports/e2e_*/
 reports/*
