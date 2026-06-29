@@ -86,7 +86,11 @@ async def _run(
 ) -> dict:
     import nats
 
-    from eidolon_sdk.memory import ConversationTurnPayload, conversation_turn_subject
+    from eidolon_sdk.memory import (
+        ConversationTurnPayload,
+        conversation_turn_subject,
+        envelope_memory_payload,
+    )
 
     subject = conversation_turn_subject(context.memory_space_id)
     publish_ms: list[float] = []
@@ -118,7 +122,10 @@ async def _run(
                     assistant_text="记下了。",
                     metadata={"source": "bench_write_jetstream", "iter": i},
                 )
-                body = json.dumps(turn.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
+                envelope = envelope_memory_payload(turn, trace_id=turn_id)
+                body = json.dumps(
+                    envelope.model_dump(mode="json"), ensure_ascii=False
+                ).encode("utf-8")
 
                 t0 = time.perf_counter()
                 ack = await js.publish(subject, body)

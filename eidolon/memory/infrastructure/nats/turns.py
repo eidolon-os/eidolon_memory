@@ -6,7 +6,11 @@ import json
 from typing import Any
 
 import nats
-from eidolon_sdk.memory import ConversationTurnPayload, conversation_turn_subject
+from eidolon_sdk.memory import (
+    ConversationTurnPayload,
+    conversation_turn_subject,
+    envelope_memory_payload,
+)
 
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
@@ -51,5 +55,6 @@ class JetStreamTurnPublisher:
             msg = "ConversationTurnPayload.context.memory_space_id is required for routing"
             raise ValueError(msg)
         subject = conversation_turn_subject(memory_space_id)
-        body = json.dumps(payload.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
+        envelope = envelope_memory_payload(payload, trace_id=payload.turn_id)
+        body = json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
         await self._js.publish(subject, body)

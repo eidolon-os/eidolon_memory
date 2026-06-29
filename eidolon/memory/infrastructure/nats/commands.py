@@ -12,7 +12,11 @@ import json
 from typing import Any
 
 import nats
-from eidolon_sdk.memory import MemoryCommandPayload, memory_command_subject
+from eidolon_sdk.memory import (
+    MemoryCommandPayload,
+    envelope_memory_payload,
+    memory_command_subject,
+)
 
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
@@ -57,5 +61,6 @@ class JetStreamCommandPublisher:
             msg = "MemoryCommandPayload.memory_space_id is required for routing"
             raise ValueError(msg)
         subject = memory_command_subject(memory_space_id)
-        body = json.dumps(payload.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
+        envelope = envelope_memory_payload(payload, trace_id=payload.request_id)
+        body = json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
         await self._js.publish(subject, body)

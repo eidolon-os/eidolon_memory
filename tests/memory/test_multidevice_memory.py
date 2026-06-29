@@ -11,6 +11,7 @@ from eidolon_sdk.memory import (
     DeviceSyncEvent,
     MemoryActorContext,
     conversation_turn_subject,
+    envelope_memory_payload,
     memory_command_subject,
     memory_sync_subject,
 )
@@ -261,7 +262,8 @@ async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
         ],
     )
 
-    msg1 = _Msg(batch.model_dump(mode="json"))
+    envelope = envelope_memory_payload(batch, trace_id=batch.request_id).model_dump(mode="json")
+    msg1 = _Msg(envelope)
     await process_sync_message(
         msg1,
         steward=steward,
@@ -270,7 +272,7 @@ async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
         settings=settings,
         expected_memory_space_id=_ctx().memory_space_id,
     )
-    msg2 = _Msg(batch.model_dump(mode="json"))
+    msg2 = _Msg(envelope)
     await process_sync_message(
         msg2,
         steward=steward,

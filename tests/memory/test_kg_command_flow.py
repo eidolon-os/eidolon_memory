@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from eidolon_sdk.memory import envelope_memory_payload
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,12 +34,13 @@ def kg_setup(tmp_path: Path):
 def _stub_msg(payload: dict) -> SimpleNamespace:
     """Mimics a nats.aio.msg.Msg enough for process_command_message."""
     ack_calls = []
+    envelope = envelope_memory_payload(payload, kind=payload.get("kind", "memory_command"))
 
     async def _ack():
         ack_calls.append("ack")
 
     return SimpleNamespace(
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps(envelope.model_dump(mode="json")).encode("utf-8"),
         ack=_ack,
         ack_calls=ack_calls,
         metadata=SimpleNamespace(num_delivered=1),

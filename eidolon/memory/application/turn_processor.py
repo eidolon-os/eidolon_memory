@@ -23,6 +23,8 @@ from eidolon_sdk.memory import (
     KgInvalidateCommand,
     MemoryCommandPayload,
     UserConfirmedFactCommand,
+    parse_conversation_turn,
+    parse_memory_command,
 )
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
@@ -94,8 +96,8 @@ async def process_turn_message(
     deliveries = delivery_count(msg)
     try:
         raw = json.loads(msg.data.decode("utf-8"))
-        turn = ConversationTurnPayload.model_validate(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
+        turn = parse_conversation_turn(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValidationError, ValueError) as exc:
         log.error("turn_processor_bad_payload", error=str(exc))
         await msg.ack()
         return
@@ -341,22 +343,8 @@ async def process_command_message(
     del settings  # not currently consulted; reserved for future cmd kinds
     try:
         raw = json.loads(msg.data.decode("utf-8"))
-        kind = raw.get("kind")
-        if kind == "kg_add_triple":
-            cmd: MemoryCommandPayload = KgAddTripleCommand.model_validate(raw)
-        elif kind == "kg_invalidate":
-            cmd = KgInvalidateCommand.model_validate(raw)
-        elif kind == "consolidator_ingest_theme":
-            cmd = ConsolidatorIngestThemeCommand.model_validate(raw)
-        elif kind == "user_confirm_fact":
-            cmd = UserConfirmedFactCommand.model_validate(raw)
-        elif kind == "device_sync_batch":
-            cmd = DeviceSyncBatchPayload.model_validate(raw)
-        else:
-            log.error("cmd_unknown_kind", kind=kind)
-            await msg.ack()
-            return
-    except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
+        cmd: MemoryCommandPayload = parse_memory_command(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValidationError, ValueError) as exc:
         log.error("cmd_bad_payload", error=str(exc))
         await msg.ack()
         return
@@ -452,8 +440,11 @@ async def process_sync_message(
     del settings
     try:
         raw = json.loads(msg.data.decode("utf-8"))
-        batch = DeviceSyncBatchPayload.model_validate(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
+        command = parse_memory_command(raw)
+        if not isinstance(command, DeviceSyncBatchPayload):
+            raise ValueError("sync payload must be device_sync_batch")
+        batch = command
+    except (json.JSONDecodeError, UnicodeDecodeError, ValidationError, ValueError) as exc:
         log.error("sync_bad_payload", error=str(exc))
         await msg.ack()
         return

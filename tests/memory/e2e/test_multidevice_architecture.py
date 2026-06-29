@@ -5,7 +5,11 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from eidolon_sdk.memory import ConversationTurnPayload, MemoryActorContext
+from eidolon_sdk.memory import (
+    ConversationTurnPayload,
+    MemoryActorContext,
+    envelope_memory_payload,
+)
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import (
@@ -31,13 +35,14 @@ def _ctx(device_id: str, session_id: str = "s") -> MemoryActorContext:
 
 
 def _turn(text: str, *, device_id: str, session_id: str = "s") -> dict:
-    return ConversationTurnPayload(
+    payload = ConversationTurnPayload(
         turn_id=uuid.uuid4().hex,
         context=_ctx(device_id, session_id),
         timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         user_text=text,
         assistant_text="记下了。",
-    ).model_dump(mode="json")
+    )
+    return envelope_memory_payload(payload, trace_id=payload.turn_id).model_dump(mode="json")
 
 
 class _Msg:

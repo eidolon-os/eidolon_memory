@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from eidolon_sdk.memory import envelope_memory_payload
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,8 +78,9 @@ def _stub_msg(payload: dict) -> SimpleNamespace:
     async def _nak():
         nak_calls.append("nak")
 
+    envelope = envelope_memory_payload(payload, kind=payload.get("kind", "conversation_turn"))
     return SimpleNamespace(
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps(envelope.model_dump(mode="json")).encode("utf-8"),
         ack=_ack,
         nak=_nak,
         ack_calls=ack_calls,
