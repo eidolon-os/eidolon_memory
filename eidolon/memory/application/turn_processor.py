@@ -102,6 +102,16 @@ async def process_turn_message(
         await msg.ack()
         return
 
+    # Cross-hop correlation id minted by the channel, carried on the envelope
+    # (channel->agent->memory). Log it so one exchange is greppable end to end.
+    trace_id = str(raw.get("trace_id") or "") if isinstance(raw, dict) else ""
+    log.info(
+        "turn_processor_ingest",
+        trace_id=trace_id,
+        turn_id=turn.turn_id,
+        memory_space_id=turn.context.memory_space_id,
+    )
+
     memory_space_id = turn.context.memory_space_id
     if (
         expected_memory_space_id is not None
