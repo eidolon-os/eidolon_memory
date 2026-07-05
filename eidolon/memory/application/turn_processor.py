@@ -85,6 +85,7 @@ async def process_turn_message(
     settings: MemorySettings,
     max_deliveries: int,
     expected_memory_space_id: str | None = None,
+    audit_sink: Any = None,
 ) -> None:
     """Decode + validate one turn, run steward, apply fragments + KG, ack / nak / DLQ.
 
@@ -150,6 +151,10 @@ async def process_turn_message(
         )
         if deliveries >= max_deliveries:
             append_dlq(settings, msg.data, str(exc), deliveries)
+            if audit_sink is not None:
+                await audit_sink.record_rejected(
+                    turn, trace_id=trace_id, reason=str(exc), deliveries=deliveries
+                )
             await msg.ack()
             log.error("turn_processor_dlq_ack", deliveries=deliveries)
         else:
@@ -186,6 +191,10 @@ async def process_turn_message(
         )
         if deliveries >= max_deliveries:
             append_dlq(settings, msg.data, str(exc), deliveries)
+            if audit_sink is not None:
+                await audit_sink.record_rejected(
+                    turn, trace_id=trace_id, reason=str(exc), deliveries=deliveries
+                )
             await msg.ack()
             log.error("turn_processor_dlq_ack", deliveries=deliveries)
         else:
@@ -272,6 +281,14 @@ async def process_turn_message(
         mentions=mentions_written if kg is not None else 0,
         mentions_rejected=mentions_rejected if kg is not None else 0,
     )
+    if audit_sink is not None:
+        await audit_sink.record_absorbed(
+            turn,
+            trace_id=trace_id,
+            should_write=decision.should_write,
+            fragments=fragments_written,
+            triples=kg_triples_added,
+        )
     await msg.ack()
 
 

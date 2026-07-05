@@ -129,6 +129,25 @@ def _materialize_kg_file(kg_sqlite_path: Path) -> None:
     fsync_directory(kg_sqlite_path.parent)
 
 
+def _open_fanout_audit_sink() -> Any:
+    """Best-effort audit sink for agent→memory fanout closure.
+
+    Opens an events-only DataStore against the shared eidolon_data DB. Returns
+    None if unavailable — the turn path then behaves exactly as before.
+    """
+    try:
+        from eidolon_data import DataSettings, DataStore
+
+        from eidolon.memory.application.eidolon_data_runtime import (
+            EidolonDataMemoryFanoutAuditSink,
+        )
+
+        return EidolonDataMemoryFanoutAuditSink(DataStore.open(DataSettings()))
+    except Exception as exc:  # noqa: BLE001 - audit is optional, never fatal
+        log.warning("fanout_audit_sink_unavailable", error=str(exc))
+        return None
+
+
 async def _nats_subscriber_loop(
     *,
     memory_space_id: str,
@@ -153,6 +172,7 @@ async def _nats_subscriber_loop(
     ledger = SyncLedger(Path(kg_sqlite).parent / "sync_ledger.sqlite3")
 
     steward = create_steward(settings)
+    audit_sink = _open_fanout_audit_sink()
     sync_every = max(1, settings.worker.sync_every_n_turns)
     writes_since_checkpoint = 0
 
@@ -268,6 +288,7 @@ async def _nats_subscriber_loop(
                             settings=settings,
                             max_deliveries=settings.nats.worker_max_deliveries,
                             expected_memory_space_id=memory_space_id,
+                            audit_sink=audit_sink,
                         ),
                     )
                     await _drain(
