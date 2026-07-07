@@ -179,13 +179,11 @@ async def _nats_subscriber_loop(
     async def _drain(psub, handler) -> None:
         """Fetch a batch and dispatch each message.
 
-        Idle fetch (``TimeoutError``) is swallowed here so an idle turn
-        subject never starves the cmd subject (or vice versa) — each subject
-        drains independently every loop. Any OTHER exception (drained /
-        dead connection, e.g. ``msg.ack()`` failing mid-batch under long
-        LLM load) propagates to the outer reconnect loop, instead of the
-        prior behavior where it killed the subscriber permanently and
-        silently stopped all turn + cmd ingestion until process restart.
+        Idle fetch (``TimeoutError``) is swallowed here. Any OTHER exception
+        (drained / dead connection, e.g. ``msg.ack()`` failing mid-batch under
+        long LLM load) propagates to the outer reconnect loop, instead of the
+        prior behavior where it killed the subscriber permanently and silently
+        stopped all turn + cmd ingestion until process restart.
         """
         nonlocal writes_since_checkpoint
         try:
@@ -198,6 +196,53 @@ async def _nats_subscriber_loop(
         for msg in msgs:
             await handler(msg)
             writes_since_checkpoint += 1
+
+    async def _drain_forever(psub, handler) -> None:
+        """Continuously drain one subject in its own task until ``stop``.
+
+        Each subject gets a dedicated task so a *busy* subject never starves the
+        others. This matters because a turn batch is processed serially and each
+        turn spends ~5-8s in the steward's LLM call — which runs OUTSIDE the
+        backend lock (``LockedBackend`` locks per-operation, not across a turn).
+        So while a large turn backlog churns, a command (admin KG edit /
+        user-confirmed fact / consolidator theme) still acquires the lock and
+        applies in ~ms on the cmd task. Intra-subject order is preserved (one
+        task drains its subject sequentially); there is no cross-subject order
+        contract. Idle loops cheaply; a real fetch/ack error propagates so the
+        outer reconnect rebinds every subscription together.
+        """
+        while not stop.is_set():
+            await _drain(psub, handler)
+
+    async def _checkpoint_forever() -> None:
+        """Checkpoint the WAL once enough writes accrue, in its own task.
+
+        Kept off the drain path so checkpointing never blocks message ingestion,
+        and a checkpoint failure degrades gracefully (log + retry) instead of
+        forcing a NATS reconnect the way it did when it shared the drain loop's
+        try-block.
+        """
+        nonlocal writes_since_checkpoint
+        while not stop.is_set():
+            await asyncio.sleep(0.5)
+            if writes_since_checkpoint < sync_every:
+                continue
+            try:
+                # G4: local SQLite backends are WAL — checkpoint when present.
+                if palace_sqlite:
+                    await asyncio.to_thread(
+                        checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
+                    )
+                await asyncio.to_thread(checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE")
+                await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
+                writes_since_checkpoint = 0
+            except Exception as exc:  # noqa: BLE001 - best-effort durability
+                log.warning(
+                    "agent_runner_checkpoint_failed",
+                    memory_space_id=memory_space_id,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
     async def _handle_list_drawers_query(msg) -> None:
         """Serve ephemeral consolidation snapshot reads.
@@ -276,54 +321,58 @@ async def _nats_subscriber_loop(
             )
             reconnect_delay = 1.0  # healthy connection — reset backoff
 
-            while not stop.is_set():
-                try:
-                    await _drain(
-                        psub_turn,
-                        lambda m: process_turn_message(
-                            m,
-                            steward=steward,
-                            backend=backend,
-                            kg=kg,
-                            settings=settings,
-                            max_deliveries=settings.nats.worker_max_deliveries,
-                            expected_memory_space_id=memory_space_id,
-                            audit_sink=audit_sink,
-                        ),
-                    )
-                    await _drain(
-                        psub_cmd,
-                        lambda m: process_command_message(
-                            m,
-                            backend=backend,
-                            kg=kg,
-                            expected_memory_space_id=memory_space_id,
-                            settings=settings,
-                        ),
-                    )
-                    await _drain(
-                        psub_sync,
-                        lambda m: process_sync_message(
-                            m,
-                            steward=steward,
-                            backend=backend,
-                            ledger=ledger,
-                            settings=settings,
-                            expected_memory_space_id=memory_space_id,
-                        ),
-                    )
-                except TimeoutError:
-                    # Idle fetch — normal, just loop.
-                    pass
-                if writes_since_checkpoint >= sync_every:
-                    # G4: local SQLite backends are WAL — checkpoint when present.
-                    if palace_sqlite:
-                        await asyncio.to_thread(
-                            checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
-                        )
-                    await asyncio.to_thread(checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE")
-                    await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
-                    writes_since_checkpoint = 0
+            # One task per subject (+ checkpointer) so a busy turn subject
+            # can't starve the command / sync subjects — see _drain_forever.
+            def _turn_handler(m):
+                return process_turn_message(
+                    m,
+                    steward=steward,
+                    backend=backend,
+                    kg=kg,
+                    settings=settings,
+                    max_deliveries=settings.nats.worker_max_deliveries,
+                    expected_memory_space_id=memory_space_id,
+                    audit_sink=audit_sink,
+                )
+
+            def _cmd_handler(m):
+                return process_command_message(
+                    m,
+                    backend=backend,
+                    kg=kg,
+                    expected_memory_space_id=memory_space_id,
+                    settings=settings,
+                )
+
+            def _sync_handler(m):
+                return process_sync_message(
+                    m,
+                    steward=steward,
+                    backend=backend,
+                    ledger=ledger,
+                    settings=settings,
+                    expected_memory_space_id=memory_space_id,
+                )
+
+            workers = [
+                asyncio.create_task(_drain_forever(psub_turn, _turn_handler)),
+                asyncio.create_task(_drain_forever(psub_cmd, _cmd_handler)),
+                asyncio.create_task(_drain_forever(psub_sync, _sync_handler)),
+                asyncio.create_task(_checkpoint_forever()),
+            ]
+            try:
+                # Return as soon as ANY worker dies — a NATS/ack error surfaces
+                # here and re-raises into the outer reconnect loop, which rebinds
+                # all subscriptions on a fresh connection. A clean return only
+                # happens once ``stop`` has drained every worker.
+                await asyncio.wait(workers, return_when=asyncio.FIRST_EXCEPTION)
+                for task in workers:
+                    if not task.cancelled() and task.exception() is not None:
+                        raise task.exception()
+            finally:
+                for task in workers:
+                    task.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
         except Exception as exc:  # noqa: BLE001 - any connection/sub failure → reconnect
             if ready is not None and not ready.is_set():
                 ready.clear()
