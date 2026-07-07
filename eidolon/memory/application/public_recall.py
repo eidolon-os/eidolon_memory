@@ -64,42 +64,6 @@ def recall_record_visible_for_context(
     )
 
 
-def _stamp_memory_space_id(
-    records: list[MemoryWireRecord],
-    memory_space_id: str,
-) -> list[MemoryWireRecord]:
-    """Restore ``memory_space_id`` on vector-search hits that lost it.
-
-    MemPalace's vector search drops custom metadata, so
-    :func:`parse_search_tool_payload` falls back to the *wing name* for
-    ``memory_space_id`` (there's no better signal in the raw hit). That fake
-    id then fails the ``memory_space_id`` gate in
-    :meth:`RecallPolicyRegistry.visible`, which would silently filter out
-    *every* vector hit — collapsing recall to the lexical ``get_all`` fallback
-    (which does preserve metadata). An agent_runner palace hosts exactly one
-    memory space, so the caller's ``context.memory_space_id`` is authoritative:
-    stamp it back on any record whose metadata didn't carry one. Records that
-    already have a real ``memory_space_id`` in metadata (e.g. the lexical
-    fallback's ``get_all`` rows) are left untouched so the cross-space gate
-    keeps its teeth.
-    """
-    out: list[MemoryWireRecord] = []
-    for rec in records:
-        meta = rec.metadata or {}
-        if not meta.get("memory_space_id"):
-            out.append(
-                rec.model_copy(
-                    update={
-                        "memory_space_id": memory_space_id,
-                        "metadata": {**meta, "memory_space_id": memory_space_id},
-                    }
-                )
-            )
-        else:
-            out.append(rec)
-    return out
-
-
 # Wings excluded from the default competitive vector fan-out.
 #   Wing_Privacy — never recalled (privacy boundary).
 #   Wing_Theme   — Phase 4.1: themes are a SEPARATE retrieval channel
@@ -619,7 +583,8 @@ async def search_all_wings_mcp_style(
                     n_results=top_k,
                     room=room,
                 )
-                found = _stamp_memory_space_id(found, context.memory_space_id)
+                # memory_space_id is stamped at the source (backend.search →
+                # parse_search_tool_payload with the palace's authoritative id).
                 return [r for r in found if recall_record_visible_for_context(r, context)]
 
         batches = await asyncio.gather(*[_one(wid) for wid in wings], return_exceptions=True)
@@ -708,7 +673,13 @@ async def _search_voice_shared_embedding(
             n_results=top_k,
             skip_closets=settings.runtime.read.voice_skip_closets,
         )
-        return parse_search_tool_payload({"results": raw})
+        # This voice fast-path bypasses backend.search, so stamp the caller's
+        # authoritative memory_space_id here (same role backend.search plays for
+        # the fan-out path) — otherwise these hits carry the wing name and the
+        # visibility gate below drops them all.
+        return parse_search_tool_payload(
+            {"results": raw}, default_memory_space_id=context.memory_space_id
+        )
 
     lock = getattr(backend, "lock", None)
     if lock is not None:
@@ -716,5 +687,4 @@ async def _search_voice_shared_embedding(
             records = await asyncio.to_thread(_run)
     else:
         records = await asyncio.to_thread(_run)
-    records = _stamp_memory_space_id(records, context.memory_space_id)
     return [r for r in records if recall_record_visible_for_context(r, context)]

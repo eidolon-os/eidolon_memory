@@ -9,8 +9,20 @@ from eidolon.memory.adapters.recall_ranking import vector_fields_from_hit
 from eidolon.memory.domain.wire import MemoryWireRecord, parse_memory_datetime
 
 
-def parse_search_tool_payload(data: Any) -> list[MemoryWireRecord]:
-    """Parse MCP ``search_drawers`` (or equivalent) JSON into wire records."""
+def parse_search_tool_payload(
+    data: Any,
+    *,
+    default_memory_space_id: str | None = None,
+) -> list[MemoryWireRecord]:
+    """Parse MCP ``search_drawers`` (or equivalent) JSON into wire records.
+
+    ``default_memory_space_id`` is the authoritative memory space of the palace
+    the hits came from. MemPalace's vector search drops custom metadata, so a
+    hit rarely carries its own ``memory_space_id``; callers that know the space
+    (the single-palace backend, the voice recall path) pass it here so records
+    get the real id instead of falling back to the wing name — which would then
+    fail recall's ``memory_space_id`` visibility gate and drop every vector hit.
+    """
     if data is None:
         return []
     rows: list[dict[str, Any]]
@@ -64,7 +76,9 @@ def parse_search_tool_payload(data: Any) -> list[MemoryWireRecord]:
         updated_at = parse_memory_datetime(r.get("updated_at") or meta.get("updated_at"))
         out.append(
             MemoryWireRecord(
-                memory_space_id=str(meta.get("memory_space_id") or wing or "default"),
+                memory_space_id=str(
+                    meta.get("memory_space_id") or default_memory_space_id or wing or "default"
+                ),
                 key=room or "general",
                 value=value,
                 metadata=meta,

@@ -159,6 +159,68 @@ def test_visible_filters_privacy_metadata():
     assert not recall_record_visible_for_context(priv, _context())
 
 
+def test_parse_search_payload_stamps_default_memory_space_id():
+    """Root fix: vector hits lose their memory_space_id (mempalace drops custom
+    metadata), so the caller-supplied authoritative id must be used instead of
+    the bogus wing-name fallback that would fail recall's visibility gate."""
+    from eidolon.memory.adapters.search_payload import parse_search_tool_payload
+
+    # A vector hit as mempalace returns it: wing/room/text, NO memory_space_id.
+    stripped = {"results": [{"wing": "Wing_Life", "room": "r1", "text": "plain drawer"}]}
+    assert parse_search_tool_payload(
+        stripped, default_memory_space_id="realm-1"
+    )[0].memory_space_id == "realm-1"
+    # Backwards-compat: no default supplied → legacy wing fallback.
+    assert parse_search_tool_payload(stripped)[0].memory_space_id == "Wing_Life"
+    # Metadata-carried id (get_all / sqlite_exact paths) always wins over the
+    # default, so a genuinely cross-space record keeps its real id.
+    with_meta = {"results": [{"wing": "Wing_Life", "room": "r1", "text": "x",
+                              "metadata": {"memory_space_id": "realm-2"}}]}
+    assert parse_search_tool_payload(
+        with_meta, default_memory_space_id="realm-1"
+    )[0].memory_space_id == "realm-2"
+
+
+def test_stamped_vector_hit_visible_and_cross_space_rejected():
+    """A stripped vector hit stamped with the caller's space is recalled (not
+    filtered), while a hit that carries a different real space id is rejected."""
+    from eidolon.memory.adapters.search_payload import parse_search_tool_payload
+
+    ctx = _context()  # memory_space_id == "default.alice.default"
+    hit = {"results": [{"wing": "Wing_Life", "room": "r1", "text": "alice fact"}]}
+    rec = parse_search_tool_payload(hit, default_memory_space_id=ctx.memory_space_id)[0]
+    assert recall_record_visible_for_context(rec, ctx)
+
+    other = {"results": [{"wing": "Wing_Life", "room": "r1", "text": "bob fact",
+                          "metadata": {"memory_space_id": "default.bob.default"}}]}
+    rec_other = parse_search_tool_payload(other, default_memory_space_id=ctx.memory_space_id)[0]
+    assert not recall_record_visible_for_context(rec_other, ctx)
+
+
+def test_json_content_drawer_dedups_across_read_paths():
+    """The same JSON-content drawer read via the vector path (parsed dict) and
+    the get_all fallback (raw JSON string) must collapse to one record; a
+    genuinely different drawer must not."""
+    from eidolon.memory.application.public_recall import _merge_unique_records
+    from eidolon.memory.domain.wire import MemoryWireRecord
+
+    vec = MemoryWireRecord(  # vector path: value is the PARSED object
+        memory_space_id="realm", key="r1", value={"b": 2, "a": 1},
+        metadata={"wing": "Wing_Life", "room": "r1"},
+    )
+    getall = MemoryWireRecord(  # get_all fallback: same drawer, RAW json string, drawer-id key
+        memory_space_id="realm", key="drawer-id-xyz", value='{"a": 1, "b": 2}',
+        metadata={"wing": "Wing_Life", "room": "r1"},
+    )
+    assert len(_merge_unique_records([vec], [getall])) == 1
+
+    other = MemoryWireRecord(
+        memory_space_id="realm", key="r2", value="different drawer",
+        metadata={"wing": "Wing_Life", "room": "r2"},
+    )
+    assert len(_merge_unique_records([vec], [other])) == 2
+
+
 @pytest.mark.asyncio
 async def test_group_recall_context_non_empty_when_hits():
     from eidolon.memory.domain.wire import MemoryWireRecord

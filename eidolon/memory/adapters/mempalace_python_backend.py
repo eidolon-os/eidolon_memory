@@ -48,9 +48,21 @@ class MemPalacePythonBackend(MemoryBackend):
     lock: asyncio.Lock | None = None
     working_memory: Any = None  # Phase 2 ring; agent_runner bolts it on at start
 
-    def __init__(self, settings: MemorySettings, palace_path: str) -> None:
+    def __init__(
+        self,
+        settings: MemorySettings,
+        palace_path: str,
+        *,
+        memory_space_id: str | None = None,
+    ) -> None:
         self._settings = settings
         self._palace = palace_path
+        # A palace hosts exactly one memory space. MemPalace's vector search
+        # drops custom metadata, so search hits come back without a
+        # ``memory_space_id`` — this authoritative id is stamped onto them so
+        # recall's visibility gate (which compares against the caller's space)
+        # doesn't reject every vector hit. See parse_search_tool_payload.
+        self._memory_space_id = memory_space_id
         self._apply_chromadb_pragmas()
 
     def _apply_chromadb_pragmas(self) -> None:
@@ -122,7 +134,10 @@ class MemPalacePythonBackend(MemoryBackend):
         )
         if isinstance(data, dict) and data.get("error"):
             raise MemoryBackendUnavailable(str(data.get("error")))
-        return apply_recall_policy(parse_search_tool_payload(data), self._settings)
+        return apply_recall_policy(
+            parse_search_tool_payload(data, default_memory_space_id=self._memory_space_id),
+            self._settings,
+        )
 
     async def ingest_text(
         self,

@@ -565,7 +565,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             raise IntegrityCheckFailed(msg)
 
-    inner = MemPalacePythonBackend(settings, str(palace_path))
+    inner = MemPalacePythonBackend(settings, str(palace_path), memory_space_id=memory_space_id)
     backend = LockedBackend(inner)
 
     # Phase 2: bolt the working-memory ring onto the backend so it shares

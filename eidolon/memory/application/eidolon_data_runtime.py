@@ -110,7 +110,9 @@ def build_eidolon_data_memory_engine(
             memory_space_id=memory_space_id,
             palace_path=palace_path,
         )
-        resolved_backend = MemPalacePythonBackend(resolved_settings, str(resolved_palace))
+        resolved_backend = MemPalacePythonBackend(
+            resolved_settings, str(resolved_palace), memory_space_id=memory_space_id
+        )
 
     if locked and not isinstance(resolved_backend, LockedBackend):
         resolved_backend = LockedBackend(resolved_backend)
