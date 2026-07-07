@@ -24,6 +24,7 @@ import asyncio
 import pytest
 
 from tests.memory.e2e.conftest import (
+    e2e_actor_context,
     load_companion_corpus,
     mcp_tool_json,
     nats_publish_turn,
@@ -41,12 +42,12 @@ async def _list_fragment_count(session) -> int:
     return len(payload.get("records") or [])
 
 
-async def _recall_top_values(session, *, query: str, top_k: int = 3) -> list[str]:
+async def _recall_top_values(session, context, *, query: str, top_k: int = 3) -> list[str]:
     """Pull verbatim fragment ``value`` strings from `recall_context`."""
     try:
         result = await session.call_tool(
             "eidolon_memory_recall_context",
-            {"query": query, "top_k": top_k, "voice": False},
+            {"query": query, "context": context, "top_k": top_k, "voice": False},
         )
     except Exception:
         return []
@@ -128,6 +129,8 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
         user_id="e2e_p1_off", port=19041, steward_mode="rules",
         extra_settings={"recall": {"rerank_enabled": False}},
     )
+    ctx_on = e2e_actor_context(h_on.user_id)
+    ctx_off = e2e_actor_context(h_off.user_id)
 
     # Drive ingest on both — publish the FULL 40-turn corpus. Rules steward
     # filters by importance so the fragment count will be smaller (~10-15).
@@ -166,8 +169,8 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
         hits_on_top3 = 0
         hits_off_top3 = 0
         for query, expected in ground_truth:
-            res_on  = await _recall_top_values(s_on,  query=query, top_k=3)
-            res_off = await _recall_top_values(s_off, query=query, top_k=3)
+            res_on  = await _recall_top_values(s_on,  ctx_on,  query=query, top_k=3)
+            res_off = await _recall_top_values(s_off, ctx_off, query=query, top_k=3)
             if res_on and _matches(res_on[:1], expected):
                 hits_on_top1 += 1
             if res_off and _matches(res_off[:1], expected):

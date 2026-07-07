@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from tests.memory.e2e.conftest import (
+    e2e_actor_context,
     mcp_tool_json,
     nats_publish_turn,
     nats_publish_user_confirm,
@@ -38,11 +39,11 @@ async def _list_values(session) -> list[str]:
     return [str(r.get("value", "")) for r in (payload.get("records") or [])]
 
 
-async def _recall_values(session, *, query: str) -> list[str]:
+async def _recall_values(session, context, *, query: str) -> list[str]:
     payload = mcp_tool_json(
         await session.call_tool(
             "eidolon_memory_recall_context",
-            {"query": query, "top_k": 5, "voice": False},
+            {"query": query, "context": context, "top_k": 5, "voice": False},
         )
     )
     if not isinstance(payload, dict):
@@ -50,11 +51,11 @@ async def _recall_values(session, *, query: str) -> list[str]:
     return [str(r.get("value", "")) for r in (payload.get("records") or [])]
 
 
-async def _recall_records(session, *, query: str) -> list[dict]:
+async def _recall_records(session, context, *, query: str) -> list[dict]:
     payload = mcp_tool_json(
         await session.call_tool(
             "eidolon_memory_recall_context",
-            {"query": query, "top_k": 5, "voice": False},
+            {"query": query, "context": context, "top_k": 5, "voice": False},
         )
     )
     if not isinstance(payload, dict):
@@ -70,6 +71,7 @@ async def test_user_confirmed_lands_verbatim_and_pins_top(
     handle = live_agent_runner(
         user_id="e2e_userconfirm", port=19090, steward_mode="noop",
     )
+    ctx = e2e_actor_context(handle.user_id)
 
     # ─── seed some chat turns in the same wing (noop steward → these do NOT
     #     produce drawers; they just exercise the turn path) plus a couple of
@@ -109,7 +111,7 @@ async def test_user_confirmed_lands_verbatim_and_pins_top(
         # ``source``) — the surviving signal is the ``room`` prefix
         # ``userconfirm:`` (see USER_CONFIRMED_ROOM_PREFIX), which is exactly
         # what the recall pin keys off. Assert against that, not ``source``.
-        records = await _recall_records(session, query="我喝什么")
+        records = await _recall_records(session, ctx, query="我喝什么")
         assert records, "recall returned no records for '我喝什么'"
         top = records[0]
         top_room = str(top.get("metadata", {}).get("room", ""))
@@ -131,6 +133,7 @@ async def test_user_confirmed_outranks_chat_drawer_same_topic(
     handle = live_agent_runner(
         user_id="e2e_userconfirm_rank", port=19091, steward_mode="rules",
     )
+    ctx = e2e_actor_context(handle.user_id)
 
     # 1) Chat turn → rules steward writes a normal drawer about tea.
     await nats_publish_turn(
@@ -154,13 +157,13 @@ async def test_user_confirmed_outranks_chat_drawer_same_topic(
 
     async with mcp_session(handle.mcp_url) as session:
         async def _confirmed_present(s) -> bool:
-            return any(_is_confirmed(r) for r in await _recall_records(s, query="我喝什么茶"))
+            return any(_is_confirmed(r) for r in await _recall_records(s, ctx, query="我喝什么茶"))
 
         assert await wait_for_visible(
             session, predicate=_confirmed_present, timeout_s=40,
         ), "user-confirmed drawer never surfaced in recall"
 
-        records = await _recall_records(session, query="我喝什么茶")
+        records = await _recall_records(session, ctx, query="我喝什么茶")
         flags = [_is_confirmed(r) for r in records]
         # The first user-confirmed record must precede any non-confirmed one.
         first_confirmed = next((i for i, f in enumerate(flags) if f), None)

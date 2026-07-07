@@ -27,11 +27,13 @@ import nats
 import pytest
 import pytest_asyncio
 from eidolon_sdk.memory import (
-    MemoryActorContext,
+    ConversationTurnPayload,
+    build_memory_actor_context,
     conversation_turn_subject,
     derive_memory_space_id,
+    envelope_memory_payload,
     memory_command_subject,
-    validate_memory_space_id,
+    memory_space_storage_name,
 )
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -43,10 +45,10 @@ _NATS_DATA_FALLBACK = Path.home() / "eidolon" / "data" / "nats-jetstream-e2e"
 
 
 def _e2e_memory_space_id(value: str) -> str:
-    try:
-        return validate_memory_space_id(value)
-    except ValueError:
-        return derive_memory_space_id("default", value, "default")
+    # A memory realm id is opaque to the SDK now (``memory_space_id ==
+    # memory_realm_id``); ``derive_memory_space_id`` simply validates it. The
+    # old ``<tenant>.<owner>.<persona>`` decomposition is gone.
+    return derive_memory_space_id(value)
 
 
 def tail_file(path: Path, *, max_chars: int = 4000) -> str:
@@ -216,7 +218,14 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                extra_settings: dict[str, Any] | None = None) -> _AgentHandle:
         memory_space_id = _e2e_memory_space_id(user_id)
         palace_root = palace_root_override or palaces_root
-        palace_dir = palace_root / memory_space_id
+        # The agent_runner stores each palace at
+        # ``<palaces_root>/<memory_space_storage_name(id)>`` (a reversible
+        # ``b64_...`` encoding, see eidolon.memory.config.palace_directory),
+        # NOT under the raw memory_space_id. Mirror that here so ``palace_dir``
+        # points at the real on-disk palace — otherwise the wipe is a no-op and
+        # tests that read the palace (restart handoff copytree, KG sqlite
+        # probes) hit a non-existent path.
+        palace_dir = palace_root / memory_space_storage_name(memory_space_id)
         if palace_dir.exists():
             shutil.rmtree(palace_dir)
         # Wipe any stale JetStream state for this user — prior crashes or
@@ -449,6 +458,21 @@ async def _nats_publish(nats_url: str, subject: str, payload: dict[str, Any]) ->
         await nc.close()
 
 
+async def _publish_command(nats_url: str, payload: dict[str, Any]) -> None:
+    """Envelope a ``MemoryCommandPayload`` dict and publish to its cmd subject.
+
+    The command consumer (``parse_memory_command``) only accepts the versioned
+    memory envelope, so every command — like turns — must be wrapped before it
+    hits JetStream. Kind is derived from the payload's own ``kind`` field.
+    """
+    envelope = envelope_memory_payload(payload, trace_id=str(payload["request_id"]))
+    await _nats_publish(
+        nats_url,
+        memory_command_subject(str(payload["memory_space_id"])),
+        envelope.model_dump(mode="json"),
+    )
+
+
 async def nats_publish_turn(
     nats_url: str,
     *,
@@ -459,32 +483,74 @@ async def nats_publish_turn(
     session_id: str = "e2e",
     metadata: dict[str, Any] | None = None,
 ) -> str:
-    """Publish a ConversationTurnPayload to ``eidolon.memory.turn.<memory_space_id>``.
+    """Publish a ConversationTurnPayload to ``eidolon.memory.turn.<space_token>``.
+
+    Mirrors the real producer (``eidolon_agent`` MemoryNatsPublisher.publish_turn):
+    identity is expressed via ``owner_id / companion_id / memory_realm_id`` on
+    ``MemoryActorContext`` (``memory_realm_id == memory_space_id``), and the
+    payload is wrapped in the versioned memory envelope — the consumer's
+    ``parse_conversation_turn`` rejects anything that isn't enveloped.
 
     Returns the turn_id (caller can use it for later poll).
     """
     memory_space_id = _e2e_memory_space_id(user_id)
-    tenant_id, owner_user_id, persona_id = memory_space_id.split(".", 2)
-    context = MemoryActorContext(
-        tenant_id=tenant_id,
-        owner_user_id=owner_user_id,
-        persona_id=persona_id,
-        agent_id="e2e",
+    context = build_memory_actor_context(
+        memory_realm_id=memory_space_id,
+        owner_id="e2e",
+        companion_id="e2e",
         device_id="e2e",
-        instance_id="e2e",
         session_id=session_id,
     )
-    payload: dict[str, Any] = {
-        "turn_id": turn_id or uuid.uuid4().hex,
-        "context": context.model_dump(mode="json"),
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "user_text": user_text,
-        "assistant_text": assistant_text,
-    }
-    if metadata is not None:
-        payload["metadata"] = metadata
-    await _nats_publish(nats_url, conversation_turn_subject(memory_space_id), payload)
-    return payload["turn_id"]
+    turn = ConversationTurnPayload(
+        turn_id=turn_id or uuid.uuid4().hex,
+        context=context,
+        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        user_text=user_text,
+        assistant_text=assistant_text,
+        metadata=metadata if metadata is not None else {},
+    )
+    envelope = envelope_memory_payload(turn, trace_id=turn.turn_id)
+    await _nats_publish(
+        nats_url,
+        conversation_turn_subject(memory_space_id),
+        envelope.model_dump(mode="json"),
+    )
+    return turn.turn_id
+
+
+def e2e_actor_context(
+    memory_space_id: str,
+    *,
+    session_id: str = "e2e",
+    device_id: str = "e2e",
+    owner_id: str = "e2e",
+    companion_id: str = "e2e",
+) -> dict[str, Any]:
+    """Build the ``MemoryActorContext`` dict the recall/search MCP tools now
+    require, mirroring the identity ``nats_publish_turn`` attributes writes to.
+
+    Read-side context MUST match the write side or scoped fragments won't be
+    recalled. Concretely (see ``RecallPolicyRegistry`` +
+    ``recall_with_kg_fusion``):
+
+      - ``memory_space_id`` is the hard visibility filter — pass ``handle.user_id``
+        (which *is* the derived memory_space_id) so it equals the write side.
+      - ``device_id`` gates ``visibility="current_device"`` records and, together
+        with ``session_id``, scopes the working-memory ring snapshot.
+      - ``session_id`` also drives the same-session ranking boost.
+      - ``owner_id`` / ``companion_id`` are not filtered on today, but are kept
+        identical to the write side for wire parity (and future-proofing).
+
+    ``memory_space_id`` is accepted as ``memory_realm_id`` (they're equal;
+    ``derive_memory_space_id`` is idempotent on an already-derived id).
+    """
+    return build_memory_actor_context(
+        memory_realm_id=memory_space_id,
+        owner_id=owner_id,
+        companion_id=companion_id,
+        device_id=device_id,
+        session_id=session_id,
+    ).model_dump(mode="json")
 
 
 def _now_iso_z() -> str:
@@ -534,11 +600,7 @@ async def nats_publish_kg_add_triple(
         payload["valid_from"] = valid_from
     if valid_to is not None:
         payload["valid_to"] = valid_to
-    await _nats_publish(
-        nats_url,
-        memory_command_subject(str(payload["memory_space_id"])),
-        payload,
-    )
+    await _publish_command(nats_url, payload)
     return str(payload["request_id"])
 
 
@@ -565,11 +627,7 @@ async def nats_publish_kg_invalidate(
     })
     if ended is not None:
         payload["ended"] = ended
-    await _nats_publish(
-        nats_url,
-        memory_command_subject(str(payload["memory_space_id"])),
-        payload,
-    )
+    await _publish_command(nats_url, payload)
     return str(payload["request_id"])
 
 
@@ -595,11 +653,7 @@ async def nats_publish_user_confirm(
         "wing": wing,
         "memory_type": memory_type,
     })
-    await _nats_publish(
-        nats_url,
-        memory_command_subject(str(payload["memory_space_id"])),
-        payload,
-    )
+    await _publish_command(nats_url, payload)
     return str(payload["request_id"])
 
 

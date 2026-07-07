@@ -19,6 +19,7 @@ import asyncio
 import pytest
 
 from tests.memory.e2e.conftest import (
+    e2e_actor_context,
     load_companion_corpus,
     mcp_tool_json,
     nats_publish_turn,
@@ -28,11 +29,11 @@ from tests.memory.e2e.conftest import (
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
-async def _recall(session, *, query: str = "刚才说什么") -> dict:
+async def _recall(session, context, *, query: str = "刚才说什么") -> dict:
     payload = mcp_tool_json(
         await session.call_tool(
             "eidolon_memory_recall_context",
-            {"query": query, "top_k": 5, "voice": False},
+            {"query": query, "context": context, "top_k": 5, "voice": False},
         )
     )
     return payload if isinstance(payload, dict) else {}
@@ -51,6 +52,9 @@ async def test_working_memory_returns_latest_10_verbatim(
     handle = live_agent_runner(
         user_id="e2e_wm", port=19070, steward_mode="noop",
     )
+    # Recall context must match the write side (device_id + session_id) so the
+    # working-memory ring snapshot for this device/session surfaces.
+    ctx = e2e_actor_context(handle.user_id)
 
     # ─── publish in corpus order; ring must keep the LATEST 10 ─────────────
     for entry in corpus[:PUBLISH_N]:
@@ -71,7 +75,7 @@ async def test_working_memory_returns_latest_10_verbatim(
         # Wait until the ring is fully primed: snapshot length must equal maxlen
         # AND the freshest expected id must be present.
         async def _primed(s) -> bool:
-            r = await _recall(s)
+            r = await _recall(s, ctx)
             wm = r.get("working_memory") or []
             if len(wm) < EXPECTED_MAXLEN:
                 return False
@@ -82,7 +86,7 @@ async def test_working_memory_returns_latest_10_verbatim(
             "working memory did not reach maxlen=10 with newest turn after 30 publishes"
         )
 
-        result = await _recall(session)
+        result = await _recall(session, ctx)
         wm = result.get("working_memory") or []
 
         # ─── structural: exactly 10 entries, all from the most-recent slice ─
@@ -126,6 +130,7 @@ async def test_working_memory_cleared_after_agent_restart(
     h1 = live_agent_runner(
         user_id="e2e_wm_restart_a", port=19071, steward_mode="noop",
     )
+    ctx1 = e2e_actor_context(h1.user_id)
     # Publish a few turns.
     for entry in load_companion_corpus()[:5]:
         await nats_publish_turn(
@@ -138,7 +143,7 @@ async def test_working_memory_cleared_after_agent_restart(
 
     async with mcp_session(h1.mcp_url) as s:
         async def _has_some_wm(sess) -> bool:
-            r = await _recall(sess)
+            r = await _recall(sess, ctx1)
             return len(r.get("working_memory") or []) >= 1
 
         assert await wait_for_visible(s, predicate=_has_some_wm, timeout_s=20), (
@@ -154,7 +159,8 @@ async def test_working_memory_cleared_after_agent_restart(
     h2 = live_agent_runner(
         user_id="e2e_wm_restart_b", port=19072, steward_mode="noop",
     )
+    ctx2 = e2e_actor_context(h2.user_id)
     async with mcp_session(h2.mcp_url) as s:
-        result = await _recall(s)
+        result = await _recall(s, ctx2)
         wm = result.get("working_memory") or []
         assert wm == [], f"new agent inherited working memory from prior run: {wm}"

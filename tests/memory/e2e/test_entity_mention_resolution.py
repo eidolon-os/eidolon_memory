@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from tests.memory.e2e.conftest import (
+    e2e_actor_context,
     load_companion_corpus,
     mcp_tool_json,
     nats_publish_turn,
@@ -134,6 +135,7 @@ async def test_llm_extracts_mentions_and_alias_query_routes_via_kg(
     handle = live_agent_runner(
         user_id="e2e_p3_mention", port=19080, steward_mode="llm",
     )
+    ctx = e2e_actor_context(handle.user_id)
 
     selected_ids = await _publish_relationship_subset(handle, corpus)
     assert len(selected_ids) >= 12, (
@@ -211,13 +213,13 @@ async def test_llm_extracts_mentions_and_alias_query_routes_via_kg(
         routed_count = 0
         routed_detail: list[tuple[str, str]] = []
         for q, accepted in alias_queries:
-            ctx = mcp_tool_json(await session.call_tool(
+            recall = mcp_tool_json(await session.call_tool(
                 "eidolon_memory_recall_context",
-                {"query": q, "top_k": 5, "voice": False},
+                {"query": q, "context": ctx, "top_k": 5, "voice": False},
             ))
-            if not isinstance(ctx, dict):
+            if not isinstance(recall, dict):
                 continue
-            kg_triples = ctx.get("kg_triples") or []
+            kg_triples = recall.get("kg_triples") or []
             for t in kg_triples:
                 if not isinstance(t, dict):
                     continue

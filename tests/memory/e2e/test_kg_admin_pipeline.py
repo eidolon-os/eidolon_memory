@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 
 from tests.memory.e2e.conftest import (
+    e2e_actor_context,
     mcp_tool_json,
     nats_publish_kg_add_triple,
     nats_publish_kg_invalidate,
@@ -76,12 +77,12 @@ async def _kg_timeline(session, *, entity_name: str | None = None, limit: int = 
     return payload.get("events") or []
 
 
-async def _recall_context(session, *, query: str, top_k: int = 5) -> dict:
+async def _recall_context(session, context, *, query: str, top_k: int = 5) -> dict:
     """Schema: {context: str, kg_triples: [...], records: [...]}."""
     payload = mcp_tool_json(
         await session.call_tool(
             "eidolon_memory_recall_context",
-            {"query": query, "top_k": top_k, "voice": False},
+            {"query": query, "context": context, "top_k": top_k, "voice": False},
         )
     )
     return payload if isinstance(payload, dict) else {}
@@ -103,6 +104,7 @@ async def test_kg_admin_cmd_pipeline_full_roundtrip(live_agent_runner, mcp_sessi
     handle = live_agent_runner(
         user_id="e2e_kg_admin", port=19050, steward_mode="noop",
     )
+    ctx = e2e_actor_context(handle.user_id)
 
     # ─── W7: NATS cmd subject → KG write ──────────────────────────────────
     for t in _TRIPLES:
@@ -153,17 +155,17 @@ async def test_kg_admin_cmd_pipeline_full_roundtrip(live_agent_runner, mcp_sessi
         )
 
         # ─── R4: KG fusion surfaces written triples in recall_context ─────
-        ctx = await _recall_context(session, query="self likes tea", top_k=5)
+        ctx_payload = await _recall_context(session, ctx, query="self likes tea", top_k=5)
         # Two complementary signals — both must hold:
         # (a) Structured ``kg_triples`` list contains the fact.
-        kg_block = ctx.get("kg_triples") or []
+        kg_block = ctx_payload.get("kg_triples") or []
         kg_objs = {t.get("object") for t in kg_block if isinstance(t, dict)}
         assert kg_objs & {"oolong", "tea"}, (
             f"recall_context.kg_triples did not surface KG fusion; got {kg_block}"
         )
         # (b) Rendered ``context`` string mentions at least one written object
         #     (transcribed by ``transcribe_triples`` into Chinese narrative).
-        rendered = str(ctx.get("context") or "")
+        rendered = str(ctx_payload.get("context") or "")
         assert any(o in rendered for o in ("tea", "oolong", "茶")), (
             f"rendered context omitted KG facts; got: {rendered[:300]}…"
         )

@@ -17,7 +17,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from eidolon_sdk.memory import ConversationTurnPayload, MemoryActorContext
+from eidolon_sdk.memory import (
+    ConversationTurnPayload,
+    MemoryActorContext,
+    envelope_memory_payload,
+)
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
@@ -52,8 +56,9 @@ def _turn_msg(turn_id: str, user_text: str, assistant_text: str = "") -> SimpleN
         assistant_text=assistant_text,
         timestamp="2026-05-25T00:00:00Z",
     ).model_dump()
+    envelope = envelope_memory_payload(payload, kind="conversation_turn")
     return SimpleNamespace(
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps(envelope.model_dump(mode="json")).encode("utf-8"),
         ack=AsyncMock(),
         metadata=SimpleNamespace(num_delivered=1),
     )

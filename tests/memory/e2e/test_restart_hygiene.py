@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from tests.memory.e2e.conftest import (
+    e2e_actor_context,
     load_companion_corpus,
     mcp_tool_json,
     nats_publish_turn,
@@ -43,12 +44,12 @@ async def _list_record_count(session) -> int:
     return len(payload.get("records") or [])
 
 
-async def _recall_works(session, *, query: str = "self") -> bool:
+async def _recall_works(session, context, *, query: str = "self") -> bool:
     """Confirm `eidolon_memory_recall_context` returns without ImportError."""
     try:
         result = await session.call_tool(
             "eidolon_memory_recall_context",
-            {"query": query, "top_k": 3, "voice": False},
+            {"query": query, "context": context, "top_k": 3, "voice": False},
         )
     except Exception:
         return False
@@ -72,6 +73,7 @@ async def test_lazy_import_no_longer_breaks_after_source_touch(
     """
     handle = live_agent_runner(user_id="e2e_p0_a", port=19030, steward_mode="noop")
     corpus = load_companion_corpus()
+    ctx = e2e_actor_context(handle.user_id)
 
     async with mcp_session(handle.mcp_url) as session:
         # ─── write path: publish 30 turns via NATS ────────────────────────
@@ -92,7 +94,7 @@ async def test_lazy_import_no_longer_breaks_after_source_touch(
             # 30 publishes are ack'd quickly even in noop steward mode.
             # We don't strictly need the fragments — we need the agent_runner
             # alive and processing.
-            return await _recall_works(s)
+            return await _recall_works(s, ctx)
 
         assert await wait_for_visible(session, predicate=_drained, timeout_s=30), (
             "agent_runner did not reach a working recall state after 30 NATS publishes"
@@ -106,11 +108,11 @@ async def test_lazy_import_no_longer_breaks_after_source_touch(
         assert source.stat().st_mtime > original_mtime, "touch didn't bump mtime"
 
         # ─── recall MUST still work after source change(no ImportError) ──
-        assert await _recall_works(session, query="self"), (
+        assert await _recall_works(session, ctx, query="self"), (
             "MCP recall_context failed after source touch — lazy import "
             "regression(see commit ecde449 + tests/memory/test_lazy_import_guard.py)"
         )
-        assert await _recall_works(session, query="铁锤"), (
+        assert await _recall_works(session, ctx, query="铁锤"), (
             "MCP recall_context failed for natural-language query after source touch"
         )
 
@@ -119,6 +121,7 @@ async def test_recall_survives_agent_restart(live_agent_runner, mcp_session):
     """Same palace, fresh process — vector + KG must persist across SIGTERM."""
     # First spawn: publish some turns, then kill.
     h1 = live_agent_runner(user_id="e2e_p0_b", port=19031, steward_mode="noop")
+    ctx1 = e2e_actor_context(h1.user_id)
     async with mcp_session(h1.mcp_url) as session:
         for entry in load_companion_corpus()[:10]:
             await nats_publish_turn(
@@ -129,7 +132,7 @@ async def test_recall_survives_agent_restart(live_agent_runner, mcp_session):
                 turn_id=entry["turn_id"],
             )
         assert await wait_for_visible(
-            session, predicate=lambda s: _recall_works(s), timeout_s=20
+            session, predicate=lambda s: _recall_works(s, ctx1), timeout_s=20
         ), "first agent did not respond to recall"
 
     h1.kill()
@@ -149,6 +152,7 @@ async def test_recall_survives_agent_restart(live_agent_runner, mcp_session):
     shutil.copytree(h1.palace_dir, backup, dirs_exist_ok=True)
 
     h2 = live_agent_runner(user_id="e2e_p0_b_restart", port=19032, steward_mode="noop")
+    ctx2 = e2e_actor_context(h2.user_id)
     # Copy the backed-up palace contents into the new spawn's palace dir
     # so we test "same data, different process".
     for item in backup.iterdir():
@@ -164,6 +168,6 @@ async def test_recall_survives_agent_restart(live_agent_runner, mcp_session):
     await asyncio.sleep(1)
 
     async with mcp_session(h2.mcp_url) as session:
-        assert await _recall_works(session, query="self"), (
+        assert await _recall_works(session, ctx2, query="self"), (
             "second agent_runner cannot recall after palace handoff"
         )

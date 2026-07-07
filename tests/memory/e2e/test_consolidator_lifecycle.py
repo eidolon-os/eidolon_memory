@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from tests.memory.e2e.conftest import (
+    e2e_actor_context,
     load_companion_corpus,
     mcp_tool_json,
     nats_publish_turn,
@@ -152,7 +153,16 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
     corpus = load_companion_corpus()
     handle = live_agent_runner(
         user_id="e2e_p4_consol", port=19090, steward_mode="llm",
+        # Lower the theme relevance floor for recall. This test verifies the
+        # consolidator → Wing_Theme drawer → [主题] render *pipeline*, not the
+        # production ``theme_min_similarity`` tuning. A generic reflection query
+        # like "我最近怎样" scores ~0.5 against broad LLM theme summaries — just
+        # under the default 0.55 floor — so themes would be filtered out and the
+        # render assertion below would flake on borderline similarity. Relaxing
+        # the floor isolates the render path from that orthogonal tuning knob.
+        extra_settings={"recall": {"theme_min_similarity": 0.3}},
     )
+    ctx = e2e_actor_context(handle.user_id)
 
     # ── Seed: full 40-turn corpus.
     for entry in corpus:
@@ -163,19 +173,52 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
             turn_id=entry["turn_id"],
         )
 
+    last_turn_id = corpus[-1]["turn_id"]
+
     async with mcp_session(handle.mcp_url) as session:
-        # Wait for steward to land drawers (≥ 20 fragments — heuristic for
-        # "consolidator has enough per-wing material to synthesize themes").
-        async def _enough_drawers(s) -> bool:
+        # Wait for the FULL 40-turn backlog to drain before running the
+        # consolidator — not merely for ≥20 drawers to exist.
+        #
+        # Why: consolidator theme writes travel the same agent_runner subscriber
+        # loop that drains conversation turns, and that loop drains a batch of up
+        # to 32 turns *serially* (each a ~5-8s LLM steward call) before it ever
+        # drains the command subject. If turns are still in flight when the
+        # consolidator publishes its themes, those theme commands sit unprocessed
+        # behind the turn batch and never land within the assertion window below.
+        #
+        # Turns are delivered in publish order, so once the LAST corpus turn
+        # shows up in the working-memory ring the whole backlog has been
+        # processed and the loop is free to apply the theme commands promptly.
+        # (Drawer-count alone is unreliable: trailing turns the steward declines
+        # to persist leave the count flat while the loop is still busy.)
+        async def _backlog_drained(s) -> bool:
             payload = mcp_tool_json(
                 await s.call_tool(
-                    "eidolon_memory_list", {"limit": 1000, "include_private": False},
+                    "eidolon_memory_recall_context",
+                    {"query": "最近", "context": ctx, "top_k": 5, "voice": False},
                 )
             )
-            return isinstance(payload, dict) and len(payload.get("records") or []) >= 20
+            if not isinstance(payload, dict):
+                return False
+            wm_ids = {t.get("turn_id") for t in (payload.get("working_memory") or [])}
+            return last_turn_id in wm_ids
 
-        assert await wait_for_visible(session, predicate=_enough_drawers, timeout_s=180), (
-            "LLM steward did not produce ≥ 20 drawers in 180s — can't run consolidator"
+        assert await wait_for_visible(
+            session, predicate=_backlog_drained, timeout_s=360, poll_interval_s=2.0
+        ), (
+            "LLM steward did not drain the 40-turn backlog (last turn never "
+            "reached the working-memory ring) in 360s — can't run consolidator"
+        )
+
+        drawer_count = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_list", {"limit": 1000, "include_private": False},
+            )
+        )
+        n_drawers = len((drawer_count or {}).get("records") or [])
+        assert n_drawers >= 15, (
+            f"backlog drained but only {n_drawers} drawers exist — too little "
+            f"per-wing material for the consolidator to synthesize themes"
         )
 
         before_themes = await _wing_theme_count(session)
@@ -210,10 +253,13 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
             )
 
         # ── Wait for the agent_runner cmd subscriber to apply theme writes.
+        # The turn backlog is already drained (see _backlog_drained above), so
+        # the subscriber loop drains the cmd subject each cycle and themes land
+        # within ~1-2s; the 60s budget is a generous safety margin.
         async def _themes_landed(s) -> bool:
             return await _wing_theme_count(s) >= 1
 
-        ok = await wait_for_visible(session, predicate=_themes_landed, timeout_s=30)
+        ok = await wait_for_visible(session, predicate=_themes_landed, timeout_s=60)
         theme_count = await _wing_theme_count(session)
         print(f"\n[Phase 4 e2e] Wing_Theme drawer count: {theme_count}")
         assert ok, (
@@ -228,7 +274,7 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
         ctx_payload = mcp_tool_json(
             await session.call_tool(
                 "eidolon_memory_recall_context",
-                {"query": "我最近怎样", "top_k": 5, "voice": False},
+                {"query": "我最近怎样", "context": ctx, "top_k": 5, "voice": False},
             )
         )
         assert isinstance(ctx_payload, dict), ctx_payload
