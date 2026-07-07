@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from typing import Any
@@ -253,6 +254,34 @@ async def _exact_lexical_fallback(
     return [row for _score, row in scored[: max(1, top_k)]]
 
 
+def _canonical_value_key(value: Any) -> str:
+    """Canonicalize a record ``value`` so both read paths dedup to one key.
+
+    The vector path (``parse_search_tool_payload``) ``json.loads`` a drawer's
+    content, so JSON drawers come back as a parsed dict/list; the ``get_all``
+    fallback keeps the raw JSON string. ``str()`` of those differs
+    (``"{'a': 1}"`` vs ``'{"a": 1}'``), so a plain ``str(value)`` fails to
+    dedup the *same* JSON drawer across paths on the chroma backend. Normalize
+    both to sorted-key JSON; plain-text content is returned unchanged.
+    """
+    if isinstance(value, (dict, list)):
+        obj: Any = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped or stripped[0] not in "{[":
+            return value  # fast path: plain text, not JSON
+        try:
+            obj = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return value
+    else:
+        return str(value)
+    try:
+        return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _record_identity(row: MemoryWireRecord) -> tuple[str, str, str, str]:
     """Stable drawer identity shared by the vector and lexical read paths.
 
@@ -262,14 +291,14 @@ def _record_identity(row: MemoryWireRecord) -> tuple[str, str, str, str]:
     ``drawer_id``. Deduping on ``key`` therefore lets the *same* drawer appear
     twice once vector hits survive the visibility gate. A drawer id is
     deterministically ``_drawer_id(wing, room, content)``, so ``(memory_space_id,
-    wing, room, value)`` is the same identity both paths agree on.
+    wing, room, canonical(value))`` is the same identity both paths agree on.
     """
     meta = row.metadata or {}
     return (
         row.memory_space_id,
         str(meta.get("wing") or ""),
         str(meta.get("room") or row.key or ""),
-        str(row.value),
+        _canonical_value_key(row.value),
     )
 
 

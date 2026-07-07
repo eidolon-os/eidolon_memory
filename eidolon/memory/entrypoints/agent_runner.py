@@ -196,6 +196,12 @@ async def _nats_subscriber_loop(
         for msg in msgs:
             await handler(msg)
             writes_since_checkpoint += 1
+            # Exit promptly on shutdown instead of finishing a full 32-message
+            # batch (which, with slow LLM turns, could run for minutes past
+            # stop and blow the lifespan's 5s teardown budget). Unprocessed
+            # messages in this batch stay unacked and JetStream redelivers them.
+            if stop.is_set():
+                break
 
     async def _drain_forever(psub, handler) -> None:
         """Continuously drain one subject in its own task until ``stop``.
@@ -225,7 +231,14 @@ async def _nats_subscriber_loop(
         nonlocal writes_since_checkpoint
         while not stop.is_set():
             await asyncio.sleep(0.5)
-            if writes_since_checkpoint < sync_every:
+            # Snapshot the count BEFORE the awaited checkpoint. Subtracting this
+            # snapshot afterwards (rather than resetting to 0) preserves writes
+            # the concurrent drain tasks add during the checkpoint window, and —
+            # on failure — still consumes the trigger so a persistently failing
+            # checkpoint retries at most once per ``sync_every`` writes instead
+            # of tight-looping every 0.5s.
+            pending = writes_since_checkpoint
+            if pending < sync_every:
                 continue
             try:
                 # G4: local SQLite backends are WAL — checkpoint when present.
@@ -235,7 +248,6 @@ async def _nats_subscriber_loop(
                     )
                 await asyncio.to_thread(checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE")
                 await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
-                writes_since_checkpoint = 0
             except Exception as exc:  # noqa: BLE001 - best-effort durability
                 log.warning(
                     "agent_runner_checkpoint_failed",
@@ -243,6 +255,8 @@ async def _nats_subscriber_loop(
                     error=str(exc),
                     error_type=type(exc).__name__,
                 )
+            # Consume the snapshot on both success and failure (see above).
+            writes_since_checkpoint -= pending
 
     async def _handle_list_drawers_query(msg) -> None:
         """Serve ephemeral consolidation snapshot reads.
@@ -365,8 +379,14 @@ async def _nats_subscriber_loop(
                 # here and re-raises into the outer reconnect loop, which rebinds
                 # all subscriptions on a fresh connection. A clean return only
                 # happens once ``stop`` has drained every worker.
-                await asyncio.wait(workers, return_when=asyncio.FIRST_EXCEPTION)
-                for task in workers:
+                #
+                # Only inspect the FINISHED tasks: FIRST_EXCEPTION returns with
+                # the others still pending, and ``.exception()`` on a pending
+                # task raises InvalidStateError — which would mask the real error.
+                done, _pending = await asyncio.wait(
+                    workers, return_when=asyncio.FIRST_EXCEPTION
+                )
+                for task in done:
                     if not task.cancelled() and task.exception() is not None:
                         raise task.exception()
             finally:
