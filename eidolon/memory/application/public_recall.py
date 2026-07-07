@@ -63,6 +63,42 @@ def recall_record_visible_for_context(
     )
 
 
+def _stamp_memory_space_id(
+    records: list[MemoryWireRecord],
+    memory_space_id: str,
+) -> list[MemoryWireRecord]:
+    """Restore ``memory_space_id`` on vector-search hits that lost it.
+
+    MemPalace's vector search drops custom metadata, so
+    :func:`parse_search_tool_payload` falls back to the *wing name* for
+    ``memory_space_id`` (there's no better signal in the raw hit). That fake
+    id then fails the ``memory_space_id`` gate in
+    :meth:`RecallPolicyRegistry.visible`, which would silently filter out
+    *every* vector hit — collapsing recall to the lexical ``get_all`` fallback
+    (which does preserve metadata). An agent_runner palace hosts exactly one
+    memory space, so the caller's ``context.memory_space_id`` is authoritative:
+    stamp it back on any record whose metadata didn't carry one. Records that
+    already have a real ``memory_space_id`` in metadata (e.g. the lexical
+    fallback's ``get_all`` rows) are left untouched so the cross-space gate
+    keeps its teeth.
+    """
+    out: list[MemoryWireRecord] = []
+    for rec in records:
+        meta = rec.metadata or {}
+        if not meta.get("memory_space_id"):
+            out.append(
+                rec.model_copy(
+                    update={
+                        "memory_space_id": memory_space_id,
+                        "metadata": {**meta, "memory_space_id": memory_space_id},
+                    }
+                )
+            )
+        else:
+            out.append(rec)
+    return out
+
+
 # Wings excluded from the default competitive vector fan-out.
 #   Wing_Privacy — never recalled (privacy boundary).
 #   Wing_Theme   — Phase 4.1: themes are a SEPARATE retrieval channel
@@ -217,14 +253,34 @@ async def _exact_lexical_fallback(
     return [row for _score, row in scored[: max(1, top_k)]]
 
 
+def _record_identity(row: MemoryWireRecord) -> tuple[str, str, str, str]:
+    """Stable drawer identity shared by the vector and lexical read paths.
+
+    The two paths key records differently — vector search
+    (``parse_search_tool_payload``) uses ``room`` as ``key`` because MemPalace's
+    search payload exposes no drawer id, while ``get_all`` uses the chroma
+    ``drawer_id``. Deduping on ``key`` therefore lets the *same* drawer appear
+    twice once vector hits survive the visibility gate. A drawer id is
+    deterministically ``_drawer_id(wing, room, content)``, so ``(memory_space_id,
+    wing, room, value)`` is the same identity both paths agree on.
+    """
+    meta = row.metadata or {}
+    return (
+        row.memory_space_id,
+        str(meta.get("wing") or ""),
+        str(meta.get("room") or row.key or ""),
+        str(row.value),
+    )
+
+
 def _merge_unique_records(
     primary: list[MemoryWireRecord],
     fallback: list[MemoryWireRecord],
 ) -> list[MemoryWireRecord]:
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     merged: list[MemoryWireRecord] = []
     for row in [*primary, *fallback]:
-        ident = (row.memory_space_id, row.key)
+        ident = _record_identity(row)
         if ident in seen:
             continue
         seen.add(ident)
@@ -534,6 +590,7 @@ async def search_all_wings_mcp_style(
                     n_results=top_k,
                     room=room,
                 )
+                found = _stamp_memory_space_id(found, context.memory_space_id)
                 return [r for r in found if recall_record_visible_for_context(r, context)]
 
         batches = await asyncio.gather(*[_one(wid) for wid in wings], return_exceptions=True)
@@ -630,4 +687,5 @@ async def _search_voice_shared_embedding(
             records = await asyncio.to_thread(_run)
     else:
         records = await asyncio.to_thread(_run)
+    records = _stamp_memory_space_id(records, context.memory_space_id)
     return [r for r in records if recall_record_visible_for_context(r, context)]
