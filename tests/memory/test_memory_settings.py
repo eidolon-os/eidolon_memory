@@ -105,11 +105,18 @@ def test_render_steward_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_resolve_log_dir_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from eidolon.memory.config.memory_settings import resolve_log_dir, resolve_run_dir
+    from eidolon.memory.config.memory_settings import (
+        resolve_dlq_log_path,
+        resolve_log_dir,
+        resolve_run_dir,
+    )
     monkeypatch.delenv("EIDOLON_MEMORY_LOG_DIR", raising=False)
     monkeypatch.delenv("EIDOLON_MEMORY_RUN_DIR", raising=False)
     settings = load_memory_settings()
-    assert resolve_log_dir(settings) == (Path.home() / "eidolon" / "logs").resolve()
+    assert resolve_log_dir(settings) == (Path.home() / "eidolon" / "logs" / "memory").resolve()
+    assert resolve_dlq_log_path(settings) == (
+        Path.home() / "eidolon" / "logs" / "memory" / "memory_dlq.jsonl"
+    ).resolve()
     assert resolve_run_dir(settings) == (Path.home() / "eidolon" / "run").resolve()
 
 
@@ -130,6 +137,24 @@ def test_resolve_log_dir_env_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("EIDOLON_MEMORY_RUN_DIR", "/tmp/env-run")
     assert resolve_log_dir(settings) == Path("/tmp/env-logs").resolve()
     assert resolve_run_dir(settings) == Path("/tmp/env-run").resolve()
+
+
+def test_resolve_dlq_log_path_is_relative_to_memory_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from eidolon.memory.config.memory_settings import resolve_dlq_log_path
+
+    monkeypatch.delenv("EIDOLON_MEMORY_LOG_DIR", raising=False)
+    settings = load_memory_settings(
+        _write_yaml(
+            tmp_path,
+            {
+                "runtime": {"log_dir": str(tmp_path / "memory-logs")},
+                "nats": {"dlq_log_path": "dlq/custom.jsonl"},
+            },
+        )
+    )
+    assert resolve_dlq_log_path(settings) == (tmp_path / "memory-logs" / "dlq/custom.jsonl")
 
 
 def _write_yaml(tmp_path: Path, data: dict) -> Path:

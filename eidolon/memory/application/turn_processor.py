@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -32,7 +31,7 @@ from eidolon.memory.application.steward.common import (
     apply_privacy_actions,
     stamp_fragment_identity,
 )
-from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.config.memory_settings import MemorySettings, resolve_dlq_log_path
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.logging import get_logger
@@ -46,7 +45,7 @@ class StewardProtocol(Protocol):
 
 def append_dlq(settings: MemorySettings, payload: bytes, error: str, deliveries: int) -> None:
     """Append a poison message + error to ``settings.nats.dlq_log_path`` (one JSON per line)."""
-    path = Path(settings.nats.dlq_log_path)
+    path = resolve_dlq_log_path(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),

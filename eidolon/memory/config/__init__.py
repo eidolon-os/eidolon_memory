@@ -12,6 +12,7 @@ from eidolon.memory.config.memory_settings import (
     get_memory_settings,
     load_memory_settings,
     reset_memory_settings_cache,
+    resolve_dlq_log_path,
     resolve_log_dir,
     resolve_run_dir,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "get_memory_settings",
     "load_memory_settings",
     "reset_memory_settings_cache",
+    "resolve_dlq_log_path",
     "resolve_log_dir",
     "resolve_palace_for_memory_space",
     "resolve_palaces_root",

@@ -123,7 +123,7 @@ class RuntimeConfig(BaseModel):
     """
 
     palaces_root: str = ""  # default ~/eidolon/memory/mempalaces; env EIDOLON_MEMORY_PALACES_ROOT
-    log_dir: str = ""  # default ~/eidolon/logs;   env EIDOLON_MEMORY_LOG_DIR
+    log_dir: str = ""  # default ~/eidolon/logs/memory; env EIDOLON_MEMORY_LOG_DIR
     run_dir: str = ""  # default ~/eidolon/run;    env EIDOLON_MEMORY_RUN_DIR
     read: ReadRuntimeConfig = Field(default_factory=ReadRuntimeConfig)
     # Phase 2 — in-memory short-term continuity ring. 0 disables; reasonable
@@ -205,7 +205,7 @@ class NatsConfig(BaseModel):
     stream_max_msgs: int = 5000
     stream_max_bytes: int = 536_870_912
     worker_max_deliveries: int = 3
-    dlq_log_path: str = "logs/memory_dlq.jsonl"
+    dlq_log_path: str = "memory_dlq.jsonl"
 
 
 class McpHttpConfig(BaseModel):
@@ -324,14 +324,23 @@ class MemorySettings(BaseModel):
 
 
 def resolve_log_dir(settings: MemorySettings) -> Path:
-    """Resolve runtime log directory. Env > config > ``~/eidolon/logs``."""
+    """Resolve runtime log directory. Env > config > ``~/eidolon/logs/memory``."""
     env = os.environ.get("EIDOLON_MEMORY_LOG_DIR", "").strip()
     if env:
         return Path(env).expanduser().resolve()
     configured = (settings.runtime.log_dir or "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    return (Path.home() / "eidolon" / "logs").resolve()
+    return (Path.home() / "eidolon" / "logs" / "memory").resolve()
+
+
+def resolve_dlq_log_path(settings: MemorySettings) -> Path:
+    """Resolve the DLQ JSONL path, anchoring relative paths under memory logs."""
+    configured = (settings.nats.dlq_log_path or "").strip() or "memory_dlq.jsonl"
+    path = Path(configured).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (resolve_log_dir(settings) / path).resolve()
 
 
 def resolve_run_dir(settings: MemorySettings) -> Path:

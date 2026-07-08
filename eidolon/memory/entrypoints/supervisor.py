@@ -302,6 +302,10 @@ class Supervisor:
     # ``user_admin.UserAdmin`` drives the supervisor through these. Kept thin
     # and side-effect-free at the read end; the only writer is reconcile_now.
 
+    @property
+    def log_root(self) -> Path:
+        return self._log_root
+
     def is_worker_alive(self, user_id: str) -> bool:
         child = self._children.get(user_id)
         return child is not None and child.is_alive()
@@ -827,7 +831,11 @@ def main(argv: list[str] | None = None) -> None:
     # state transitions without cross-process signaling.
     import uvicorn
 
-    user_admin = UserAdmin(supervisor)
+    user_admin = UserAdmin(
+        supervisor,
+        maintenance_log_root=supervisor.log_root / "maintenance",
+        user_log_root=supervisor.log_root,
+    )
     admin_app = build_admin_api(user_admin)
     admin_host = (args.admin_host or settings.supervisor.admin_http_host).strip() or "127.0.0.1"
     admin_port = args.admin_port or settings.supervisor.admin_http_port
