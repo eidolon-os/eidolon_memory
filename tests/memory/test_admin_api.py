@@ -128,6 +128,29 @@ def test_get_missing_user_returns_404(client: TestClient) -> None:
     assert r.status_code == 404
 
 
+def test_cleanup_orphaned_realm_purges_absent_registry_palace(client: TestClient) -> None:
+    palace = client.supervisor._palaces_root / "orphan"  # type: ignore[attr-defined]
+    palace.mkdir(parents=True)
+    (palace / "chroma.sqlite3").write_bytes(b"some data")
+
+    r = client.delete("/api/admin/realms/orphan/orphan", params={"purge_palace": "true"})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["user_id"] == "orphan"
+    assert body["orphaned"] is True
+    assert body["palace_deleted"] is True
+    assert not palace.exists()
+
+
+def test_cleanup_orphaned_realm_rejects_enabled_registry_entry(client: TestClient) -> None:
+    _set_users(client, UserEntry(id="alice", port=8030, enabled=True))
+
+    r = client.delete("/api/admin/realms/alice/orphan", params={"purge_palace": "true"})
+
+    assert r.status_code == 409
+
+
 def test_list_with_consolidator_config(client: TestClient) -> None:
     """Consolidator config is read from the admin-owned registry."""
     _set_users(

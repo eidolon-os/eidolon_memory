@@ -18,12 +18,11 @@ pytestmark = pytest.mark.asyncio
 def _settings() -> MemorySettings:
     return MemorySettings.model_validate(
         {
-            "wings": [{"id": "Wing_Life", "display_name": "life"}],
             "nats": {
                 "url": "nats://127.0.0.1:4222",
                 "stream": "MEMORY_TURNS",
             },
-            "mcp_http": {"host": "127.0.0.1", "port": 8030, "path": "/mcp"},
+            "mcp_http": {"host": "127.0.0.1", "port": 10030, "path": "/mcp"},
             "discovery_http": {
                 "host": "127.0.0.1",
                 "port": 8020,
@@ -122,7 +121,7 @@ async def test_discovery_uses_default_user_when_registry_empty(
             "owner_id": None,
             "companion_id": None,
             "enabled": True,
-            "mcp_http_url": "http://127.0.0.1:8030/mcp",
+            "mcp_http_url": "http://127.0.0.1:10030/mcp",
             "mcp_auth": {"type": "none"},
             "agent_reachable": False,
         }

@@ -16,7 +16,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from eidolon_sdk.memory import MemoryActorContext, UserConfirmedFactCommand
+from eidolon_sdk.memory import (
+    MemoryActorContext,
+    UserConfirmedFactCommand,
+    envelope_memory_payload,
+)
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
@@ -41,6 +45,11 @@ def _actor_context() -> MemoryActorContext:
         device_id="device",
         session_id="s1",
     )
+
+
+def _command_wire(payload: dict) -> bytes:
+    envelope = envelope_memory_payload(payload, kind=payload["kind"])
+    return json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
 
 
 # ─── Schema ────────────────────────────────────────────────────────────────
@@ -158,7 +167,7 @@ async def test_process_command_message_dispatches_user_confirm():
         "text": "wire-shaped confirm", "wing": "Wing_Profile",
     }
     msg = SimpleNamespace(
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        data=_command_wire(payload),
         ack=AsyncMock(),
     )
     settings = load_memory_settings()
@@ -183,7 +192,7 @@ async def test_process_command_message_memory_space_mismatch_ignored():
         "text": "should not land", "wing": "Wing_Profile",
     }
     msg = SimpleNamespace(
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        data=_command_wire(payload),
         ack=AsyncMock(),
     )
     settings = load_memory_settings()

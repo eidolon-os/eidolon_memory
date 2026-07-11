@@ -18,7 +18,6 @@ from eidolon.memory.config.palace_directory import (
 
 def _write_settings(tmp_path: Path, palaces_root: str = "") -> Path:
     data = {
-        "wings": [{"id": "Wing_Profile", "display_name": "p"}],
         "runtime": {"palaces_root": palaces_root},
     }
     p = tmp_path / "memory.yaml"

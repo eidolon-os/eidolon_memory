@@ -6,7 +6,11 @@ import json
 from io import BytesIO
 
 import pytest
-from eidolon_sdk.memory import stable_memory_realm_port
+from eidolon_sdk.memory import (
+    DEFAULT_MEMORY_MCP_BASE_PORT,
+    MEMORY_MCP_PORT_SPAN,
+    stable_memory_realm_port,
+)
 
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.config.users import UsersConfig, load_users_config
@@ -24,8 +28,11 @@ class _Response(BytesIO):
 def _settings() -> MemorySettings:
     return MemorySettings.model_validate(
         {
-            "wings": [{"id": "Wing_Life", "display_name": "life"}],
-            "mcp_http": {"host": "127.0.0.1", "port": 8030, "path": "/mcp"},
+            "mcp_http": {
+                "host": "127.0.0.1",
+                "port": DEFAULT_MEMORY_MCP_BASE_PORT,
+                "path": "/mcp",
+            },
         }
     )
 
@@ -96,7 +103,7 @@ def test_load_memory_realms_from_owner_workspace(monkeypatch: pytest.MonkeyPatch
     assert default.companion_id == "test"
     assert default.port == stable_memory_realm_port(
         "r:benchmark:default",
-        base_port=8030,
+        base_port=DEFAULT_MEMORY_MCP_BASE_PORT,
         used_ports=set(),
     )
     assert default.enabled is True
@@ -142,7 +149,12 @@ def test_load_memory_realms_assigns_stable_ports(monkeypatch: pytest.MonkeyPatch
     second = load_users_config(_settings())
     assert [(u.id, u.port) for u in first.users] == [(u.id, u.port) for u in second.users]
     assert len({u.port for u in first.users}) == 2
-    assert all(8030 <= u.port <= 10029 for u in first.users)
+    assert all(
+        DEFAULT_MEMORY_MCP_BASE_PORT
+        <= u.port
+        < DEFAULT_MEMORY_MCP_BASE_PORT + MEMORY_MCP_PORT_SPAN
+        for u in first.users
+    )
 
 
 def test_load_memory_realms_ignores_runtime_route_in_engine_config(
@@ -176,7 +188,7 @@ def test_load_memory_realms_ignores_runtime_route_in_engine_config(
     cfg = load_users_config(_settings())
     assert cfg.find("r:benchmark:default").port == stable_memory_realm_port(
         "r:benchmark:default",
-        base_port=8030,
+        base_port=DEFAULT_MEMORY_MCP_BASE_PORT,
         used_ports=set(),
     )
 

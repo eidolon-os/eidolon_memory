@@ -17,7 +17,7 @@ llm:
   temperature: 0.7
 mcp_http:
   host: 127.0.0.1
-  port: 8030
+  port: 10030
   stateless_http: true
   json_response: true
   bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN

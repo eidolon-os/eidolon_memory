@@ -81,6 +81,10 @@ class UserRegistryReadOnly(UserAdminError):
     status_code = 409
 
 
+class UserStillRegistered(UserAdminError):
+    status_code = 409
+
+
 class RebuildAlreadyRunning(UserAdminError):
     status_code = 409
 
@@ -130,12 +134,12 @@ class _SupervisorProtocol(Protocol):
 # ---- port allocation --------------------------------------------------------
 
 
-# Auto-allocate range for newly-created users. Operators can still explicitly
-# specify a port at create-time; this range is only used when they don't.
-# 8030 is the default first-user port; we leave a 70-port window. If you need
-# more than 70 users you should switch to specifying ports explicitly anyway.
-_AUTO_PORT_MIN = 8030
-_AUTO_PORT_MAX = 8100
+# Auto-allocate range for legacy memory-local user creation. Admin-owned
+# memory realms now use the SDK stable route contract, but keeping this range
+# out of the fixed 8xxx service ports avoids collisions when old tooling calls
+# into this helper.
+_AUTO_PORT_MIN = 10030
+_AUTO_PORT_MAX = 10100
 
 
 def allocate_port(existing: Iterable[UserEntry]) -> int:
@@ -417,52 +421,98 @@ class UserAdmin:
             if entry is None:
                 raise UserNotFound(f"user {user_id!r} not found")
 
-            palace_path = self._sup.palace_path_for(entry)
+            return await self._cleanup_runtime_and_palace(
+                entry,
+                worker_stop_timeout_s=worker_stop_timeout_s,
+                purge_palace=purge_palace,
+            )
 
-            # ---- Step 1: reconcile + await worker death ----
-            await self._sup.reconcile_now()
-            deadline = time.monotonic() + worker_stop_timeout_s
-            while self._sup.is_worker_alive(user_id):
-                if time.monotonic() >= deadline:
-                    log.error(
-                        "user_admin_worker_did_not_stop",
-                        user_id=user_id,
-                        timeout_s=worker_stop_timeout_s,
-                    )
-                    raise WorkerNotTerminated(
-                        f"worker for user {user_id!r} did not exit within "
-                        f"{worker_stop_timeout_s}s; check worker log and retry"
-                    )
-                await asyncio.sleep(0.1)
+    async def cleanup_orphaned_user(
+        self,
+        user_id: str,
+        *,
+        worker_stop_timeout_s: float = 30.0,
+        purge_palace: bool = False,
+    ) -> dict:
+        """Clean palace data for a realm that is absent from admin's registry.
 
-            # ---- Step 2: trash palace ----
-            trash_target: Path | None = None
-            palace_deleted = False
-            deleted_logs: list[str] = []
-            if palace_path.exists():
-                try:
-                    if purge_palace:
-                        self._delete_palace(palace_path, user_id)
-                        palace_deleted = True
-                        deleted_logs = self._delete_user_logs(user_id)
-                    else:
-                        trash_target = self._trash_palace(palace_path, user_id)
-                except Exception as exc:  # noqa: BLE001 - need broad to drive rollback
-                    log.exception("user_admin_palace_cleanup_failed", user_id=user_id)
-                    raise PalaceCleanupFailed(f"palace cleanup failed: {exc}") from exc
-
-            # Final reconcile so any UI status reads are consistent.
-            await self._sup.reconcile_now()
-
-            return {
-                "user_id": user_id,
-                "deleted": True,
-                "palace_trashed_to": str(trash_target) if trash_target else None,
-                "palace_deleted": palace_deleted,
-                "logs_deleted": deleted_logs,
-            }
+        This is the live-contract cleanup path after Admin/Data has already
+        removed an owner tree. The registry row no longer exists, so
+        ``delete_user`` cannot look up the port; palace resolution depends
+        only on the realm id, so a synthetic disabled entry is sufficient.
+        Active registry rows are rejected to avoid deleting a live realm.
+        """
+        async with self._lock:
+            config = load_users_config()
+            entry = config.find(user_id)
+            if entry is not None and entry.enabled:
+                raise UserStillRegistered(
+                    f"user {user_id!r} is still enabled in admin registry; "
+                    "disable or delete it before orphan cleanup"
+                )
+            cleanup_entry = entry or UserEntry(id=user_id, port=1, enabled=False)
+            result = await self._cleanup_runtime_and_palace(
+                cleanup_entry,
+                worker_stop_timeout_s=worker_stop_timeout_s,
+                purge_palace=purge_palace,
+            )
+            result["orphaned"] = entry is None
+            return result
 
     # -------------------- internals --------------------
+
+    async def _cleanup_runtime_and_palace(
+        self,
+        entry: UserEntry,
+        *,
+        worker_stop_timeout_s: float,
+        purge_palace: bool,
+    ) -> dict:
+        user_id = entry.id
+        palace_path = self._sup.palace_path_for(entry)
+
+        # ---- Step 1: reconcile + await worker death ----
+        await self._sup.reconcile_now()
+        deadline = time.monotonic() + worker_stop_timeout_s
+        while self._sup.is_worker_alive(user_id):
+            if time.monotonic() >= deadline:
+                log.error(
+                    "user_admin_worker_did_not_stop",
+                    user_id=user_id,
+                    timeout_s=worker_stop_timeout_s,
+                )
+                raise WorkerNotTerminated(
+                    f"worker for user {user_id!r} did not exit within "
+                    f"{worker_stop_timeout_s}s; check worker log and retry"
+                )
+            await asyncio.sleep(0.1)
+
+        # ---- Step 2: trash palace ----
+        trash_target: Path | None = None
+        palace_deleted = False
+        deleted_logs: list[str] = []
+        if palace_path.exists():
+            try:
+                if purge_palace:
+                    self._delete_palace(palace_path, user_id)
+                    palace_deleted = True
+                    deleted_logs = self._delete_user_logs(user_id)
+                else:
+                    trash_target = self._trash_palace(palace_path, user_id)
+            except Exception as exc:  # noqa: BLE001 - need broad to drive rollback
+                log.exception("user_admin_palace_cleanup_failed", user_id=user_id)
+                raise PalaceCleanupFailed(f"palace cleanup failed: {exc}") from exc
+
+        # Final reconcile so any UI status reads are consistent.
+        await self._sup.reconcile_now()
+
+        return {
+            "user_id": user_id,
+            "deleted": True,
+            "palace_trashed_to": str(trash_target) if trash_target else None,
+            "palace_deleted": palace_deleted,
+            "logs_deleted": deleted_logs,
+        }
 
     def _trash_palace(self, palace_path: Path, user_id: str) -> Path:
         """Move palace_path under trash_root with a timestamp suffix.

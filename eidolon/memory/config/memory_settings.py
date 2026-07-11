@@ -219,7 +219,7 @@ class McpHttpConfig(BaseModel):
     """
 
     host: str = "127.0.0.1"
-    port: int = 8030  # only used if CLI --port unset
+    port: int = 10030  # only used if CLI --port unset
     path: str = "/mcp"
     stateless_http: bool = True
     json_response: bool = True

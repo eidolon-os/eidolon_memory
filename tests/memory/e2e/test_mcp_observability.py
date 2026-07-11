@@ -46,19 +46,19 @@ async def _list(session, *, limit: int = 1000, include_private: bool = False) ->
 
 
 async def test_status_returns_identity_and_config(live_agent_runner, mcp_session):
-    """R9: status surfaces user_id, palace_path, steward_mode, wings."""
+    """R9: status surfaces memory_space_id, palace_path, steward_mode, wings."""
     handle = live_agent_runner(
         user_id="e2e_status", port=19060, steward_mode="rules",
     )
     async with mcp_session(handle.mcp_url) as session:
         s = await _status(session)
 
-        # Identity — the user_id this runner was spawned with.
-        assert s.get("user_id") == handle.user_id, s
+        # Identity — the memory realm/space this runner was spawned with.
+        assert s.get("memory_space_id") == handle.user_id, s
         # Steward selection — surfaced from settings exactly.
         assert s.get("steward_mode") == "rules", s
-        # Palace path must point under the test palace root.
-        assert handle.user_id in str(s.get("palace_path", "")), s
+        # Palace path must point at the storage-safe realm directory.
+        assert str(s.get("palace_path", "")) == str(handle.palace_dir.resolve()), s
         # Wings must be a non-empty list of {id, ...} records (canonical wings).
         wings = s.get("wings") or []
         wing_ids = {w.get("id") for w in wings if isinstance(w, dict)}
@@ -120,6 +120,6 @@ async def test_list_paginates_and_filters_private(live_agent_runner, mcp_session
 
         # ─── every returned row carries the expected envelope keys ────────
         for row in with_private[:5]:
-            assert {"user_id", "key", "value", "metadata"}.issubset(row.keys()), (
+            assert {"memory_space_id", "key", "value", "metadata"}.issubset(row.keys()), (
                 f"row missing canonical fields: {sorted(row.keys())}"
             )

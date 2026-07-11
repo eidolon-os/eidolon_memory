@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from eidolon_sdk.memory import (
     ConversationTurnPayload,
     MemoryActorContext,
+    build_memory_actor_context,
     envelope_memory_payload,
 )
 
@@ -21,13 +22,11 @@ from eidolon.memory.config.memory_settings import load_memory_settings
 
 
 def _ctx(device_id: str, session_id: str = "s") -> MemoryActorContext:
-    return MemoryActorContext(
-        tenant_id="default",
-        owner_user_id="alice",
-        persona_id="mochi",
-        agent_id="agent-mochi",
+    return build_memory_actor_context(
+        memory_realm_id="r:alice:mochi",
+        owner_id="alice",
+        companion_id="mochi",
         device_id=device_id,
-        instance_id=f"{device_id}-runtime",
         session_id=session_id,
     )
 
@@ -36,7 +35,7 @@ def _turn(text: str, *, device_id: str, session_id: str = "s") -> dict:
     payload = ConversationTurnPayload(
         turn_id=uuid.uuid4().hex,
         context=_ctx(device_id, session_id),
-        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        timestamp=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         user_text=text,
         assistant_text="记下了。",
     )

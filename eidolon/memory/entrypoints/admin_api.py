@@ -17,6 +17,8 @@ Routes:
     GET    /api/admin/realms/{memory_realm_id}
                                                 single detail
     POST   /api/admin/reconcile              re-read admin registry
+    DELETE /api/admin/realms/{memory_realm_id}/orphan
+                                                cleanup removed realm palace
     POST   /api/admin/realms/{memory_realm_id}/memory/rebuild-index
                                                 async rebuild vector index
     GET    /api/admin/memory/rebuild-index/{job_id}
@@ -124,6 +126,19 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
         try:
             await user_admin.reconcile()
             return {"ok": True}
+        except UserAdminError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @app.delete("/api/admin/realms/{memory_realm_id}/orphan")
+    async def cleanup_orphaned_realm(
+        memory_realm_id: str,
+        purge_palace: bool = False,
+    ) -> dict:
+        try:
+            return await user_admin.cleanup_orphaned_user(
+                memory_realm_id,
+                purge_palace=purge_palace,
+            )
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 

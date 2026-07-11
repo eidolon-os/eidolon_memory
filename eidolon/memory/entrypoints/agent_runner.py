@@ -36,6 +36,9 @@ from eidolon_sdk.memory import (
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
+from eidolon.memory.application.eidolon_data_runtime import (
+    EidolonDataMemoryFanoutAuditSink,
+)
 from eidolon.memory.application.privacy_filter import row_visible_to_listing
 from eidolon.memory.application.public_recall import wire_record_to_public_dict
 from eidolon.memory.application.runtime_warm import warm_palace_read_path
@@ -143,10 +146,6 @@ def _open_fanout_audit_sink() -> Any:
     try:
         from eidolon_data import DataSettings, DataStore
 
-        from eidolon.memory.application.eidolon_data_runtime import (
-            EidolonDataMemoryFanoutAuditSink,
-        )
-
         return EidolonDataMemoryFanoutAuditSink(DataStore.open(DataSettings()))
     except Exception as exc:  # noqa: BLE001 - audit is optional, never fatal
         log.warning("fanout_audit_sink_unavailable", error=str(exc))
@@ -246,13 +245,21 @@ async def _nats_subscriber_loop(
             if pending < sync_every:
                 continue
             try:
-                # G4: local SQLite backends are WAL — checkpoint when present.
-                if palace_sqlite:
-                    await asyncio.to_thread(
-                        checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
-                    )
-                await asyncio.to_thread(checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE")
-                await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
+                async def _checkpoint_targets() -> None:
+                    # G4: local SQLite backends are WAL — checkpoint when present.
+                    if palace_sqlite:
+                        await asyncio.to_thread(
+                            checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
+                        )
+                    await asyncio.to_thread(checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE")
+                    await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
+
+                lock = getattr(backend, "lock", None)
+                if lock is not None:
+                    async with lock:
+                        await _checkpoint_targets()
+                else:
+                    await _checkpoint_targets()
             except Exception as exc:  # noqa: BLE001 - best-effort durability
                 log.warning(
                     "agent_runner_checkpoint_failed",

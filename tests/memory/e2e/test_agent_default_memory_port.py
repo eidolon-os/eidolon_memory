@@ -16,13 +16,44 @@ import time
 import uuid
 
 import pytest
-from eidolon_agent.config.settings import MemoryEndpoint, NatsSettings
-from eidolon_agent.core.types.memory import MemoryQueryPlan
-from eidolon_agent.infra.events.nats_bus import NatsEventBus
-from eidolon_agent.infra.memory.discovery import MemoryRoutingTable
-from eidolon_agent.infra.memory.mcp_client import McpClientPool
-from eidolon_agent.infra.memory.nats_pub import MemoryNatsPublisher
-from eidolon_agent.infra.memory.port_adapter import EidolonMemoryPort
+
+agent_settings = pytest.importorskip(
+    "eidolon_agent.config.settings",
+    reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+)
+agent_memory_types = pytest.importorskip(
+    "eidolon_agent.core.types.memory",
+    reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+)
+agent_nats_bus = pytest.importorskip(
+    "eidolon_agent.infra.events.nats_bus",
+    reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+)
+agent_discovery = pytest.importorskip(
+    "eidolon_agent.infra.memory.discovery",
+    reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+)
+agent_mcp_client = pytest.importorskip(
+    "eidolon_agent.infra.memory.mcp_client",
+    reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+)
+agent_nats_pub = pytest.importorskip(
+    "eidolon_agent.infra.memory.nats_pub",
+    reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+)
+agent_port_adapter = pytest.importorskip(
+    "eidolon_agent.infra.memory.port_adapter",
+    reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+)
+
+MemoryEndpoint = agent_settings.MemoryEndpoint
+NatsSettings = agent_settings.NatsSettings
+MemoryQueryPlan = agent_memory_types.MemoryQueryPlan
+NatsEventBus = agent_nats_bus.NatsEventBus
+MemoryRoutingTable = agent_discovery.MemoryRoutingTable
+McpClientPool = agent_mcp_client.McpClientPool
+MemoryNatsPublisher = agent_nats_pub.MemoryNatsPublisher
+EidolonMemoryPort = agent_port_adapter.EidolonMemoryPort
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 

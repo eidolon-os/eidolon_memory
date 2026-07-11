@@ -23,6 +23,7 @@ from eidolon.memory.application.user_admin import (
     UserAdmin,
     UserNotFound,
     UserRegistryReadOnly,
+    UserStillRegistered,
     WorkerNotTerminated,
     allocate_port,
 )
@@ -116,15 +117,15 @@ def admin_env(
 
 def test_allocate_port_picks_lowest_free() -> None:
     existing = [
-        UserEntry(id="a", port=8030),
-        UserEntry(id="b", port=8032),
+        UserEntry(id="a", port=10030),
+        UserEntry(id="b", port=10032),
     ]
-    assert allocate_port(existing) == 8031
+    assert allocate_port(existing) == 10031
 
 
 def test_allocate_port_full_range_raises() -> None:
-    # Fill the whole [8030, 8100) range
-    existing = [UserEntry(id=f"u{p}", port=p) for p in range(8030, 8100)]
+    # Fill the whole [10030, 10100) legacy admin allocation range.
+    existing = [UserEntry(id=f"u{p}", port=p) for p in range(10030, 10100)]
     with pytest.raises(PortConflict):
         allocate_port(existing)
 
@@ -334,6 +335,35 @@ async def test_delete_user_without_palace_returns_success(admin_env) -> None:
     assert "alice" not in sup.alive
     assert len(sup.registry.users) == 1
     assert sup.registry.users[0].enabled is False
+
+
+async def test_cleanup_orphaned_user_purges_absent_registry_palace(admin_env) -> None:
+    admin, sup, tmp_path = admin_env
+    palace = tmp_path / "palaces" / "orphan"
+    palace.mkdir(parents=True)
+    (palace / "chroma.sqlite3").write_bytes(b"some data")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "agent_orphan.log").write_text("agent log")
+
+    result = await admin.cleanup_orphaned_user("orphan", purge_palace=True)
+
+    assert result["user_id"] == "orphan"
+    assert result["orphaned"] is True
+    assert result["palace_deleted"] is True
+    assert not palace.exists()
+    assert not (logs / "agent_orphan.log").exists()
+    assert sup.reconcile_count == 2
+
+
+async def test_cleanup_orphaned_user_rejects_enabled_registry_entry(admin_env) -> None:
+    admin, sup, _ = admin_env
+    _set_users(sup, UserEntry(id="alice", port=8030, enabled=True))
+
+    with pytest.raises(UserStillRegistered):
+        await admin.cleanup_orphaned_user("alice", purge_palace=True)
+
+    assert sup.reconcile_count == 0
 
 
 # ---- list / get -----------------------------------------------------------

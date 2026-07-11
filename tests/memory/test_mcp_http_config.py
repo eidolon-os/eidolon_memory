@@ -14,7 +14,7 @@ from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 
 def test_mcp_http_base_url_defaults() -> None:
     cfg = McpHttpConfig()
-    assert cfg.base_url() == "http://127.0.0.1:8030/mcp"
+    assert cfg.base_url() == "http://127.0.0.1:10030/mcp"
     assert cfg.stateless_http is True
     assert cfg.json_response is True
 
@@ -26,7 +26,6 @@ def test_mcp_http_base_url_port_override() -> None:
 
 def test_mcp_http_base_url_from_yaml(tmp_path):
     data = {
-        "wings": [{"id": "Wing_Life", "display_name": "life"}],
         "mcp_http": {"host": "0.0.0.0", "port": 9001, "path": "/memory/mcp"},
     }
     p = tmp_path / "cfg.yaml"

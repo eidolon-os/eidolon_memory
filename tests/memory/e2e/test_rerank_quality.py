@@ -4,7 +4,9 @@ Story:
     1. Spawn TWO isolated agent_runners against the same corpus:
        - ``rerank_on``  : default (rerank_enabled=True, rrf_k=60)
        - ``rerank_off`` : same data, rerank_enabled=False
-    2. Drive both via NATS publish of the 40-turn companion corpus.
+    2. Drive each via NATS publish of the 40-turn companion corpus, waiting
+       for one realm to finish ingest before writing the next. This test is
+       about rerank quality, not backend write concurrency.
        Use steward.mode="rules" so deterministic fragments hit chroma.
     3. Wait for both palaces to ingest ≥ 30 fragments via MCP `list`.
     4. For every ``expected_recall_queries`` entry across the corpus, ask
@@ -18,8 +20,6 @@ Marker: ``@pytest.mark.e2e``
 """
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 
@@ -121,48 +121,39 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
         f"corpus must yield ≥12 ground-truth queries, got {len(ground_truth)}"
     )
 
-    # Spawn the two agents in parallel; same corpus, different rerank flag.
     h_on = live_agent_runner(
         user_id="e2e_p1_on", port=19040, steward_mode="rules",
     )
+    ctx_on = e2e_actor_context(h_on.user_id)
+
+    # Rules steward filters by importance, so the fragment count will be
+    # smaller than the corpus (~7-9). Keep write/read phases sequential: the
+    # embedded Chroma backend is intentionally single-realm/single-flight.
+    MIN_FRAGMENTS = 5
+
+    async def _wait_for_fragments(session, label: str) -> int:
+        async def _ready(s):
+            return await _list_fragment_count(s) >= MIN_FRAGMENTS
+
+        ok = await wait_for_visible(session, predicate=_ready, timeout_s=90)
+        count = await _list_fragment_count(session)
+        assert ok, f"{label} palace did not reach {MIN_FRAGMENTS} fragments (got {count})"
+        return count
+
+    await _publish_corpus(h_on, corpus, len(corpus))
+    async with mcp_session(h_on.mcp_url) as s_on:
+        n_on = await _wait_for_fragments(s_on, "rerank_on")
+
     h_off = live_agent_runner(
         user_id="e2e_p1_off", port=19041, steward_mode="rules",
         extra_settings={"recall": {"rerank_enabled": False}},
     )
-    ctx_on = e2e_actor_context(h_on.user_id)
     ctx_off = e2e_actor_context(h_off.user_id)
-
-    # Drive ingest on both — publish the FULL 40-turn corpus. Rules steward
-    # filters by importance so the fragment count will be smaller (~10-15).
-    await _publish_corpus(h_on, corpus, len(corpus))
     await _publish_corpus(h_off, corpus, len(corpus))
+    async with mcp_session(h_off.mcp_url) as s_off:
+        n_off = await _wait_for_fragments(s_off, "rerank_off")
 
     async with mcp_session(h_on.mcp_url) as s_on, mcp_session(h_off.mcp_url) as s_off:
-        # Wait for ≥ 5 fragments on each palace (rules steward is selective —
-        # not every turn passes the importance threshold; observed ~7-9 on
-        # the 40-turn corpus with default settings).
-        MIN_FRAGMENTS = 5
-
-        async def _ready_on(s):
-            return await _list_fragment_count(s) >= MIN_FRAGMENTS
-
-        async def _ready_off(s):
-            return await _list_fragment_count(s) >= MIN_FRAGMENTS
-
-        on_ok, off_ok = await asyncio.gather(
-            wait_for_visible(s_on,  predicate=_ready_on,  timeout_s=90),
-            wait_for_visible(s_off, predicate=_ready_off, timeout_s=90),
-        )
-        # Diagnostic counters even if waits fail.
-        n_on = await _list_fragment_count(s_on)
-        n_off = await _list_fragment_count(s_off)
-        assert on_ok, (
-            f"rerank_on palace did not reach {MIN_FRAGMENTS} fragments (got {n_on})"
-        )
-        assert off_ok, (
-            f"rerank_off palace did not reach {MIN_FRAGMENTS} fragments (got {n_off})"
-        )
-
         # Score both agents on the same ground-truth set.
         hits_on_top1 = 0
         hits_off_top1 = 0
