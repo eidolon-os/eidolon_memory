@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import shutil
 import signal
 import sqlite3
@@ -58,6 +59,19 @@ log = get_logger(__name__)
 _AGENT_CLI = "eidolon-memory-agent"
 _CONSOLIDATOR_CLI = "eidolon-memory-consolidator"
 _DEGRADED_MIN_INTERVAL = 60.0  # seconds — rolling failure window
+
+
+def _configure_process_logging() -> None:
+    """Make supervisor lifecycle spans visible in the daemon log."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    logging.getLogger("eidolon.memory").setLevel(logging.INFO)
+
+
+def _elapsed_ms(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000.0, 3)
 
 
 def _backup_sqlite_database(source: Path, dest: Path) -> bool:
@@ -449,17 +463,50 @@ class Supervisor:
         loop = asyncio.get_running_loop()
 
         def _run() -> tuple[str, str | None]:
+            started = time.perf_counter()
+            palace = self._palace_for(user)
+            backend = selected_mempalace_backend(self._settings)
+            log.info(
+                "supervisor_palace_init_start",
+                user_id=user.id,
+                palace=str(palace),
+                backend=backend,
+            )
             try:
                 ensure_palace_initialized(
                     user.id,
-                    self._palace_for(user),
-                    backend=selected_mempalace_backend(self._settings),
+                    palace,
+                    backend=backend,
                     env=mempalace_backend_env(self._settings),
+                )
+                log.info(
+                    "supervisor_palace_init_done",
+                    user_id=user.id,
+                    palace=str(palace),
+                    backend=backend,
+                    elapsed_ms=_elapsed_ms(started),
                 )
                 return user.id, None
             except PalaceInitError as exc:
+                log.warning(
+                    "supervisor_palace_init_failed",
+                    user_id=user.id,
+                    palace=str(palace),
+                    backend=backend,
+                    error=str(exc),
+                    elapsed_ms=_elapsed_ms(started),
+                )
                 return user.id, str(exc)
             except Exception as exc:  # noqa: BLE001 - keep one bad init from killing reconcile
+                log.warning(
+                    "supervisor_palace_init_failed",
+                    user_id=user.id,
+                    palace=str(palace),
+                    backend=backend,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    elapsed_ms=_elapsed_ms(started),
+                )
                 return user.id, f"{type(exc).__name__}: {exc}"
 
         return await loop.run_in_executor(self._init_pool, _run)
@@ -638,10 +685,21 @@ class Supervisor:
 
     async def _reconcile(self) -> None:
         """Re-read admin's registry and align running set."""
+        reconcile_started = time.perf_counter()
         try:
+            read_started = time.perf_counter()
             users = self._read_users()
+            log.info(
+                "supervisor_reconcile_registry_loaded",
+                users=len(users.users),
+                elapsed_ms=_elapsed_ms(read_started),
+            )
         except Exception as exc:
-            log.error("supervisor_reload_failed", error=str(exc))
+            log.error(
+                "supervisor_reload_failed",
+                error=str(exc),
+                elapsed_ms=_elapsed_ms(reconcile_started),
+            )
             return
         wanted = {u.id: u for u in users.enabled_users()}
         for user_id in list(self._init_failures):
@@ -680,6 +738,14 @@ class Supervisor:
             if _agent_child_needs_spawn(self._children.get(u.id))
             and _init_candidate_due(self._init_failures.get(u.id))
         ]
+        log.info(
+            "supervisor_reconcile_plan",
+            wanted=len(wanted),
+            running_agents=len(self._children),
+            running_consolidators=len(self._consolidators),
+            spawn_candidates=len(spawn_candidates),
+            eager_init=self._eager_init,
+        )
         if self._eager_init:
             by_id = {u.id: u for u in spawn_candidates}
             init_tasks = [asyncio.create_task(self._init_user(u)) for u in spawn_candidates]
@@ -746,6 +812,13 @@ class Supervisor:
                 existing.user = user_def
                 continue
             self._spawn_consolidator(user_def)
+        log.info(
+            "supervisor_reconcile_done",
+            wanted=len(wanted),
+            running_agents=len(self._children),
+            running_consolidators=len(self._consolidators),
+            elapsed_ms=_elapsed_ms(reconcile_started),
+        )
 
     def _ensure_agent_child(self, user_def: UserEntry) -> None:
         existing = self._children.get(user_def.id)
@@ -760,8 +833,17 @@ class Supervisor:
             self._children.pop(user_def.id, None)
         child = _Child(user_def, self._palace_for(user_def), self._log_root)
         try:
+            started = time.perf_counter()
             child.spawn()
             self._children[user_def.id] = child
+            log.info(
+                "supervisor_spawn_done",
+                user_id=user_def.id,
+                kind=child.kind,
+                port=user_def.port,
+                pid=child.proc.pid if child.proc else None,
+                elapsed_ms=_elapsed_ms(started),
+            )
         except Exception as exc:
             log.error(
                 "supervisor_reload_spawn_failed",
@@ -818,6 +900,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
+    _configure_process_logging()
     args = _parse_args(argv)
     settings = get_memory_settings()
 

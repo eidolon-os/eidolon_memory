@@ -124,7 +124,9 @@ def ensure_palace_initialized(
             stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
-        raise PalaceInitError(f"mempalace CLI {cli!r} disappeared between resolve and exec") from exc
+        raise PalaceInitError(
+            f"mempalace CLI {cli!r} disappeared between resolve and exec"
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         raise PalaceInitError(
             f"mempalace init timed out after {timeout_seconds}s for {user_id!r}; "
@@ -170,6 +172,9 @@ def _materialize_backend_collection(
     """
     code = (
         "import hashlib, math, re, sys; "
+        "from eidolon.memory.infrastructure.embedding_model_dir import "
+        "apply_local_embedding_model_dir_from_env; "
+        "apply_local_embedding_model_dir_from_env(); "
         "from mempalace.palace import get_collection; "
         "palace, backend = sys.argv[1], sys.argv[2]; "
         "col = get_collection(palace, create=True, backend=backend); "

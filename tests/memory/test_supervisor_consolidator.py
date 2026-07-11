@@ -32,6 +32,7 @@ from eidolon.memory.config.users import (
     UserEntry,
     UsersConfig,
 )
+from eidolon.memory.entrypoints import supervisor as supervisor_mod
 from eidolon.memory.entrypoints.supervisor import (
     Supervisor,
     _agent_cli_argv,
@@ -46,6 +47,40 @@ FAST_SPACE = "default.fast.mochi"
 SLOW_SPACE = "default.slow.mochi"
 
 # ─── argv builder ──────────────────────────────────────────────────────────
+
+
+def test_supervisor_entrypoint_enables_process_lifecycle_logs(monkeypatch):
+    calls: list[tuple[str, object]] = []
+    real_get_logger = supervisor_mod.logging.getLogger
+
+    class _Logger:
+        def setLevel(self, level: int) -> None:  # noqa: N802 - stdlib API shape
+            calls.append(("setLevel", level))
+
+    def _get_logger(name: str | None = None):
+        if name == "eidolon.memory":
+            return _Logger()
+        return real_get_logger(name)
+
+    monkeypatch.setattr(
+        supervisor_mod.logging,
+        "basicConfig",
+        lambda **kwargs: calls.append(("basicConfig", kwargs)),
+    )
+    monkeypatch.setattr(supervisor_mod.logging, "getLogger", _get_logger)
+
+    supervisor_mod._configure_process_logging()
+
+    assert calls == [
+        (
+            "basicConfig",
+            {
+                "level": supervisor_mod.logging.INFO,
+                "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+            },
+        ),
+        ("setLevel", supervisor_mod.logging.INFO),
+    ]
 
 
 def test_consolidator_cli_argv_has_all_knobs():

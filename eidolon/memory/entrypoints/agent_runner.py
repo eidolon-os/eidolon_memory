@@ -22,6 +22,7 @@ import fcntl
 import json
 import os
 import signal
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,10 @@ from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _elapsed_ms(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000.0, 3)
 
 
 def _acquire_memory_space_process_lock(settings: MemorySettings, memory_space_id: str):
@@ -437,14 +442,20 @@ def _compose_starlette_lifespan(
     @asynccontextmanager
     async def _lifespan(_app: Any):
         log.info("agent_runner_warm_start", memory_space_id=memory_space_id, palace=palace_path)
+        warm_started = time.perf_counter()
         try:
             await warm_palace_read_path(settings, palace_path, role="default")
-            log.info("agent_runner_warm_complete", memory_space_id=memory_space_id)
+            log.info(
+                "agent_runner_warm_complete",
+                memory_space_id=memory_space_id,
+                elapsed_ms=_elapsed_ms(warm_started),
+            )
         except Exception as exc:
             log.warning(
                 "agent_runner_warm_failed",
                 memory_space_id=memory_space_id,
                 error=str(exc),
+                elapsed_ms=_elapsed_ms(warm_started),
             )
 
         sub_task: asyncio.Task | None = None
@@ -470,7 +481,13 @@ def _compose_starlette_lifespan(
             )
         try:
             if not nats_disabled:
+                nats_started = time.perf_counter()
                 await asyncio.wait_for(nats_ready_event.wait(), timeout=30.0)
+                log.info(
+                    "agent_runner_nats_ready",
+                    memory_space_id=memory_space_id,
+                    elapsed_ms=_elapsed_ms(nats_started),
+                )
             async with session_manager.run():
                 yield
         finally:
@@ -511,6 +528,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
+    bootstrap_started = time.perf_counter()
     args = _parse_args(argv)
     memory_space_id = validate_memory_space_id(args.memory_space_id)
     settings = get_memory_settings()
@@ -532,23 +550,39 @@ def main(argv: list[str] | None = None) -> None:
         log.error("agent_runner_unsafe_palace_location", error=str(exc))
         raise
 
+    step_started = time.perf_counter()
     ensure_palace_initialized(
         memory_space_id,
         palace_path,
         backend=backend_name,
         env=mempalace_backend_env(settings),
     )
+    log.info(
+        "agent_runner_palace_init_done",
+        memory_space_id=memory_space_id,
+        palace=str(palace_path),
+        elapsed_ms=_elapsed_ms(step_started),
+    )
 
     # KG plan §3.2 G3: explicitly create the KG SQLite so integrity_check sees a
     # committed file (mempalace KnowledgeGraph initializes tables on first open).
     kg_sqlite_path = palace_path / "knowledge_graph.sqlite3"
+    step_started = time.perf_counter()
     _materialize_kg_file(kg_sqlite_path)
+    log.info(
+        "agent_runner_kg_materialize_done",
+        memory_space_id=memory_space_id,
+        kg=str(kg_sqlite_path),
+        elapsed_ms=_elapsed_ms(step_started),
+    )
 
     # D2 + KG G3: integrity check — refuse to come up on a malformed palace OR KG.
     integrity_targets = [
         *vector_sqlite_integrity_targets(palace_path, backend_name),
         ("kg", kg_sqlite_path),
     ]
+    step_started = time.perf_counter()
+    checked: list[str] = []
     for label, db_path in integrity_targets:
         report = run_integrity_check(str(db_path), quick=False)
         if not report.ok:
@@ -564,7 +598,15 @@ def main(argv: list[str] | None = None) -> None:
                 detail=report.detail,
             )
             raise IntegrityCheckFailed(msg)
+        checked.append(label)
+    log.info(
+        "agent_runner_integrity_check_done",
+        memory_space_id=memory_space_id,
+        targets=checked,
+        elapsed_ms=_elapsed_ms(step_started),
+    )
 
+    step_started = time.perf_counter()
     inner = MemPalacePythonBackend(settings, str(palace_path), memory_space_id=memory_space_id)
     backend = LockedBackend(inner)
 
@@ -588,10 +630,16 @@ def main(argv: list[str] | None = None) -> None:
     # KG plan §3.3: write tools publish through the same JetStream stream
     # that handles chat turns; admin is just another "agent" client.
     command_publisher = JetStreamCommandPublisher.from_memory_settings(settings)
+    log.info(
+        "agent_runner_backend_open_done",
+        memory_space_id=memory_space_id,
+        elapsed_ms=_elapsed_ms(step_started),
+    )
 
     host = (args.host or settings.mcp_http.host).strip() or "127.0.0.1"
     port = args.port if args.port else settings.mcp_http.port
 
+    step_started = time.perf_counter()
     mcp = build_control_plane_mcp(
         backend,
         settings,
@@ -603,6 +651,11 @@ def main(argv: list[str] | None = None) -> None:
         kg=kg,
         command_publisher=command_publisher,
     )
+    log.info(
+        "agent_runner_mcp_build_done",
+        memory_space_id=memory_space_id,
+        elapsed_ms=_elapsed_ms(step_started),
+    )
 
     log.info(
         "agent_runner_start",
@@ -611,6 +664,7 @@ def main(argv: list[str] | None = None) -> None:
         backend=backend_name,
         host=host,
         port=port,
+        bootstrap_elapsed_ms=_elapsed_ms(bootstrap_started),
     )
 
     def _on_signal(signum: int, _frame: Any) -> None:  # pragma: no cover - signal path

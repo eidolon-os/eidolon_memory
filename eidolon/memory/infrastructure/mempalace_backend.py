@@ -9,10 +9,13 @@ checks for the supported backends we may run in development.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.infrastructure.embedding_model_dir import (
+    apply_local_embedding_model_dir_from_env,
+)
 
 SUPPORTED_MEMPALACE_BACKENDS = frozenset({"chroma", "qdrant", "pgvector", "sqlite_exact"})
 
@@ -41,6 +44,9 @@ def mempalace_backend_env(
     embedding_device = settings.mempalace.embedding_device.strip().lower()
     if embedding_device:
         env["MEMPALACE_EMBEDDING_DEVICE"] = embedding_device
+    embedding_model_dir = settings.mempalace.embedding_model_dir.strip()
+    if embedding_model_dir:
+        env["MEMPALACE_EMBEDDING_MODEL_DIR"] = str(Path(embedding_model_dir).expanduser())
 
     if backend == "qdrant":
         if settings.mempalace.qdrant_url:
@@ -62,6 +68,7 @@ def apply_mempalace_backend_env(settings: MemorySettings) -> None:
     for key, value in env.items():
         if key.startswith("MEMPALACE_"):
             os.environ[key] = value
+    apply_local_embedding_model_dir_from_env()
 
 
 def backend_artifact_path(palace_path: Path, backend: str) -> Path:

@@ -15,7 +15,13 @@ def _onnx_cache_dir() -> Path:
 def warm_embedding() -> None:
     from mempalace.embedding import describe_device, get_embedding_function
 
-    print("warming Chroma ONNX embedding (all-MiniLM-L6-v2, ~79MB on first run)…")
+    from eidolon.memory.config.memory_settings import get_memory_settings
+    from eidolon.memory.infrastructure.mempalace_backend import apply_mempalace_backend_env
+
+    settings = get_memory_settings()
+    apply_mempalace_backend_env(settings)
+    model = settings.mempalace.embedding_model or "minilm"
+    print(f"warming Chroma ONNX embedding ({model})…")
     ef = get_embedding_function()
     vectors = ef(["eidolon memory warmup"])
     dim = len(vectors[0]) if vectors else 0

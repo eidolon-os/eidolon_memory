@@ -60,6 +60,7 @@ def test_embedding_env_is_applied() -> None:
     assert settings.mempalace.embedding_model_dir == "/models/embeddinggemma"
     assert env["MEMPALACE_EMBEDDING_MODEL"] == "embeddinggemma"
     assert env["MEMPALACE_EMBEDDING_DEVICE"] == "coreml"
+    assert env["MEMPALACE_EMBEDDING_MODEL_DIR"] == "/models/embeddinggemma"
 
 
 def test_backend_artifacts_and_integrity_targets(tmp_path: Path) -> None:
