@@ -38,6 +38,10 @@ class NoOpSteward:
     (empty) fragments list — fastest possible path through ``turn_processor``.
     """
 
+    @property
+    def extraction_version(self) -> str:
+        return "noop:v1"
+
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         del turn  # ack-only path
         delay = os.environ.get(_TEST_TURN_DELAY_ENV, "").strip()

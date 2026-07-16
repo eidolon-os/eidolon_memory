@@ -14,6 +14,11 @@ from eidolon.memory.domain.errors import (
     StewardError,
     StewardOutputError,
 )
+from eidolon.memory.domain.extraction_decision import (
+    ExtractionDecisionConflict,
+    ExtractionDecisionRecord,
+    extraction_input_hash,
+)
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.payloads import (
     MemoryDeletePayload,
@@ -30,6 +35,7 @@ from eidolon.memory.domain.ports import (
     DlqReader,
     DlqStore,
     DlqWriter,
+    ExtractionDecisionStore,
     MemoryAdmin,
     MemoryBackend,
     MemoryPrivacyAdmin,
@@ -48,6 +54,10 @@ __all__ = [
     "MemoryBackendUnsupported",
     "MemoryBackendWriteFailed",
     "MemoryFragment",
+    "ExtractionDecisionConflict",
+    "ExtractionDecisionRecord",
+    "ExtractionDecisionStore",
+    "extraction_input_hash",
     "MemoryReader",
     "ScopedMemoryReader",
     "MemoryWriter",

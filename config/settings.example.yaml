@@ -42,6 +42,7 @@ llm:
   model: openai/deepseek-v4-flash
   base_url: http://127.0.0.1:8180/v1
   api_key_env: EIDOLON_MEMORY_LLM_API_KEY
+  temperature: 0.0
 
 mcp_http:
   host: 127.0.0.1

@@ -79,7 +79,8 @@ class LlmConfig(BaseModel):
     api_key: str = ""
     api_key_env: str = "EIDOLON_MEMORY_LLM_API_KEY"
     timeout_seconds: float = 20.0
-    temperature: float = 0.1
+    # Extraction is a replayable decision, not creative generation.
+    temperature: float = 0.0
 
     @model_validator(mode="before")
     @classmethod

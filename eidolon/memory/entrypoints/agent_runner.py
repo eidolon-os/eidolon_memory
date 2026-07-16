@@ -63,6 +63,7 @@ from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
 from eidolon.memory.infrastructure.dlq import DlqLedger
+from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 from eidolon.memory.infrastructure.integrity import (
     IntegrityCheckFailed,
     PalaceLocationError,
@@ -164,6 +165,7 @@ async def _nats_subscriber_loop(
     kg_sqlite: str,
     command_status: CommandStatusLedger,
     dlq: DlqLedger,
+    decision_store: ExtractionDecisionLedger,
     stop: asyncio.Event,
     ready: asyncio.Event | None = None,
 ) -> None:
@@ -362,6 +364,7 @@ async def _nats_subscriber_loop(
                     expected_memory_space_id=memory_space_id,
                     audit_sink=audit_sink,
                     dlq_writer=dlq,
+                    decision_store=decision_store,
                 )
 
             def _cmd_handler(m):
@@ -383,6 +386,7 @@ async def _nats_subscriber_loop(
                     ledger=ledger,
                     settings=settings,
                     expected_memory_space_id=memory_space_id,
+                    decision_store=decision_store,
                 )
 
             workers = [
@@ -440,6 +444,7 @@ def _compose_starlette_lifespan(
     command_publisher: Any,
     command_status: CommandStatusLedger,
     dlq: DlqLedger,
+    decision_store: ExtractionDecisionLedger,
     palace_path: str,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
@@ -485,6 +490,7 @@ def _compose_starlette_lifespan(
                     kg_sqlite=kg_sqlite,
                     command_status=command_status,
                     dlq=dlq,
+                    decision_store=decision_store,
                     stop=stop_event,
                     ready=nats_ready_event,
                 ),
@@ -650,6 +656,9 @@ def main(argv: list[str] | None = None) -> None:
         prune_every_writes=settings.command_status.prune_every_writes,
     )
     dlq = DlqLedger(palace_path / "dlq.sqlite3")
+    decision_store = ExtractionDecisionLedger(
+        palace_path / "extraction_decisions.sqlite3"
+    )
     log.info(
         "agent_runner_backend_open_done",
         memory_space_id=memory_space_id,
@@ -718,6 +727,7 @@ def main(argv: list[str] | None = None) -> None:
         command_publisher=command_publisher,
         command_status=command_status,
         dlq=dlq,
+        decision_store=decision_store,
         palace_path=str(palace_path),
     )
 

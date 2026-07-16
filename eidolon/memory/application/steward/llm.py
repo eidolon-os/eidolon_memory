@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
 from eidolon_sdk.memory import ConversationTurnPayload
+from pydantic import ValidationError
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.steward.common import apply_privacy_actions, finalize_fragments
 from eidolon.memory.application.steward.rules import RuleBasedSteward
+from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import StewardOutputError
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.logging import get_logger
-
-from eidolon.memory.config.memory_settings import MemorySettings
 
 if TYPE_CHECKING:
     from eidolon.memory.domain.ports import MemoryBackend
@@ -35,6 +35,22 @@ class LiteLLMSteward:
     ) -> None:
         self._settings = settings
         self._fallback = fallback or RuleBasedSteward(settings)
+
+    @property
+    def extraction_version(self) -> str:
+        """Identify the configured extraction policy, including fallback semantics."""
+        policy = {
+            "model": self._settings.llm.model,
+            "prompt": self._settings.render_steward_prompt(),
+            "temperature": self._settings.llm.temperature,
+            "fallback_to_rules": self._settings.steward.fallback_to_rules,
+            "fallback_version": self._fallback.extraction_version,
+            "max_fragments": self._settings.steward.max_fragments_per_turn,
+            "min_importance": self._settings.steward.min_importance_to_write,
+        }
+        raw = json.dumps(policy, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return f"llm:{digest}"
 
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         try:

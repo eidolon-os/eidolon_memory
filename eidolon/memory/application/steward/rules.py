@@ -55,6 +55,11 @@ class RuleBasedSteward:
     def __init__(self, settings: MemorySettings) -> None:
         self._settings = settings
 
+    @property
+    def extraction_version(self) -> str:
+        """Bump when deterministic extraction semantics change."""
+        return "rules:v1"
+
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         text = f"{turn.user_text}\n{turn.assistant_text}".strip()
         timestamp = turn.timestamp or datetime.now(UTC).isoformat()

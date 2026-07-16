@@ -35,8 +35,13 @@ from eidolon.memory.application.steward.common import (
 )
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_dlq_log_path
 from eidolon.memory.domain.command_status import CommandStatus
+from eidolon.memory.domain.extraction_decision import (
+    ExtractionDecisionConflict,
+    ExtractionDecisionRecord,
+    extraction_input_hash,
+)
 from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.ports import CommandStatusWriter, DlqWriter
+from eidolon.memory.domain.ports import CommandStatusWriter, DlqWriter, ExtractionDecisionStore
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.logging import get_logger
 
@@ -44,7 +49,59 @@ log = get_logger(__name__)
 
 
 class StewardProtocol(Protocol):
+    extraction_version: str
+
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision: ...
+
+
+async def _decide_once(
+    steward: StewardProtocol,
+    turn: ConversationTurnPayload,
+    store: ExtractionDecisionStore | None,
+) -> StewardDecision:
+    """Return one durable extraction result for a turn + extractor version."""
+    if store is None:
+        return await steward.decide(turn)
+
+    extractor_version = str(getattr(steward, "extraction_version", "")).strip()
+    if not extractor_version:
+        raise ValueError("steward must expose a non-empty extraction_version")
+    input_hash = extraction_input_hash(turn)
+    existing = await store.get(
+        turn.context.memory_space_id,
+        turn.turn_id,
+        extractor_version,
+    )
+    if existing is not None:
+        if existing.input_hash != input_hash:
+            raise ExtractionDecisionConflict(
+                "stored extraction decision input does not match redelivered turn"
+            )
+        log.info(
+            "turn_processor_decision_reused",
+            memory_space_id=turn.context.memory_space_id,
+            turn_id=turn.turn_id,
+            extractor_version=extractor_version,
+        )
+        return existing.decision
+
+    decision = await steward.decide(turn)
+    stored = await store.put_if_absent(
+        ExtractionDecisionRecord(
+            memory_space_id=turn.context.memory_space_id,
+            source_turn_id=turn.turn_id,
+            extractor_version=extractor_version,
+            input_hash=input_hash,
+            decision=decision,
+        )
+    )
+    log.info(
+        "turn_processor_decision_persisted",
+        memory_space_id=turn.context.memory_space_id,
+        turn_id=turn.turn_id,
+        extractor_version=extractor_version,
+    )
+    return stored.decision
 
 
 def append_dlq(settings: MemorySettings, payload: bytes, error: str, deliveries: int) -> None:
@@ -109,6 +166,7 @@ async def process_turn_message(
     expected_memory_space_id: str | None = None,
     audit_sink: Any = None,
     dlq_writer: DlqWriter | None = None,
+    decision_store: ExtractionDecisionStore | None = None,
 ) -> None:
     """Decode + validate one turn, run steward, apply fragments + KG, ack / nak / DLQ.
 
@@ -172,7 +230,7 @@ async def process_turn_message(
 
     # ── decide ─────────────────────────────────────────────────────────────
     try:
-        decision = await steward.decide(turn)
+        decision = await _decide_once(steward, turn, decision_store)
     except Exception as exc:
         log.error(
             "turn_processor_steward_failed",
@@ -622,6 +680,7 @@ async def process_sync_message(
     ledger: Any,
     settings: MemorySettings,
     expected_memory_space_id: str,
+    decision_store: ExtractionDecisionStore | None = None,
 ) -> None:
     """Handle ``DeviceSyncBatchPayload`` from ``eidolon.memory.sync.<memory_space_token>``."""
     del settings
@@ -667,7 +726,7 @@ async def process_sync_message(
             if ring is not None:
                 await ring.append(turn)
 
-            decision = await steward.decide(turn)
+            decision = await _decide_once(steward, turn, decision_store)
             await _apply_privacy(
                 backend,
                 expected_memory_space_id,

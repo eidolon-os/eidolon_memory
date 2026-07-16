@@ -14,7 +14,7 @@ llm:
   base_url: http://mopai.geni.dyxnet.com.cn/v1
   api_key_env: EIDOLON_MEMORY_LLM_API_KEY
   timeout_seconds: 30
-  temperature: 0.7
+  temperature: 0.0
 mcp_http:
   host: 127.0.0.1
   port: 10030

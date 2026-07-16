@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from eidolon.memory.application.working_memory import WorkingMemoryRing
     from eidolon.memory.domain.command_status import CommandStatusRecord, CommandStatusStats
     from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
+    from eidolon.memory.domain.extraction_decision import ExtractionDecisionRecord
     from eidolon.memory.domain.fragments import MemoryFragment
     from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -141,6 +142,23 @@ class MemoryPrivacyAdmin(Protocol):
 @runtime_checkable
 class MemoryBackend(MemoryReader, MemoryWriter, MemoryAdmin, MemoryPrivacyAdmin, Protocol):
     """Combined backend surface kept for compatibility with existing callers."""
+
+
+@runtime_checkable
+class ExtractionDecisionStore(Protocol):
+    """Durable source for validated steward output, separate from projections."""
+
+    async def get(
+        self,
+        memory_space_id: str,
+        source_turn_id: str,
+        extractor_version: str,
+    ) -> ExtractionDecisionRecord | None: ...
+
+    async def put_if_absent(
+        self,
+        record: ExtractionDecisionRecord,
+    ) -> ExtractionDecisionRecord: ...
 
 
 @runtime_checkable
