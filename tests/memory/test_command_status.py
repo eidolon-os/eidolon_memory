@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
@@ -95,3 +97,60 @@ def test_status_ledger_implements_ports_without_application_infrastructure_impor
     assert isinstance(ledger, CommandStatusWriter)
     assert isinstance(ledger, CommandStatusStore)
     assert "infrastructure.command_status" not in inspect.getsource(turn_processor)
+
+
+async def test_prune_expires_only_terminal_rows(tmp_path: Path) -> None:
+    path = tmp_path / "command_status.sqlite3"
+    ledger = CommandStatusLedger(path, retention_days=1)
+    await ledger.record_applied("old-applied", kind="user_confirm_fact")
+    await ledger.record_failed("old-failed", kind="kg_add_triple", error="terminal")
+    await ledger.record_accepted("old-active", kind="user_confirm_fact")
+    old = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE command_status SET updated_at = ?", (old,))
+
+    assert await ledger.prune() == 2
+    assert await ledger.get("old-applied") is None
+    assert await ledger.get("old-failed") is None
+    assert await ledger.get("old-active") is not None
+
+
+async def test_prune_caps_terminal_history_but_preserves_active_rows(tmp_path: Path) -> None:
+    ledger = CommandStatusLedger(
+        tmp_path / "command_status.sqlite3",
+        retention_days=365,
+        max_records=2,
+        prune_every_writes=100,
+    )
+    await ledger.record_applied("terminal-1", kind="user_confirm_fact")
+    await ledger.record_applied("terminal-2", kind="user_confirm_fact")
+    await ledger.record_applied("terminal-3", kind="user_confirm_fact")
+    await ledger.record_accepted("active", kind="user_confirm_fact")
+
+    assert await ledger.prune() == 2
+    assert await ledger.get("active") is not None
+    remaining_terminal = [
+        request_id
+        for request_id in ("terminal-1", "terminal-2", "terminal-3")
+        if await ledger.get(request_id) is not None
+    ]
+    assert len(remaining_terminal) == 1
+
+
+async def test_periodic_prune_keeps_projection_bounded(tmp_path: Path) -> None:
+    ledger = CommandStatusLedger(
+        tmp_path / "command_status.sqlite3",
+        retention_days=365,
+        max_records=2,
+        prune_every_writes=1,
+    )
+
+    for index in range(5):
+        await ledger.record_applied(f"req-{index}", kind="user_confirm_fact")
+
+    retained = [
+        request_id
+        for request_id in (f"req-{index}" for index in range(5))
+        if await ledger.get(request_id) is not None
+    ]
+    assert len(retained) == 2

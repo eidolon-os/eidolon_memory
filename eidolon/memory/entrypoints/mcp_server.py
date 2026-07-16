@@ -444,8 +444,9 @@ def _register_kg_tools(
     ) -> dict[str, Any]:
         """Queue a temporal triple write via NATS; wait for worker status (≤2s).
 
-        All admin writes share the same JetStream pipeline as chat turns so
-        rebuild-from-replay naturally recovers admin edits (D5).
+        All admin writes share the same JetStream pipeline as chat turns.
+        Replay can recover edits only inside configured JetStream retention;
+        it is not a multi-year source of truth.
         """
         request_id = uuid.uuid4().hex
         cmd = KgAddTripleCommand(

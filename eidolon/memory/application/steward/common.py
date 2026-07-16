@@ -28,6 +28,9 @@ class PrivacyActionResult:
     deleted_keys: list[str] = field(default_factory=list)
     archived_keys: list[str] = field(default_factory=list)
     unmatched_targets: list[str] = field(default_factory=list)
+    confirmation_required: dict[str, list[dict[str, object]]] = field(
+        default_factory=dict
+    )
 
 
 def normalize_content(text: str) -> str:
@@ -176,6 +179,16 @@ async def apply_privacy_actions(
                 )
                 result.archived_keys.extend(archived)
             else:
+                if len(candidates) > 1:
+                    result.confirmation_required[action.target] = [
+                        candidate.to_dict() for candidate in candidates
+                    ]
+                    log.warning(
+                        "privacy_delete_confirmation_required",
+                        target=action.target,
+                        candidate_count=len(candidates),
+                    )
+                    continue
                 deleted = await delete_exact_drawers(
                     backend,
                     memory_space_id,

@@ -637,7 +637,12 @@ def main(argv: list[str] | None = None) -> None:
     # KG plan §3.3: write tools publish through the same JetStream stream
     # that handles chat turns; admin is just another "agent" client.
     command_publisher = JetStreamCommandPublisher.from_memory_settings(settings)
-    command_status = CommandStatusLedger(palace_path / "command_status.sqlite3")
+    command_status = CommandStatusLedger(
+        palace_path / "command_status.sqlite3",
+        retention_days=settings.command_status.retention_days,
+        max_records=settings.command_status.max_records,
+        prune_every_writes=settings.command_status.prune_every_writes,
+    )
     log.info(
         "agent_runner_backend_open_done",
         memory_space_id=memory_space_id,

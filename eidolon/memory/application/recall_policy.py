@@ -176,6 +176,7 @@ class RecallPolicyRegistry:
         ]
         visible.sort(
             key=lambda r: (
+                (r.metadata or {}).get("source") == "user-confirmed",
                 self.score(r, context=context, query=query),
                 float((r.metadata or {}).get("similarity") or 0.0),
             ),

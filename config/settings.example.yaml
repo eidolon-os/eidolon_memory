@@ -31,6 +31,13 @@ mempalace:
 nats:
   url: nats://127.0.0.1:4222
 
+# Command outcomes are an operational projection, not permanent user memory.
+# Keep the table bounded even when a Realm runs for years.
+command_status:
+  retention_days: 30
+  max_records: 100000
+  prune_every_writes: 100
+
 llm:
   model: openai/deepseek-v4-flash
   base_url: http://127.0.0.1:8180/v1

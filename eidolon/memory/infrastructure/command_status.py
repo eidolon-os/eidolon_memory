@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import UTC, datetime
+import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from eidolon.memory.domain.command_status import (
@@ -22,12 +23,27 @@ class CommandStatusLedger:
     but can never make an unapplied command look successful.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        retention_days: int = 30,
+        max_records: int = 100_000,
+        prune_every_writes: int = 100,
+    ) -> None:
+        if retention_days < 1 or max_records < 1 or prune_every_writes < 1:
+            raise ValueError("command status retention limits must be positive")
         self.path = Path(path)
+        self.retention_days = retention_days
+        self.max_records = max_records
+        self.prune_every_writes = prune_every_writes
         self._terminal_events: dict[str, asyncio.Event] = {}
         self._terminal_waiters: dict[str, int] = {}
+        self._prune_counter_lock = threading.Lock()
+        self._writes_since_prune = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self._prune_sync()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=5.0)
@@ -122,6 +138,10 @@ class CommandStatusLedger:
 
     async def get(self, request_id: str) -> CommandStatusRecord | None:
         return await asyncio.to_thread(self._get_sync, request_id)
+
+    async def prune(self) -> int:
+        """Remove expired/overflow terminal rows without touching active work."""
+        return await asyncio.to_thread(self._prune_sync)
 
     async def wait_terminal(
         self,
@@ -249,7 +269,48 @@ class CommandStatusLedger:
             ).fetchone()
             conn.commit()
         assert row is not None
+        self._maybe_prune()
         return self._from_row(row)
+
+    def _maybe_prune(self) -> None:
+        should_prune = False
+        with self._prune_counter_lock:
+            self._writes_since_prune += 1
+            if self._writes_since_prune >= self.prune_every_writes:
+                self._writes_since_prune = 0
+                should_prune = True
+        if should_prune:
+            self._prune_sync()
+
+    def _prune_sync(self) -> int:
+        cutoff = (datetime.now(UTC) - timedelta(days=self.retention_days)).isoformat()
+        deleted = 0
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM command_status
+                WHERE status IN ('applied', 'failed') AND updated_at < ?
+                """,
+                (cutoff,),
+            )
+            deleted += max(0, cursor.rowcount)
+            total = int(conn.execute("SELECT COUNT(*) FROM command_status").fetchone()[0])
+            overflow = max(0, total - self.max_records)
+            if overflow:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM command_status
+                    WHERE request_id IN (
+                        SELECT request_id FROM command_status
+                        WHERE status IN ('applied', 'failed')
+                        ORDER BY updated_at ASC, request_id ASC
+                        LIMIT ?
+                    )
+                    """,
+                    (overflow,),
+                )
+                deleted += max(0, cursor.rowcount)
+        return deleted
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> CommandStatusRecord:

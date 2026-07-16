@@ -34,6 +34,10 @@ class ForgetCandidate:
         }
 
 
+class ForgetResolutionLimitExceeded(RuntimeError):
+    """Resolution cannot prove a complete candidate set within safety limits."""
+
+
 def extract_privacy_target(text: str) -> str:
     """Remove command boilerplate while preserving the fact/topic itself."""
     clean = (text or "").strip().strip("，。！？,.!? ")
@@ -57,10 +61,17 @@ async def find_forget_candidates(
     memory_space_id: str,
     target: str,
     *,
-    max_scan: int = 5000,
+    max_scan: int = 50_000,
     max_candidates: int = 20,
+    page_size: int = 500,
 ) -> list[ForgetCandidate]:
-    """Return only high-confidence, tenant-scoped matches for confirmation."""
+    """Return a bounded candidate set without silent static truncation.
+
+    Pagination prevents a single multi-year Realm listing from materializing
+    in memory. Hitting either safety cap raises instead of silently deleting a
+    partial subset of the user's history. This is not a cross-page snapshot;
+    exact-ID preview/confirm remains the strict path under concurrent writes.
+    """
     clean_target = extract_privacy_target(target)
     normalized_target = _normalize(clean_target)
     if clean_target in _GENERIC_TARGETS or len(normalized_target) < 2:
@@ -81,39 +92,66 @@ async def find_forget_candidates(
             )
         ]
 
-    rows = await backend.get_all(
-        memory_space_id,
-        limit=max(1, min(max_scan, 50_000)),
-        offset=0,
-    )
+    if max_scan < 1 or max_candidates < 1 or page_size < 1:
+        raise ValueError("forget resolution limits must be positive")
+
     candidates: list[ForgetCandidate] = []
-    for record in rows:
-        if not _belongs_to_space(record, memory_space_id):
-            continue
-        normalized_key = _normalize(record.key)
-        normalized_text = _normalize(record.value)
-        memory_id = _normalize(record.metadata.get("memory_id"))
-        if normalized_target in {normalized_key, memory_id}:
-            score = 1.0
-        elif normalized_target == normalized_text:
-            score = 1.0
-        elif normalized_target in normalized_text:
-            score = 0.9
-        elif len(normalized_text) >= 4 and normalized_text in normalized_target:
-            score = 0.85
-        else:
-            continue
-        candidates.append(
-            ForgetCandidate(
-                key=record.key,
-                text=str(record.value or ""),
-                wing=str(record.metadata.get("wing") or ""),
-                score=score,
-            )
+    candidate_keys: set[str] = set()
+    offset = 0
+    chunk = min(page_size, max_scan)
+    while offset < max_scan:
+        request_size = min(chunk, max_scan - offset)
+        rows = await backend.get_all(
+            memory_space_id,
+            limit=request_size,
+            offset=offset,
         )
+        if not rows:
+            break
+        offset += len(rows)
+        for record in rows:
+            if not _belongs_to_space(record, memory_space_id):
+                continue
+            normalized_key = _normalize(record.key)
+            normalized_text = _normalize(record.value)
+            memory_id = _normalize(record.metadata.get("memory_id"))
+            if normalized_target in {normalized_key, memory_id}:
+                score = 1.0
+            elif normalized_target == normalized_text:
+                score = 1.0
+            elif normalized_target in normalized_text:
+                score = 0.9
+            elif len(normalized_text) >= 4 and normalized_text in normalized_target:
+                score = 0.85
+            else:
+                continue
+            if record.key in candidate_keys:
+                continue
+            candidate_keys.add(record.key)
+            candidates.append(
+                ForgetCandidate(
+                    key=record.key,
+                    text=str(record.value or ""),
+                    wing=str(record.metadata.get("wing") or ""),
+                    score=score,
+                )
+            )
+            if len(candidates) > max_candidates:
+                raise ForgetResolutionLimitExceeded(
+                    f"privacy target matches more than {max_candidates} drawers"
+                )
+        if len(rows) < request_size:
+            break
+
+    if offset >= max_scan:
+        overflow = await backend.get_all(memory_space_id, limit=1, offset=offset)
+        if overflow:
+            raise ForgetResolutionLimitExceeded(
+                f"privacy candidate scan exceeds {max_scan} drawers; use exact drawer IDs"
+            )
 
     candidates.sort(key=lambda item: (-item.score, item.key))
-    return candidates[: max(1, min(max_candidates, 100))]
+    return candidates
 
 
 async def delete_exact_drawers(

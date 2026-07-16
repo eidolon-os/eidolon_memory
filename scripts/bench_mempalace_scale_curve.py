@@ -3,13 +3,22 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import resource
 import statistics
+import sys
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
+
+from eidolon_sdk.memory import MemoryActorContext
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
-from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
+from eidolon.memory.adapters.mempalace_python_backend import (
+    MemPalacePythonBackend,
+    _drawer_id,
+)
+from eidolon.memory.application.forget import find_forget_candidates
 from eidolon.memory.application.public_recall import search_all_wings_mcp_style
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.infrastructure.mempalace_backend import (
@@ -18,7 +27,6 @@ from eidolon.memory.infrastructure.mempalace_backend import (
     selected_mempalace_backend,
 )
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
-
 
 WINGS = [
     "Wing_Profile",
@@ -99,8 +107,14 @@ def _summary(values: list[float]) -> dict[str, float | int]:
         "count": len(values),
         "p50": _percentile(values, 0.50),
         "p95": _percentile(values, 0.95),
+        "p99": _percentile(values, 0.99),
         "mean": statistics.fmean(values) if values else 0.0,
     }
+
+
+def _max_rss_bytes() -> int:
+    value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    return value if sys.platform == "darwin" else value * 1024
 
 
 async def _timed(
@@ -133,12 +147,17 @@ def _doc(idx: int) -> tuple[str, str, str, dict[str, Any]]:
     )
     metadata = {
         "user_id": "default",
+        "memory_space_id": "default",
         "wing": wing,
         "room": room,
         "source_file": f"scale/default/{category}/{idx}.txt",
         "category": category,
         "marker": marker,
         "added_by": "scale-benchmark",
+        # Keep a small but growing restricted population so the benchmark
+        # catches privacy filtering that accidentally scales with all archived
+        # drawers instead of only the current top-k hits.
+        "privacy": "do_not_recall" if idx % 50 == 0 else "normal",
     }
     return wing, room, text, metadata
 
@@ -179,7 +198,7 @@ def _upsert_batch_sync(palace: str, backend: str, start: int, end: int, batch_si
         metas: list[dict[str, Any]] = []
         for idx in range(lo, hi):
             _wing, _room, text, metadata = _doc(idx)
-            ids.append(f"scale_drawer_{idx:08d}")
+            ids.append(_drawer_id(_wing, _room, text))
             docs.append(text)
             metas.append(metadata)
         col.upsert(ids=ids, documents=docs, metadatas=metas)
@@ -257,10 +276,13 @@ async def _measure_point(
     get_all_lat: list[float] = []
     get_by_id_lat: list[float] = []
     write_lat: list[float] = []
+    privacy_scan_lat: list[float] = []
     normal_precision: list[float] = []
     voice_precision: list[float] = []
     backend_precision: list[float] = []
     direct_precision: list[float] = []
+    privacy_leak_count = 0
+    context = MemoryActorContext(memory_realm_id="default", memory_space_id="default")
 
     from mempalace.palace import get_collection
 
@@ -281,7 +303,7 @@ async def _measure_point(
                 backend,
                 settings,
                 query=query,
-                user_id="default",
+                context=context,
                 top_k=top_k,
                 wing=None,
                 room=None,
@@ -299,7 +321,7 @@ async def _measure_point(
                 backend,
                 settings,
                 query=query,
-                user_id="default",
+                context=context,
                 top_k=top_k,
                 wing=None,
                 room=None,
@@ -322,6 +344,12 @@ async def _measure_point(
             ),
         )
         backend_precision.append(_category_precision(hits or [], category))
+        privacy_leak_count += sum(
+            1
+            for hit in hits or []
+            if str((getattr(hit, "metadata", {}) or {}).get("privacy", "")).lower()
+            in {"private", "do_not_recall"}
+        )
 
         async def direct_query(query=query, category=category) -> Any:
             del category
@@ -343,14 +371,34 @@ async def _measure_point(
             lambda offset=offset: backend.get_all("default", limit=25, offset=offset),
         )
     for idx in sample_indices[: min(8, len(sample_indices))]:
+        wing, room, text, _meta = _doc(idx)
         await _timed(
             get_by_id_lat,
             errors,
             f"get:{size}:{idx}",
-            lambda idx=idx: backend.get("default", f"scale_drawer_{idx:08d}"),
+            lambda wing=wing, room=room, text=text: backend.get(
+                "default", _drawer_id(wing, room, text)
+            ),
         )
 
-    write_start = size + 1_000_000
+    deep_marker = f"scale_marker_{max(0, size - 1):06d}"
+    privacy_candidates = await _timed(
+        privacy_scan_lat,
+        errors,
+        f"privacy_scan:{size}",
+        lambda: find_forget_candidates(
+            backend,
+            "default",
+            deep_marker,
+            max_scan=max(1, size + 100),
+            max_candidates=5,
+            page_size=500,
+        ),
+    )
+
+    # A resumed benchmark must still measure a real insert instead of hitting
+    # deterministic idempotency from an earlier run at the same size.
+    write_start = size + 1_000_000 + (time.time_ns() % 1_000_000_000)
     for idx in range(write_start, write_start + write_samples):
         wing, room, text, meta = _doc(idx)
         await _timed(
@@ -382,7 +430,7 @@ async def _measure_point(
                     backend,
                     settings,
                     query=query,
-                    user_id="default",
+                    context=context,
                     top_k=top_k,
                     wing=None,
                     room=None,
@@ -405,18 +453,29 @@ async def _measure_point(
         "get_all_page_ms": _summary(get_all_lat),
         "get_by_id_ms": _summary(get_by_id_lat),
         "sample_write_ms": _summary(write_lat),
+        "privacy_deep_scan_ms": _summary(privacy_scan_lat),
+        "privacy_deep_candidate_count": len(privacy_candidates or []),
         "mixed_recall_ms": _summary(mixed_lat),
         "mixed_error_count": len(mixed_errors),
+        "privacy_leak_count": privacy_leak_count,
+        "process_max_rss_bytes": _max_rss_bytes(),
+        "palace_bytes": sum(
+            path.stat().st_size for path in Path(palace).rglob("*") if path.is_file()
+        ),
         "precision": {
             "normal_mean": statistics.fmean(normal_precision) if normal_precision else 0.0,
             "voice_mean": statistics.fmean(voice_precision) if voice_precision else 0.0,
-            "backend_search_mean": statistics.fmean(backend_precision) if backend_precision else 0.0,
+            "backend_search_mean": (
+                statistics.fmean(backend_precision) if backend_precision else 0.0
+            ),
             "direct_query_mean": statistics.fmean(direct_precision) if direct_precision else 0.0,
         },
     }
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
+    if args.initial_size < 0:
+        raise ValueError("initial_size must be non-negative")
     settings = _settings(args)
     apply_mempalace_backend_env(settings)
     backend_name = selected_mempalace_backend(settings)
@@ -427,15 +486,23 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         backend=backend_name,
         env=mempalace_backend_env(settings),
     )
-    backend = LockedBackend(MemPalacePythonBackend(settings, str(palace)))
+    backend = LockedBackend(
+        MemPalacePythonBackend(settings, str(palace), memory_space_id="default")
+    )
 
     sizes = [int(part) for part in args.sizes.split(",") if part.strip()]
     sizes = sorted(set(sizes))
-    current_target = 0
+    current_target = args.initial_size
     points = []
     total_started = time.perf_counter()
     for size in sizes:
-        seed = {"from": current_target, "to": size, "written": 0, "elapsed_ms": 0.0, "docs_per_sec": 0.0}
+        seed = {
+            "from": current_target,
+            "to": size,
+            "written": 0,
+            "elapsed_ms": 0.0,
+            "docs_per_sec": 0.0,
+        }
         if size > current_target:
             seed = await _seed_to_target(
                 palace=str(palace),
@@ -461,8 +528,13 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "backend": backend_name,
         "palace": str(palace),
         "sizes": sizes,
+        "estimated_years_at_records_per_day": {
+            str(size): round(size / max(1, args.long_term_records_per_day) / 365, 2)
+            for size in sizes
+        },
         "user_id": "default",
         "seed_batch_size": args.seed_batch_size,
+        "initial_size": args.initial_size,
         "queries_per_point": args.queries,
         "total_elapsed_ms": (time.perf_counter() - total_started) * 1000,
         "points": points,
@@ -470,15 +542,29 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Scale curve benchmark for default-user MemPalace backend.")
+    parser = argparse.ArgumentParser(
+        description="Scale curve benchmark for default-user MemPalace backend."
+    )
     parser.add_argument("--backend", choices=["chroma", "qdrant"], required=True)
     parser.add_argument("--palace", required=True)
     parser.add_argument("--sizes", default="1000,5000,10000,30000,50000,100000")
+    parser.add_argument(
+        "--initial-size",
+        type=int,
+        default=0,
+        help="Known production-shaped rows already seeded in this isolated Palace.",
+    )
     parser.add_argument("--seed-batch-size", type=int, default=256)
     parser.add_argument("--queries", type=int, default=16)
     parser.add_argument("--write-samples", type=int, default=8)
     parser.add_argument("--concurrency", type=int, default=12)
     parser.add_argument("--top-k", type=int, default=8)
+    parser.add_argument(
+        "--long-term-records-per-day",
+        type=int,
+        default=10,
+        help="Convert each size into an approximate accumulation horizon.",
+    )
     parser.add_argument("--qdrant-url", default="http://127.0.0.1:6333")
     parser.add_argument("--qdrant-namespace", default="eidolon-scale")
     parser.add_argument("--qdrant-timeout", type=float, default=10.0)

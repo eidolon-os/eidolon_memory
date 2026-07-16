@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import pytest
 from eidolon_sdk.memory import MemoryActorContext
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.forget import (
+    ForgetResolutionLimitExceeded,
     extract_privacy_target,
     find_forget_candidates,
 )
@@ -91,7 +93,7 @@ async def test_archive_topic_keeps_drawer_but_blocks_recall() -> None:
     assert not RecallPolicyRegistry.default().visible(archived, context=context)
 
 
-async def test_privacy_mutation_uses_one_serialized_batch_backend_call() -> None:
+async def test_multiple_delete_candidates_require_confirmation_without_mutation() -> None:
     class TrackingBackend(FakeMemoryBackend):
         def __init__(self) -> None:
             super().__init__()
@@ -117,5 +119,57 @@ async def test_privacy_mutation_uses_one_serialized_batch_backend_call() -> None
         ],
     )
 
-    assert result.deleted_keys == ["drawer_tea_1", "drawer_tea_2"]
-    assert backend.delete_many_calls == [["drawer_tea_1", "drawer_tea_2"]]
+    assert result.deleted_keys == []
+    assert backend.delete_many_calls == []
+    assert [
+        item["drawer_id"]
+        for item in result.confirmation_required["删掉绿茶"]
+    ] == ["drawer_tea_1", "drawer_tea_2"]
+
+
+async def test_candidate_resolution_pages_through_multi_year_history() -> None:
+    backend = FakeMemoryBackend()
+    for index in range(12):
+        text = "很久以前喜欢绿茶" if index == 10 else f"历史记录 {index}"
+        _seed(backend, f"drawer_{index:02d}", text)
+
+    candidates = await find_forget_candidates(
+        backend,
+        SPACE,
+        "绿茶",
+        max_scan=20,
+        page_size=3,
+    )
+
+    assert [candidate.key for candidate in candidates] == ["drawer_10"]
+
+
+async def test_candidate_resolution_fails_instead_of_silently_truncating_scan() -> None:
+    backend = FakeMemoryBackend()
+    for index in range(6):
+        _seed(backend, f"drawer_{index:02d}", f"历史记录 {index}")
+
+    with pytest.raises(ForgetResolutionLimitExceeded, match="exceeds 5 drawers"):
+        await find_forget_candidates(
+            backend,
+            SPACE,
+            "不存在的话题",
+            max_scan=5,
+            page_size=2,
+        )
+
+
+async def test_candidate_resolution_fails_on_ambiguous_result_overflow() -> None:
+    backend = FakeMemoryBackend()
+    for index in range(4):
+        _seed(backend, f"drawer_{index:02d}", f"绿茶记录 {index}")
+
+    with pytest.raises(ForgetResolutionLimitExceeded, match="more than 3 drawers"):
+        await find_forget_candidates(
+            backend,
+            SPACE,
+            "绿茶",
+            max_scan=10,
+            max_candidates=3,
+            page_size=2,
+        )

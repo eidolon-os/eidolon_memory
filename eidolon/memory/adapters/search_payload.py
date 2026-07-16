@@ -52,6 +52,12 @@ def parse_search_tool_payload(
         similarity, internal = vector_fields_from_hit(r)
         raw_meta = r.get("metadata")
         meta: dict[str, Any] = raw_meta.copy() if isinstance(raw_meta, dict) else {}
+        if isinstance(text, str):
+            # Internal only: MemPalace omits drawer IDs, while JSON text is
+            # parsed into a dict below. Preserve the exact stored bytes so the
+            # backend can reconstruct its deterministic drawer ID without
+            # changing the public ``value`` contract.
+            meta["_raw_search_text"] = text
         meta.update(
             {
                 "wing": wing,

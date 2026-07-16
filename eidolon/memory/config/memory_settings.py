@@ -177,6 +177,14 @@ class WorkerConfig(BaseModel):
     sync_every_n_turns: int = 5  # PASSIVE checkpoint cadence (D3)
 
 
+class CommandStatusConfig(BaseModel):
+    """Bound the asynchronous command projection over multi-year runtimes."""
+
+    retention_days: int = Field(default=30, ge=1)
+    max_records: int = Field(default=100_000, ge=100)
+    prune_every_writes: int = Field(default=100, ge=1)
+
+
 class KgConfig(BaseModel):
     """Knowledge graph runtime tuning (T2/T3)."""
 
@@ -295,6 +303,7 @@ class MemorySettings(BaseModel):
     chromadb: ChromadbConfig = Field(default_factory=ChromadbConfig)
     mempalace: MempalaceBackendConfig = Field(default_factory=MempalaceBackendConfig)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
+    command_status: CommandStatusConfig = Field(default_factory=CommandStatusConfig)
     kg: KgConfig = Field(default_factory=KgConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     nats: NatsConfig = Field(default_factory=NatsConfig)

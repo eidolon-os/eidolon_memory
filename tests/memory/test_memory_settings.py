@@ -18,6 +18,15 @@ def test_load_default_memory_settings(tmp_path: Path, monkeypatch: pytest.Monkey
     settings = load_memory_settings()
     assert len(settings.wings) >= 1
     assert settings.nats.conversation_turn_subject_base
+    assert settings.command_status.retention_days == 30
+    assert settings.command_status.max_records == 100_000
+
+
+def test_command_status_retention_limits_are_positive(tmp_path: Path) -> None:
+    path = _write_yaml(tmp_path, {"command_status": {"max_records": 0}})
+
+    with pytest.raises(ValueError, match="max_records"):
+        load_memory_settings(path)
 
 
 def test_get_memory_settings_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
