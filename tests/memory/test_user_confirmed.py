@@ -85,6 +85,26 @@ def _intent_command(
     )
 
 
+def _structured_command(
+    request_id: str,
+    *,
+    source_event_id: str,
+) -> MemoryIntentCommand:
+    command = _intent_command(request_id=request_id)
+    return command.model_copy(
+        update={
+            "intent": command.intent.model_copy(
+                update={
+                    "source_event_id": source_event_id,
+                    "subject": "user",
+                    "predicate": "likes",
+                    "object": "oolong",
+                }
+            )
+        }
+    )
+
+
 def test_cmd_defaults():
     cmd = _intent_command(attributes={})
     assert cmd.kind == "memory_intent"
@@ -190,7 +210,18 @@ async def test_canonical_exact_fact_deduplicates_projection_but_keeps_evidence(
     tmp_path,
 ):
     backend = LockedBackend(FakeMemoryBackend())
-    kg = SimpleNamespace(add_triple=AsyncMock(return_value="triple-1"))
+    kg = SimpleNamespace(
+        add_triple=AsyncMock(return_value="triple-1"),
+        query_entity=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    subject="user",
+                    predicate="likes",
+                    object="oolong",
+                )
+            ]
+        ),
+    )
     canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
     first = _intent_command(request_id="confirm-1")
     first = first.model_copy(
@@ -230,6 +261,51 @@ async def test_canonical_exact_fact_deduplicates_projection_but_keeps_evidence(
     assert second_resource.endswith(":evidence:2")
     assert len(backend.inner.docs) == 1
     assert kg.add_triple.await_count == 1
+
+
+async def test_missing_canonical_drawer_is_reprojected_on_new_confirmation(
+    tmp_path,
+):
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = SimpleNamespace(
+        add_triple=AsyncMock(return_value="triple-1"),
+        query_entity=AsyncMock(),
+    )
+    canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    first = _structured_command("repair-drawer-1", source_event_id="turn-1")
+    second = _structured_command("repair-drawer-2", source_event_id="turn-2")
+    await apply_explicit_intent(backend, kg, first, canonical_facts=canonical)
+    backend.inner.docs.clear()
+
+    repaired = await apply_explicit_intent(
+        backend, kg, second, canonical_facts=canonical
+    )
+
+    assert repaired.startswith("memoryintent:fact:")
+    assert len(backend.inner.docs) == 1
+    assert kg.add_triple.await_count == 2
+    kg.query_entity.assert_not_awaited()
+
+
+async def test_missing_canonical_kg_is_reprojected_on_new_confirmation(tmp_path):
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = SimpleNamespace(
+        add_triple=AsyncMock(return_value="triple-1"),
+        query_entity=AsyncMock(return_value=[]),
+    )
+    canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    first = _structured_command("repair-kg-1", source_event_id="turn-1")
+    second = _structured_command("repair-kg-2", source_event_id="turn-2")
+    await apply_explicit_intent(backend, kg, first, canonical_facts=canonical)
+
+    repaired = await apply_explicit_intent(
+        backend, kg, second, canonical_facts=canonical
+    )
+
+    assert repaired.startswith("memoryintent:fact:")
+    assert len(backend.inner.docs) == 1
+    assert kg.add_triple.await_count == 2
+    kg.query_entity.assert_awaited_once()
 
 
 async def test_canonical_projection_remains_pending_until_all_projections_succeed(

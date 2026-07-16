@@ -7,6 +7,7 @@ from typing import Any
 from eidolon_sdk.memory import (
     KG_PREDICATE_VALUES,
     USER_CONFIRMED_ROOM_PREFIX,
+    MemoryIntent,
     MemoryIntentCommand,
 )
 
@@ -91,9 +92,20 @@ async def apply_explicit_intent(
         registration = await canonical_facts.register(intent)
         projection_identity = registration.assertion_id
         if not registration.projection_required:
-            return (
-                f"confirmed:{registration.assertion_id}:"
-                f"evidence:{registration.evidence_count}"
+            visible = await _canonical_projection_visible(
+                backend,
+                kg,
+                intent,
+                registration.assertion_id,
+            )
+            if visible:
+                return (
+                    f"confirmed:{registration.assertion_id}:"
+                    f"evidence:{registration.evidence_count}"
+                )
+            await canonical_facts.mark_projection_pending(
+                intent.memory_space_id,
+                registration.assertion_id,
             )
 
     fragment = MemoryFragment(
@@ -109,7 +121,7 @@ async def apply_explicit_intent(
             _optional_attribute(attributes, "source_instance_id") or cmd.issuer
         ),
         wing=wing,
-        room=f"{USER_CONFIRMED_ROOM_PREFIX}{intent.intent_id[-16:]}",
+        room=f"{USER_CONFIRMED_ROOM_PREFIX}{projection_identity[-16:]}",
         content=intent.raw_claim,
         memory_type=memory_type,
         importance=importance,
@@ -144,7 +156,7 @@ async def apply_explicit_intent(
             valid_to=None,
             confidence=intent.confidence,
             source_turn_id=(
-                f"canonical:{projection_identity}"
+                f"canonical:{projection_identity}:evidence:{intent.intent_id}"
                 if registration is not None
                 else intent.source_event_id
             ),
@@ -195,4 +207,29 @@ def _string_list_attribute(attributes: dict[str, Any], key: str) -> list[str]:
             for item in value
             if isinstance(item, str) and item.strip()
         )
+    )
+
+
+async def _canonical_projection_visible(
+    backend: Any,
+    kg: Any,
+    intent: MemoryIntent,
+    assertion_id: str,
+) -> bool:
+    drawer = await backend.get_by_source_turn_id(
+        intent.memory_space_id,
+        f"canonical:{assertion_id}",
+    )
+    if drawer is None:
+        return False
+    triples = await kg.query_entity(
+        intent.subject,
+        direction="outgoing",
+        include_sensitive=True,
+    )
+    return any(
+        row.subject == intent.subject
+        and row.predicate == intent.predicate
+        and row.object == intent.object
+        for row in triples
     )

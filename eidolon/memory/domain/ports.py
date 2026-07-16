@@ -176,6 +176,12 @@ class CanonicalFactStore(Protocol):
         assertion_id: str,
     ) -> None: ...
 
+    async def mark_projection_pending(
+        self,
+        memory_space_id: str,
+        assertion_id: str,
+    ) -> None: ...
+
 
 @runtime_checkable
 class CommandStatusReader(Protocol):

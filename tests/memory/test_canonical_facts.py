@@ -57,6 +57,10 @@ async def test_projection_is_required_until_marked_and_retry_is_idempotent(
     assert after_projection.projection_required is False
     assert after_projection.evidence_count == 1
 
+    await reopened.mark_projection_pending(MEMORY_SPACE_ID, first.assertion_id)
+    pending_again = await reopened.register(intent)
+    assert pending_again.projection_required is True
+
 
 @pytest.mark.asyncio
 async def test_new_confirmation_keeps_one_fact_and_adds_provenance(

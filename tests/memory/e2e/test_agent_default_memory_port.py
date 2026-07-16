@@ -397,6 +397,76 @@ async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_stat
                 and triple.get("object") == marker
             ]
             assert len(matching_triples) == 1
+
+            invalidated = _mcp_tool_json(
+                await session.call_tool(
+                    "eidolon_memory_kg_invalidate",
+                    {
+                        "subject": "self",
+                        "predicate": "likes",
+                        "object": marker,
+                        "wait_visible_seconds": 5.0,
+                    },
+                )
+            )
+            assert invalidated.get("status") == "applied"
+
+            repair_request_id = await port.assert_fact(
+                "e2e",
+                "e2e",
+                handle.user_id,
+                "self",
+                "likes",
+                marker,
+                source_event_id=f"turn-repair-{marker}",
+                tool_call_id=f"call-repair-{marker}",
+                confidence=0.99,
+            )
+            repair_status = None
+
+            async def _repair_applied() -> bool:
+                nonlocal repair_status
+                repair_status = _mcp_tool_json(
+                    await session.call_tool(
+                        "eidolon_memory_command_status",
+                        {"request_id": repair_request_id},
+                    )
+                )
+                return (
+                    isinstance(repair_status, dict)
+                    and repair_status.get("status") == "applied"
+                )
+
+            assert await _wait_for_true(_repair_applied, timeout_s=30)
+            assert str(repair_status.get("resource_id", "")).startswith(
+                "memoryintent:fact:"
+            )
+
+            repaired_list = _mcp_tool_json(
+                await session.call_tool(
+                    "eidolon_memory_list",
+                    {"limit": 100, "include_private": True},
+                )
+            )
+            repaired_values = [
+                str(record.get("value") or "")
+                for record in (repaired_list or {}).get("records") or []
+            ]
+            assert repaired_values.count(f"self likes {marker}") == 1
+
+            repaired_kg = _mcp_tool_json(
+                await session.call_tool(
+                    "eidolon_memory_kg_query_entity",
+                    {"name": "self"},
+                )
+            )
+            repaired_triples = [
+                triple
+                for triple in (repaired_kg or {}).get("triples") or []
+                if triple.get("predicate") == "likes"
+                and triple.get("object") == marker
+            ]
+            assert len(repaired_triples) == 1
     finally:
         await port.close()
         await bus.close()

@@ -88,6 +88,18 @@ class CanonicalFactLedger:
             assertion_id,
         )
 
+    async def mark_projection_pending(
+        self,
+        memory_space_id: str,
+        assertion_id: str,
+    ) -> None:
+        await asyncio.to_thread(
+            self._set_projection_state_sync,
+            memory_space_id,
+            assertion_id,
+            "pending",
+        )
+
     async def evidence_count(self, assertion_id: str) -> int:
         return await asyncio.to_thread(self._evidence_count_sync, assertion_id)
 
@@ -214,15 +226,29 @@ class CanonicalFactLedger:
         memory_space_id: str,
         assertion_id: str,
     ) -> None:
+        self._set_projection_state_sync(
+            memory_space_id,
+            assertion_id,
+            "projected",
+        )
+
+    def _set_projection_state_sync(
+        self,
+        memory_space_id: str,
+        assertion_id: str,
+        state: str,
+    ) -> None:
+        if state not in {"pending", "projected"}:
+            raise ValueError("invalid canonical projection state")
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             result = conn.execute(
                 """
                 UPDATE canonical_assertions
-                SET projection_state = 'projected', updated_at = ?
+                SET projection_state = ?, updated_at = ?
                 WHERE assertion_id = ? AND memory_space_id = ?
                 """,
-                (now, assertion_id, memory_space_id),
+                (state, now, assertion_id, memory_space_id),
             )
             if result.rowcount != 1:
                 raise LookupError("canonical assertion not found in memory space")
