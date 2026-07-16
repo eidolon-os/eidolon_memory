@@ -9,8 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from eidolon_sdk.memory import MemoryActorContext
 
-pytestmark = pytest.mark.asyncio
-
 
 def _ctx(memory_realm_id: str = "default.alice.default") -> MemoryActorContext:
     return MemoryActorContext(

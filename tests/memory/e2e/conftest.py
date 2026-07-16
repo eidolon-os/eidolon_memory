@@ -16,11 +16,13 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterator
+from typing import Any
 
 import httpx
 import nats
@@ -36,12 +38,11 @@ from eidolon_sdk.memory import (
     memory_space_storage_name,
 )
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _REPORTS_ROOT = _REPO_ROOT / "reports"
-_NATS_DATA_FALLBACK = Path.home() / "eidolon" / "data" / "nats-jetstream-e2e"
 
 
 def _e2e_memory_space_id(value: str) -> str:
@@ -65,7 +66,7 @@ def tail_file(path: Path, *, max_chars: int = 4000) -> str:
 # ─── nats-server lifecycle ─────────────────────────────────────────────────
 
 
-def _nats_port_free(port: int = 4222) -> bool:
+def _nats_port_free(port: int) -> bool:
     """Return True if a NATS server is NOT listening on ``port``."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.2)
@@ -76,37 +77,58 @@ def _nats_port_free(port: int = 4222) -> bool:
             return True
 
 
+def _unused_tcp_port() -> int:
+    """Ask the kernel for a loopback port for this isolated E2E session."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 @pytest.fixture(scope="session")
-def live_nats() -> Iterator[str]:
-    """Provide a live NATS JetStream broker on ``nats://127.0.0.1:4222``.
+def live_nats(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    """Provide an isolated NATS JetStream broker for this test session.
 
-    If one is already up (e.g. user's persistent dev server) we re-use it;
-    otherwise we ``subprocess.Popen("nats-server -js")`` and tear it down
-    at session end. Either way the URL is returned.
+    Reusing a developer's port 4222 and persistent JetStream directory made
+    the E2E suite mutate external consumer state and fail when a stale store
+    could not be reopened.  Every run now gets its own port, data directory,
+    and startup log.  An explicitly supplied ``EIDOLON_MEMORY_E2E_NATS_URL``
+    remains available for CI environments that manage the broker themselves.
     """
-    url = "nats://127.0.0.1:4222"
-    proc: subprocess.Popen[bytes] | None = None
+    external_url = os.environ.get("EIDOLON_MEMORY_E2E_NATS_URL", "").strip()
+    if external_url:
+        yield external_url
+        return
 
-    if _nats_port_free(4222):
-        # No one's listening — spin up our own.
-        nats_bin = shutil.which("nats-server")
-        if nats_bin is None:
-            pytest.skip("nats-server not installed; install via brew install nats-server")
-        _NATS_DATA_FALLBACK.mkdir(parents=True, exist_ok=True)
+    port = _unused_tcp_port()
+    url = f"nats://127.0.0.1:{port}"
+    proc: subprocess.Popen[bytes] | None = None
+    nats_bin = shutil.which("nats-server")
+    if nats_bin is None:
+        pytest.skip("nats-server not installed; install via brew install nats-server")
+    state_dir = tmp_path_factory.mktemp("e2e_nats")
+    log_path = state_dir / "nats-server.log"
+    with log_path.open("ab") as log_fp:
         proc = subprocess.Popen(
-            [nats_bin, "-js", "-p", "4222", "-sd", str(_NATS_DATA_FALLBACK)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            [nats_bin, "-js", "-a", "127.0.0.1", "-p", str(port), "-sd", str(state_dir)],
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        # Wait for it to bind (up to 10s)
-        for _ in range(50):
-            if not _nats_port_free(4222):
-                break
-            time.sleep(0.2)
-        else:
+    for _ in range(50):
+        if not _nats_port_free(port):
+            break
+        if proc.poll() is not None:
+            pytest.fail(
+                f"nats-server exited with {proc.returncode} before binding {port}.\n"
+                f"log tail:\n{tail_file(log_path)}"
+            )
+        time.sleep(0.2)
+    else:
+        if proc.poll() is None:
             proc.terminate()
-            pytest.fail("nats-server failed to bind 4222 after 10s")
+        pytest.fail(
+            f"nats-server failed to bind {port} after 10s.\nlog tail:\n{tail_file(log_path)}"
+        )
     try:
         yield url
     finally:
@@ -140,8 +162,12 @@ def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
             # polling so startup failures surface with the agent log tail.
             if response.status_code < 500:
                 return True
-        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError,
-                httpx.TimeoutException):
+        except (
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.RemoteProtocolError,
+            httpx.TimeoutException,
+        ):
             pass
         time.sleep(0.5)
     return False
@@ -210,12 +236,25 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
     # Pin the palace root to a dedicated test directory so e2e tests never
     # touch the user's real palaces and the fixture knows exactly where data
     # will land. Each test run gets its own root subdir for isolation.
-    palaces_root = tmp_path_factory.mktemp("e2e_palaces")
+    # Chroma's Rust compactor reproducibly raises SQLITE_IOERR_SHORT_READ
+    # (extended code 522) around the 17th write when a Palace lives under
+    # macOS's per-user /private/var/folders pytest temp root.  The identical
+    # 40-turn, two-Realm scenario is stable under /private/tmp.  Keep storage
+    # tests on an explicitly local, non-synced root while leaving callers an
+    # override for CI hosts.
+    safe_tmp_root = Path(os.environ.get("EIDOLON_MEMORY_E2E_TMPDIR", "/private/tmp")).expanduser()
+    safe_tmp_root.mkdir(parents=True, exist_ok=True)
+    palaces_root = Path(tempfile.mkdtemp(prefix="eidolon-memory-e2e-palaces-", dir=safe_tmp_root))
 
-    def _spawn(*, user_id: str, port: int, steward_mode: str = "noop",
-               env_overrides: dict[str, str] | None = None,
-               palace_root_override: Path | None = None,
-               extra_settings: dict[str, Any] | None = None) -> _AgentHandle:
+    def _spawn(
+        *,
+        user_id: str,
+        port: int,
+        steward_mode: str = "noop",
+        env_overrides: dict[str, str] | None = None,
+        palace_root_override: Path | None = None,
+        extra_settings: dict[str, Any] | None = None,
+    ) -> _AgentHandle:
         memory_space_id = _e2e_memory_space_id(user_id)
         palace_root = palace_root_override or palaces_root
         # The agent_runner stores each palace at
@@ -228,6 +267,17 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         palace_dir = palace_root / memory_space_storage_name(memory_space_id)
         if palace_dir.exists():
             shutil.rmtree(palace_dir)
+        # Keep SQLite/Chroma temporary files isolated per agent process as
+        # well as the persistent Palace itself.  On macOS, leaving child
+        # processes on pytest's shared /private/var/folders TMPDIR reproduces
+        # SQLITE_IOERR_SHORT_READ (522) during Chroma log compaction even
+        # when the Palace is under /private/tmp.  A per-Realm directory makes
+        # this dependency explicit and prevents two A/B processes from
+        # sharing the same temporary-file namespace.
+        process_tmp_dir = palace_root / ".process-tmp" / memory_space_storage_name(memory_space_id)
+        if process_tmp_dir.exists():
+            shutil.rmtree(process_tmp_dir)
+        process_tmp_dir.mkdir(parents=True, exist_ok=True)
         # Wipe any stale JetStream state for this user — prior crashes or
         # aborted runs leave pending messages that would otherwise bleed
         # into this spawn's pull subscription. ``_spawn`` is sync but the
@@ -240,6 +290,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                 if loop.is_running():
                     # We're inside the test's loop — spin a dedicated thread.
                     import threading
+
                     t = threading.Thread(
                         target=lambda: asyncio.new_event_loop().run_until_complete(
                             _delete_e2e_durables(live_nats, memory_space_id)
@@ -254,7 +305,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         except Exception:  # noqa: BLE001 - best-effort cleanup
             pass
 
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         log_dir = _REPORTS_ROOT / f"e2e_{memory_space_id}_{ts}"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "agent_runner.log"
@@ -270,10 +321,13 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         # Write a per-spawn settings yaml so tests can override steward.mode
         # without touching the user's local config/settings.yaml.
         import yaml
+
         settings_path = tmp_settings_dir / f"{memory_space_id}.yaml"
         settings_doc: dict[str, Any] = {
             "steward": {"mode": steward_mode},
             "mcp_http": {"host": "127.0.0.1", "port": port},
+            "mempalace": {"embedding_threads": 1},
+            "nats": {"url": live_nats},
             "runtime": {"palaces_root": str(palace_root)},
         }
         # If the test runs in LLM-steward mode, inherit the project's LLM
@@ -298,6 +352,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                         _deep_merge(dst[k], v)
                     else:
                         dst[k] = v
+
             _deep_merge(settings_doc, extra_settings)
         settings_path.write_text(
             yaml.safe_dump(settings_doc, allow_unicode=True),
@@ -306,6 +361,11 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
 
         env = {**os.environ}
         env["EIDOLON_MEMORY_SETTINGS_YAML"] = str(settings_path)
+        # Activate isolation in the parent before the child imports Chroma's
+        # native modules. Agent startup repeats this configuration as a guard.
+        env["EIDOLON_MEMORY_PROCESS_TMP_ROOT"] = str(process_tmp_dir.parent)
+        env["TMPDIR"] = str(process_tmp_dir)
+        env["SQLITE_TMPDIR"] = str(process_tmp_dir)
         # Forward LLM secret from config/.env if not already exported, so the
         # llm-mode tests have credentials without each test having to call
         # ``dotenv.load_dotenv`` manually.
@@ -348,6 +408,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
             nats_url=live_nats,
             palace_dir=palace_dir,
             log_path=log_path,
+            settings_path=settings_path,
             process=proc,
         )
         handles.append(handle)
@@ -367,13 +428,22 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                     h.process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
+    shutil.rmtree(palaces_root, ignore_errors=True)
 
 
 class _AgentHandle:
     """Handle returned by ``live_agent_runner`` fixture factory."""
 
-    __slots__ = ("user_id", "port", "mcp_url", "nats_url", "palace_dir",
-                 "log_path", "process")
+    __slots__ = (
+        "user_id",
+        "port",
+        "mcp_url",
+        "nats_url",
+        "palace_dir",
+        "log_path",
+        "settings_path",
+        "process",
+    )
 
     def __init__(
         self,
@@ -384,6 +454,7 @@ class _AgentHandle:
         nats_url: str,
         palace_dir: Path,
         log_path: Path,
+        settings_path: Path,
         process: subprocess.Popen,
     ) -> None:
         self.user_id = user_id
@@ -392,6 +463,7 @@ class _AgentHandle:
         self.nats_url = nats_url
         self.palace_dir = palace_dir
         self.log_path = log_path
+        self.settings_path = settings_path
         self.process = process
 
     def kill(self) -> None:
@@ -432,13 +504,14 @@ async def mcp_session():
 
     @asynccontextmanager
     async def _open(url: str) -> AsyncIterator[ClientSession]:
-        async with streamablehttp_client(
-            url,
-            httpx_client_factory=_local_http_client,
-        ) as (read, write, _):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
+        async with _local_http_client() as http_client:
+            async with streamable_http_client(
+                url,
+                http_client=http_client,
+            ) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    yield session
 
     yield _open
 
@@ -504,7 +577,7 @@ async def nats_publish_turn(
     turn = ConversationTurnPayload(
         turn_id=turn_id or uuid.uuid4().hex,
         context=context,
-        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        timestamp=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         user_text=user_text,
         assistant_text=assistant_text,
         metadata=metadata if metadata is not None else {},
@@ -554,7 +627,7 @@ def e2e_actor_context(
 
 
 def _now_iso_z() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _base_cmd(user_id: str, kind: str, request_id: str | None) -> dict[str, Any]:
@@ -589,13 +662,15 @@ async def nats_publish_kg_add_triple(
     violate the NATS-write contract).
     """
     payload = _base_cmd(user_id, "kg_add_triple", request_id)
-    payload.update({
-        "subject": subject,
-        "predicate": predicate,
-        "object": obj,
-        "confidence": confidence,
-        "adapter_name": adapter_name,
-    })
+    payload.update(
+        {
+            "subject": subject,
+            "predicate": predicate,
+            "object": obj,
+            "confidence": confidence,
+            "adapter_name": adapter_name,
+        }
+    )
     if valid_from is not None:
         payload["valid_from"] = valid_from
     if valid_to is not None:
@@ -620,11 +695,13 @@ async def nats_publish_kg_invalidate(
     same cmd subject as adds, dispatched on ``kind="kg_invalidate"``.
     """
     payload = _base_cmd(user_id, "kg_invalidate", request_id)
-    payload.update({
-        "subject": subject,
-        "predicate": predicate,
-        "object": obj,
-    })
+    payload.update(
+        {
+            "subject": subject,
+            "predicate": predicate,
+            "object": obj,
+        }
+    )
     if ended is not None:
         payload["ended"] = ended
     await _publish_command(nats_url, payload)
@@ -647,12 +724,14 @@ async def nats_publish_user_confirm(
     recall-pin path end to end.
     """
     payload = _base_cmd(user_id, "user_confirm_fact", request_id)
-    payload.update({
-        "issuer": "agent",
-        "text": text,
-        "wing": wing,
-        "memory_type": memory_type,
-    })
+    payload.update(
+        {
+            "issuer": "agent",
+            "text": text,
+            "wing": wing,
+            "memory_type": memory_type,
+        }
+    )
     await _publish_command(nats_url, payload)
     return str(payload["request_id"])
 

@@ -19,9 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import shutil
 import signal
-import sqlite3
 import subprocess
 import time
 from collections import deque
@@ -52,6 +50,7 @@ from eidolon.memory.infrastructure.palace_init import (
     ensure_palace_initialized,
     palace_is_initialized,
 )
+from eidolon.memory.infrastructure.process_temp import process_temp_subprocess_env
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -72,33 +71,6 @@ def _configure_process_logging() -> None:
 
 def _elapsed_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000.0, 3)
-
-
-def _backup_sqlite_database(source: Path, dest: Path) -> bool:
-    """Write a consistent SQLite backup of ``source`` to ``dest``.
-
-    Used for KG preservation around MemPalace's Chroma rebuild. SQLite's
-    backup API folds any WAL state into a standalone destination DB, unlike a
-    naive file copy of ``*.sqlite3``.
-    """
-    if not source.is_file():
-        return False
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    src = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
-    try:
-        dst = sqlite3.connect(dest)
-        try:
-            src.backup(dst)
-        finally:
-            dst.close()
-    finally:
-        src.close()
-    return True
-
-
-def _restore_sqlite_database(source: Path, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, dest)
 
 
 def _agent_cli_argv(user: UserEntry, palace_path: Path) -> list[str]:
@@ -154,11 +126,13 @@ class _Child:
         log_root: Path,
         *,
         kind: str = "agent",
+        env: dict[str, str] | None = None,
     ) -> None:
         self.user = user
         self.palace_path = palace_path
         self.log_root = log_root
         self.kind = kind
+        self.env = env
         self.proc: subprocess.Popen | None = None
         self.log_path: Path | None = None
         self._log_fh = None
@@ -192,6 +166,7 @@ class _Child:
             stdout=self._log_fh,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
+            env=self.env,
             start_new_session=True,
         )
         self.last_spawn_at = time.monotonic()
@@ -360,10 +335,6 @@ class Supervisor:
         if child is not None:
             await asyncio.to_thread(child.terminate, grace_seconds=30.0)
 
-        kg_path = palace_path / "knowledge_graph.sqlite3"
-        kg_backup_path = log_path.with_suffix(".knowledge_graph.sqlite3")
-        kg_backed_up = await asyncio.to_thread(_backup_sqlite_database, kg_path, kg_backup_path)
-
         cli = _resolve_mempalace_cli()
         cmd = [
             cli,
@@ -398,15 +369,39 @@ class Supervisor:
                 stdin=subprocess.DEVNULL,
                 env=mempalace_backend_env(self._settings),
             )
-            returncode = await proc.wait()
-            if returncode == 0 and kg_backed_up:
-                await asyncio.to_thread(_restore_sqlite_database, kg_backup_path, kg_path)
+            repair_returncode = await proc.wait()
+            returncode = repair_returncode
+            embedder_identity_recorded = False
+            embedding_model = self._settings.mempalace.embedding_model.strip()
+            if returncode == 0 and embedding_model:
+                identity_cmd = [
+                    cli,
+                    "--backend",
+                    backend,
+                    "--palace",
+                    str(palace_path),
+                    "palace",
+                    "set-embedder",
+                    "--model",
+                    embedding_model,
+                ]
                 fh.write(
                     (
                         f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
-                        f"kg-restored: {kg_path}\n"
+                        f"running: {' '.join(identity_cmd)}\n"
                     ).encode()
                 )
+                identity_proc = await asyncio.create_subprocess_exec(
+                    *identity_cmd,
+                    stdout=fh,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    env=mempalace_backend_env(self._settings),
+                )
+                identity_returncode = await identity_proc.wait()
+                embedder_identity_recorded = identity_returncode == 0
+                if identity_returncode != 0:
+                    returncode = identity_returncode
             fh.write(
                 (
                     f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] exit: {returncode}\n"
@@ -426,8 +421,11 @@ class Supervisor:
             "palace_path": str(palace_path),
             "backend": backend,
             "returncode": returncode,
+            "repair_returncode": repair_returncode,
             "log_path": str(log_path),
-            "kg_preserved": kg_backed_up and returncode == 0,
+            "kg_preserved": repair_returncode == 0,
+            "kg_preservation_owner": "mempalace-3.5.0-repair",
+            "embedder_identity_recorded": embedder_identity_recorded,
         }
 
     # -------------------- config loading --------------------
@@ -567,7 +565,13 @@ class Supervisor:
                 continue
             user = by_id[user_id]
             self._init_failures.pop(user.id, None)
-            child = _Child(user, self._palace_for(user), self._log_root)
+            palace = self._palace_for(user)
+            child = _Child(
+                user,
+                palace,
+                self._log_root,
+                env=process_temp_subprocess_env(self._settings, palace, user.id),
+            )
             child.spawn()
             self._children[user.id] = child
             # Phase 4 — opt-in per-user consolidator. Spawn it alongside the
@@ -831,7 +835,13 @@ class Supervisor:
             else:
                 existing._close_log()
             self._children.pop(user_def.id, None)
-        child = _Child(user_def, self._palace_for(user_def), self._log_root)
+        palace = self._palace_for(user_def)
+        child = _Child(
+            user_def,
+            palace,
+            self._log_root,
+            env=process_temp_subprocess_env(self._settings, palace, user_def.id),
+        )
         try:
             started = time.perf_counter()
             child.spawn()

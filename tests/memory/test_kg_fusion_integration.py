@@ -18,8 +18,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from eidolon_sdk.memory import MemoryActorContext, envelope_memory_payload
 
-pytestmark = pytest.mark.asyncio
-
 MEMORY_SPACE_ID = "default.alice.default"
 
 

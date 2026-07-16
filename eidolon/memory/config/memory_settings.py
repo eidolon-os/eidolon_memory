@@ -123,6 +123,10 @@ class RuntimeConfig(BaseModel):
     """
 
     palaces_root: str = ""  # default ~/eidolon/memory/mempalaces; env EIDOLON_MEMORY_PALACES_ROOT
+    # Per-Realm SQLite/Chroma temporary files. Empty keeps them beside the
+    # Palace root under ``.process-tmp``; env EIDOLON_MEMORY_PROCESS_TMP_ROOT
+    # wins. The supervisor activates this before the child imports Chroma.
+    process_tmp_root: str = ""
     log_dir: str = ""  # default ~/eidolon/logs/memory; env EIDOLON_MEMORY_LOG_DIR
     run_dir: str = ""  # default ~/eidolon/run;    env EIDOLON_MEMORY_RUN_DIR
     read: ReadRuntimeConfig = Field(default_factory=ReadRuntimeConfig)
@@ -132,9 +136,12 @@ class RuntimeConfig(BaseModel):
 
 
 class ChromadbConfig(BaseModel):
-    """SQLite/Chroma persistence tuning (D3 半写防护)."""
+    """Legacy compatibility surface; Chroma now owns its SQLite pragmas."""
 
-    synchronous: str = "FULL"  # FULL = fsync each commit; chroma write +30% latency, safer
+    # Retained so existing YAML still parses. Do not apply this through an
+    # external sqlite3 connection; Chroma 1.5.9 manages its own synchronous
+    # and journal settings.
+    synchronous: str = "FULL"
 
 
 class MempalaceBackendConfig(BaseModel):
@@ -151,6 +158,7 @@ class MempalaceBackendConfig(BaseModel):
     embedding_model: str = ""
     embedding_device: str = ""
     embedding_model_dir: str = ""
+    embedding_threads: int = Field(default=0, ge=0)
     qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_namespace: str = "eidolon"
     qdrant_timeout_seconds: float = 10.0

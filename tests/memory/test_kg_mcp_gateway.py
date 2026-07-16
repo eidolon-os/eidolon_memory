@@ -7,8 +7,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 def mcp_with_kg(tmp_path: Path):

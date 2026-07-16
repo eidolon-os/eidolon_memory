@@ -13,8 +13,6 @@ from eidolon_sdk.memory import ConversationTurnPayload, build_memory_actor_conte
 
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 
-pytestmark = pytest.mark.asyncio
-
 
 def _turn(i: int) -> ConversationTurnPayload:
     return ConversationTurnPayload(

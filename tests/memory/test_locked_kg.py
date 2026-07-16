@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 def kg_pair(tmp_path: Path):

@@ -18,7 +18,6 @@ flags (``is_alive``, ``returncode``) are emulated on the mock.
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -177,9 +176,9 @@ def _patch_registry(monkeypatch, users: list[dict]) -> UsersConfig:
     return cfg
 
 
-def _build_supervisor(tmp_path: Path) -> Supervisor:
-    # eager_init=False — Supervisor.start would otherwise try to spawn the
-    # palace-init helper subprocess (which we don't want under unit-test mocks).
+def _build_supervisor(tmp_path: Path, *, eager_init: bool = False) -> Supervisor:
+    # eager_init defaults false — most unit tests don't want the palace-init
+    # helper subprocess. Tests for init scheduling opt in explicitly.
     settings = load_memory_settings()
     settings = settings.model_copy(
         update={
@@ -188,7 +187,7 @@ def _build_supervisor(tmp_path: Path) -> Supervisor:
             )
         }
     )
-    return Supervisor(settings, eager_init=False)
+    return Supervisor(settings, eager_init=eager_init)
 
 
 async def test_supervisor_skips_consolidator_when_disabled(
@@ -213,8 +212,12 @@ async def test_supervisor_skips_consolidator_when_disabled(
         assert sup._consolidators == {}
         # subprocess.Popen was called exactly once — only for agent_runner.
         assert _patched_popen.call_count == 1
-        agent_argv = _patched_popen.call_args_list[0].args[0]
+        agent_call = _patched_popen.call_args_list[0]
+        agent_argv = agent_call.args[0]
         assert agent_argv[0] == "eidolon-memory-agent"
+        agent_env = agent_call.kwargs["env"]
+        assert agent_env["TMPDIR"] == agent_env["SQLITE_TMPDIR"]
+        assert Path(agent_env["TMPDIR"]).is_dir()
     finally:
         await sup.stop()
 
@@ -229,6 +232,8 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     """
     _patch_registry(monkeypatch, [])
     sup = _build_supervisor(tmp_path)
+    sup._settings.mempalace.embedding_model = "embeddinggemma"
+    sup._settings.mempalace.embedding_device = "cpu"
     user = UserEntry(
         id=ALICE_SPACE,
         port=9001,
@@ -236,23 +241,14 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     )
     palace_path = sup.palace_path_for(user)
     palace_path.mkdir(parents=True)
-    kg_path = palace_path / "knowledge_graph.sqlite3"
-    conn = sqlite3.connect(kg_path)
-    try:
-        conn.execute("CREATE TABLE marker (value TEXT)")
-        conn.execute("INSERT INTO marker VALUES ('kept')")
-        conn.commit()
-    finally:
-        conn.close()
-    captured: dict[str, object] = {}
+    captured: list[tuple[list[str], dict[str, object]]] = []
 
     class _Proc:
         async def wait(self) -> int:
             return 0
 
     async def _fake_exec(*cmd: str, **kwargs: object) -> _Proc:
-        captured["cmd"] = list(cmd)
-        captured["kwargs"] = kwargs
+        captured.append((list(cmd), dict(kwargs)))
         return _Proc()
 
     monkeypatch.setattr(
@@ -268,8 +264,11 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     result = await sup.rebuild_memory_index(user, log_path=tmp_path / "repair.log")
 
     assert result["returncode"] == 0
+    assert result["repair_returncode"] == 0
     assert result["kg_preserved"] is True
-    assert captured["cmd"] == [
+    assert result["kg_preservation_owner"] == "mempalace-3.5.0-repair"
+    assert result["embedder_identity_recorded"] is True
+    assert captured[0][0] == [
         "/venv/bin/mempalace",
         "--backend",
         "chroma",
@@ -281,16 +280,26 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
         "--archive-existing",
         "--yes",
     ]
-    assert (tmp_path / "repair.knowledge_graph.sqlite3").is_file()
-    conn = sqlite3.connect(kg_path)
-    try:
-        assert conn.execute("SELECT value FROM marker").fetchone()[0] == "kept"
-    finally:
-        conn.close()
-    kwargs = captured["kwargs"]
+    assert captured[1][0] == [
+        "/venv/bin/mempalace",
+        "--backend",
+        "chroma",
+        "--palace",
+        str(palace_path),
+        "palace",
+        "set-embedder",
+        "--model",
+        "embeddinggemma",
+    ]
+    assert not (tmp_path / "repair.knowledge_graph.sqlite3").exists()
+    kwargs = captured[0][1]
     assert isinstance(kwargs, dict)
     assert kwargs["stderr"] == subprocess.STDOUT
     assert kwargs["stdin"] == subprocess.DEVNULL
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["MEMPALACE_EMBEDDING_MODEL"] == "embeddinggemma"
+    assert env["MEMPALACE_EMBEDDING_DEVICE"] == "cpu"
 
 
 async def test_supervisor_spawns_consolidator_when_enabled(
@@ -405,8 +414,7 @@ async def test_start_spawns_ready_user_before_slow_init_finishes(
 
     monkeypatch.setattr(_Child, "spawn", _spawn_spy)
 
-    settings = load_memory_settings()
-    sup = Supervisor(settings, eager_init=True)
+    sup = _build_supervisor(tmp_path, eager_init=True)
     start_task = asyncio.create_task(sup.start())
     try:
         await asyncio.wait_for(fast_spawned.wait(), timeout=0.5)
@@ -466,8 +474,7 @@ async def test_reconcile_spawns_ready_user_before_slow_init_finishes(
 
     monkeypatch.setattr(_Child, "spawn", _spawn_spy)
 
-    settings = load_memory_settings()
-    sup = Supervisor(settings, eager_init=True)
+    sup = _build_supervisor(tmp_path, eager_init=True)
     reconcile_task = asyncio.create_task(sup._reconcile())
     try:
         await asyncio.wait_for(fast_spawned.wait(), timeout=0.5)
@@ -548,9 +555,8 @@ async def test_reconcile_retries_palace_init_failure(
         "eidolon.memory.entrypoints.supervisor.ensure_palace_initialized",
         _fake_init,
     )
-    settings = load_memory_settings()
-    settings.supervisor.restart_backoff_seconds = [0]
-    sup = Supervisor(settings, eager_init=True)
+    sup = _build_supervisor(tmp_path, eager_init=True)
+    sup._settings.supervisor.restart_backoff_seconds = [0]
     try:
         await sup._reconcile()
         assert ALICE_SPACE not in sup._children

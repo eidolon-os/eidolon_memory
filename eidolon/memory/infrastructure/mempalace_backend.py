@@ -47,6 +47,8 @@ def mempalace_backend_env(
     embedding_model_dir = settings.mempalace.embedding_model_dir.strip()
     if embedding_model_dir:
         env["MEMPALACE_EMBEDDING_MODEL_DIR"] = str(Path(embedding_model_dir).expanduser())
+    if settings.mempalace.embedding_threads > 0:
+        env["MEMPALACE_EMBEDDING_THREADS"] = str(settings.mempalace.embedding_threads)
 
     if backend == "qdrant":
         if settings.mempalace.qdrant_url:

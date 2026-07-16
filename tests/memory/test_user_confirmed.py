@@ -32,8 +32,6 @@ from eidolon.memory.application.turn_processor import (
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.wire import MemoryWireRecord
 
-pytestmark = pytest.mark.asyncio
-
 MEMORY_SPACE_ID = "r:alice:default"
 
 

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any
 
 from eidolon.memory.application.query_embedding import embed_query_vector
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
+from eidolon.memory.infrastructure.mempalace_compat import (
+    collection_metric,
+    distance_similarity,
+    first_result_list,
+)
+from eidolon.memory.infrastructure.mempalace_hnsw import probe_hnsw_safety
 
 
 def search_memories_shared_embedding(
@@ -22,6 +27,17 @@ def search_memories_shared_embedding(
     collection_name: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search multiple wings using a single precomputed query embedding."""
+    hnsw_safety = probe_hnsw_safety(palace_path, collection_name)
+    if hnsw_safety.vector_disabled:
+        return _search_sqlite_fallback(
+            query,
+            palace_path,
+            wings=wings,
+            room=room,
+            n_results=n_results,
+            collection_name=collection_name,
+        )
+
     try:
         from mempalace.palace import get_collection
     except ImportError as exc:
@@ -35,7 +51,7 @@ def search_memories_shared_embedding(
 
     try:
         drawers_col = get_collection(palace_path, collection_name=collection_name, create=False)
-        metric = _metric_for_collection(drawers_col)
+        metric = collection_metric(drawers_col)
         where = _combined_where(wings, room)
         limit = max(n_results * max(3, len(wings) * 3), n_results)
         try:
@@ -86,6 +102,63 @@ def search_memories_shared_embedding(
     return hits[: max(n_results * len(wings), n_results)]
 
 
+def _search_sqlite_fallback(
+    query: str,
+    palace_path: str,
+    *,
+    wings: list[str],
+    room: str | None,
+    n_results: int,
+    collection_name: str | None,
+) -> list[dict[str, Any]]:
+    """Use MemPalace's SQLite BM25 path without opening an unsafe HNSW segment."""
+
+    try:
+        from mempalace.searcher import search_memories
+    except ImportError as exc:
+        raise MemoryBackendUnavailable("mempalace package is not installed") from exc
+
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for wing in wings or [None]:
+        payload = search_memories(
+            query=query,
+            palace_path=palace_path,
+            wing=wing,
+            room=room,
+            n_results=n_results,
+            vector_disabled=True,
+            collection_name=collection_name,
+        )
+        if isinstance(payload, dict) and payload.get("error"):
+            raise MemoryBackendUnavailable(str(payload["error"]))
+        rows = payload.get("results", []) if isinstance(payload, dict) else []
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            key = (
+                str(row.get("text") or ""),
+                str(row.get("wing") or wing or ""),
+                str(row.get("room") or ""),
+                str(row.get("source_path") or row.get("source_file") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(row)
+
+    def _rank(row: dict[str, Any]) -> float:
+        for key in ("hybrid_score", "bm25_score", "similarity"):
+            value = row.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+        return 0.0
+
+    hits.sort(key=_rank, reverse=True)
+    return hits[: max(n_results * max(1, len(wings)), n_results)]
+
+
 def _combined_where(wings: list[str], room: str | None) -> dict[str, Any] | None:
     if not wings and not room:
         return None
@@ -120,34 +193,8 @@ def _query_collection(
     return collection.query(**kwargs)
 
 
-def _metric_for_collection(collection: Any) -> str:
-    try:
-        from mempalace.searcher import _metric_for_collection as upstream_metric_for_collection
-
-        return upstream_metric_for_collection(collection)
-    except Exception:
-        try:
-            metric = getattr(collection, "distance_metric", "cosine")
-        except Exception:
-            return "cosine"
-        metric = str(metric or "cosine").lower()
-        return metric if metric in {"cosine", "l2", "ip"} else "cosine"
-
-
 def _distance_to_similarity(distance: float | None, metric: str = "cosine") -> float:
-    try:
-        from mempalace.searcher import _distance_to_similarity as upstream_distance_to_similarity
-
-        return float(upstream_distance_to_similarity(distance, metric))
-    except Exception:
-        if distance is None:
-            return 0.0
-        metric = (metric or "cosine").lower()
-        if metric == "l2":
-            return 1.0 / (1.0 + max(0.0, float(distance)))
-        if metric == "ip":
-            return 1.0 / (1.0 + math.exp(min(60.0, float(distance))))
-        return max(0.0, 1.0 - float(distance))
+    return distance_similarity(distance, metric)
 
 
 def _apply_distance_boost(distance: float, boost: float, metric: str) -> float:
@@ -177,8 +224,6 @@ def _closet_boosts(
 ) -> dict[str, tuple]:
     try:
         from mempalace.palace import get_closets_collection
-        from mempalace.searcher import _first_or_empty
-
         closets_col = get_closets_collection(palace_path, create=False)
         try:
             closet_results = _query_collection(
@@ -199,9 +244,9 @@ def _closet_boosts(
         out: dict[str, tuple] = {}
         for rank, (cdoc, cmeta, cdist) in enumerate(
             zip(
-                _first_or_empty(closet_results, "documents"),
-                _first_or_empty(closet_results, "metadatas"),
-                _first_or_empty(closet_results, "distances"),
+                first_result_list(closet_results, "documents"),
+                first_result_list(closet_results, "metadatas"),
+                first_result_list(closet_results, "distances"),
             )
         ):
             cmeta = cmeta or {}
@@ -225,16 +270,14 @@ def _score_results(
     post_filter: bool,
     metric: str = "cosine",
 ) -> list[dict[str, Any]]:
-    from mempalace.searcher import _first_or_empty
-
     closet_rank_boosts = [0.40, 0.25, 0.15, 0.08, 0.04]
     closet_distance_cap = 1.5
 
     scored: list[dict[str, Any]] = []
     for doc, meta, dist in zip(
-        _first_or_empty(drawer_results, "documents"),
-        _first_or_empty(drawer_results, "metadatas"),
-        _first_or_empty(drawer_results, "distances"),
+        first_result_list(drawer_results, "documents"),
+        first_result_list(drawer_results, "metadatas"),
+        first_result_list(drawer_results, "distances"),
     ):
         meta = meta or {}
         if post_filter and not _matches_scope(meta, wings=wings, room=room):

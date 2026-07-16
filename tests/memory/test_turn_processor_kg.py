@@ -12,9 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from eidolon_sdk.memory import envelope_memory_payload
 
-pytestmark = pytest.mark.asyncio
-
-
 # ─── Test fixtures ────────────────────────────────────────────────────────
 
 
@@ -224,7 +221,9 @@ async def test_low_confidence_triples_skipped(settings, backend, kg):
         should_write=True, reason="",
         triples=[
             KgTripleAction(subject="self", predicate="likes", object="tea", confidence=0.9),
-            KgTripleAction(subject="self", predicate="likes", object="wine", confidence=0.4),  # < 0.6
+            KgTripleAction(
+                subject="self", predicate="likes", object="wine", confidence=0.4
+            ),  # < 0.6
         ],
     )
     msg = _stub_msg(_turn_payload())
@@ -252,7 +251,11 @@ async def test_invalidation_applies_before_new_triple(settings, backend, kg):
     # Seed an existing "likes coffee" via a prior turn.
     seed_decision = StewardDecision(
         should_write=True, reason="",
-        triples=[KgTripleAction(subject="self", predicate="likes", object="coffee", confidence=0.95)],
+        triples=[
+            KgTripleAction(
+                subject="self", predicate="likes", object="coffee", confidence=0.95
+            )
+        ],
     )
     msg1 = _stub_msg(_turn_payload(turn_id="seed"))
     await process_turn_message(

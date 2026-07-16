@@ -1,4 +1,4 @@
-"""WAL pragma helpers (D1: simplified module, no error-classification helpers)."""
+"""Checkpoint helper for Eidolon-owned SQLite databases."""
 
 from __future__ import annotations
 
@@ -7,9 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
+from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.infrastructure.chroma_refresh import (
     checkpoint_sqlite_wal,
-    ensure_sqlite_wal,
 )
 
 
@@ -22,21 +23,24 @@ def _make_sqlite(tmp_path: Path) -> Path:
     return p
 
 
-def test_ensure_sqlite_wal_sets_mode_and_synchronous(tmp_path: Path) -> None:
-    p = _make_sqlite(tmp_path)
-    info = ensure_sqlite_wal(str(p), synchronous="FULL")
-    assert info["journal_mode"].lower() == "wal"
-    assert info["synchronous"] == "FULL"
+def test_backend_construction_does_not_mutate_chroma_journal_mode(tmp_path: Path) -> None:
+    sqlite_path = _make_sqlite(tmp_path)
+    with sqlite3.connect(sqlite_path) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone() == ("delete",)
 
+    settings = MemorySettings()
+    settings.chromadb.synchronous = "OFF"  # legacy config must remain inert
+    MemPalacePythonBackend(settings, str(tmp_path), memory_space_id="realm-a")
 
-def test_ensure_sqlite_wal_missing_file(tmp_path: Path) -> None:
-    info = ensure_sqlite_wal(str(tmp_path / "nope.sqlite3"))
-    assert info["journal_mode"] == "missing"
+    with sqlite3.connect(sqlite_path) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone() == ("delete",)
 
 
 @pytest.mark.parametrize("mode", ["PASSIVE", "TRUNCATE"])
 def test_checkpoint_sqlite_wal_runs(tmp_path: Path, mode: str) -> None:
     p = _make_sqlite(tmp_path)
-    ensure_sqlite_wal(str(p))
+    conn = sqlite3.connect(str(p))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
     # Should not raise
     checkpoint_sqlite_wal(str(p), mode=mode)

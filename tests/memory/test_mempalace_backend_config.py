@@ -63,6 +63,24 @@ def test_embedding_env_is_applied() -> None:
     assert env["MEMPALACE_EMBEDDING_MODEL_DIR"] == "/models/embeddinggemma"
 
 
+def test_embedding_threads_env_is_applied() -> None:
+    settings = MemorySettings.model_validate(
+        {"mempalace": {"embedding_threads": 3}}
+    )
+
+    env = mempalace_backend_env(settings, base={})
+
+    assert env["MEMPALACE_EMBEDDING_THREADS"] == "3"
+
+
+def test_embedding_threads_auto_leaves_native_default_unset() -> None:
+    settings = MemorySettings()
+
+    env = mempalace_backend_env(settings, base={})
+
+    assert "MEMPALACE_EMBEDDING_THREADS" not in env
+
+
 def test_backend_artifacts_and_integrity_targets(tmp_path: Path) -> None:
     assert backend_artifact_path(tmp_path, "chroma") == tmp_path / "chroma.sqlite3"
     assert backend_artifact_path(tmp_path, "qdrant") == tmp_path / "qdrant_backend.json"

@@ -16,7 +16,6 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest
 from eidolon_sdk.memory import (
     ConversationTurnPayload,
     MemoryActorContext,
@@ -31,8 +30,6 @@ from eidolon.memory.application.turn_processor import process_turn_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.steward import StewardDecision
-
-pytestmark = pytest.mark.asyncio
 
 MEMORY_SPACE_ID = "default.alice.default"
 

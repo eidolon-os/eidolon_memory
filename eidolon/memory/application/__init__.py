@@ -1,20 +1,10 @@
-"""Application layer: recall + writes + steward (D1)."""
+"""Application layer package.
 
-from eidolon.memory.application.eidolon_data_runtime import (
-    build_eidolon_data_memory_engine,
-    open_eidolon_data_store,
-)
-from eidolon.memory.application.ingest import ingest_fragment, ingest_memory_fragment
-from eidolon.memory.application.livekit_recall import LiveKitRecallService
-from eidolon.memory.application.steward import NoOpSteward
-from eidolon.memory.application.turn_processor import process_turn_message
+Import concrete modules instead of re-exporting them here.  Eager package-level
+imports made ``application.query_embedding`` load ``livekit_recall`` which loads
+``public_recall`` and then loops back through ``mempalace_fast_search``.  The
+cycle was order-dependent: the full suite happened to pass while the focused
+fast-search contract could not even be collected.
+"""
 
-__all__ = [
-    "LiveKitRecallService",
-    "NoOpSteward",
-    "build_eidolon_data_memory_engine",
-    "ingest_fragment",
-    "ingest_memory_fragment",
-    "open_eidolon_data_store",
-    "process_turn_message",
-]
+__all__: list[str] = []

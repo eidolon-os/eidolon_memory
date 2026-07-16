@@ -79,6 +79,7 @@ from eidolon.memory.infrastructure.nats.names import memory_consumer_name, nats_
 from eidolon.memory.infrastructure.nats.query import memory_list_drawers_query_subject
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
+from eidolon.memory.infrastructure.process_temp import configure_process_temp
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 from eidolon.memory.support.logging import get_logger
 
@@ -158,7 +159,6 @@ async def _nats_subscriber_loop(
     settings: MemorySettings,
     backend: Any,
     kg: Any,
-    palace_sqlite: str | None,
     kg_sqlite: str,
     stop: asyncio.Event,
     ready: asyncio.Event | None = None,
@@ -245,12 +245,10 @@ async def _nats_subscriber_loop(
             if pending < sync_every:
                 continue
             try:
+
                 async def _checkpoint_targets() -> None:
-                    # G4: local SQLite backends are WAL — checkpoint when present.
-                    if palace_sqlite:
-                        await asyncio.to_thread(
-                            checkpoint_sqlite_wal, palace_sqlite, mode="PASSIVE"
-                        )
+                    # KG is Eidolon-owned SQLite. Chroma's native client owns
+                    # chroma.sqlite3 and its compaction lifecycle exclusively.
                     await asyncio.to_thread(checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE")
                     await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
 
@@ -395,9 +393,7 @@ async def _nats_subscriber_loop(
                 # Only inspect the FINISHED tasks: FIRST_EXCEPTION returns with
                 # the others still pending, and ``.exception()`` on a pending
                 # task raises InvalidStateError — which would mask the real error.
-                done, _pending = await asyncio.wait(
-                    workers, return_when=asyncio.FIRST_EXCEPTION
-                )
+                done, _pending = await asyncio.wait(workers, return_when=asyncio.FIRST_EXCEPTION)
                 for task in done:
                     if not task.cancelled() and task.exception() is not None:
                         raise task.exception()
@@ -438,8 +434,6 @@ def _compose_starlette_lifespan(
     palace_path: str,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
-    backend_name = selected_mempalace_backend(settings)
-    palace_sqlite = str(Path(palace_path) / "chroma.sqlite3") if backend_name == "chroma" else None
     kg_sqlite = str(Path(palace_path) / "knowledge_graph.sqlite3")
     stop_event = asyncio.Event()
     nats_ready_event = asyncio.Event()
@@ -479,7 +473,6 @@ def _compose_starlette_lifespan(
                     settings=settings,
                     backend=backend,
                     kg=kg,
-                    palace_sqlite=palace_sqlite,
                     kg_sqlite=kg_sqlite,
                     stop=stop_event,
                     ready=nats_ready_event,
@@ -556,6 +549,8 @@ def main(argv: list[str] | None = None) -> None:
     except PalaceLocationError as exc:
         log.error("agent_runner_unsafe_palace_location", error=str(exc))
         raise
+
+    configure_process_temp(settings, palace_path, memory_space_id)
 
     step_started = time.perf_counter()
     ensure_palace_initialized(

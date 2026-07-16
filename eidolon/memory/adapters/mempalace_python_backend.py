@@ -8,7 +8,6 @@ import json
 import math
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from eidolon.memory.adapters.search_payload import parse_search_tool_payload
@@ -21,8 +20,8 @@ from eidolon.memory.domain.errors import (
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.wire import MemoryWireRecord, parse_memory_datetime
-from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
+from eidolon.memory.infrastructure.mempalace_hnsw import probe_hnsw_safety
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -35,10 +34,9 @@ def _now_iso() -> str:
 class MemPalacePythonBackend(MemoryBackend):
     """Maps Eidolon memory operations to MemPalace's Python package.
 
-    D1: applies ``synchronous=FULL`` (configurable via ``settings.chromadb``) on
-    construction so chroma's SQLite commits fsync — required for hard-kill
-    durability since writes are async (NATS-driven) and a 30% commit overhead is
-    cheap in this workload.
+    Chroma exclusively owns the SQLite journal and compaction lifecycle. Eidolon
+    must not mutate or checkpoint ``chroma.sqlite3`` through a second SQLite
+    connection while the native client is active.
 
     ``lock`` is None on this raw adapter — it's meant to be wrapped by
     ``LockedBackend`` (which adds the per-palace asyncio.Lock). Direct use
@@ -63,20 +61,6 @@ class MemPalacePythonBackend(MemoryBackend):
         # recall's visibility gate (which compares against the caller's space)
         # doesn't reject every vector hit. See parse_search_tool_payload.
         self._memory_space_id = memory_space_id
-        self._apply_chromadb_pragmas()
-
-    def _apply_chromadb_pragmas(self) -> None:
-        if selected_mempalace_backend(self._settings) != "chroma":
-            return
-        sqlite_path = Path(self._palace) / "chroma.sqlite3"
-        if not sqlite_path.is_file():
-            return  # palace not yet initialized; agent_runner lazy-init will handle it
-        sync = (self._settings.chromadb.synchronous or "FULL").upper()
-        try:
-            info = ensure_sqlite_wal(str(sqlite_path), synchronous=sync)
-            log.info("mempalace_chroma_pragmas_applied", palace=self._palace, **info)
-        except Exception as exc:  # PRAGMA failures are non-fatal
-            log.warning("mempalace_chroma_pragmas_failed", palace=self._palace, error=str(exc))
 
     async def search(
         self,
@@ -125,12 +109,21 @@ class MemPalacePythonBackend(MemoryBackend):
         except ImportError as exc:
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
 
+        hnsw_safety = probe_hnsw_safety(self._palace)
+        if hnsw_safety.vector_disabled:
+            log.warning(
+                "mempalace_hnsw_vector_disabled",
+                palace=self._palace,
+                status=hnsw_safety.status,
+                reason=hnsw_safety.message,
+            )
         data = search_memories(
             query=query,
             palace_path=self._palace,
             wing=wing,
             room=room,
             n_results=n_results,
+            vector_disabled=hnsw_safety.vector_disabled,
         )
         if isinstance(data, dict) and data.get("error"):
             raise MemoryBackendUnavailable(str(data.get("error")))

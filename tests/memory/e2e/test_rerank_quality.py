@@ -153,66 +153,67 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
     async with mcp_session(h_off.mcp_url) as s_off:
         n_off = await _wait_for_fragments(s_off, "rerank_off")
 
-    async with mcp_session(h_on.mcp_url) as s_on, mcp_session(h_off.mcp_url) as s_off:
-        # Score both agents on the same ground-truth set.
-        hits_on_top1 = 0
-        hits_off_top1 = 0
-        hits_on_top3 = 0
-        hits_off_top3 = 0
-        for query, expected in ground_truth:
-            res_on  = await _recall_top_values(s_on,  ctx_on,  query=query, top_k=3)
-            res_off = await _recall_top_values(s_off, ctx_off, query=query, top_k=3)
-            if res_on and _matches(res_on[:1], expected):
-                hits_on_top1 += 1
-            if res_off and _matches(res_off[:1], expected):
-                hits_off_top1 += 1
-            if _matches(res_on, expected):
-                hits_on_top3 += 1
-            if _matches(res_off, expected):
-                hits_off_top3 += 1
+    async def _score(mcp_url: str, context) -> tuple[int, int]:
+        """Score one Palace at a time so quality A/B is not a load test."""
+        hits_top1 = 0
+        hits_top3 = 0
+        async with mcp_session(mcp_url) as session:
+            for query, expected in ground_truth:
+                rows = await _recall_top_values(session, context, query=query, top_k=3)
+                if rows and _matches(rows[:1], expected):
+                    hits_top1 += 1
+                if _matches(rows, expected):
+                    hits_top3 += 1
+        return hits_top1, hits_top3
 
-        total = len(ground_truth)
-        rate_on_1 = hits_on_top1 / total
-        rate_off_1 = hits_off_top1 / total
-        rate_on_3 = hits_on_top3 / total
-        rate_off_3 = hits_off_top3 / total
+    # Score the same ground-truth set sequentially.  Running both embedded
+    # Chroma palaces at full query rate in one context manager turns this
+    # quality contract into an accidental cross-Realm compaction stress test.
+    hits_on_top1, hits_on_top3 = await _score(h_on.mcp_url, ctx_on)
+    hits_off_top1, hits_off_top3 = await _score(h_off.mcp_url, ctx_off)
 
-        report = (
-            f"\n=== Phase 1 rerank e2e (n_queries={total}) ===\n"
-            f"  top-1 hit rate: rerank_on={rate_on_1:.2%}  rerank_off={rate_off_1:.2%}\n"
-            f"  top-3 hit rate: rerank_on={rate_on_3:.2%}  rerank_off={rate_off_3:.2%}\n"
-            f"  fragments ingested: on={n_on} off={n_off}\n"
-        )
-        print(report)
+    total = len(ground_truth)
+    rate_on_1 = hits_on_top1 / total
+    rate_off_1 = hits_off_top1 / total
+    rate_on_3 = hits_on_top3 / total
+    rate_off_3 = hits_off_top3 / total
 
-        # Defensive assertions — the headline plan target is +15pp, but rules
-        # steward on a small corpus has limited headroom. Two-tier check:
-        # (a) rerank must not REGRESS top-1 hit rate
-        # (b) rerank's top-3 hit rate must be ≥ 50% (sanity floor)
-        # The headline plan target (+15pp top-1) requires the LLM steward — the
-        # rules steward writes verbatim user_text fragments where BM25 has
-        # little headroom to differentiate. So the strict assertions here are:
-        #
-        #   (a) rerank wire-up does not REGRESS top-1 hit rate vs cosine-only
-        #   (b) rerank wire-up does not REGRESS top-3 hit rate vs cosine-only
-        #   (c) top-3 hit rate is ≥ top-1 hit rate (recall sanity — degenerate
-        #       paths would have all 3 slots return junk)
-        #   (d) some non-zero hit rate ground-truthed against the corpus
-        #
-        # Quality uplift (+15pp) is gated to the Phase 3 e2e (entity mentions)
-        # where the LLM steward generates richer fragments. The value of THIS
-        # e2e is contractual: NATS-write → MCP-read with rerank in the pipeline
-        # behaves correctly on a realistic 40-turn workload.
-        assert rate_on_1 >= rate_off_1 - 0.05, (
-            f"rerank regressed top-1: on={rate_on_1:.2%} < off={rate_off_1:.2%}\n{report}"
-        )
-        assert rate_on_3 >= rate_off_3 - 0.05, (
-            f"rerank regressed top-3: on={rate_on_3:.2%} < off={rate_off_3:.2%}\n{report}"
-        )
-        assert rate_on_3 >= rate_on_1, (
-            f"recall path broken: top-3 {rate_on_3:.2%} < top-1 {rate_on_1:.2%}\n{report}"
-        )
-        assert rate_on_1 > 0.0, (
-            f"rerank_on returned zero ground-truth hits — pipeline likely "
-            f"broken (no fragments reachable via recall)\n{report}"
-        )
+    report = (
+        f"\n=== Phase 1 rerank e2e (n_queries={total}) ===\n"
+        f"  top-1 hit rate: rerank_on={rate_on_1:.2%}  rerank_off={rate_off_1:.2%}\n"
+        f"  top-3 hit rate: rerank_on={rate_on_3:.2%}  rerank_off={rate_off_3:.2%}\n"
+        f"  fragments ingested: on={n_on} off={n_off}\n"
+    )
+    print(report)
+
+    # Defensive assertions — the headline plan target is +15pp, but rules
+    # steward on a small corpus has limited headroom. Two-tier check:
+    # (a) rerank must not REGRESS top-1 hit rate
+    # (b) rerank's top-3 hit rate must be ≥ 50% (sanity floor)
+    # The headline plan target (+15pp top-1) requires the LLM steward — the
+    # rules steward writes verbatim user_text fragments where BM25 has
+    # little headroom to differentiate. So the strict assertions here are:
+    #
+    #   (a) rerank wire-up does not REGRESS top-1 hit rate vs cosine-only
+    #   (b) rerank wire-up does not REGRESS top-3 hit rate vs cosine-only
+    #   (c) top-3 hit rate is ≥ top-1 hit rate (recall sanity — degenerate
+    #       paths would have all 3 slots return junk)
+    #   (d) some non-zero hit rate ground-truthed against the corpus
+    #
+    # Quality uplift (+15pp) is gated to the Phase 3 e2e (entity mentions)
+    # where the LLM steward generates richer fragments. The value of THIS
+    # e2e is contractual: NATS-write → MCP-read with rerank in the pipeline
+    # behaves correctly on a realistic 40-turn workload.
+    assert rate_on_1 >= rate_off_1 - 0.05, (
+        f"rerank regressed top-1: on={rate_on_1:.2%} < off={rate_off_1:.2%}\n{report}"
+    )
+    assert rate_on_3 >= rate_off_3 - 0.05, (
+        f"rerank regressed top-3: on={rate_on_3:.2%} < off={rate_off_3:.2%}\n{report}"
+    )
+    assert rate_on_3 >= rate_on_1, (
+        f"recall path broken: top-3 {rate_on_3:.2%} < top-1 {rate_on_1:.2%}\n{report}"
+    )
+    assert rate_on_1 > 0.0, (
+        f"rerank_on returned zero ground-truth hits — pipeline likely "
+        f"broken (no fragments reachable via recall)\n{report}"
+    )

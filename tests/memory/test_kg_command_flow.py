@@ -11,8 +11,6 @@ from unittest.mock import AsyncMock
 import pytest
 from eidolon_sdk.memory import envelope_memory_payload
 
-pytestmark = pytest.mark.asyncio
-
 SPACE = "default.alice.default"
 OTHER_SPACE = "default.bob.default"
 

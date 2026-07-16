@@ -3,6 +3,9 @@
 
 runtime:
   palaces_root: ""
+  # Optional root for per-Realm SQLite/Chroma temp directories. Empty uses
+  # <palaces_root>/.process-tmp. Env: EIDOLON_MEMORY_PROCESS_TMP_ROOT.
+  process_tmp_root: ""
   log_dir: ""
   run_dir: ""
 
@@ -17,6 +20,9 @@ mempalace:
   embedding_device: ""
   # Optional local copy of model files for operations/runbooks.
   embedding_model_dir: ""
+  # MemPalace 3.5+: explicit ONNX Runtime intra-op cap. 0 keeps the native
+  # auto default; set a positive value after cross-Realm CPU/latency testing.
+  embedding_threads: 0
   qdrant_url: http://127.0.0.1:6333
   qdrant_namespace: eidolon-dev
   qdrant_timeout_seconds: 10

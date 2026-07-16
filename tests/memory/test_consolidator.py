@@ -18,7 +18,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-import pytest
 from eidolon_sdk.memory import ConsolidatorIngestThemeCommand, MemoryActorContext
 from nats.errors import NoRespondersError
 
@@ -34,9 +33,6 @@ from eidolon.memory.entrypoints.consolidator import (
     group_drawers_by_wing,
 )
 from eidolon.memory.infrastructure.nats.query import NatsMemoryQueryClient
-
-pytestmark = pytest.mark.asyncio
-
 
 # ─── Theme.idempotency_hash ────────────────────────────────────────────────
 

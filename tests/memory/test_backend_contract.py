@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from eidolon.memory.adapters.mempalace_python_backend import (
@@ -32,3 +34,59 @@ async def test_delete_requires_drawer_id_key(monkeypatch: pytest.MonkeyPatch):
     backend = MemPalacePythonBackend(load_memory_settings(), "/tmp/palace")
     with pytest.raises(MemoryBackendUnsupported):
         await backend.delete("u", "not-a-drawer-id")
+
+
+def test_search_sync_disables_vector_when_hnsw_diverged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "eidolon.memory.adapters.mempalace_python_backend.probe_hnsw_safety",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            vector_disabled=True,
+            status="diverged",
+            message="test divergence",
+        ),
+    )
+
+    def _search_memories(**kwargs):
+        captured.update(kwargs)
+        return {"results": []}
+
+    monkeypatch.setattr("mempalace.searcher.search_memories", _search_memories)
+
+    backend = MemPalacePythonBackend(
+        load_memory_settings(),
+        "/tmp/palace",
+        memory_space_id="realm-test",
+    )
+    assert backend.search_sync("hello", wing="Wing_Profile") == []
+    assert captured["vector_disabled"] is True
+
+
+def test_search_sync_keeps_vector_for_inconclusive_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "eidolon.memory.adapters.mempalace_python_backend.probe_hnsw_safety",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            vector_disabled=False,
+            status="unknown",
+            message="probe unavailable",
+        ),
+    )
+
+    def _search_memories(**kwargs):
+        captured.update(kwargs)
+        return {"results": []}
+
+    monkeypatch.setattr("mempalace.searcher.search_memories", _search_memories)
+
+    backend = MemPalacePythonBackend(load_memory_settings(), "/tmp/palace")
+    assert backend.search_sync("hello", wing="Wing_Profile") == []
+    assert captured["vector_disabled"] is False

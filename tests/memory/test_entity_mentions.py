@@ -17,13 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import sqlite3
 from pathlib import Path
 
 import pytest
-
-pytestmark = pytest.mark.asyncio
-
 
 # ─── Helpers (fresh palace per test) ───────────────────────────────────────
 
@@ -78,8 +74,9 @@ def test_schema_migration_creates_entity_mentions_table(tmp_path):
 
 def test_schema_migration_idempotent_on_re_spawn(tmp_path):
     """Constructing the wrapper twice against the same db is safe."""
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
     from mempalace.knowledge_graph import KnowledgeGraph
+
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 
     db = str(tmp_path / "kg.sqlite3")
     a = LockedKnowledgeGraph(KnowledgeGraph(db_path=db), asyncio.Lock())

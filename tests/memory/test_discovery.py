@@ -12,8 +12,6 @@ from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.config.users import UserEntry, UsersConfig
 from eidolon.memory.entrypoints import discovery_server
 
-pytestmark = pytest.mark.asyncio
-
 
 def _settings() -> MemorySettings:
     return MemorySettings.model_validate(

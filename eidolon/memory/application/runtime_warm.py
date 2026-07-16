@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.infrastructure.chroma_refresh import ensure_sqlite_wal
 from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.support.logging import get_logger
@@ -25,8 +24,6 @@ async def warm_palace_read_path(
 
 
 def _warm_sync(settings: MemorySettings, palace_path: str) -> None:
-    from pathlib import Path
-
     from mempalace.embedding import get_embedding_function
     from mempalace.palace import get_closets_collection
     from mempalace.searcher import search_memories
@@ -35,11 +32,6 @@ def _warm_sync(settings: MemorySettings, palace_path: str) -> None:
     if backend != "chroma":
         log.info("runtime_warm_skip_non_chroma", backend=backend, palace=palace_path)
         return
-
-    sqlite = Path(palace_path) / "chroma.sqlite3"
-    if sqlite.is_file():
-        mode = ensure_sqlite_wal(str(sqlite))
-        log.info("chroma_sqlite_pragma", **mode)
 
     log.info("runtime_warm_embedding_start")
     ef = get_embedding_function()

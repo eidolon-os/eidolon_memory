@@ -16,7 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "faststream[nats]>=0.5",
     "litellm>=1.0",
-    "mempalace>=3.4.1",
+    "mempalace==3.5.0",
     "python-dotenv>=1.0",
     "nats-py>=2.9",
     "mcp>=1.2.0",
@@ -64,4 +64,5 @@ markers = [
     "mempalace: needs real MemPalace Python package",
     "e2e: needs nats-server + eidolon-memory-agent subprocess",
     "llm: needs EIDOLON_MEMORY_LLM_API_KEY env var (real LLM endpoint)",
+    "live_realm: destructive/operational test against explicitly configured real Realm services",
 ]
