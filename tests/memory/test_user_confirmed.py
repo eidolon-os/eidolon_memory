@@ -1,9 +1,9 @@
 """Phase 5.2 — user-confirmed facts.
 
 Three layers of contract to verify:
-  1. Schema: ``UserConfirmedFactCommand`` validates + has correct defaults.
-  2. Dispatch: ``process_command_message`` routes ``kind == "user_confirm_fact"``
-     to ``_ingest_user_confirmed``, which writes a verbatim drawer with
+  1. Schema: explicit writes use the canonical ``MemoryIntentCommand``.
+  2. Dispatch: ``process_command_message`` routes ``kind == "memory_intent"``
+     to the explicit intent applier, which writes a verbatim drawer with
      ``metadata.source == "user-confirmed"``.
   3. Recall: ``recall_with_kg_fusion`` pins ``source == "user-confirmed"``
      records ahead of regular vector hits inside the same wing.
@@ -18,17 +18,16 @@ from unittest.mock import AsyncMock
 import pytest
 from eidolon_sdk.memory import (
     MemoryActorContext,
-    UserConfirmedFactCommand,
+    MemoryIntent,
+    MemoryIntentCommand,
     envelope_memory_payload,
 )
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
+from eidolon.memory.application.explicit_intents import apply_explicit_intent
 from eidolon.memory.application.public_recall import recall_with_kg_fusion
-from eidolon.memory.application.turn_processor import (
-    _ingest_user_confirmed,
-    process_command_message,
-)
+from eidolon.memory.application.turn_processor import process_command_message
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -53,72 +52,77 @@ def _command_wire(payload: dict) -> bytes:
 # ─── Schema ────────────────────────────────────────────────────────────────
 
 
-def test_cmd_defaults():
-    cmd = UserConfirmedFactCommand(
-        request_id="r1", memory_space_id=MEMORY_SPACE_ID,
-        issued_at="2026-05-26T00:00:00Z", issuer="agent",
-        text="我喝乌龙茶不喝咖啡", wing="Wing_Profile",
+def _intent_command(
+    *,
+    request_id: str = "r1",
+    text: str = "我喝乌龙茶不喝咖啡",
+    confidence: float = 0.99,
+    attributes: dict | None = None,
+) -> MemoryIntentCommand:
+    return MemoryIntentCommand(
+        request_id=request_id,
+        memory_space_id=MEMORY_SPACE_ID,
+        issued_at="2026-05-26T00:00:00Z",
+        issuer="agent",
+        intent=MemoryIntent(
+            intent_id=f"intent:{request_id}",
+            memory_space_id=MEMORY_SPACE_ID,
+            source_event_id="turn-1",
+            authority="explicit_user",
+            intent_type="preference",
+            raw_claim=text,
+            operation_hint="confirm",
+            confidence=confidence,
+            attributes=attributes
+            or {
+                "wing": "Wing_Profile",
+                "memory_type": "preference",
+                "importance": 5,
+                "tags": ["beverage"],
+            },
+        ),
     )
-    assert cmd.kind == "user_confirm_fact"
-    assert cmd.memory_type == "profile"
-    assert cmd.importance == 5
-    assert cmd.confidence == 0.99
-    assert cmd.tags == []
+
+
+def test_cmd_defaults():
+    cmd = _intent_command(attributes={})
+    assert cmd.kind == "memory_intent"
+    assert cmd.intent.operation_hint == "confirm"
+    assert cmd.intent.authority == "explicit_user"
+    assert cmd.intent.confidence == 0.99
 
 
 def test_cmd_rejects_empty_text():
     """Pydantic ``min_length=1`` catches empty / whitespace-only callers."""
     import pydantic
     with pytest.raises(pydantic.ValidationError):
-        UserConfirmedFactCommand(
-            request_id="r1", memory_space_id=MEMORY_SPACE_ID,
-            issued_at="2026-05-26T00:00:00Z",
-            text="", wing="Wing_Profile",
-        )
+        _intent_command(text=" ")
 
 
 def test_cmd_validates_importance_and_confidence_bounds():
     import pydantic
-    base = dict(
-        request_id="r1", memory_space_id=MEMORY_SPACE_ID,
-        issued_at="2026-05-26T00:00:00Z",
-        text="x", wing="Wing_Profile",
-    )
-    for bad in ({"importance": 0}, {"importance": 6},
-                {"confidence": -0.1}, {"confidence": 1.5}):
+    for confidence in (-0.1, 1.5):
         with pytest.raises(pydantic.ValidationError):
-            UserConfirmedFactCommand(**base, **bad)
+            _intent_command(confidence=confidence)
 
 
-def test_cmd_replay_safe_without_optional_fields():
-    """Older callers may not send ``tags`` / ``memory_type`` — defaults kick in."""
-    raw = {
-        "kind": "user_confirm_fact",
-        "request_id": "r1", "memory_space_id": MEMORY_SPACE_ID,
-        "issued_at": "2026-05-26T00:00:00Z", "issuer": "agent",
-        "text": "verbatim", "wing": "Wing_Profile",
-    }
-    cmd = UserConfirmedFactCommand.model_validate(raw)
-    assert cmd.tags == []
-    assert cmd.memory_type == "profile"
+def test_cmd_rejects_cross_realm_intent():
+    import pydantic
+
+    raw = _intent_command().model_dump(mode="json")
+    raw["memory_space_id"] = "r:bob:default"
+    with pytest.raises(pydantic.ValidationError):
+        MemoryIntentCommand.model_validate(raw)
 
 
-# ─── _ingest_user_confirmed ────────────────────────────────────────────────
+# ─── explicit intent projection ───────────────────────────────────────────
 
 
 async def test_ingest_writes_verbatim_drawer_with_source_marker():
     """The drawer the user wrote MUST land verbatim, NOT paraphrased."""
     backend = LockedBackend(FakeMemoryBackend())
-    cmd = UserConfirmedFactCommand(
-        request_id="abc123", memory_space_id=MEMORY_SPACE_ID,
-        issued_at="2026-05-26T00:00:00Z", issuer="agent",
-        text="我喝乌龙茶不喝咖啡", wing="Wing_Profile",
-        memory_type="preference",
-        importance=5,
-        confidence=0.99,
-        tags=["beverage"],
-    )
-    await _ingest_user_confirmed(backend, cmd)
+    cmd = _intent_command(request_id="abc123")
+    await apply_explicit_intent(backend, None, cmd)
 
     docs = list(backend._inner.docs.values())
     assert len(docs) == 1
@@ -126,6 +130,7 @@ async def test_ingest_writes_verbatim_drawer_with_source_marker():
     assert rec.value == "我喝乌龙茶不喝咖啡", "verbatim text was altered"
     assert rec.metadata.get("wing") == "Wing_Profile"
     assert rec.metadata.get("memory_type") == "preference"
+    assert rec.metadata.get("source_turn_id") == "turn-1"
 
     # Contract: the metadata PASSED in through ingest carries the source
     # marker that recall keys off. FakeBackend overrides ``source`` with
@@ -139,31 +144,57 @@ async def test_ingest_writes_verbatim_drawer_with_source_marker():
 
 
 async def test_ingest_idempotent_on_redelivery():
-    """Same request_id → same fragment_id → chroma dedups."""
+    """Same intent_id → same fragment_id → chroma dedups."""
     backend = LockedBackend(FakeMemoryBackend())
-    cmd = UserConfirmedFactCommand(
-        request_id="dedup-key", memory_space_id=MEMORY_SPACE_ID,
-        issued_at="2026-05-26T00:00:00Z",
-        text="x", wing="Wing_Profile",
-    )
+    cmd = _intent_command(request_id="dedup-key", text="x")
     for _ in range(4):
-        await _ingest_user_confirmed(backend, cmd)
+        await apply_explicit_intent(backend, None, cmd)
     assert len(backend._inner.docs) == 1
+
+
+async def test_structured_intent_projects_drawer_and_kg_with_same_source_event():
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = SimpleNamespace(add_triple=AsyncMock(return_value="triple-1"))
+    base = _intent_command(request_id="structured")
+    cmd = base.model_copy(
+        update={
+            "intent": base.intent.model_copy(
+                update={
+                    "intent_type": "preference",
+                    "subject": "user",
+                    "predicate": "likes",
+                    "object": "oolong",
+                }
+            )
+        }
+    )
+
+    resource_id = await apply_explicit_intent(backend, kg, cmd)
+
+    assert resource_id == "memoryintent:intent:structured"
+    assert len(backend._inner.docs) == 1
+    kg.add_triple.assert_awaited_once_with(
+        subject="user",
+        predicate="likes",
+        object="oolong",
+        valid_from="2026-05-26T00:00:00Z",
+        valid_to=None,
+        confidence=0.99,
+        source_turn_id="turn-1",
+        adapter_name="user-confirmed",
+    )
 
 
 # ─── Cmd dispatcher routes the kind ───────────────────────────────────────
 
 
 async def test_process_command_message_dispatches_user_confirm():
-    """The wire-level cmd payload reaches ``_ingest_user_confirmed``
+    """The wire-level cmd payload reaches the explicit intent applier
     through ``process_command_message``'s elif branch."""
     backend = LockedBackend(FakeMemoryBackend())
-    payload = {
-        "kind": "user_confirm_fact",
-        "request_id": "wire-1", "memory_space_id": MEMORY_SPACE_ID,
-        "issued_at": "2026-05-26T00:00:00Z", "issuer": "agent",
-        "text": "wire-shaped confirm", "wing": "Wing_Profile",
-    }
+    payload = _intent_command(
+        request_id="wire-1", text="wire-shaped confirm"
+    ).model_dump(mode="json")
     msg = SimpleNamespace(
         data=_command_wire(payload),
         ack=AsyncMock(),
@@ -183,12 +214,10 @@ async def test_process_command_message_memory_space_mismatch_ignored():
     """Cross-space replay is dropped at the cmd
     dispatcher (existing guard); user-confirm inherits the same protection."""
     backend = LockedBackend(FakeMemoryBackend())
-    payload = {
-        "kind": "user_confirm_fact",
-        "request_id": "wire-2", "memory_space_id": "default.bob.default",
-        "issued_at": "2026-05-26T00:00:00Z", "issuer": "agent",
-        "text": "should not land", "wing": "Wing_Profile",
-    }
+    command = _intent_command(request_id="wire-2", text="should not land")
+    payload = command.model_dump(mode="json")
+    payload["memory_space_id"] = "r:bob:default"
+    payload["intent"]["memory_space_id"] = "r:bob:default"
     msg = SimpleNamespace(
         data=_command_wire(payload),
         ack=AsyncMock(),
@@ -200,6 +229,33 @@ async def test_process_command_message_memory_space_mismatch_ignored():
     )
     assert backend._inner.docs == {}
     msg.ack.assert_awaited()  # acked anyway — bad routing is not a NAK
+
+
+async def test_update_intent_fails_closed_without_retry_or_projection():
+    backend = LockedBackend(FakeMemoryBackend())
+    base = _intent_command(request_id="unsafe-update")
+    command = base.model_copy(
+        update={
+            "intent": base.intent.model_copy(update={"operation_hint": "update"})
+        }
+    )
+    msg = SimpleNamespace(
+        data=_command_wire(command.model_dump(mode="json")),
+        ack=AsyncMock(),
+        nak=AsyncMock(),
+    )
+
+    await process_command_message(
+        msg,
+        backend=backend,
+        kg=None,
+        settings=load_memory_settings(),
+        expected_memory_space_id=MEMORY_SPACE_ID,
+    )
+
+    assert backend._inner.docs == {}
+    msg.ack.assert_awaited_once()
+    msg.nak.assert_not_awaited()
 
 
 # ─── Recall ranking pin ────────────────────────────────────────────────────

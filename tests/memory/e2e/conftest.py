@@ -717,19 +717,33 @@ async def nats_publish_user_confirm(
     memory_type: str = "preference",
     request_id: str | None = None,
 ) -> str:
-    """Publish a ``UserConfirmedFactCommand`` (Phase 5.2) to the cmd subject.
+    """Publish an explicit ``MemoryIntentCommand`` to the cmd subject.
 
     This is the exact wire shape the ``eidolon_memory_user_confirm`` MCP tool
     emits — e2e tests publish it directly to verify the worker → drawer →
     recall-pin path end to end.
     """
-    payload = _base_cmd(user_id, "user_confirm_fact", request_id)
+    payload = _base_cmd(user_id, "memory_intent", request_id)
+    event_id = f"e2e:{payload['request_id']}"
+    intent_type = "preference" if memory_type == "preference" else "fact"
     payload.update(
         {
             "issuer": "agent",
-            "text": text,
-            "wing": wing,
-            "memory_type": memory_type,
+            "intent": {
+                "intent_id": f"intent:{payload['request_id']}",
+                "memory_space_id": payload["memory_space_id"],
+                "source_event_id": event_id,
+                "authority": "explicit_user",
+                "intent_type": intent_type,
+                "raw_claim": text,
+                "operation_hint": "confirm",
+                "confidence": 0.99,
+                "attributes": {
+                    "wing": wing,
+                    "memory_type": memory_type,
+                    "importance": 5,
+                },
+            },
         }
     )
     await _publish_command(nats_url, payload)

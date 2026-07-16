@@ -2,8 +2,8 @@
 
 Edge under test (NATS-write → MCP-read contract, no LLM):
 
-    NATS cmd `user_confirm_fact` → agent_runner subscriber
-      → process_command_message → _ingest_user_confirmed
+    NATS cmd `memory_intent` → agent_runner subscriber
+      → process_command_message → explicit intent applier
       → chromadb drawer (source="user-confirmed", confidence=0.99)
     → MCP recall_context → recall_with_kg_fusion pins it ahead of
       cosine-ranked siblings in the same wing.

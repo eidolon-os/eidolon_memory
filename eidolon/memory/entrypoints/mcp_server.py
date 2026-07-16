@@ -21,8 +21,9 @@ from eidolon_sdk.memory import (
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryActorContext,
+    MemoryIntent,
+    MemoryIntentCommand,
     PrivacyMutationCommand,
-    UserConfirmedFactCommand,
 )
 
 from eidolon.memory.adapters.locked_kg import _now_iso
@@ -546,6 +547,8 @@ def _register_user_confirm_tool(
         source_instance_id: str = "",
         session_id: str = "",
         extensions: dict[str, dict[str, Any]] | None = None,
+        source_event_id: str = "",
+        tool_call_id: str = "",
         wait_applied_seconds: float = 0.75,
     ) -> dict[str, Any]:
         """Persist a user-confirmed fact verbatim, bypassing the LLM steward.
@@ -575,24 +578,40 @@ def _register_user_confirm_tool(
                 "error": "text must be a non-empty string",
             }
         request_id = uuid.uuid4().hex
-        cmd = UserConfirmedFactCommand(
+        event_id = source_event_id.strip() or request_id
+        intent = MemoryIntent(
+            intent_id=f"intent:{request_id}",
+            memory_space_id=memory_space_id,
+            source_event_id=event_id,
+            authority="explicit_user",
+            intent_type=(
+                "preference" if memory_type.strip().lower() == "preference" else "fact"
+            ),
+            raw_claim=clean,
+            operation_hint="confirm",
+            occurred_at=_now_iso(),
+            tool_call_id=tool_call_id.strip() or None,
+            confidence=max(0.0, min(1.0, confidence)),
+            attributes={
+                "wing": wing,
+                "memory_type": memory_type,
+                "importance": max(1, min(5, importance)),
+                "tags": list(tags or []),
+                "scope": scope,
+                "visibility": visibility,
+                "source_device_id": source_device_id,
+                "target_device_id": target_device_id,
+                "source_instance_id": source_instance_id,
+                "session_id": session_id,
+                "extensions": dict(extensions or {}),
+            },
+        )
+        cmd = MemoryIntentCommand(
             request_id=request_id,
             memory_space_id=memory_space_id,
             issued_at=_now_iso(),
             issuer="agent",
-            text=clean,
-            wing=wing,
-            memory_type=memory_type,
-            importance=max(1, min(5, importance)),
-            confidence=max(0.0, min(1.0, confidence)),
-            tags=list(tags or []),
-            scope=scope,  # type: ignore[arg-type]
-            visibility=visibility,  # type: ignore[arg-type]
-            source_device_id=source_device_id,
-            target_device_id=target_device_id,
-            source_instance_id=source_instance_id,
-            session_id=session_id,
-            extensions=dict(extensions or {}),
+            intent=intent,
         )
         outcome = await _publish_with_status(
             command_publisher,
@@ -600,7 +619,12 @@ def _register_user_confirm_tool(
             cmd,
             wait_seconds=wait_applied_seconds,
         )
-        return {**outcome, "wing": wing}
+        return {
+            **outcome,
+            "wing": wing,
+            "intent_id": intent.intent_id,
+            "source_event_id": event_id,
+        }
 
 
 # palace_graph business logic lives in eidolon.memory.application.palace_graph

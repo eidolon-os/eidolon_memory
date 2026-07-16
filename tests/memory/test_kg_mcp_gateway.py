@@ -250,8 +250,8 @@ async def test_command_status_read_does_not_wait_for_backend_lock(mcp_with_kg) -
     mcp, _, _, ledger, backend = mcp_with_kg
     await ledger.record_applied(
         "status-fast",
-        kind="user_confirm_fact",
-        resource_id="userconfirm:status-fast",
+        kind="memory_intent",
+        resource_id="memoryintent:intent:status-fast",
     )
     status_tool = next(
         t
@@ -266,7 +266,7 @@ async def test_command_status_read_does_not_wait_for_backend_lock(mcp_with_kg) -
         )
 
     assert result["status"] == "applied"
-    assert result["resource_id"] == "userconfirm:status-fast"
+    assert result["resource_id"] == "memoryintent:intent:status-fast"
 
 
 async def test_command_status_stats_tool_reads_projection_capacity(mcp_with_kg) -> None:
@@ -357,6 +357,10 @@ async def test_user_confirm_reports_accepted_not_applied_when_worker_is_silent(
     assert record is not None
     assert record.status == "accepted"
     assert backend.inner.docs == {}
+    command = publisher.publish.await_args.args[0]
+    assert command.kind == "memory_intent"
+    assert command.intent.authority == "explicit_user"
+    assert command.intent.raw_claim == "我喜欢乌龙茶"
 
 
 async def test_user_confirm_publish_failure_is_truthfully_failed(mcp_with_kg) -> None:

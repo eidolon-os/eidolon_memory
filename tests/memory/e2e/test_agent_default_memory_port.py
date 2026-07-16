@@ -194,7 +194,7 @@ async def test_agent_memory_port_delete_is_previewed_and_terminally_applied(
     facts = [f"{marker} 工作记录", f"{marker} 旅行记录"]
     resources_closed = False
     try:
-        for fact in facts:
+        for index, fact in enumerate(facts):
             await port.write_confirmed_fact(
                 "e2e",
                 "e2e",
@@ -202,6 +202,8 @@ async def test_agent_memory_port_delete_is_previewed_and_terminally_applied(
                 "e2e",
                 "e2e",
                 text=fact,
+                source_event_id=f"turn-{marker}",
+                tool_call_id=f"call-{index}",
             )
 
         latest_preview = None
@@ -274,3 +276,94 @@ async def test_agent_memory_port_delete_is_previewed_and_terminally_applied(
         if not resources_closed:
             await port.close()
             await bus.close()
+
+
+async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_status(
+    live_agent_runner,
+    mcp_session,
+) -> None:
+    handle = live_agent_runner(
+        user_id="e2e_agent_structured_intent",
+        port=19132,
+        steward_mode="noop",
+    )
+    routes = MemoryRoutingTable.from_static(
+        endpoints=[
+            MemoryEndpoint(
+                memory_space_id=handle.user_id,
+                mcp_url=handle.mcp_url,
+            )
+        ],
+        nats=NatsSettings(url=handle.nats_url),
+    )
+    bus = NatsEventBus(handle.nats_url)
+    pool = McpClientPool(routes=routes)
+    port = EidolonMemoryPort(
+        pool=pool,
+        publisher=MemoryNatsPublisher(event_bus=bus, routes=routes),
+    )
+    marker = f"oolong-{uuid.uuid4().hex[:8]}"
+    turn_id = f"turn-{marker}"
+    call_id = f"call-{marker}"
+    try:
+        request_id = await port.assert_fact(
+            "e2e",
+            "e2e",
+            handle.user_id,
+            "self",
+            "likes",
+            marker,
+            source_event_id=turn_id,
+            tool_call_id=call_id,
+            confidence=0.99,
+        )
+        assert request_id
+
+        async with mcp_session(handle.mcp_url) as session:
+            latest_status = None
+
+            async def _applied() -> bool:
+                nonlocal latest_status
+                latest_status = _mcp_tool_json(
+                    await session.call_tool(
+                        "eidolon_memory_command_status",
+                        {"request_id": request_id},
+                    )
+                )
+                return (
+                    isinstance(latest_status, dict)
+                    and latest_status.get("status") == "applied"
+                )
+
+            assert await _wait_for_true(_applied, timeout_s=30)
+            assert latest_status is not None
+            assert str(latest_status.get("resource_id", "")).startswith(
+                "memoryintent:intent:"
+            )
+
+            listed = _mcp_tool_json(
+                await session.call_tool(
+                    "eidolon_memory_list",
+                    {"limit": 100, "include_private": True},
+                )
+            )
+            values = {
+                str(record.get("value") or "")
+                for record in (listed or {}).get("records") or []
+            }
+            assert f"self likes {marker}" in values
+
+            kg_result = _mcp_tool_json(
+                await session.call_tool(
+                    "eidolon_memory_kg_query_entity",
+                    {"name": "self"},
+                )
+            )
+            assert any(
+                triple.get("predicate") == "likes"
+                and triple.get("object") == marker
+                for triple in (kg_result or {}).get("triples") or []
+            )
+    finally:
+        await port.close()
+        await bus.close()

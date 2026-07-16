@@ -128,11 +128,11 @@ NATS JetStream
  │        8. ack
  │
  └─ agent.memory.cmd.<uid>                 (admin / 系统写,绕 steward)
-       → turn_processor.process_command_message,按 kind 分发 4 种:
+       → turn_processor.process_command_message,按 kind 分发:
           ├─ kg_add_triple              → LockedKG.add_triple
           ├─ kg_invalidate              → LockedKG.invalidate
           ├─ consolidator_ingest_theme  → 直写 Wing_Theme fragment   (Phase 4)
-          └─ user_confirm_fact          → 直写 verbatim drawer        (Phase 5.2)
+          └─ memory_intent              → 显式意图直写 drawer/KG
 ```
 
 **NATS subscriber 韧性**(重构):`_drain` 把 fetch + handler 都包进重连边界;长 LLM
@@ -270,7 +270,7 @@ mcp_http:
 |------|------|---------|
 | `eidolon_memory_search` | 语义向量检索 | `query`, `top_k`, 可选 `wing` / `room` |
 | `eidolon_memory_recall_context` | **vector + KG + 主题 + 工作记忆 融合召回**(LiveKit 同源) | `query`, `top_k`, `voice` (LiveKit 50ms KG 预算 / non-voice 1s), `include_kg`, `include_sensitive_kg` |
-| `eidolon_memory_user_confirm` | **用户确认事实直写**(绕 steward,verbatim,召回置顶,Phase 5.2) | `text`, `wing`, `memory_type`, `importance`, `confidence`, `tags` |
+| `eidolon_memory_user_confirm` | **用户确认意图**(绕 steward、经 NATS 单写 worker 投影、verbatim、召回置顶) | `text`, `wing`, `memory_type`, `importance`, `confidence`, `tags`, `source_event_id`, `tool_call_id` |
 | `eidolon_memory_list` | 分页列举所有 drawer | `limit`, `offset`, `include_private` |
 | `eidolon_memory_status` | 当前 agent 状态(palace、wings、steward mode) | — |
 | `eidolon_memory_hierarchy_snapshot` | wing→room→drawer 树 | `max_records`, `max_drawers_per_room` |

@@ -11,9 +11,9 @@ from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 async def test_command_status_never_downgrades_terminal_state(tmp_path: Path) -> None:
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
 
-    await ledger.record_applied("req-1", kind="user_confirm_fact", resource_id="drawer-1")
-    await ledger.record_accepted("req-1", kind="user_confirm_fact")
-    await ledger.record_failed("req-1", kind="user_confirm_fact", error="late duplicate")
+    await ledger.record_applied("req-1", kind="memory_intent", resource_id="drawer-1")
+    await ledger.record_accepted("req-1", kind="memory_intent")
+    await ledger.record_failed("req-1", kind="memory_intent", error="late duplicate")
 
     record = await ledger.get("req-1")
     assert record is not None
@@ -71,11 +71,11 @@ async def test_wait_terminal_reads_without_backend_lock(tmp_path: Path) -> None:
     backend_lock = asyncio.Lock()
     await backend_lock.acquire()
     try:
-        await ledger.record_accepted("req-3", kind="user_confirm_fact")
+        await ledger.record_accepted("req-3", kind="memory_intent")
 
         async def _complete() -> None:
             await asyncio.sleep(0.01)
-            await ledger.record_applied("req-3", kind="user_confirm_fact")
+            await ledger.record_applied("req-3", kind="memory_intent")
 
         task = asyncio.create_task(_complete())
         record = await ledger.wait_terminal("req-3", timeout_seconds=0.2)
@@ -126,9 +126,9 @@ def test_status_ledger_implements_ports_without_application_infrastructure_impor
 async def test_prune_expires_only_terminal_rows(tmp_path: Path) -> None:
     path = tmp_path / "command_status.sqlite3"
     ledger = CommandStatusLedger(path, retention_days=1)
-    await ledger.record_applied("old-applied", kind="user_confirm_fact")
+    await ledger.record_applied("old-applied", kind="memory_intent")
     await ledger.record_failed("old-failed", kind="kg_add_triple", error="terminal")
-    await ledger.record_accepted("old-active", kind="user_confirm_fact")
+    await ledger.record_accepted("old-active", kind="memory_intent")
     old = (datetime.now(UTC) - timedelta(days=2)).isoformat()
     with sqlite3.connect(path) as conn:
         conn.execute("UPDATE command_status SET updated_at = ?", (old,))
@@ -146,10 +146,10 @@ async def test_prune_caps_terminal_history_but_preserves_active_rows(tmp_path: P
         max_records=2,
         prune_every_writes=100,
     )
-    await ledger.record_applied("terminal-1", kind="user_confirm_fact")
-    await ledger.record_applied("terminal-2", kind="user_confirm_fact")
-    await ledger.record_applied("terminal-3", kind="user_confirm_fact")
-    await ledger.record_accepted("active", kind="user_confirm_fact")
+    await ledger.record_applied("terminal-1", kind="memory_intent")
+    await ledger.record_applied("terminal-2", kind="memory_intent")
+    await ledger.record_applied("terminal-3", kind="memory_intent")
+    await ledger.record_accepted("active", kind="memory_intent")
 
     assert await ledger.prune() == 2
     assert await ledger.get("active") is not None
@@ -170,7 +170,7 @@ async def test_periodic_prune_keeps_projection_bounded(tmp_path: Path) -> None:
     )
 
     for index in range(5):
-        await ledger.record_applied(f"req-{index}", kind="user_confirm_fact")
+        await ledger.record_applied(f"req-{index}", kind="memory_intent")
 
     retained = [
         request_id

@@ -151,6 +151,11 @@ async def test_projection_retry_reuses_persisted_decision_without_rerunning_stew
     steward.decide.assert_awaited_once()
     second.ack.assert_awaited_once()
     assert len(backend.inner.docs) == 1
+    stored = await store.get(MEMORY_SPACE_ID, turn.turn_id, "test:v1")
+    assert stored is not None
+    assert len(stored.intents) == 1
+    assert stored.intents[0].intent_type == "preference"
+    assert stored.intents[0].source_event_id == turn.turn_id
 
 
 @pytest.mark.asyncio

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
+
+from eidolon_sdk.memory import MemoryIntent
 
 from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionConflict,
@@ -43,11 +46,21 @@ class ExtractionDecisionLedger:
                     extractor_version TEXT NOT NULL,
                     input_hash TEXT NOT NULL,
                     decision_json TEXT NOT NULL,
+                    intents_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (memory_space_id, source_turn_id, extractor_version)
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(extraction_decisions)")
+            }
+            if "intents_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE extraction_decisions "
+                    "ADD COLUMN intents_json TEXT NOT NULL DEFAULT '[]'"
+                )
 
     async def get(
         self,
@@ -106,8 +119,8 @@ class ExtractionDecisionLedger:
                     """
                     INSERT INTO extraction_decisions (
                         memory_space_id, source_turn_id, extractor_version,
-                        input_hash, decision_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        input_hash, decision_json, intents_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.memory_space_id,
@@ -115,6 +128,12 @@ class ExtractionDecisionLedger:
                         record.extractor_version,
                         record.input_hash,
                         record.decision.model_dump_json(),
+                        json.dumps(
+                            [intent.model_dump(mode="json") for intent in record.intents],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
                         record.created_at.isoformat(),
                     ),
                 )
@@ -135,5 +154,9 @@ class ExtractionDecisionLedger:
             extractor_version=str(row["extractor_version"]),
             input_hash=str(row["input_hash"]),
             decision=StewardDecision.model_validate_json(str(row["decision_json"])),
+            intents=[
+                MemoryIntent.model_validate(item)
+                for item in json.loads(str(row["intents_json"]))
+            ],
             created_at=str(row["created_at"]),
         )

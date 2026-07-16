@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from eidolon_sdk.memory import ConversationTurnPayload
+from eidolon_sdk.memory import ConversationTurnPayload, MemoryIntent
 from pydantic import Field
 
 from eidolon.memory.domain.steward import StewardDecision
@@ -25,6 +25,7 @@ class ExtractionDecisionRecord(BaseEidolonModel):
     extractor_version: str
     input_hash: str
     decision: StewardDecision
+    intents: list[MemoryIntent] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

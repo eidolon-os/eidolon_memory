@@ -13,22 +13,26 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from eidolon_sdk.memory import (
-    USER_CONFIRMED_ROOM_PREFIX,
     ConsolidatorIngestThemeCommand,
     ConversationTurnPayload,
     DeviceSyncBatchPayload,
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryCommandPayload,
+    MemoryIntentCommand,
     PrivacyMutationCommand,
-    UserConfirmedFactCommand,
     parse_conversation_turn,
     parse_memory_command,
 )
 from pydantic import ValidationError
 
+from eidolon.memory.application.explicit_intents import (
+    MemoryIntentRejected,
+    apply_explicit_intent,
+)
 from eidolon.memory.application.forget import archive_exact_drawers, delete_exact_drawers
 from eidolon.memory.application.ingest import ingest_memory_fragment
+from eidolon.memory.application.memory_intents import memory_intents_from_decision
 from eidolon.memory.application.steward.common import (
     apply_privacy_actions,
     stamp_fragment_identity,
@@ -86,6 +90,11 @@ async def _decide_once(
         return existing.decision
 
     decision = await steward.decide(turn)
+    intents = memory_intents_from_decision(
+        decision,
+        memory_space_id=turn.context.memory_space_id,
+        source_event_id=turn.turn_id,
+    )
     stored = await store.put_if_absent(
         ExtractionDecisionRecord(
             memory_space_id=turn.context.memory_space_id,
@@ -93,6 +102,7 @@ async def _decide_once(
             extractor_version=extractor_version,
             input_hash=input_hash,
             decision=decision,
+            intents=intents,
         )
     )
     log.info(
@@ -549,14 +559,14 @@ async def process_command_message(
                 drawer_count=len(cmd.source_drawer_ids),
                 confidence=cmd.confidence,
             )
-        elif isinstance(cmd, UserConfirmedFactCommand):
-            resource_id = await _ingest_user_confirmed(backend, cmd)
+        elif isinstance(cmd, MemoryIntentCommand):
+            resource_id = await apply_explicit_intent(backend, kg, cmd)
             log.info(
-                "cmd_user_confirm_ok",
+                "cmd_memory_intent_ok",
                 request_id=cmd.request_id,
-                wing=cmd.wing,
-                memory_type=cmd.memory_type,
-                confidence=cmd.confidence,
+                intent_id=cmd.intent.intent_id,
+                intent_type=cmd.intent.intent_type,
+                authority=cmd.intent.authority,
             )
         elif isinstance(cmd, PrivacyMutationCommand):
             if cmd.action == "delete":
@@ -590,6 +600,21 @@ async def process_command_message(
             )
             await msg.ack()
             return
+    except MemoryIntentRejected as exc:
+        log.warning(
+            "cmd_memory_intent_rejected",
+            request_id=cmd.request_id,
+            error=str(exc),
+        )
+        await _record_command_status(
+            command_status,
+            "failed",
+            cmd.request_id,
+            kind=cmd.kind,
+            error=str(exc),
+        )
+        await msg.ack()
+        return
     except Exception as exc:
         deliveries = delivery_count(msg)
         log.error(
@@ -806,47 +831,3 @@ async def _ingest_theme(backend: Any, cmd: ConsolidatorIngestThemeCommand) -> st
     await ingest_memory_fragment(backend, fragment)
     return fragment.memory_id
 
-
-async def _ingest_user_confirmed(
-    backend: Any, cmd: UserConfirmedFactCommand,
-) -> str:
-    """Write a user-confirmed fact directly as a drawer in the chosen wing.
-
-    Bypasses the steward by design: a user-confirmed fact is the user's
-    own ground truth — paraphrase / mis-classification / silent drop by
-    the LLM are all unacceptable. Recall-time priority boost is keyed off
-    ``metadata.source == "user-confirmed"``, so this string is the
-    cross-layer contract; do not rename without updating recall too.
-
-    Idempotency: ``fragment_id = "userconfirm:<request_id>"``; chroma's
-    deterministic ids collapse redelivery to one row.
-    """
-    fragment = MemoryFragment(
-        memory_id=f"userconfirm:{cmd.request_id}",
-        memory_space_id=cmd.memory_space_id,
-        memory_realm_id=cmd.memory_space_id,
-        companion_id=cmd.source_instance_id or None,
-        scope=cmd.scope,
-        visibility=cmd.visibility,
-        source_device_id=cmd.source_device_id or "admin",
-        target_device_id=cmd.target_device_id,
-        source_instance_id=cmd.source_instance_id or cmd.issuer,
-        wing=cmd.wing,
-        room=f"{USER_CONFIRMED_ROOM_PREFIX}{cmd.request_id[:16]}",
-        content=cmd.text,
-        memory_type=cmd.memory_type,
-        importance=cmd.importance,
-        confidence=cmd.confidence,
-        occurred_at=cmd.issued_at,
-        source_turn_id=f"user-confirmed:{cmd.request_id}",
-        session_id=cmd.session_id or "user-confirmed",
-        tags=["user-confirmed", *cmd.tags],
-        privacy="normal",
-        metadata={
-            "source": "user-confirmed",
-            "request_id": cmd.request_id,
-        },
-        extensions=cmd.extensions,
-    )
-    await ingest_memory_fragment(backend, fragment)
-    return fragment.memory_id

@@ -1,0 +1,172 @@
+"""Fail-closed projection of explicit canonical memory intents."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from eidolon_sdk.memory import (
+    KG_PREDICATE_VALUES,
+    USER_CONFIRMED_ROOM_PREFIX,
+    MemoryIntentCommand,
+)
+
+from eidolon.memory.application.ingest import ingest_memory_fragment
+from eidolon.memory.domain.fragments import MemoryFragment
+
+
+class MemoryIntentRejected(ValueError):
+    """A valid wire intent that this projection contract cannot safely apply."""
+
+
+async def apply_explicit_intent(
+    backend: Any,
+    kg: Any,
+    cmd: MemoryIntentCommand,
+) -> str:
+    """Project one explicit add/confirm intent without bypassing write ports.
+
+    Reconciliation operations intentionally fail closed here. Natural-language
+    correction/forget/update cannot safely select an existing fact; exact
+    privacy mutation remains a separate preview/confirm command until the
+    canonical reconciler owns those semantics.
+    """
+    intent = cmd.intent
+    if intent.authority not in {"explicit_user", "explicit_admin"}:
+        raise MemoryIntentRejected(
+            "memory_intent command requires explicit authority"
+        )
+    if intent.intent_type in {"forget", "correction"}:
+        raise MemoryIntentRejected(
+            "forget/correction intents require exact privacy or reconciliation flow"
+        )
+    if intent.operation_hint not in {None, "add", "confirm"}:
+        raise MemoryIntentRejected("update/invalidate intents require reconciliation")
+
+    attributes = intent.attributes
+    defaults = {
+        "fact": ("Wing_Profile", "profile"),
+        "preference": ("Wing_Life", "preference"),
+        "commitment": ("Wing_Future", "goal"),
+        "episode": ("Wing_Life", "event"),
+    }
+    default_wing, default_memory_type = defaults[intent.intent_type]
+    wing = _non_blank_attribute(attributes, "wing", default_wing)
+    memory_type = _non_blank_attribute(
+        attributes, "memory_type", default_memory_type
+    )
+    importance = _bounded_int_attribute(attributes, "importance", 5, 1, 5)
+    tags = _string_list_attribute(attributes, "tags")
+    scope = attributes.get("scope", "persona")
+    if scope not in {"global", "persona", "agent", "device", "session"}:
+        scope = "persona"
+    visibility = attributes.get("visibility", "all_devices")
+    if visibility not in {"all_devices", "current_device", "private"}:
+        visibility = "all_devices"
+    source = (
+        "user-confirmed"
+        if intent.authority == "explicit_user"
+        else "admin-confirmed"
+    )
+    extensions = attributes.get("extensions", {})
+    if not isinstance(extensions, dict):
+        extensions = {}
+    structured = (intent.subject, intent.predicate, intent.object)
+    if any(structured) and not all(structured):
+        raise MemoryIntentRejected(
+            "structured intent requires subject, predicate, and object"
+        )
+    if all(structured):
+        if intent.predicate not in KG_PREDICATE_VALUES:
+            raise MemoryIntentRejected(
+                f"unsupported KG predicate: {intent.predicate}"
+            )
+        if kg is None:
+            raise RuntimeError("structured memory intent requires KG backend")
+
+    fragment = MemoryFragment(
+        memory_id=f"memoryintent:{intent.intent_id}",
+        memory_space_id=cmd.memory_space_id,
+        memory_realm_id=cmd.memory_space_id,
+        companion_id=_optional_attribute(attributes, "source_instance_id"),
+        scope=scope,
+        visibility=visibility,
+        source_device_id=_optional_attribute(attributes, "source_device_id") or "admin",
+        target_device_id=_optional_attribute(attributes, "target_device_id"),
+        source_instance_id=(
+            _optional_attribute(attributes, "source_instance_id") or cmd.issuer
+        ),
+        wing=wing,
+        room=f"{USER_CONFIRMED_ROOM_PREFIX}{intent.intent_id[-16:]}",
+        content=intent.raw_claim,
+        memory_type=memory_type,
+        importance=importance,
+        confidence=intent.confidence,
+        occurred_at=intent.occurred_at or cmd.issued_at,
+        source_turn_id=intent.source_event_id,
+        session_id=_optional_attribute(attributes, "session_id") or source,
+        tags=[source, *tags],
+        privacy="normal",
+        metadata={
+            "source": source,
+            "request_id": cmd.request_id,
+            "intent_id": intent.intent_id,
+            "intent_type": intent.intent_type,
+            "authority": intent.authority,
+            "tool_call_id": intent.tool_call_id or "",
+        },
+        extensions=extensions,
+    )
+    await ingest_memory_fragment(backend, fragment)
+
+    if all(structured):
+        await kg.add_triple(
+            subject=intent.subject,
+            predicate=intent.predicate,
+            object=intent.object,
+            valid_from=intent.occurred_at or cmd.issued_at,
+            valid_to=None,
+            confidence=intent.confidence,
+            source_turn_id=intent.source_event_id,
+            adapter_name=source,
+        )
+    return fragment.memory_id
+
+
+def _non_blank_attribute(attributes: dict[str, Any], key: str, default: str) -> str:
+    value = attributes.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
+
+
+def _optional_attribute(attributes: dict[str, Any], key: str) -> str | None:
+    value = attributes.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _bounded_int_attribute(
+    attributes: dict[str, Any],
+    key: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = attributes.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _string_list_attribute(attributes: dict[str, Any], key: str) -> list[str]:
+    value = attributes.get(key)
+    if not isinstance(value, list):
+        return []
+    return list(
+        dict.fromkeys(
+            item.strip()
+            for item in value
+            if isinstance(item, str) and item.strip()
+        )
+    )
