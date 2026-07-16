@@ -338,7 +338,38 @@ async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_stat
             assert await _wait_for_true(_applied, timeout_s=30)
             assert latest_status is not None
             assert str(latest_status.get("resource_id", "")).startswith(
-                "memoryintent:intent:"
+                "memoryintent:fact:"
+            )
+
+            second_request_id = await port.assert_fact(
+                "e2e",
+                "e2e",
+                handle.user_id,
+                "self",
+                "likes",
+                marker,
+                source_event_id=f"turn-confirm-again-{marker}",
+                tool_call_id=f"call-confirm-again-{marker}",
+                confidence=0.99,
+            )
+            second_status = None
+
+            async def _second_applied() -> bool:
+                nonlocal second_status
+                second_status = _mcp_tool_json(
+                    await session.call_tool(
+                        "eidolon_memory_command_status",
+                        {"request_id": second_request_id},
+                    )
+                )
+                return (
+                    isinstance(second_status, dict)
+                    and second_status.get("status") == "applied"
+                )
+
+            assert await _wait_for_true(_second_applied, timeout_s=30)
+            assert str(second_status.get("resource_id", "")).endswith(
+                ":evidence:2"
             )
 
             listed = _mcp_tool_json(
@@ -347,11 +378,11 @@ async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_stat
                     {"limit": 100, "include_private": True},
                 )
             )
-            values = {
+            values = [
                 str(record.get("value") or "")
                 for record in (listed or {}).get("records") or []
-            }
-            assert f"self likes {marker}" in values
+            ]
+            assert values.count(f"self likes {marker}") == 1
 
             kg_result = _mcp_tool_json(
                 await session.call_tool(
@@ -359,11 +390,13 @@ async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_stat
                     {"name": "self"},
                 )
             )
-            assert any(
-                triple.get("predicate") == "likes"
-                and triple.get("object") == marker
+            matching_triples = [
+                triple
                 for triple in (kg_result or {}).get("triples") or []
-            )
+                if triple.get("predicate") == "likes"
+                and triple.get("object") == marker
+            ]
+            assert len(matching_triples) == 1
     finally:
         await port.close()
         await bus.close()

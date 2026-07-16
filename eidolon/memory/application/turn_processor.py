@@ -45,7 +45,12 @@ from eidolon.memory.domain.extraction_decision import (
     extraction_input_hash,
 )
 from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.ports import CommandStatusWriter, DlqWriter, ExtractionDecisionStore
+from eidolon.memory.domain.ports import (
+    CanonicalFactStore,
+    CommandStatusWriter,
+    DlqWriter,
+    ExtractionDecisionStore,
+)
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.logging import get_logger
 
@@ -459,6 +464,7 @@ async def process_command_message(
     expected_memory_space_id: str | None = None,
     command_status: CommandStatusWriter | None = None,
     dlq_writer: DlqWriter | None = None,
+    canonical_facts: CanonicalFactStore | None = None,
 ) -> None:
     """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_token>``.
 
@@ -560,7 +566,12 @@ async def process_command_message(
                 confidence=cmd.confidence,
             )
         elif isinstance(cmd, MemoryIntentCommand):
-            resource_id = await apply_explicit_intent(backend, kg, cmd)
+            resource_id = await apply_explicit_intent(
+                backend,
+                kg,
+                cmd,
+                canonical_facts=canonical_facts,
+            )
             log.info(
                 "cmd_memory_intent_ok",
                 request_id=cmd.request_id,
@@ -830,4 +841,3 @@ async def _ingest_theme(backend: Any, cmd: ConsolidatorIngestThemeCommand) -> st
     )
     await ingest_memory_fragment(backend, fragment)
     return fragment.memory_id
-

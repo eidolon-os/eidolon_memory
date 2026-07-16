@@ -12,6 +12,7 @@ from eidolon_sdk.memory import (
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.domain.fragments import MemoryFragment
+from eidolon.memory.domain.ports import CanonicalFactStore
 
 
 class MemoryIntentRejected(ValueError):
@@ -22,6 +23,7 @@ async def apply_explicit_intent(
     backend: Any,
     kg: Any,
     cmd: MemoryIntentCommand,
+    canonical_facts: CanonicalFactStore | None = None,
 ) -> str:
     """Project one explicit add/confirm intent without bypassing write ports.
 
@@ -83,8 +85,19 @@ async def apply_explicit_intent(
         if kg is None:
             raise RuntimeError("structured memory intent requires KG backend")
 
+    registration = None
+    projection_identity = intent.intent_id
+    if all(structured) and canonical_facts is not None:
+        registration = await canonical_facts.register(intent)
+        projection_identity = registration.assertion_id
+        if not registration.projection_required:
+            return (
+                f"confirmed:{registration.assertion_id}:"
+                f"evidence:{registration.evidence_count}"
+            )
+
     fragment = MemoryFragment(
-        memory_id=f"memoryintent:{intent.intent_id}",
+        memory_id=f"memoryintent:{projection_identity}",
         memory_space_id=cmd.memory_space_id,
         memory_realm_id=cmd.memory_space_id,
         companion_id=_optional_attribute(attributes, "source_instance_id"),
@@ -102,7 +115,11 @@ async def apply_explicit_intent(
         importance=importance,
         confidence=intent.confidence,
         occurred_at=intent.occurred_at or cmd.issued_at,
-        source_turn_id=intent.source_event_id,
+        source_turn_id=(
+            f"canonical:{projection_identity}"
+            if registration is not None
+            else intent.source_event_id
+        ),
         session_id=_optional_attribute(attributes, "session_id") or source,
         tags=[source, *tags],
         privacy="normal",
@@ -126,8 +143,17 @@ async def apply_explicit_intent(
             valid_from=intent.occurred_at or cmd.issued_at,
             valid_to=None,
             confidence=intent.confidence,
-            source_turn_id=intent.source_event_id,
+            source_turn_id=(
+                f"canonical:{projection_identity}"
+                if registration is not None
+                else intent.source_event_id
+            ),
             adapter_name=source,
+        )
+    if registration is not None:
+        await canonical_facts.mark_projected(
+            intent.memory_space_id,
+            registration.assertion_id,
         )
     return fragment.memory_id
 

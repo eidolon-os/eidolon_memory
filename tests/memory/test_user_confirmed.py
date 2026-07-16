@@ -30,6 +30,7 @@ from eidolon.memory.application.public_recall import recall_with_kg_fusion
 from eidolon.memory.application.turn_processor import process_command_message
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 
 MEMORY_SPACE_ID = "r:alice:default"
 
@@ -183,6 +184,88 @@ async def test_structured_intent_projects_drawer_and_kg_with_same_source_event()
         source_turn_id="turn-1",
         adapter_name="user-confirmed",
     )
+
+
+async def test_canonical_exact_fact_deduplicates_projection_but_keeps_evidence(
+    tmp_path,
+):
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = SimpleNamespace(add_triple=AsyncMock(return_value="triple-1"))
+    canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    first = _intent_command(request_id="confirm-1")
+    first = first.model_copy(
+        update={
+            "intent": first.intent.model_copy(
+                update={
+                    "subject": "user",
+                    "predicate": "likes",
+                    "object": "oolong",
+                }
+            )
+        }
+    )
+    second = _intent_command(request_id="confirm-2")
+    second = second.model_copy(
+        update={
+            "intent": second.intent.model_copy(
+                update={
+                    "source_event_id": "turn-2",
+                    "subject": "user",
+                    "predicate": "likes",
+                    "object": "oolong",
+                }
+            )
+        }
+    )
+
+    first_resource = await apply_explicit_intent(
+        backend, kg, first, canonical_facts=canonical
+    )
+    second_resource = await apply_explicit_intent(
+        backend, kg, second, canonical_facts=canonical
+    )
+
+    assert first_resource.startswith("memoryintent:fact:")
+    assert second_resource.startswith("confirmed:fact:")
+    assert second_resource.endswith(":evidence:2")
+    assert len(backend.inner.docs) == 1
+    assert kg.add_triple.await_count == 1
+
+
+async def test_canonical_projection_remains_pending_until_all_projections_succeed(
+    tmp_path,
+):
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = SimpleNamespace(
+        add_triple=AsyncMock(
+            side_effect=[RuntimeError("temporary KG failure"), "triple-1"]
+        )
+    )
+    canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    command = _intent_command(request_id="projection-retry")
+    command = command.model_copy(
+        update={
+            "intent": command.intent.model_copy(
+                update={
+                    "subject": "user",
+                    "predicate": "likes",
+                    "object": "oolong",
+                }
+            )
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="temporary KG failure"):
+        await apply_explicit_intent(
+            backend, kg, command, canonical_facts=canonical
+        )
+    resource_id = await apply_explicit_intent(
+        backend, kg, command, canonical_facts=canonical
+    )
+
+    assert resource_id.startswith("memoryintent:fact:")
+    assert len(backend.inner.docs) == 1
+    assert kg.add_triple.await_count == 2
 
 
 # ─── Cmd dispatcher routes the kind ───────────────────────────────────────
