@@ -12,6 +12,7 @@ from eidolon_sdk.memory import (
 )
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
+from eidolon.memory.domain.canonical_fact import ProjectionTarget
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import CanonicalFactStore
 
@@ -88,66 +89,90 @@ async def apply_explicit_intent(
 
     registration = None
     projection_identity = intent.intent_id
+    pending_targets: set[ProjectionTarget] = {"drawer"}
+    if all(structured):
+        pending_targets.add("kg")
     if all(structured) and canonical_facts is not None:
-        registration = await canonical_facts.register(intent)
+        requested_targets: set[ProjectionTarget] = {"drawer", "kg"}
+        registration = await canonical_facts.register(
+            intent,
+            targets=requested_targets,
+        )
         projection_identity = registration.assertion_id
-        if not registration.projection_required:
-            visible = await _canonical_projection_visible(
+        pending_targets = set(registration.pending_targets)
+        projected_targets = requested_targets - pending_targets
+        if projected_targets:
+            visible_targets = await _visible_canonical_targets(
                 backend,
                 kg,
                 intent,
                 registration.assertion_id,
+                projected_targets,
             )
-            if visible:
+            missing_targets = projected_targets - visible_targets
+            if missing_targets:
+                await canonical_facts.mark_projection_pending(
+                    intent.memory_space_id,
+                    registration.assertion_id,
+                    targets=missing_targets,
+                )
+                pending_targets.update(missing_targets)
+            if not pending_targets:
                 return (
                     f"confirmed:{registration.assertion_id}:"
                     f"evidence:{registration.evidence_count}"
                 )
-            await canonical_facts.mark_projection_pending(
+
+    resource_id = f"memoryintent:{projection_identity}"
+    if "drawer" in pending_targets:
+        fragment = MemoryFragment(
+            memory_id=resource_id,
+            memory_space_id=cmd.memory_space_id,
+            memory_realm_id=cmd.memory_space_id,
+            companion_id=_optional_attribute(attributes, "source_instance_id"),
+            scope=scope,
+            visibility=visibility,
+            source_device_id=(
+                _optional_attribute(attributes, "source_device_id") or "admin"
+            ),
+            target_device_id=_optional_attribute(attributes, "target_device_id"),
+            source_instance_id=(
+                _optional_attribute(attributes, "source_instance_id") or cmd.issuer
+            ),
+            wing=wing,
+            room=f"{USER_CONFIRMED_ROOM_PREFIX}{projection_identity[-16:]}",
+            content=intent.raw_claim,
+            memory_type=memory_type,
+            importance=importance,
+            confidence=intent.confidence,
+            occurred_at=intent.occurred_at or cmd.issued_at,
+            source_turn_id=(
+                f"canonical:{projection_identity}"
+                if registration is not None
+                else intent.source_event_id
+            ),
+            session_id=_optional_attribute(attributes, "session_id") or source,
+            tags=[source, *tags],
+            privacy="normal",
+            metadata={
+                "source": source,
+                "request_id": cmd.request_id,
+                "intent_id": intent.intent_id,
+                "intent_type": intent.intent_type,
+                "authority": intent.authority,
+                "tool_call_id": intent.tool_call_id or "",
+            },
+            extensions=extensions,
+        )
+        await ingest_memory_fragment(backend, fragment)
+        if registration is not None:
+            await canonical_facts.mark_projected(
                 intent.memory_space_id,
                 registration.assertion_id,
+                targets={"drawer"},
             )
 
-    fragment = MemoryFragment(
-        memory_id=f"memoryintent:{projection_identity}",
-        memory_space_id=cmd.memory_space_id,
-        memory_realm_id=cmd.memory_space_id,
-        companion_id=_optional_attribute(attributes, "source_instance_id"),
-        scope=scope,
-        visibility=visibility,
-        source_device_id=_optional_attribute(attributes, "source_device_id") or "admin",
-        target_device_id=_optional_attribute(attributes, "target_device_id"),
-        source_instance_id=(
-            _optional_attribute(attributes, "source_instance_id") or cmd.issuer
-        ),
-        wing=wing,
-        room=f"{USER_CONFIRMED_ROOM_PREFIX}{projection_identity[-16:]}",
-        content=intent.raw_claim,
-        memory_type=memory_type,
-        importance=importance,
-        confidence=intent.confidence,
-        occurred_at=intent.occurred_at or cmd.issued_at,
-        source_turn_id=(
-            f"canonical:{projection_identity}"
-            if registration is not None
-            else intent.source_event_id
-        ),
-        session_id=_optional_attribute(attributes, "session_id") or source,
-        tags=[source, *tags],
-        privacy="normal",
-        metadata={
-            "source": source,
-            "request_id": cmd.request_id,
-            "intent_id": intent.intent_id,
-            "intent_type": intent.intent_type,
-            "authority": intent.authority,
-            "tool_call_id": intent.tool_call_id or "",
-        },
-        extensions=extensions,
-    )
-    await ingest_memory_fragment(backend, fragment)
-
-    if all(structured):
+    if all(structured) and "kg" in pending_targets:
         await kg.add_triple(
             subject=intent.subject,
             predicate=intent.predicate,
@@ -162,12 +187,13 @@ async def apply_explicit_intent(
             ),
             adapter_name=source,
         )
-    if registration is not None:
-        await canonical_facts.mark_projected(
-            intent.memory_space_id,
-            registration.assertion_id,
-        )
-    return fragment.memory_id
+        if registration is not None:
+            await canonical_facts.mark_projected(
+                intent.memory_space_id,
+                registration.assertion_id,
+                targets={"kg"},
+            )
+    return resource_id
 
 
 def _non_blank_attribute(attributes: dict[str, Any], key: str, default: str) -> str:
@@ -210,26 +236,32 @@ def _string_list_attribute(attributes: dict[str, Any], key: str) -> list[str]:
     )
 
 
-async def _canonical_projection_visible(
+async def _visible_canonical_targets(
     backend: Any,
     kg: Any,
     intent: MemoryIntent,
     assertion_id: str,
-) -> bool:
-    drawer = await backend.get_by_source_turn_id(
-        intent.memory_space_id,
-        f"canonical:{assertion_id}",
-    )
-    if drawer is None:
-        return False
-    triples = await kg.query_entity(
-        intent.subject,
-        direction="outgoing",
-        include_sensitive=True,
-    )
-    return any(
-        row.subject == intent.subject
-        and row.predicate == intent.predicate
-        and row.object == intent.object
-        for row in triples
-    )
+    targets: set[ProjectionTarget],
+) -> set[ProjectionTarget]:
+    visible: set[ProjectionTarget] = set()
+    if "drawer" in targets:
+        drawer = await backend.get_by_source_turn_id(
+            intent.memory_space_id,
+            f"canonical:{assertion_id}",
+        )
+        if drawer is not None:
+            visible.add("drawer")
+    if "kg" in targets:
+        triples = await kg.query_entity(
+            intent.subject,
+            direction="outgoing",
+            include_sensitive=True,
+        )
+        if any(
+            row.subject == intent.subject
+            and row.predicate == intent.predicate
+            and row.object == intent.object
+            for row in triples
+        ):
+            visible.add("kg")
+    return visible

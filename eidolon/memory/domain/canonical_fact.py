@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Literal
 
 from pydantic import Field
 
@@ -13,13 +14,16 @@ class CanonicalEvidenceConflict(RuntimeError):
     """One intent id was reused for a different canonical assertion."""
 
 
+ProjectionTarget = Literal["drawer", "kg"]
+
+
 class CanonicalFactRegistration(BaseEidolonModel):
     assertion_id: str
     memory_space_id: str
     intent_id: str
     evidence_count: int = Field(ge=1)
     evidence_created: bool
-    projection_required: bool
+    pending_targets: list[ProjectionTarget] = Field(default_factory=list)
 
 
 def canonical_assertion_id(

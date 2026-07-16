@@ -19,6 +19,7 @@ from eidolon_sdk.memory import (
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryCommandPayload,
+    MemoryIntent,
     MemoryIntentCommand,
     PrivacyMutationCommand,
     parse_conversation_turn,
@@ -67,10 +68,15 @@ async def _decide_once(
     steward: StewardProtocol,
     turn: ConversationTurnPayload,
     store: ExtractionDecisionStore | None,
-) -> StewardDecision:
+) -> tuple[StewardDecision, list[MemoryIntent]]:
     """Return one durable extraction result for a turn + extractor version."""
     if store is None:
-        return await steward.decide(turn)
+        decision = await steward.decide(turn)
+        return decision, memory_intents_from_decision(
+            decision,
+            memory_space_id=turn.context.memory_space_id,
+            source_event_id=turn.turn_id,
+        )
 
     extractor_version = str(getattr(steward, "extraction_version", "")).strip()
     if not extractor_version:
@@ -92,7 +98,12 @@ async def _decide_once(
             turn_id=turn.turn_id,
             extractor_version=extractor_version,
         )
-        return existing.decision
+        intents = existing.intents or memory_intents_from_decision(
+            existing.decision,
+            memory_space_id=turn.context.memory_space_id,
+            source_event_id=turn.turn_id,
+        )
+        return existing.decision, intents
 
     decision = await steward.decide(turn)
     intents = memory_intents_from_decision(
@@ -116,7 +127,12 @@ async def _decide_once(
         turn_id=turn.turn_id,
         extractor_version=extractor_version,
     )
-    return stored.decision
+    intents = stored.intents or memory_intents_from_decision(
+        stored.decision,
+        memory_space_id=turn.context.memory_space_id,
+        source_event_id=turn.turn_id,
+    )
+    return stored.decision, intents
 
 
 def append_dlq(settings: MemorySettings, payload: bytes, error: str, deliveries: int) -> None:
@@ -182,6 +198,7 @@ async def process_turn_message(
     audit_sink: Any = None,
     dlq_writer: DlqWriter | None = None,
     decision_store: ExtractionDecisionStore | None = None,
+    canonical_facts: CanonicalFactStore | None = None,
 ) -> None:
     """Decode + validate one turn, run steward, apply fragments + KG, ack / nak / DLQ.
 
@@ -245,7 +262,11 @@ async def process_turn_message(
 
     # ── decide ─────────────────────────────────────────────────────────────
     try:
-        decision = await _decide_once(steward, turn, decision_store)
+        decision, memory_intents = await _decide_once(
+            steward,
+            turn,
+            decision_store,
+        )
     except Exception as exc:
         log.error(
             "turn_processor_steward_failed",
@@ -311,6 +332,7 @@ async def process_turn_message(
     mentions_written = 0
     mentions_rejected = 0
     kg_skipped_low_confidence = 0
+    kg_exact_noop = 0
     kg_failures: list[str] = []
     min_conf = settings.kg.min_confidence_to_write if kg is not None else 1.0
 
@@ -338,11 +360,36 @@ async def process_turn_message(
                 kg_failures.append(f"inv:{exc}")
                 log.warning("kg_invalidate_failed", error=str(exc))
 
-        for t in decision.triples:
+        triple_intents: dict[int, MemoryIntent] = {}
+        for intent in memory_intents:
+            source_index = intent.attributes.get("source_index")
+            if (
+                intent.attributes.get("source_kind") == "triple"
+                and isinstance(source_index, int)
+                and not isinstance(source_index, bool)
+            ):
+                triple_intents[source_index] = intent
+        for index, t in enumerate(decision.triples):
             if t.confidence < min_conf:
                 kg_skipped_low_confidence += 1
                 continue
             try:
+                intent = triple_intents.get(index)
+                registration = None
+                if canonical_facts is not None and intent is not None:
+                    registration = await canonical_facts.register(
+                        intent,
+                        targets={"kg"},
+                    )
+                    if "kg" not in registration.pending_targets:
+                        if await _canonical_kg_visible(kg, intent):
+                            kg_exact_noop += 1
+                            continue
+                        await canonical_facts.mark_projection_pending(
+                            memory_space_id,
+                            registration.assertion_id,
+                            targets={"kg"},
+                        )
                 await kg.add_triple(
                     subject=t.subject,
                     predicate=t.predicate,
@@ -350,9 +397,20 @@ async def process_turn_message(
                     valid_from=t.valid_from or turn_ts,
                     valid_to=t.valid_to,
                     confidence=t.confidence,
-                    source_turn_id=turn.turn_id,
+                    source_turn_id=(
+                        f"canonical:{registration.assertion_id}:"
+                        f"evidence:{intent.intent_id}"
+                        if registration is not None and intent is not None
+                        else turn.turn_id
+                    ),
                     adapter_name="steward-llm",
                 )
+                if registration is not None:
+                    await canonical_facts.mark_projected(
+                        memory_space_id,
+                        registration.assertion_id,
+                        targets={"kg"},
+                    )
                 kg_triples_added += 1
             except Exception as exc:
                 kg_failures.append(f"add:{exc}")
@@ -379,6 +437,7 @@ async def process_turn_message(
         triples=kg_triples_added,
         invalidations=kg_invalidations_applied,
         kg_skipped_lowconf=kg_skipped_low_confidence,
+        kg_exact_noop=kg_exact_noop,
         kg_failures=len(kg_failures),
         kg_failure_sample=kg_failures[:2],
         privacy_actions=len(decision.privacy_actions),
@@ -394,6 +453,21 @@ async def process_turn_message(
             triples=kg_triples_added,
         )
     await msg.ack()
+
+
+async def _canonical_kg_visible(kg: Any, intent: MemoryIntent) -> bool:
+    """Verify that an assertion marked projected still has an active KG row."""
+    rows = await kg.query_entity(
+        intent.subject,
+        direction="outgoing",
+        include_sensitive=True,
+    )
+    return any(
+        row.subject == intent.subject
+        and row.predicate == intent.predicate
+        and row.object == intent.object
+        for row in rows
+    )
 
 
 async def _write_mentions(
@@ -762,7 +836,11 @@ async def process_sync_message(
             if ring is not None:
                 await ring.append(turn)
 
-            decision = await _decide_once(steward, turn, decision_store)
+            decision, _memory_intents = await _decide_once(
+                steward,
+                turn,
+                decision_store,
+            )
             await _apply_privacy(
                 backend,
                 expected_memory_space_id,

@@ -367,6 +367,7 @@ async def _nats_subscriber_loop(
                     audit_sink=audit_sink,
                     dlq_writer=dlq,
                     decision_store=decision_store,
+                    canonical_facts=canonical_facts,
                 )
 
             def _cmd_handler(m):

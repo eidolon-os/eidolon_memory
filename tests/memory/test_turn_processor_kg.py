@@ -372,13 +372,14 @@ async def test_turn_processor_emits_memory_fanout_absorbed(settings, backend, tm
         EidolonDataMemoryFanoutAuditSink,
     )
     from eidolon.memory.application.turn_processor import process_turn_message
+    from eidolon.memory.domain.steward import StewardDecision
 
     store = DataStore.open(DataSettings(sqlite_path=str(tmp_path / "audit.sqlite3")))
     await store.init_schema()
     try:
         await store.owner_service.create_owner(owner_id="alice", display_name="Alice")
         sink = EidolonDataMemoryFanoutAuditSink(store)
-        decision = SimpleNamespace(should_write=True, fragments=[], privacy_actions=[])
+        decision = StewardDecision(should_write=True, reason="audit test")
         msg = _stub_msg(_turn_payload(turn_id="turn-abs"))
 
         await process_turn_message(

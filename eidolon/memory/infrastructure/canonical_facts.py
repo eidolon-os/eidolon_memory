@@ -12,8 +12,14 @@ from eidolon_sdk.memory import MemoryIntent
 from eidolon.memory.domain.canonical_fact import (
     CanonicalEvidenceConflict,
     CanonicalFactRegistration,
+    ProjectionTarget,
     canonical_assertion_id,
 )
+
+_TARGET_COLUMNS: dict[ProjectionTarget, str] = {
+    "drawer": "drawer_projection_state",
+    "kg": "kg_projection_state",
+}
 
 
 class CanonicalFactLedger:
@@ -48,7 +54,8 @@ class CanonicalFactLedger:
                     predicate TEXT NOT NULL,
                     object_value TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'active',
-                    projection_state TEXT NOT NULL DEFAULT 'pending',
+                    drawer_projection_state TEXT NOT NULL DEFAULT 'pending',
+                    kg_projection_state TEXT NOT NULL DEFAULT 'pending',
                     evidence_count INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -73,39 +80,75 @@ class CanonicalFactLedger:
                     ON canonical_evidence(assertion_id, recorded_at);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(canonical_assertions)")
+            }
+            added_target_columns: list[str] = []
+            for column in _TARGET_COLUMNS.values():
+                if column not in columns:
+                    conn.execute(
+                        f"ALTER TABLE canonical_assertions ADD COLUMN {column} "
+                        "TEXT NOT NULL DEFAULT 'pending'"
+                    )
+                    added_target_columns.append(column)
+            if "projection_state" in columns:
+                for column in added_target_columns:
+                    conn.execute(
+                        f"UPDATE canonical_assertions SET {column} = 'projected' "
+                        "WHERE projection_state = 'projected'"
+                    )
 
-    async def register(self, intent: MemoryIntent) -> CanonicalFactRegistration:
-        return await asyncio.to_thread(self._register_sync, intent)
+    async def register(
+        self,
+        intent: MemoryIntent,
+        *,
+        targets: set[ProjectionTarget],
+    ) -> CanonicalFactRegistration:
+        return await asyncio.to_thread(self._register_sync, intent, targets)
 
     async def mark_projected(
         self,
         memory_space_id: str,
         assertion_id: str,
+        *,
+        targets: set[ProjectionTarget],
     ) -> None:
         await asyncio.to_thread(
-            self._mark_projected_sync,
+            self._set_projection_state_sync,
             memory_space_id,
             assertion_id,
+            targets,
+            "projected",
         )
 
     async def mark_projection_pending(
         self,
         memory_space_id: str,
         assertion_id: str,
+        *,
+        targets: set[ProjectionTarget],
     ) -> None:
         await asyncio.to_thread(
             self._set_projection_state_sync,
             memory_space_id,
             assertion_id,
+            targets,
             "pending",
         )
 
     async def evidence_count(self, assertion_id: str) -> int:
         return await asyncio.to_thread(self._evidence_count_sync, assertion_id)
 
-    def _register_sync(self, intent: MemoryIntent) -> CanonicalFactRegistration:
+    def _register_sync(
+        self,
+        intent: MemoryIntent,
+        targets: set[ProjectionTarget],
+    ) -> CanonicalFactRegistration:
         if not intent.subject or not intent.predicate or not intent.object:
             raise ValueError("canonical fact registration requires a complete triple")
+        if not targets or not targets.issubset(_TARGET_COLUMNS):
+            raise ValueError("canonical fact registration requires known projection targets")
         assertion_id = canonical_assertion_id(
             intent.memory_space_id,
             intent.subject,
@@ -124,9 +167,10 @@ class CanonicalFactLedger:
                     """
                     INSERT INTO canonical_assertions (
                         assertion_id, memory_space_id, subject, predicate,
-                        object_value, state, projection_state, evidence_count,
+                        object_value, state, drawer_projection_state,
+                        kg_projection_state, evidence_count,
                         created_at, updated_at, last_confirmed_at
-                    ) VALUES (?, ?, ?, ?, ?, 'active', 'pending', 0, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, 'active', 'pending', 'pending', 0, ?, ?, ?)
                     """,
                     (
                         assertion_id,
@@ -139,7 +183,7 @@ class CanonicalFactLedger:
                         now,
                     ),
                 )
-                projection_state = "pending"
+                projection_states = {"drawer": "pending", "kg": "pending"}
             else:
                 if (
                     str(assertion["memory_space_id"]) != intent.memory_space_id
@@ -150,7 +194,10 @@ class CanonicalFactLedger:
                     raise CanonicalEvidenceConflict(
                         "canonical assertion id resolved to different fact fields"
                     )
-                projection_state = str(assertion["projection_state"])
+                projection_states = {
+                    target: str(assertion[column])
+                    for target, column in _TARGET_COLUMNS.items()
+                }
 
             existing_evidence = conn.execute(
                 "SELECT * FROM canonical_evidence WHERE intent_id = ?",
@@ -218,37 +265,37 @@ class CanonicalFactLedger:
             intent_id=intent.intent_id,
             evidence_count=evidence_count,
             evidence_created=evidence_created,
-            projection_required=projection_state != "projected",
-        )
-
-    def _mark_projected_sync(
-        self,
-        memory_space_id: str,
-        assertion_id: str,
-    ) -> None:
-        self._set_projection_state_sync(
-            memory_space_id,
-            assertion_id,
-            "projected",
+            pending_targets=sorted(
+                target
+                for target in targets
+                if projection_states[target] != "projected"
+            ),
         )
 
     def _set_projection_state_sync(
         self,
         memory_space_id: str,
         assertion_id: str,
+        targets: set[ProjectionTarget],
         state: str,
     ) -> None:
         if state not in {"pending", "projected"}:
             raise ValueError("invalid canonical projection state")
+        if not targets or not targets.issubset(_TARGET_COLUMNS):
+            raise ValueError("canonical projection update requires known targets")
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
+            assignments = ", ".join(
+                f"{_TARGET_COLUMNS[target]} = ?" for target in sorted(targets)
+            )
+            values = [state for _target in sorted(targets)]
             result = conn.execute(
-                """
+                f"""
                 UPDATE canonical_assertions
-                SET projection_state = ?, updated_at = ?
+                SET {assignments}, updated_at = ?
                 WHERE assertion_id = ? AND memory_space_id = ?
                 """,
-                (state, now, assertion_id, memory_space_id),
+                (*values, now, assertion_id, memory_space_id),
             )
             if result.rowcount != 1:
                 raise LookupError("canonical assertion not found in memory space")

@@ -269,7 +269,15 @@ async def test_missing_canonical_drawer_is_reprojected_on_new_confirmation(
     backend = LockedBackend(FakeMemoryBackend())
     kg = SimpleNamespace(
         add_triple=AsyncMock(return_value="triple-1"),
-        query_entity=AsyncMock(),
+        query_entity=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    subject="user",
+                    predicate="likes",
+                    object="oolong",
+                )
+            ]
+        ),
     )
     canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
     first = _structured_command("repair-drawer-1", source_event_id="turn-1")
@@ -283,8 +291,8 @@ async def test_missing_canonical_drawer_is_reprojected_on_new_confirmation(
 
     assert repaired.startswith("memoryintent:fact:")
     assert len(backend.inner.docs) == 1
-    assert kg.add_triple.await_count == 2
-    kg.query_entity.assert_not_awaited()
+    assert kg.add_triple.await_count == 1
+    kg.query_entity.assert_awaited_once()
 
 
 async def test_missing_canonical_kg_is_reprojected_on_new_confirmation(tmp_path):

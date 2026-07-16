@@ -17,7 +17,10 @@ if TYPE_CHECKING:
     from eidolon_sdk.memory import MemoryIntent
 
     from eidolon.memory.application.working_memory import WorkingMemoryRing
-    from eidolon.memory.domain.canonical_fact import CanonicalFactRegistration
+    from eidolon.memory.domain.canonical_fact import (
+        CanonicalFactRegistration,
+        ProjectionTarget,
+    )
     from eidolon.memory.domain.command_status import CommandStatusRecord, CommandStatusStats
     from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
     from eidolon.memory.domain.extraction_decision import ExtractionDecisionRecord
@@ -168,18 +171,27 @@ class ExtractionDecisionStore(Protocol):
 class CanonicalFactStore(Protocol):
     """Exact structured fact identity and evidence; not a recall projection."""
 
-    async def register(self, intent: MemoryIntent) -> CanonicalFactRegistration: ...
+    async def register(
+        self,
+        intent: MemoryIntent,
+        *,
+        targets: set[ProjectionTarget],
+    ) -> CanonicalFactRegistration: ...
 
     async def mark_projected(
         self,
         memory_space_id: str,
         assertion_id: str,
+        *,
+        targets: set[ProjectionTarget],
     ) -> None: ...
 
     async def mark_projection_pending(
         self,
         memory_space_id: str,
         assertion_id: str,
+        *,
+        targets: set[ProjectionTarget],
     ) -> None: ...
 
 
