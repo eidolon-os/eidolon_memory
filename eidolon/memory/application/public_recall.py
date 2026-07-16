@@ -541,9 +541,15 @@ async def search_all_wings_mcp_style(
     """Search configured wings in parallel, filter, rank, and cap top_k."""
     wings = _resolve_wings(settings, wing=wing, for_voice=for_voice)
     vector_degraded = False
-    if for_voice and wings and settings.runtime.read.shared_query_embedding and palace_path:
+    use_shared_embedding = for_voice or settings.runtime.read.normal_shared_query_embedding
+    if (
+        use_shared_embedding
+        and wings
+        and settings.runtime.read.shared_query_embedding
+        and palace_path
+    ):
         try:
-            hits = await _search_voice_shared_embedding(
+            hits = await _search_shared_embedding(
                 palace_path,
                 settings,
                 backend=backend,
@@ -552,20 +558,24 @@ async def search_all_wings_mcp_style(
                 room=room,
                 top_k=top_k,
                 context=context,
+                skip_closets=(settings.runtime.read.voice_skip_closets if for_voice else False),
             )
         except BaseException as exc:
             if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
                 raise
             if raise_on_degraded:
                 raise MemoryBackendUnavailable(
-                    f"voice shared embedding search failed: {exc}"
+                    f"{'voice' if for_voice else 'normal'} shared embedding search failed: {exc}"
                 ) from exc
             # Chroma/mempalace can surface pyo3 panic wrappers as BaseException
-            # rather than Exception. Voice recall is a degraded dependency on
-            # the realtime path, so return no vector hits instead of taking the
-            # whole MCP worker/session down.
+            # rather than Exception. Recall is a degraded dependency, so return
+            # no vector hits instead of taking the whole MCP worker/session down.
             log.warning(
-                "voice_shared_embedding_search_failed",
+                (
+                    "voice_shared_embedding_search_failed"
+                    if for_voice
+                    else "normal_shared_embedding_search_failed"
+                ),
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
@@ -645,7 +655,7 @@ async def search_all_wings_mcp_style(
     )
 
 
-async def _search_voice_shared_embedding(
+async def _search_shared_embedding(
     palace_path: str,
     settings: MemorySettings,
     *,
@@ -655,8 +665,9 @@ async def _search_voice_shared_embedding(
     room: str | None,
     top_k: int,
     context: MemoryActorContext,
+    skip_closets: bool,
 ) -> list[MemoryWireRecord]:
-    """Voice fast-path: one ONNX embed, parallel ``collection.query`` per wing.
+    """Fast path: one ONNX embed and one filtered ``collection.query``.
 
     D1: chroma calls bypass ``MemoryBackend.search`` for the shared-embedding
     optimization, so we must acquire ``LockedBackend.lock`` here to keep the
@@ -671,9 +682,9 @@ async def _search_voice_shared_embedding(
             wings=wings,
             room=room,
             n_results=top_k,
-            skip_closets=settings.runtime.read.voice_skip_closets,
+            skip_closets=skip_closets,
         )
-        # This voice fast-path bypasses backend.search, so stamp the caller's
+        # This shared fast-path bypasses backend.search, so stamp the caller's
         # authoritative memory_space_id here (same role backend.search plays for
         # the fan-out path) — otherwise these hits carry the wing name and the
         # visibility gate below drops them all.

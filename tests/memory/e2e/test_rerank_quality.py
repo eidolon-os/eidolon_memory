@@ -217,3 +217,81 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
         f"rerank_on returned zero ground-truth hits — pipeline likely "
         f"broken (no fragments reachable via recall)\n{report}"
     )
+
+
+async def test_normal_shared_embedding_preserves_realistic_top3_quality(
+    live_agent_runner,
+    mcp_session,
+) -> None:
+    """The normal fast path must not buy latency by losing companion facts."""
+    corpus = load_companion_corpus()
+    ground_truth = _ground_truth_queries(corpus)
+    assert len(ground_truth) >= 12
+
+    legacy = live_agent_runner(
+        user_id="e2e_normal_legacy",
+        port=19042,
+        steward_mode="rules",
+        extra_settings={
+            "runtime": {"read": {"normal_shared_query_embedding": False}},
+        },
+    )
+    shared = live_agent_runner(
+        user_id="e2e_normal_shared",
+        port=19043,
+        steward_mode="rules",
+        extra_settings={
+            "runtime": {"read": {"normal_shared_query_embedding": True}},
+        },
+    )
+
+    async def _seed_and_wait(handle) -> list[str]:
+        await _publish_corpus(handle, corpus, len(corpus))
+        async with mcp_session(handle.mcp_url) as session:
+            async def _ready(s):
+                return await _list_fragment_count(s) >= 5
+
+            assert await wait_for_visible(session, predicate=_ready, timeout_s=90)
+            listed = mcp_tool_json(
+                await session.call_tool("eidolon_memory_list", {"limit": 1000})
+            )
+            return [
+                str(row.get("value", ""))
+                for row in (listed or {}).get("records") or []
+            ]
+
+    # Keep embedded Chroma writers/readers for the two Palaces sequential.
+    legacy_values = await _seed_and_wait(legacy)
+    shared_values = await _seed_and_wait(shared)
+    eligible = [
+        (query, expected)
+        for query, expected in ground_truth
+        if _matches(legacy_values, expected) and _matches(shared_values, expected)
+    ]
+    assert len(eligible) >= 5, "rules steward did not persist enough shared ground truth"
+
+    async def _score(handle) -> tuple[int, int]:
+        top1 = 0
+        top3 = 0
+        context = e2e_actor_context(handle.user_id)
+        async with mcp_session(handle.mcp_url) as session:
+            for query, expected in eligible:
+                rows = await _recall_top_values(session, context, query=query, top_k=3)
+                top1 += int(bool(rows) and _matches(rows[:1], expected))
+                top3 += int(_matches(rows, expected))
+        return top1, top3
+
+    legacy_top1, legacy_top3 = await _score(legacy)
+    shared_top1, shared_top3 = await _score(shared)
+    total = len(eligible)
+    report = (
+        f"normal legacy top1/top3={legacy_top1}/{legacy_top3}; "
+        f"shared={shared_top1}/{shared_top3}; total={total}"
+    )
+
+    # Allow one-query noise on the small deterministic corpus, but reject a
+    # material ranking regression or a fast path that returns mostly junk.
+    tolerance = max(1, int(total * 0.05))
+    assert shared_top1 >= legacy_top1 - tolerance, report
+    assert shared_top3 >= legacy_top3 - tolerance, report
+    assert shared_top3 > 0, report

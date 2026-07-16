@@ -20,6 +20,7 @@ def test_load_default_memory_settings(tmp_path: Path, monkeypatch: pytest.Monkey
     assert settings.nats.conversation_turn_subject_base
     assert settings.command_status.retention_days == 30
     assert settings.command_status.max_records == 100_000
+    assert settings.runtime.read.normal_shared_query_embedding is True
 
 
 def test_command_status_retention_limits_are_positive(tmp_path: Path) -> None:

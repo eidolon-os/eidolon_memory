@@ -92,6 +92,11 @@ def _settings(args: argparse.Namespace) -> MemorySettings:
                 "voice_wings": WINGS,
                 "theme_top_k": 0,
             },
+            "runtime": {
+                "read": {
+                    "normal_shared_query_embedding": args.normal_shared_embedding,
+                }
+            },
         }
     )
 
@@ -554,6 +559,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "backend": backend_name,
         "mode": "raw" if args.raw else "locked",
+        "normal_shared_query_embedding": args.normal_shared_embedding,
         "palace": str(palace),
         "sizes": sizes,
         "estimated_years_at_records_per_day": {
@@ -595,6 +601,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Bypass LockedBackend for isolated read-only A/B diagnostics.",
     )
+    parser.add_argument("--normal-shared-embedding", action="store_true")
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument(
         "--long-term-records-per-day",

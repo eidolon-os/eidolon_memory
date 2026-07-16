@@ -111,6 +111,9 @@ class ReadRuntimeConfig(BaseModel):
     max_wing_parallel: int = 0  # 0 = auto (see cpu_env.recommend_max_wing_parallel)
     omp_num_threads: int = 0  # 0 = auto from CPU
     shared_query_embedding: bool = True
+    # One embedding + one filtered collection query under the same Realm lock.
+    # Keep configurable as a rollback switch for backend-specific quality issues.
+    normal_shared_query_embedding: bool = True
     voice_skip_closets: bool = True
 
 

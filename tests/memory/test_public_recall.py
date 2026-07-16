@@ -254,14 +254,16 @@ async def test_single_wing_voice_uses_shared_embedding_path(monkeypatch):
         room: str | None,
         top_k: int,
         context: MemoryActorContext,
+        skip_closets: bool,
     ):
         del backend
         assert context.memory_space_id == MEMORY_SPACE_ID
+        assert skip_closets is True
         calls.append(list(wings))
         return []
 
     monkeypatch.setattr(
-        "eidolon.memory.application.public_recall._search_voice_shared_embedding",
+        "eidolon.memory.application.public_recall._search_shared_embedding",
         _fake_shared,
     )
     await search_all_wings_mcp_style(
@@ -273,6 +275,49 @@ async def test_single_wing_voice_uses_shared_embedding_path(monkeypatch):
         wing="Wing_Profile",
         room=None,
         for_voice=True,
+        palace_path="/tmp/fake-palace",
+    )
+    assert calls == [["Wing_Profile"]]
+
+
+@pytest.mark.asyncio
+async def test_normal_recall_can_opt_into_shared_embedding_without_skipping_closets(monkeypatch):
+    settings = get_memory_settings().model_copy(deep=True)
+    settings.runtime.read.normal_shared_query_embedding = True
+    backend = FakeMemoryBackend()
+    calls: list[list[str]] = []
+
+    async def _fake_shared(
+        palace_path: str,
+        _settings,
+        *,
+        backend,
+        query: str,
+        wings: list[str],
+        room: str | None,
+        top_k: int,
+        context: MemoryActorContext,
+        skip_closets: bool,
+    ):
+        del backend
+        assert context.memory_space_id == MEMORY_SPACE_ID
+        assert skip_closets is False
+        calls.append(list(wings))
+        return []
+
+    monkeypatch.setattr(
+        "eidolon.memory.application.public_recall._search_shared_embedding",
+        _fake_shared,
+    )
+    await search_all_wings_mcp_style(
+        backend,
+        settings,
+        query="test",
+        context=_context(),
+        top_k=3,
+        wing="Wing_Profile",
+        room=None,
+        for_voice=False,
         palace_path="/tmp/fake-palace",
     )
     assert calls == [["Wing_Profile"]]
@@ -293,7 +338,7 @@ async def test_voice_shared_embedding_failure_degrades_to_empty(monkeypatch):
         raise PanicLike("sqlite disk I/O panic")
 
     monkeypatch.setattr(
-        "eidolon.memory.application.public_recall._search_voice_shared_embedding",
+        "eidolon.memory.application.public_recall._search_shared_embedding",
         _panic,
     )
 
@@ -323,7 +368,7 @@ async def test_recall_fusion_marks_degraded_when_voice_fast_path_fails(monkeypat
         raise PanicLike("sqlite disk I/O panic")
 
     monkeypatch.setattr(
-        "eidolon.memory.application.public_recall._search_voice_shared_embedding",
+        "eidolon.memory.application.public_recall._search_shared_embedding",
         _panic,
     )
 
