@@ -31,7 +31,7 @@ from eidolon.memory.adapters.locked_backend import LockedBackend  # noqa: E402
 from eidolon.memory.adapters.mempalace_python_backend import (  # noqa: E402
     MemPalacePythonBackend,
 )
-from eidolon.memory.application.query_embedding import (  # noqa: E402
+from eidolon.memory.adapters.mempalace_query_embedding import (  # noqa: E402
     _embed_query_cached_normalized,
     clear_embedding_cache,
 )
@@ -39,7 +39,6 @@ from eidolon.memory.config.memory_settings import get_memory_settings  # noqa: E
 from eidolon.memory.config.palace_directory import (  # noqa: E402
     resolve_palace_for_user,
 )
-
 
 _QUERIES = [
     "用户最近的情绪状态",
@@ -101,7 +100,7 @@ async def _timed_recall(
     # We can call the cached function directly here; production calls embed
     # via mempalace.embedding inside search_memories_shared_embedding, but
     # measuring the cached path is the cheapest representative.
-    from eidolon.memory.application.query_embedding import embed_query_vector
+    from eidolon.memory.adapters.mempalace_query_embedding import embed_query_vector
     _vec = embed_query_vector(query)
     del _vec
     stages["embed_ms"] = (time.perf_counter() - t0) * 1000

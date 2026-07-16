@@ -29,6 +29,52 @@ def test_metadata_for_chroma_serializes_nested_values():
     assert "empty" not in meta
 
 
+def test_scoped_search_is_owned_by_mempalace_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
+    captured: dict[str, object] = {}
+
+    def _scoped(query: str, palace_path: str, **kwargs):
+        captured.update({"query": query, "palace_path": palace_path, **kwargs})
+        return [
+            {
+                "text": "likes green tea",
+                "wing": "Wing_Profile",
+                "room": "preference",
+                "similarity": 0.9,
+                "metadata": {
+                    "wing": "Wing_Profile",
+                    "room": "preference",
+                    "privacy": "normal",
+                },
+            }
+        ]
+
+    monkeypatch.setattr(
+        "eidolon.memory.adapters.mempalace_python_backend.search_memories_shared_embedding",
+        _scoped,
+    )
+    backend = MemPalacePythonBackend(
+        load_memory_settings(),
+        "/tmp/palace",
+        memory_space_id="realm-test",
+    )
+
+    hits = backend.search_scoped_sync(
+        "green tea",
+        wings=["Wing_Profile", "Wing_Work"],
+        n_results=3,
+        skip_closets=True,
+    )
+
+    assert captured["palace_path"] == "/tmp/palace"
+    assert captured["wings"] == ["Wing_Profile", "Wing_Work"]
+    assert captured["skip_closets"] is True
+    assert hits[0].memory_space_id == "realm-test"
+    assert hits[0].metadata["privacy"] == "normal"
+
+
 @pytest.mark.asyncio
 async def test_delete_requires_drawer_id_key(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)

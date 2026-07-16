@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from eidolon.memory.application.query_embedding import embed_query_vector
+from eidolon.memory.adapters.mempalace_query_embedding import embed_query_vector
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
 from eidolon.memory.infrastructure.mempalace_compat import (
     collection_metric,

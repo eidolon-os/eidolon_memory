@@ -1,12 +1,8 @@
-"""Embed a query once per recall round (shared across wings)."""
+"""MemPalace query embedding reused by scoped multi-wing search."""
 
 from __future__ import annotations
 
 from functools import lru_cache
-
-from eidolon.memory.support.logging import get_logger
-
-log = get_logger(__name__)
 
 
 @lru_cache(maxsize=128)
@@ -31,7 +27,7 @@ def _embed_query_cached_normalized(query: str) -> tuple[float, ...]:
 
 
 def embed_query_vector(query: str) -> list[float]:
-    """Return embedding for ``query``; process-local LRU cache by exact text."""
+    """Return an embedding for ``query``; cache by normalized exact text."""
     normalized = query.strip()
     if not normalized:
         msg = "query cannot be blank"
@@ -40,5 +36,5 @@ def embed_query_vector(query: str) -> list[float]:
 
 
 def clear_embedding_cache() -> None:
-    """Tests: drop cached query vectors."""
+    """Drop process-local cached query vectors (primarily for tests)."""
     _embed_query_cached_normalized.cache_clear()

@@ -1,16 +1,11 @@
-"""Abstract memory backend — implemented by MCP MemPalace or test fakes.
+"""Abstract memory backend — implemented by MemPalace or test fakes.
 
 D1 lock contract:
-    Backends that need to serialize concurrent access to underlying state
-    (chromadb PersistentClient, SQLite cursor) expose an ``asyncio.Lock``
-    as the ``lock`` attribute. Application-layer code that needs to share
-    that lock across the read/write boundary(e.g. shared-embedding voice
-    fast-path, palace_graph snapshot)reads ``backend.lock``; if ``None``,
-    no locking is needed(unit-test fakes, in-memory implementations).
-
-    This keeps the application layer decoupled from the concrete
-    ``LockedBackend`` / ``LockedKnowledgeGraph`` classes — duck-typing
-    against the Protocol, not the implementation.
+    Serialization belongs to the backend adapter. Application services call
+    read/write ports and never acquire the concrete storage lock themselves.
+    The legacy ``lock`` attribute remains on ``MemoryReader`` for the working
+    memory and palace-graph migration path; new storage capabilities must be
+    expressed as narrow ports instead of bypassing the adapter.
 """
 
 from __future__ import annotations
@@ -50,6 +45,29 @@ class MemoryReader(Protocol):
         room: str | None = None,
     ) -> list[MemoryWireRecord]:
         """Semantic search scoped to a wing (user / palace id)."""
+
+
+@runtime_checkable
+class ScopedMemoryReader(Protocol):
+    """Optional optimized read capability for one query across many wings.
+
+    Implementations own embedding reuse, storage details and serialization.
+    Callers can fall back to ``MemoryReader.search`` fan-out when the capability
+    is unavailable.
+    """
+
+    supports_scoped_search: bool
+
+    async def search_scoped(
+        self,
+        query: str,
+        *,
+        wings: list[str],
+        n_results: int = 5,
+        room: str | None = None,
+        skip_closets: bool = False,
+    ) -> list[MemoryWireRecord]:
+        """Search multiple wings while reusing backend-owned query work."""
 
 
 @runtime_checkable

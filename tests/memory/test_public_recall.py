@@ -238,34 +238,21 @@ async def test_group_recall_context_non_empty_when_hits():
 
 
 @pytest.mark.asyncio
-async def test_single_wing_voice_uses_shared_embedding_path(monkeypatch):
-    """Single wing + palace_path should use fast path when for_voice=True."""
+async def test_single_wing_voice_uses_scoped_read_port():
+    """Voice recall requests the optimized read capability through its port."""
     settings = get_memory_settings()
-    backend = FakeMemoryBackend()
     calls: list[list[str]] = []
 
-    async def _fake_shared(
-        palace_path: str,
-        _settings,
-        *,
-        backend,
-        query: str,
-        wings: list[str],
-        room: str | None,
-        top_k: int,
-        context: MemoryActorContext,
-        skip_closets: bool,
-    ):
-        del backend
-        assert context.memory_space_id == MEMORY_SPACE_ID
-        assert skip_closets is True
-        calls.append(list(wings))
-        return []
+    class ScopedFake(FakeMemoryBackend):
+        supports_scoped_search = True
 
-    monkeypatch.setattr(
-        "eidolon.memory.application.public_recall._search_shared_embedding",
-        _fake_shared,
-    )
+        async def search_scoped(self, query: str, *, wings: list[str], **kwargs):
+            assert query == "test"
+            assert kwargs["skip_closets"] is True
+            calls.append(list(wings))
+            return []
+
+    backend = ScopedFake()
     await search_all_wings_mcp_style(
         backend,
         settings,
@@ -275,40 +262,26 @@ async def test_single_wing_voice_uses_shared_embedding_path(monkeypatch):
         wing="Wing_Profile",
         room=None,
         for_voice=True,
-        palace_path="/tmp/fake-palace",
     )
     assert calls == [["Wing_Profile"]]
 
 
 @pytest.mark.asyncio
-async def test_normal_recall_can_opt_into_shared_embedding_without_skipping_closets(monkeypatch):
+async def test_normal_recall_can_opt_into_scoped_read_without_skipping_closets():
     settings = get_memory_settings().model_copy(deep=True)
     settings.runtime.read.normal_shared_query_embedding = True
-    backend = FakeMemoryBackend()
     calls: list[list[str]] = []
 
-    async def _fake_shared(
-        palace_path: str,
-        _settings,
-        *,
-        backend,
-        query: str,
-        wings: list[str],
-        room: str | None,
-        top_k: int,
-        context: MemoryActorContext,
-        skip_closets: bool,
-    ):
-        del backend
-        assert context.memory_space_id == MEMORY_SPACE_ID
-        assert skip_closets is False
-        calls.append(list(wings))
-        return []
+    class ScopedFake(FakeMemoryBackend):
+        supports_scoped_search = True
 
-    monkeypatch.setattr(
-        "eidolon.memory.application.public_recall._search_shared_embedding",
-        _fake_shared,
-    )
+        async def search_scoped(self, query: str, *, wings: list[str], **kwargs):
+            assert query == "test"
+            assert kwargs["skip_closets"] is False
+            calls.append(list(wings))
+            return []
+
+    backend = ScopedFake()
     await search_all_wings_mcp_style(
         backend,
         settings,
@@ -318,29 +291,26 @@ async def test_normal_recall_can_opt_into_shared_embedding_without_skipping_clos
         wing="Wing_Profile",
         room=None,
         for_voice=False,
-        palace_path="/tmp/fake-palace",
     )
     assert calls == [["Wing_Profile"]]
 
 
 @pytest.mark.asyncio
-async def test_voice_shared_embedding_failure_degrades_to_empty(monkeypatch):
+async def test_voice_scoped_read_failure_degrades_to_empty():
     """Chroma/mempalace pyo3 panics can arrive as BaseException wrappers.
     Voice recall must degrade instead of crashing the MCP worker process.
     """
     settings = get_memory_settings()
-    backend = FakeMemoryBackend()
-
     class PanicLike(BaseException):
         pass
 
-    async def _panic(*_args, **_kwargs):
-        raise PanicLike("sqlite disk I/O panic")
+    class PanickingScopedFake(FakeMemoryBackend):
+        supports_scoped_search = True
 
-    monkeypatch.setattr(
-        "eidolon.memory.application.public_recall._search_shared_embedding",
-        _panic,
-    )
+        async def search_scoped(self, *_args, **_kwargs):
+            raise PanicLike("sqlite disk I/O panic")
+
+    backend = PanickingScopedFake()
 
     out = await search_all_wings_mcp_style(
         backend,
@@ -351,26 +321,24 @@ async def test_voice_shared_embedding_failure_degrades_to_empty(monkeypatch):
         wing="Wing_Profile",
         room=None,
         for_voice=True,
-        palace_path="/tmp/fake-palace",
     )
     assert out == []
 
 
 @pytest.mark.asyncio
-async def test_recall_fusion_marks_degraded_when_voice_fast_path_fails(monkeypatch):
+async def test_recall_fusion_marks_degraded_when_voice_scoped_read_fails():
     settings = get_memory_settings()
-    backend = FakeMemoryBackend()
 
     class PanicLike(BaseException):
         pass
 
-    async def _panic(*_args, **_kwargs):
-        raise PanicLike("sqlite disk I/O panic")
+    class PanickingScopedFake(FakeMemoryBackend):
+        supports_scoped_search = True
 
-    monkeypatch.setattr(
-        "eidolon.memory.application.public_recall._search_shared_embedding",
-        _panic,
-    )
+        async def search_scoped(self, *_args, **_kwargs):
+            raise PanicLike("sqlite disk I/O panic")
+
+    backend = PanickingScopedFake()
 
     result = await recall_with_kg_fusion(
         backend,

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from unittest.mock import MagicMock
 
 import pytest
 from eidolon_sdk.memory import MemoryActorContext
 
+from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.application.livekit_recall import LiveKitRecallService
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.config.memory_settings import (
@@ -78,6 +82,45 @@ async def test_livekit_recall_fail_fast_on_timeout() -> None:
         assert out["context"] == ""
     finally:
         mod.recall_with_kg_fusion = original
+
+
+@pytest.mark.asyncio
+async def test_livekit_timeout_keeps_realm_serialized_until_worker_finishes() -> None:
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    next_read_entered = asyncio.Event()
+
+    class SlowScopedFake(FakeMemoryBackend):
+        supports_scoped_search = True
+
+        async def search_scoped(self, *_args, **_kwargs):
+            def _blocking_search():
+                worker_started.set()
+                release_worker.wait(timeout=2.0)
+                return []
+
+            return await asyncio.to_thread(_blocking_search)
+
+        async def get_all(self, *args, **kwargs):
+            next_read_entered.set()
+            return await super().get_all(*args, **kwargs)
+
+    backend = LockedBackend(SlowScopedFake())
+    settings = _settings()
+    settings.recall.livekit_timeout_seconds = 0.05
+    service = LiveKitRecallService(backend, settings, palace_path="/tmp/fake")
+
+    recall = asyncio.create_task(service.recall_context_with_records("hello", context=_ctx()))
+    assert await asyncio.to_thread(worker_started.wait, 1.0)
+    outcome = await recall
+    assert outcome["degraded"] is True
+
+    next_read = asyncio.create_task(backend.get_all("default.alice.default"))
+    await asyncio.sleep(0.05)
+    assert not next_read_entered.is_set()
+
+    release_worker.set()
+    assert await next_read == []
 
 
 def test_filter_excludes_same_session() -> None:

@@ -14,11 +14,17 @@ per LiveKit utterance).
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
+from eidolon.memory.domain.errors import MemoryBackendUnsupported
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.support.logging import get_logger
+
+log = get_logger(__name__)
+T = TypeVar("T")
 
 
 class LockedBackend(MemoryBackend):
@@ -27,6 +33,10 @@ class LockedBackend(MemoryBackend):
     def __init__(self, inner: MemoryBackend, *, lock: asyncio.Lock | None = None) -> None:
         self._inner = inner
         self._lock = lock or asyncio.Lock()
+        # A caller deadline may cancel its coroutine while ``asyncio.to_thread``
+        # continues running.  Keep operation-owned tasks alive so the Realm lock
+        # is released only when the actual backend operation has terminated.
+        self._operations: set[asyncio.Task[Any]] = set()
         # Phase 2: optional in-memory working-memory ring. ``agent_runner``
         # assigns the actual instance after construction (so settings drive
         # ``maxlen`` without coupling LockedBackend to the config schema).
@@ -40,6 +50,63 @@ class LockedBackend(MemoryBackend):
     def inner(self) -> MemoryBackend:
         return self._inner
 
+    @property
+    def supports_scoped_search(self) -> bool:
+        return bool(
+            getattr(self._inner, "supports_scoped_search", False)
+            and callable(getattr(self._inner, "search_scoped", None))
+        )
+
+    async def _serialized(
+        self,
+        operation: Callable[[], Awaitable[T]],
+        *,
+        name: str,
+    ) -> T:
+        """Run one backend operation under the Realm lock, cancellation-safely.
+
+        ``asyncio.shield`` lets a deadline cancel the waiting caller without
+        cancelling the task that owns the lock.  This matters for adapters that
+        await ``asyncio.to_thread``: Python cannot stop that worker thread, so
+        releasing the lock on caller cancellation would allow unsafe overlap.
+        """
+
+        started = asyncio.Event()
+
+        async def _run() -> T:
+            async with self._lock:
+                started.set()
+                return await operation()
+
+        state = {"detached": False}
+        task = asyncio.create_task(_run(), name=f"memory-backend:{name}")
+        self._operations.add(task)
+
+        def _completed(done: asyncio.Task[Any]) -> None:
+            self._operations.discard(done)
+            if done.cancelled():
+                return
+            error = done.exception()
+            if state["detached"] and error is not None:
+                log.warning(
+                    "detached_memory_backend_operation_failed",
+                    operation=name,
+                    error=str(error),
+                    error_type=type(error).__name__,
+                )
+
+        task.add_done_callback(_completed)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if started.is_set():
+                state["detached"] = True
+            else:
+                # No storage work has begun.  Preserve normal cancellation
+                # semantics instead of executing abandoned queued work later.
+                task.cancel()
+            raise
+
     async def search(
         self,
         query: str,
@@ -48,8 +115,33 @@ class LockedBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
     ) -> list[MemoryWireRecord]:
-        async with self._lock:
-            return await self._inner.search(query, wing=wing, n_results=n_results, room=room)
+        return await self._serialized(
+            lambda: self._inner.search(query, wing=wing, n_results=n_results, room=room),
+            name="search",
+        )
+
+    async def search_scoped(
+        self,
+        query: str,
+        *,
+        wings: list[str],
+        n_results: int = 5,
+        room: str | None = None,
+        skip_closets: bool = False,
+    ) -> list[MemoryWireRecord]:
+        search_scoped = getattr(self._inner, "search_scoped", None)
+        if not self.supports_scoped_search or search_scoped is None:
+            raise MemoryBackendUnsupported("inner memory backend does not support scoped search")
+        return await self._serialized(
+            lambda: search_scoped(
+                query,
+                wings=wings,
+                n_results=n_results,
+                room=room,
+                skip_closets=skip_closets,
+            ),
+            name="search_scoped",
+        )
 
     async def ingest_text(
         self,
@@ -59,16 +151,27 @@ class LockedBackend(MemoryBackend):
         text: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        async with self._lock:
-            await self._inner.ingest_text(wing=wing, room=room, text=text, metadata=metadata)
+        await self._serialized(
+            lambda: self._inner.ingest_text(
+                wing=wing,
+                room=room,
+                text=text,
+                metadata=metadata,
+            ),
+            name="ingest_text",
+        )
 
     async def ingest_fragment(self, fragment: MemoryFragment) -> None:
-        async with self._lock:
-            await self._inner.ingest_fragment(fragment)
+        await self._serialized(
+            lambda: self._inner.ingest_fragment(fragment),
+            name="ingest_fragment",
+        )
 
     async def get(self, user_id: str, key: str) -> MemoryWireRecord | None:
-        async with self._lock:
-            return await self._inner.get(user_id, key)
+        return await self._serialized(
+            lambda: self._inner.get(user_id, key),
+            name="get",
+        )
 
     async def get_all(
         self,
@@ -77,25 +180,35 @@ class LockedBackend(MemoryBackend):
         limit: int | None = None,
         offset: int | None = None,
     ) -> list[MemoryWireRecord]:
-        async with self._lock:
-            return await self._inner.get_all(user_id, limit=limit, offset=offset)
+        return await self._serialized(
+            lambda: self._inner.get_all(user_id, limit=limit, offset=offset),
+            name="get_all",
+        )
 
     async def get_by_source_turn_id(
         self,
         memory_space_id: str,
         source_turn_id: str,
     ) -> MemoryWireRecord | None:
-        async with self._lock:
-            return await self._inner.get_by_source_turn_id(memory_space_id, source_turn_id)
+        return await self._serialized(
+            lambda: self._inner.get_by_source_turn_id(memory_space_id, source_turn_id),
+            name="get_by_source_turn_id",
+        )
 
     async def delete(self, user_id: str, key: str) -> None:
-        async with self._lock:
-            await self._inner.delete(user_id, key)
+        await self._serialized(
+            lambda: self._inner.delete(user_id, key),
+            name="delete",
+        )
 
     async def delete_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
-        async with self._lock:
-            return await self._inner.delete_many(memory_space_id, keys)
+        return await self._serialized(
+            lambda: self._inner.delete_many(memory_space_id, keys),
+            name="delete_many",
+        )
 
     async def archive_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
-        async with self._lock:
-            return await self._inner.archive_many(memory_space_id, keys)
+        return await self._serialized(
+            lambda: self._inner.archive_many(memory_space_id, keys),
+            name="archive_many",
+        )

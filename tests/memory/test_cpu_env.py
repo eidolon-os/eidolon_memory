@@ -51,7 +51,7 @@ def test_recommend_max_wing_parallel_auto():
 def test_embed_query_handles_ndarray_vector(monkeypatch):
     import numpy as np
 
-    from eidolon.memory.application import query_embedding as qe
+    from eidolon.memory.adapters import mempalace_query_embedding as qe
 
     class _EF:
         def __call__(self, texts):

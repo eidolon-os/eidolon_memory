@@ -10,16 +10,14 @@ from typing import Any
 
 from eidolon_sdk.memory import USER_CONFIRMED_ROOM_PREFIX, MemoryActorContext
 
-from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
-from eidolon.memory.adapters.search_payload import parse_search_tool_payload
 from eidolon.memory.application.kg_recall import query_kg_for_recall
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
-from eidolon.memory.domain.ports import MemoryReader
+from eidolon.memory.domain.ports import MemoryReader, ScopedMemoryReader
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.cpu_env import recommend_max_wing_parallel
 from eidolon.memory.support.logging import get_logger
@@ -542,24 +540,30 @@ async def search_all_wings_mcp_style(
     wings = _resolve_wings(settings, wing=wing, for_voice=for_voice)
     vector_degraded = False
     use_shared_embedding = for_voice or settings.runtime.read.normal_shared_query_embedding
+    scoped_reader = (
+        backend
+        if isinstance(backend, ScopedMemoryReader) and backend.supports_scoped_search
+        else None
+    )
     if (
         use_shared_embedding
         and wings
         and settings.runtime.read.shared_query_embedding
-        and palace_path
+        and scoped_reader
     ):
         try:
-            hits = await _search_shared_embedding(
-                palace_path,
-                settings,
-                backend=backend,
+            scoped_hits = await scoped_reader.search_scoped(
                 query=query,
                 wings=wings,
                 room=room,
-                top_k=top_k,
-                context=context,
+                n_results=top_k,
                 skip_closets=(settings.runtime.read.voice_skip_closets if for_voice else False),
             )
+            hits = [
+                record
+                for record in scoped_hits
+                if recall_record_visible_for_context(record, context)
+            ]
         except BaseException as exc:
             if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
                 raise
@@ -653,49 +657,3 @@ async def search_all_wings_mcp_style(
         query=query,
         top_k=top_k,
     )
-
-
-async def _search_shared_embedding(
-    palace_path: str,
-    settings: MemorySettings,
-    *,
-    backend: MemoryReader,
-    query: str,
-    wings: list[str],
-    room: str | None,
-    top_k: int,
-    context: MemoryActorContext,
-    skip_closets: bool,
-) -> list[MemoryWireRecord]:
-    """Fast path: one ONNX embed and one filtered ``collection.query``.
-
-    D1: chroma calls bypass ``MemoryBackend.search`` for the shared-embedding
-    optimization, so we must acquire ``LockedBackend.lock`` here to keep the
-    single-writer-single-reader contract. Non-locked backends (tests) fall back
-    to running unlocked.
-    """
-
-    def _run() -> list[MemoryWireRecord]:
-        raw = search_memories_shared_embedding(
-            query,
-            palace_path,
-            wings=wings,
-            room=room,
-            n_results=top_k,
-            skip_closets=skip_closets,
-        )
-        # This shared fast-path bypasses backend.search, so stamp the caller's
-        # authoritative memory_space_id here (same role backend.search plays for
-        # the fan-out path) — otherwise these hits carry the wing name and the
-        # visibility gate below drops them all.
-        return parse_search_tool_payload(
-            {"results": raw}, default_memory_space_id=context.memory_space_id
-        )
-
-    lock = getattr(backend, "lock", None)
-    if lock is not None:
-        async with lock:
-            records = await asyncio.to_thread(_run)
-    else:
-        records = await asyncio.to_thread(_run)
-    return [r for r in records if recall_record_visible_for_context(r, context)]

@@ -10,6 +10,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
 from eidolon.memory.adapters.search_payload import parse_search_tool_payload
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import (
@@ -45,6 +46,7 @@ class MemPalacePythonBackend(MemoryBackend):
 
     lock: asyncio.Lock | None = None
     working_memory: Any = None  # Phase 2 ring; agent_runner bolts it on at start
+    supports_scoped_search = True
 
     def __init__(
         self,
@@ -135,6 +137,51 @@ class MemPalacePythonBackend(MemoryBackend):
             self._hydrate_hit_metadata(records),
             self._settings,
         )
+
+    async def search_scoped(
+        self,
+        query: str,
+        *,
+        wings: list[str],
+        n_results: int = 5,
+        room: str | None = None,
+        skip_closets: bool = False,
+    ) -> list[MemoryWireRecord]:
+        """Adapter-owned multi-wing search with one query embedding."""
+        return await asyncio.to_thread(
+            self.search_scoped_sync,
+            query,
+            wings=wings,
+            n_results=n_results,
+            room=room,
+            skip_closets=skip_closets,
+        )
+
+    def search_scoped_sync(
+        self,
+        query: str,
+        *,
+        wings: list[str],
+        n_results: int = 5,
+        room: str | None = None,
+        skip_closets: bool = False,
+    ) -> list[MemoryWireRecord]:
+        raw = search_memories_shared_embedding(
+            query,
+            self._palace,
+            wings=wings,
+            room=room,
+            n_results=n_results,
+            skip_closets=skip_closets,
+        )
+        records = parse_search_tool_payload(
+            {"results": raw},
+            default_memory_space_id=self._memory_space_id,
+        )
+        # Unlike MemPalace's public search payload, the scoped adapter reads
+        # Chroma's stored metadata directly, so privacy/provenance are already
+        # present and no second collection.get hydration round is required.
+        return apply_recall_policy(records, self._settings)
 
     def _hydrate_hit_metadata(
         self,

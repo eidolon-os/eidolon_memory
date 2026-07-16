@@ -35,6 +35,7 @@ from eidolon.memory.domain.ports import (
     MemoryPrivacyAdmin,
     MemoryReader,
     MemoryWriter,
+    ScopedMemoryReader,
 )
 from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
 from eidolon.memory.domain.wire import MemoryWireRecord
@@ -48,6 +49,7 @@ __all__ = [
     "MemoryBackendWriteFailed",
     "MemoryFragment",
     "MemoryReader",
+    "ScopedMemoryReader",
     "MemoryWriter",
     "MemoryPrivacyAdmin",
     "CommandStatus",
