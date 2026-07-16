@@ -269,7 +269,7 @@ def _category_precision_from_raw(result: Any, category: str) -> float:
 
 async def _measure_point(
     *,
-    backend: LockedBackend,
+    backend: Any,
     settings: MemorySettings,
     palace: str,
     backend_name: str,
@@ -500,6 +500,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("initial_size must be non-negative")
     if args.mixed_operations < 1:
         raise ValueError("mixed_operations must be positive")
+    sizes = sorted({int(part) for part in args.sizes.split(",") if part.strip()})
+    if not sizes:
+        raise ValueError("sizes must contain at least one value")
+    if args.raw and (args.write_samples != 0 or any(size > args.initial_size for size in sizes)):
+        raise ValueError("raw mode is read-only: use --write-samples 0 on an existing size")
     settings = _settings(args)
     apply_mempalace_backend_env(settings)
     backend_name = selected_mempalace_backend(settings)
@@ -510,12 +515,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         backend=backend_name,
         env=mempalace_backend_env(settings),
     )
-    backend = LockedBackend(
-        MemPalacePythonBackend(settings, str(palace), memory_space_id="default")
-    )
+    inner = MemPalacePythonBackend(settings, str(palace), memory_space_id="default")
+    backend: Any = inner if args.raw else LockedBackend(inner)
 
-    sizes = [int(part) for part in args.sizes.split(",") if part.strip()]
-    sizes = sorted(set(sizes))
     current_target = args.initial_size
     points = []
     total_started = time.perf_counter()
@@ -551,6 +553,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         points.append({"seed": seed, "measure": measured})
     return {
         "backend": backend_name,
+        "mode": "raw" if args.raw else "locked",
         "palace": str(palace),
         "sizes": sizes,
         "estimated_years_at_records_per_day": {
@@ -587,6 +590,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--write-samples", type=int, default=8)
     parser.add_argument("--concurrencies", default="1,2,4,8")
     parser.add_argument("--mixed-operations", type=int, default=32)
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Bypass LockedBackend for isolated read-only A/B diagnostics.",
+    )
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument(
         "--long-term-records-per-day",

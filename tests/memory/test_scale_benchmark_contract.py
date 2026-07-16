@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from eidolon.memory.adapters.mempalace_python_backend import _drawer_id
@@ -10,6 +12,7 @@ from scripts.bench_mempalace_scale_curve import (
     _doc,
     _measure_point,
     _parse_concurrencies,
+    _run,
     _summary,
 )
 
@@ -71,3 +74,25 @@ def test_scale_concurrency_curve_is_positive_ordered_and_deduplicated() -> None:
 
     with pytest.raises(ValueError, match="at least one"):
         _parse_concurrencies("")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("initial_size", "sizes", "write_samples"),
+    [(55_000, "55000", 1), (0, "55000", 0)],
+)
+async def test_raw_scale_ab_cannot_write_or_seed(
+    initial_size: int,
+    sizes: str,
+    write_samples: int,
+) -> None:
+    args = SimpleNamespace(
+        initial_size=initial_size,
+        mixed_operations=4,
+        sizes=sizes,
+        raw=True,
+        write_samples=write_samples,
+    )
+
+    with pytest.raises(ValueError, match="raw mode is read-only"):
+        await _run(args)
