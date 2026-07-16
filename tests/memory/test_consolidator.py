@@ -188,6 +188,94 @@ async def test_grouped_wing_synthesis_is_bounded_parallel_and_ordered(monkeypatc
     assert [theme.underlying_wing for theme in themes] == sorted(grouped)
 
 
+async def test_grouped_wing_synthesis_returns_partial_results_at_pass_budget(
+    monkeypatch,
+):
+    import asyncio
+
+    from eidolon.memory.config.memory_settings import load_memory_settings
+    from eidolon.memory.entrypoints import consolidator
+
+    cancelled: list[str] = []
+
+    async def _fake_synthesize(wing_id, records, *, settings):
+        del records, settings
+        if wing_id == "Wing_Fast":
+            await asyncio.sleep(0.01)
+            return [Theme("fast", wing_id, 0.8, ["drawer_fast"])]
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.append(wing_id)
+            raise
+        return []
+
+    monkeypatch.setattr(consolidator, "synthesize_themes_for_wing", _fake_synthesize)
+    grouped = {
+        "Wing_Fast": [{"key": "drawer_fast"}],
+        "Wing_Slow": [{"key": "drawer_slow"}],
+    }
+
+    rows, themes = await consolidator.synthesize_grouped_wings(
+        grouped,
+        settings=load_memory_settings(),
+        min_drawers=1,
+        confidence_threshold=0.5,
+        max_parallel_wings=2,
+        synthesis_budget_seconds=0.05,
+    )
+
+    by_wing = {row["wing"]: row for row in rows}
+    assert by_wing["Wing_Fast"]["status"] == "completed"
+    assert by_wing["Wing_Slow"]["status"] == "timed_out"
+    assert by_wing["Wing_Slow"]["skipped_reason"] == "pass_budget_exhausted"
+    assert [theme.text for theme in themes] == ["fast"]
+    assert cancelled == ["Wing_Slow"]
+
+
+async def test_grouped_wing_synthesis_isolates_unexpected_wing_failure(monkeypatch):
+    from eidolon.memory.config.memory_settings import load_memory_settings
+    from eidolon.memory.entrypoints import consolidator
+
+    async def _fake_synthesize(wing_id, records, *, settings):
+        del records, settings
+        if wing_id == "Wing_Broken":
+            raise RuntimeError("bad wing")
+        return [Theme("ok", wing_id, 0.8, ["drawer_ok"])]
+
+    monkeypatch.setattr(consolidator, "synthesize_themes_for_wing", _fake_synthesize)
+
+    rows, themes = await consolidator.synthesize_grouped_wings(
+        {"Wing_Broken": [{}], "Wing_Ok": [{}]},
+        settings=load_memory_settings(),
+        min_drawers=1,
+        confidence_threshold=0.5,
+        max_parallel_wings=2,
+        synthesis_budget_seconds=1,
+    )
+
+    by_wing = {row["wing"]: row for row in rows}
+    assert by_wing["Wing_Broken"]["status"] == "failed"
+    assert "bad wing" in by_wing["Wing_Broken"]["error"]
+    assert by_wing["Wing_Ok"]["status"] == "completed"
+    assert [theme.text for theme in themes] == ["ok"]
+
+
+def test_consolidation_status_distinguishes_partial_from_total_failure():
+    from eidolon.memory.entrypoints.consolidator import _consolidation_status
+
+    assert _consolidation_status([{"status": "completed"}]) == "completed"
+    assert _consolidation_status([{"status": "skipped"}]) == "completed"
+    assert _consolidation_status([
+        {"status": "completed"},
+        {"status": "timed_out"},
+    ]) == "partial"
+    assert _consolidation_status([
+        {"status": "failed"},
+        {"status": "timed_out"},
+    ]) == "failed"
+
+
 async def test_query_client_wait_until_ready_retries_no_responders(monkeypatch):
     sleeps: list[float] = []
 

@@ -123,11 +123,29 @@ def _run_consolidator(
     settings_yaml: Path,
     log_path: Path,
     timeout_s: float = 180,
+    synthesis_budget_s: float = 120,
+    max_parallel_wings: int = 3,
 ) -> subprocess.CompletedProcess:
     """Run the console-script subprocess. Inherits project LLM config via
     ``EIDOLON_MEMORY_SETTINGS_YAML`` + ``config/.env`` forwarding."""
     cli = Path(sys.executable).parent / "eidolon-memory-consolidator"
-    env = {**os.environ, "EIDOLON_MEMORY_SETTINGS_YAML": str(settings_yaml)}
+    env = {
+        **os.environ,
+        "EIDOLON_MEMORY_SETTINGS_YAML": str(settings_yaml),
+        # E2E must not spend its pass budget refreshing LiteLLM's optional
+        # remote pricing metadata. The bundled map is sufficient here.
+        "LITELLM_LOCAL_MODEL_COST_MAP": "true",
+        "PYTHONUNBUFFERED": "1",
+    }
+    # macOS system proxy settings can be discovered by aiohttp even when no
+    # proxy variables are exported. Keep loopback OpenAI-compatible test
+    # servers local instead of sending them through the desktop proxy.
+    for key in ("NO_PROXY", "no_proxy"):
+        bypass = [part for part in env.get(key, "").split(",") if part]
+        for host in ("127.0.0.1", "localhost"):
+            if host not in bypass:
+                bypass.append(host)
+        env[key] = ",".join(bypass)
     # Forward LLM secret from .env into the subprocess env if not exported.
     dotenv = Path(__file__).resolve().parents[3] / "config" / ".env"
     if dotenv.is_file():
@@ -138,8 +156,20 @@ def _run_consolidator(
                     env[k] = v.strip()
     with log_path.open("ab") as log_fp:
         return subprocess.run(
-            [str(cli), "--memory-space-id", user_id,
-             "--once", "--min-drawers", "2", "--min-confidence", "0.5"],
+            [
+                str(cli),
+                "--memory-space-id",
+                user_id,
+                "--once",
+                "--min-drawers",
+                "2",
+                "--min-confidence",
+                "0.5",
+                "--synthesis-budget",
+                str(synthesis_budget_s),
+                "--max-parallel-wings",
+                str(max_parallel_wings),
+            ],
             stdout=log_fp, stderr=subprocess.STDOUT, env=env,
             timeout=timeout_s,
         )
@@ -227,22 +257,11 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
         )
 
         # ── Spawn the consolidator subprocess.
-        # The agent_runner's spawn fixture already wrote a temp settings file
-        # at log_dir's sibling; locate it via env or write our own minimal one.
-        # Simpler: pass the agent's settings file directly.
-        # The fixture stores it under tmp_settings_dir/<user_id>.yaml — read from there.
-        spawn_settings = next(
-            (p for p in Path(handle.log_path).parent.parent.rglob(
-                f"{handle.user_id}.yaml"
-            )), None,
-        )
-        if spawn_settings is None:
-            # Fallback: project-level settings.
-            spawn_settings = Path(__file__).resolve().parents[3] / "config" / "settings.yaml"
-
         log_path = tmp_path / "consolidator.log"
         proc = _run_consolidator(
-            user_id=handle.user_id, settings_yaml=spawn_settings, log_path=log_path,
+            user_id=handle.user_id,
+            settings_yaml=handle.settings_path,
+            log_path=log_path,
         )
         if proc.returncode != 0:
             pytest.fail(
@@ -323,17 +342,9 @@ async def test_consolidator_idempotent_on_rerun(
             "did not reach 15 drawers in 300s"
         )
 
-        spawn_settings = next(
-            (p for p in Path(handle.log_path).parent.parent.rglob(
-                f"{handle.user_id}.yaml"
-            )), None,
-        )
-        if spawn_settings is None:
-            spawn_settings = Path(__file__).resolve().parents[3] / "config" / "settings.yaml"
-
         # First pass
         _run_consolidator(
-            user_id=handle.user_id, settings_yaml=spawn_settings,
+            user_id=handle.user_id, settings_yaml=handle.settings_path,
             log_path=tmp_path / "c1.log",
         )
 
@@ -346,7 +357,7 @@ async def test_consolidator_idempotent_on_rerun(
 
         # Second pass — same palace, same drawer set.
         _run_consolidator(
-            user_id=handle.user_id, settings_yaml=spawn_settings,
+            user_id=handle.user_id, settings_yaml=handle.settings_path,
             log_path=tmp_path / "c2.log",
         )
         # Allow the cmd subscriber to drain any new (idempotent) writes.

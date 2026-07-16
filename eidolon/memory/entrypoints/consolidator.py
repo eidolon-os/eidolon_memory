@@ -38,6 +38,7 @@ import hashlib
 import json
 import re
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -243,7 +244,13 @@ async def synthesize_themes_for_wing(
     *,
     settings: MemorySettings,
 ) -> list[Theme]:
-    """One LLM round-trip per wing; never raises (catches + logs)."""
+    """Run one LLM round-trip for a wing.
+
+    LLM transport failures are logged and re-raised so the grouped pass can
+    report this wing as ``failed`` without losing successful sibling wings.
+    An empty list therefore means a successful response with no usable theme,
+    rather than an ambiguous transport failure.
+    """
     if not records:
         return []
     import litellm  # local import — only consolidator process needs it
@@ -267,11 +274,12 @@ async def synthesize_themes_for_wing(
             ],
             temperature=settings.llm.temperature,
             timeout=settings.llm.timeout_seconds,
+            num_retries=0,
             max_tokens=400,
         )
-    except Exception as exc:  # noqa: BLE001 - consolidator must not crash on LLM blips
+    except Exception as exc:  # noqa: BLE001 - grouped pass isolates this wing
         log.warning("consolidator_llm_failed", wing=wing_id, error=str(exc))
-        return []
+        raise
 
     raw_text = (resp.choices[0].message.content or "").strip()
     parsed = _extract_themes_from_llm_response(raw_text)
@@ -348,26 +356,24 @@ async def synthesize_grouped_wings(
     min_drawers: int,
     confidence_threshold: float,
     max_parallel_wings: int = 3,
+    synthesis_budget_seconds: float = 120.0,
 ) -> tuple[list[dict[str, Any]], list[Theme]]:
-    """Synthesize independent wings concurrently under a small LLM budget."""
+    """Synthesize wings under bounded parallelism and one total pass budget.
+
+    Completed wings remain publishable when the budget expires. Timed-out
+    wings are retried on the next pass; deterministic theme request IDs make
+    reprocessing completed wings harmless.
+    """
     if max_parallel_wings < 1:
         raise ValueError("max_parallel_wings must be positive")
+    if synthesis_budget_seconds <= 0:
+        raise ValueError("synthesis_budget_seconds must be positive")
     semaphore = asyncio.Semaphore(max_parallel_wings)
 
     async def _one(
         wing_id: str, recs: list[dict]
     ) -> tuple[dict[str, Any], list[Theme]]:
-        if len(recs) < min_drawers:
-            return (
-                {
-                    "wing": wing_id,
-                    "drawer_count": len(recs),
-                    "themes_produced": 0,
-                    "themes_kept": 0,
-                    "skipped_reason": "below_min_drawers",
-                },
-                [],
-            )
+        started = time.perf_counter()
         async with semaphore:
             produced = await synthesize_themes_for_wing(
                 wing_id, recs, settings=settings
@@ -379,16 +385,104 @@ async def synthesize_grouped_wings(
                 "drawer_count": len(recs),
                 "themes_produced": len(produced),
                 "themes_kept": len(kept),
+                "status": "completed",
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
             },
             kept,
         )
 
-    results = await asyncio.gather(
-        *(_one(wing_id, recs) for wing_id, recs in sorted(by_wing.items()))
-    )
-    rows = [row for row, _themes in results]
-    themes = [theme for _row, kept in results for theme in kept]
+    rows_by_wing: dict[str, dict[str, Any]] = {}
+    tasks: dict[asyncio.Task, tuple[str, list[dict], float]] = {}
+    for wing_id, recs in sorted(by_wing.items()):
+        if len(recs) < min_drawers:
+            rows_by_wing[wing_id] = {
+                "wing": wing_id,
+                "drawer_count": len(recs),
+                "themes_produced": 0,
+                "themes_kept": 0,
+                "status": "skipped",
+                "skipped_reason": "below_min_drawers",
+                "elapsed_ms": 0.0,
+            }
+            continue
+        task = asyncio.create_task(_one(wing_id, recs), name=f"consolidate-{wing_id}")
+        tasks[task] = (wing_id, recs, time.perf_counter())
+
+    themes_by_wing: dict[str, list[Theme]] = {}
+    if tasks:
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=synthesis_budget_seconds,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        for task in done:
+            wing_id, recs, task_started = tasks[task]
+            try:
+                row, kept = task.result()
+            except asyncio.CancelledError:
+                rows_by_wing[wing_id] = {
+                    "wing": wing_id,
+                    "drawer_count": len(recs),
+                    "themes_produced": 0,
+                    "themes_kept": 0,
+                    "status": "timed_out",
+                    "skipped_reason": "pass_budget_exhausted",
+                    "elapsed_ms": round(
+                        (time.perf_counter() - task_started) * 1000, 3
+                    ),
+                }
+            except Exception as exc:  # noqa: BLE001 - isolate one failed wing
+                rows_by_wing[wing_id] = {
+                    "wing": wing_id,
+                    "drawer_count": len(recs),
+                    "themes_produced": 0,
+                    "themes_kept": 0,
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "elapsed_ms": round(
+                        (time.perf_counter() - task_started) * 1000, 3
+                    ),
+                }
+            else:
+                rows_by_wing[wing_id] = row
+                themes_by_wing[wing_id] = kept
+
+        for task in pending:
+            wing_id, recs, task_started = tasks[task]
+            rows_by_wing[wing_id] = {
+                "wing": wing_id,
+                "drawer_count": len(recs),
+                "themes_produced": 0,
+                "themes_kept": 0,
+                "status": "timed_out",
+                "skipped_reason": "pass_budget_exhausted",
+                "elapsed_ms": round(
+                    (time.perf_counter() - task_started) * 1000, 3
+                ),
+            }
+
+    rows = [rows_by_wing[wing_id] for wing_id in sorted(rows_by_wing)]
+    themes = [
+        theme
+        for wing_id in sorted(themes_by_wing)
+        for theme in themes_by_wing[wing_id]
+    ]
     return rows, themes
+
+
+def _consolidation_status(rows: list[dict[str, Any]]) -> str:
+    """Summarize wing outcomes without reporting total failure as partial."""
+    has_problem = any(
+        row.get("status") in {"failed", "timed_out"} for row in rows
+    )
+    if not has_problem:
+        return "completed"
+    has_completed = any(row.get("status") == "completed" for row in rows)
+    return "partial" if has_completed else "failed"
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -406,6 +500,7 @@ async def consolidate_once(
     query_timeout_seconds: float = 5.0,
     query_startup_wait_seconds: float = 300.0,
     max_parallel_wings: int = 3,
+    synthesis_budget_seconds: float = 120.0,
 ) -> dict[str, Any]:
     """One full pass — returns a result dict suitable for logging or assertion.
 
@@ -419,10 +514,13 @@ async def consolidate_once(
 
     Result schema (one row per wing visited):
       {
+        "status": "completed" | "partial" | "failed",
         "themes_published": int,
+        "timed_out_wings": list[str],
+        "failed_wings": list[str],
         "wings": [
             {"wing": str, "drawer_count": int, "themes_produced": int,
-             "themes_kept": int},
+             "themes_kept": int, "status": str, "elapsed_ms": float},
             ...
         ],
       }
@@ -442,12 +540,17 @@ async def consolidate_once(
         drawers = await _list_all_drawers(query_client, memory_space_id=memory_space_id)
         by_wing = group_drawers_by_wing(drawers, window_days=window_days)
 
+        synthesis_started = time.perf_counter()
         rows, all_themes = await synthesize_grouped_wings(
             by_wing,
             settings=settings,
             min_drawers=min_drawers,
             confidence_threshold=confidence_threshold,
             max_parallel_wings=max_parallel_wings,
+            synthesis_budget_seconds=synthesis_budget_seconds,
+        )
+        synthesis_elapsed_ms = round(
+            (time.perf_counter() - synthesis_started) * 1000, 3
         )
 
         published = await publish_themes(
@@ -456,7 +559,21 @@ async def consolidate_once(
             window_days=window_days,
             publisher=publisher,
         )
-        return {"themes_published": published, "wings": rows}
+        timed_out_wings = [
+            str(row["wing"]) for row in rows if row.get("status") == "timed_out"
+        ]
+        failed_wings = [
+            str(row["wing"]) for row in rows if row.get("status") == "failed"
+        ]
+        return {
+            "status": _consolidation_status(rows),
+            "themes_published": published,
+            "synthesis_budget_seconds": synthesis_budget_seconds,
+            "synthesis_elapsed_ms": synthesis_elapsed_ms,
+            "timed_out_wings": timed_out_wings,
+            "failed_wings": failed_wings,
+            "wings": rows,
+        }
     finally:
         await query_client.close()
         await publisher.close()
@@ -474,13 +591,14 @@ async def _run(args: argparse.Namespace) -> int:
             query_timeout_seconds=args.query_timeout,
             query_startup_wait_seconds=args.query_startup_wait,
             max_parallel_wings=args.max_parallel_wings,
+            synthesis_budget_seconds=args.synthesis_budget,
         )
         log.info("consolidator_once_done", **{k: v for k, v in result.items() if k != "wings"})
         for row in result["wings"]:
             log.info("consolidator_wing_summary", **row)
         # Stdout-friendly summary for CLI users / cron logs.
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
+        return 1 if result["status"] == "failed" else 0
 
     # Loop mode — keep running until SIGTERM.
     interval = max(1, args.interval_hours) * 3600
@@ -495,6 +613,7 @@ async def _run(args: argparse.Namespace) -> int:
                 query_timeout_seconds=args.query_timeout,
                 query_startup_wait_seconds=args.query_startup_wait,
                 max_parallel_wings=args.max_parallel_wings,
+                synthesis_budget_seconds=args.synthesis_budget,
             )
         except Exception as exc:  # noqa: BLE001
             log.error("consolidator_pass_failed", error=str(exc))
@@ -525,6 +644,8 @@ def main() -> int:
                         help="Seconds to wait for the agent_runner query responder at startup")
     parser.add_argument("--max-parallel-wings", type=int, default=3,
                         help="Maximum concurrent per-wing LLM calls (default 3)")
+    parser.add_argument("--synthesis-budget", type=float, default=120.0,
+                        help="Total seconds allowed for all per-wing LLM calls")
     args = parser.parse_args()
     return asyncio.run(_run(args))
 
