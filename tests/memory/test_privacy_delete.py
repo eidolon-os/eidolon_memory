@@ -5,6 +5,7 @@ from eidolon_sdk.memory import MemoryActorContext
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.forget import (
+    DEFAULT_FORGET_PAGE_SIZE,
     ForgetResolutionLimitExceeded,
     extract_privacy_target,
     find_forget_candidates,
@@ -15,6 +16,10 @@ from eidolon.memory.domain.steward import PrivacyAction
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 SPACE = "default.alice.default"
+
+
+def test_default_forget_page_size_matches_55k_memory_latency_curve() -> None:
+    assert DEFAULT_FORGET_PAGE_SIZE == 5_000
 
 
 def _seed(backend: FakeMemoryBackend, key: str, text: str) -> None:

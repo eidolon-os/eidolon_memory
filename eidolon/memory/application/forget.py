@@ -16,6 +16,7 @@ _COMMAND_RE = re.compile(
 _SUFFIX_RE = re.compile(r"(?:这条|这段|相关的|有关的)?(?:的)?(?:记忆|内容|信息|事情|事实)$")
 _NON_SEMANTIC_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
 _GENERIC_TARGETS = frozenset({"", "刚才", "这件事", "那件事", "这个", "那个", "全部"})
+DEFAULT_FORGET_PAGE_SIZE = 5_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +64,7 @@ async def find_forget_candidates(
     *,
     max_scan: int = 50_000,
     max_candidates: int = 20,
-    page_size: int = 500,
+    page_size: int = DEFAULT_FORGET_PAGE_SIZE,
 ) -> list[ForgetCandidate]:
     """Return a bounded candidate set without silent static truncation.
 

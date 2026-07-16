@@ -89,6 +89,7 @@ async def test_raw_scale_ab_cannot_write_or_seed(
     args = SimpleNamespace(
         initial_size=initial_size,
         mixed_operations=4,
+        privacy_page_size=500,
         sizes=sizes,
         raw=True,
         write_samples=write_samples,

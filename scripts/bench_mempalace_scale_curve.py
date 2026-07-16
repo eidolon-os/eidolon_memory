@@ -284,6 +284,7 @@ async def _measure_point(
     write_samples: int,
     concurrencies: list[int],
     mixed_operations: int,
+    privacy_page_size: int,
 ) -> dict[str, Any]:
     errors: list[str] = []
     normal_lat: list[float] = []
@@ -409,7 +410,7 @@ async def _measure_point(
             deep_marker,
             max_scan=max(1, size + 100),
             max_candidates=5,
-            page_size=500,
+            page_size=privacy_page_size,
         ),
     )
 
@@ -505,6 +506,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("initial_size must be non-negative")
     if args.mixed_operations < 1:
         raise ValueError("mixed_operations must be positive")
+    if args.privacy_page_size < 1:
+        raise ValueError("privacy_page_size must be positive")
     sizes = sorted({int(part) for part in args.sizes.split(",") if part.strip()})
     if not sizes:
         raise ValueError("sizes must contain at least one value")
@@ -554,6 +557,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             write_samples=args.write_samples,
             concurrencies=_parse_concurrencies(args.concurrencies),
             mixed_operations=args.mixed_operations,
+            privacy_page_size=args.privacy_page_size,
         )
         points.append({"seed": seed, "measure": measured})
     return {
@@ -571,6 +575,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "initial_size": args.initial_size,
         "queries_per_point": args.queries,
         "mixed_operations_per_concurrency": args.mixed_operations,
+        "privacy_page_size": args.privacy_page_size,
         "concurrencies": _parse_concurrencies(args.concurrencies),
         "mixed_load_model": MIXED_LOAD_MODEL,
         "total_elapsed_ms": (time.perf_counter() - total_started) * 1000,
@@ -596,6 +601,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--write-samples", type=int, default=8)
     parser.add_argument("--concurrencies", default="1,2,4,8")
     parser.add_argument("--mixed-operations", type=int, default=32)
+    parser.add_argument("--privacy-page-size", type=int, default=5_000)
     parser.add_argument(
         "--raw",
         action="store_true",
