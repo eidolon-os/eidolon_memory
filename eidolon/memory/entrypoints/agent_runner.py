@@ -689,6 +689,7 @@ def main(argv: list[str] | None = None) -> None:
         kg=kg,
         command_publisher=command_publisher,
         command_status=command_status,
+        canonical_facts=canonical_facts,
         dlq_store=dlq,
         replay_publisher=command_publisher,
     )

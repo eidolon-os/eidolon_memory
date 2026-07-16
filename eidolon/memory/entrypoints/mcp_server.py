@@ -42,7 +42,12 @@ from eidolon.memory.application.public_recall import (
 )
 from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.domain.ports import CommandStatusStore, DlqStore, MemoryBackend
+from eidolon.memory.domain.ports import (
+    CanonicalFactReader,
+    CommandStatusStore,
+    DlqStore,
+    MemoryBackend,
+)
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.palace_init import palace_is_initialized
 from eidolon.memory.support.logging import get_logger
@@ -62,6 +67,7 @@ def build_control_plane_mcp(
     kg: Any = None,
     command_publisher: Any = None,
     command_status: CommandStatusStore | None = None,
+    canonical_facts: CanonicalFactReader | None = None,
     dlq_store: DlqStore | None = None,
     replay_publisher: Any = None,
 ):
@@ -197,6 +203,13 @@ def build_control_plane_mcp(
         async def eidolon_memory_command_status_stats() -> dict[str, Any]:
             """Capacity and active-work metrics for the write-status projection."""
             return (await command_status.stats()).to_dict()
+
+    if canonical_facts is not None:
+
+        @mcp.tool()
+        async def eidolon_memory_canonical_stats() -> dict[str, Any]:
+            """Read exact-fact evidence and projection-state counts."""
+            return (await canonical_facts.stats()).to_dict()
 
     if dlq_store is not None:
         _register_dlq_tools(

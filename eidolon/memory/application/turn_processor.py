@@ -47,7 +47,7 @@ from eidolon.memory.domain.extraction_decision import (
 )
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import (
-    CanonicalFactStore,
+    CanonicalFactWriter,
     CommandStatusWriter,
     DlqWriter,
     ExtractionDecisionStore,
@@ -198,7 +198,7 @@ async def process_turn_message(
     audit_sink: Any = None,
     dlq_writer: DlqWriter | None = None,
     decision_store: ExtractionDecisionStore | None = None,
-    canonical_facts: CanonicalFactStore | None = None,
+    canonical_facts: CanonicalFactWriter | None = None,
 ) -> None:
     """Decode + validate one turn, run steward, apply fragments + KG, ack / nak / DLQ.
 
@@ -551,7 +551,7 @@ async def process_command_message(
     expected_memory_space_id: str | None = None,
     command_status: CommandStatusWriter | None = None,
     dlq_writer: DlqWriter | None = None,
-    canonical_facts: CanonicalFactStore | None = None,
+    canonical_facts: CanonicalFactWriter | None = None,
 ) -> None:
     """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_token>``.
 

@@ -199,3 +199,28 @@ async def test_previous_combined_projection_state_is_upgraded(tmp_path: Path) ->
     registered = await ledger.register(intent, targets={"drawer", "kg"})
 
     assert registered.pending_targets == []
+
+
+@pytest.mark.asyncio
+async def test_stats_report_capacity_and_projection_state(tmp_path: Path) -> None:
+    ledger = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    automatic = await ledger.register(_intent("intent:1"), targets={"kg"})
+    await ledger.mark_projected(
+        MEMORY_SPACE_ID,
+        automatic.assertion_id,
+        targets={"kg"},
+    )
+    await ledger.register(
+        _intent("intent:2", object_="咖啡", source_event_id="turn-2"),
+        targets={"drawer", "kg"},
+    )
+
+    stats = await ledger.stats()
+
+    assert stats.assertions_total == 2
+    assert stats.evidence_total == 2
+    assert stats.drawer_not_projected == 2
+    assert stats.drawer_projected == 0
+    assert stats.kg_not_projected == 1
+    assert stats.kg_projected == 1
+    assert stats.database_bytes > 0

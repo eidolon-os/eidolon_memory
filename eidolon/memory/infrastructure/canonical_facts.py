@@ -12,6 +12,7 @@ from eidolon_sdk.memory import MemoryIntent
 from eidolon.memory.domain.canonical_fact import (
     CanonicalEvidenceConflict,
     CanonicalFactRegistration,
+    CanonicalFactStats,
     ProjectionTarget,
     canonical_assertion_id,
 )
@@ -139,6 +140,9 @@ class CanonicalFactLedger:
 
     async def evidence_count(self, assertion_id: str) -> int:
         return await asyncio.to_thread(self._evidence_count_sync, assertion_id)
+
+    async def stats(self) -> CanonicalFactStats:
+        return await asyncio.to_thread(self._stats_sync)
 
     def _register_sync(
         self,
@@ -307,3 +311,33 @@ class CanonicalFactLedger:
                 (assertion_id,),
             ).fetchone()
         return int(row["count"])
+
+    def _stats_sync(self) -> CanonicalFactStats:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS assertions_total,
+                    COALESCE(SUM(drawer_projection_state = 'pending'), 0)
+                        AS drawer_not_projected,
+                    COALESCE(SUM(drawer_projection_state = 'projected'), 0)
+                        AS drawer_projected,
+                    COALESCE(SUM(kg_projection_state = 'pending'), 0)
+                        AS kg_not_projected,
+                    COALESCE(SUM(kg_projection_state = 'projected'), 0)
+                        AS kg_projected
+                FROM canonical_assertions
+                """
+            ).fetchone()
+            evidence_total = int(
+                conn.execute("SELECT COUNT(*) FROM canonical_evidence").fetchone()[0]
+            )
+        return CanonicalFactStats(
+            assertions_total=int(row["assertions_total"]),
+            evidence_total=evidence_total,
+            drawer_not_projected=int(row["drawer_not_projected"]),
+            drawer_projected=int(row["drawer_projected"]),
+            kg_not_projected=int(row["kg_not_projected"]),
+            kg_projected=int(row["kg_projected"]),
+            database_bytes=self.path.stat().st_size if self.path.exists() else 0,
+        )

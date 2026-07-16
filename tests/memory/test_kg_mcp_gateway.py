@@ -284,6 +284,54 @@ async def test_command_status_stats_tool_reads_projection_capacity(mcp_with_kg) 
     assert result["max_records"] == 100_000
 
 
+async def test_canonical_stats_read_does_not_wait_for_backend_lock(tmp_path: Path) -> None:
+    from eidolon_sdk.memory import MemoryIntent
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.adapters.locked_backend import LockedBackend
+    from eidolon.memory.config.memory_settings import load_memory_settings
+    from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
+
+    backend = LockedBackend(FakeMemoryBackend())
+    canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    await canonical.register(
+        MemoryIntent(
+            intent_id="intent:stats",
+            memory_space_id=SPACE,
+            source_event_id="turn-stats",
+            authority="extracted_user",
+            intent_type="preference",
+            raw_claim="self likes tea",
+            operation_hint="add",
+            subject="self",
+            predicate="likes",
+            object="tea",
+        ),
+        targets={"kg"},
+    )
+    mcp = build_control_plane_mcp(
+        backend,
+        load_memory_settings(),
+        memory_space_id=SPACE,
+        palace_path=str(tmp_path),
+        host="127.0.0.1",
+        port=9999,
+        canonical_facts=canonical,
+    )
+    tool = next(
+        item for item in mcp._tool_manager.list_tools()
+        if item.name == "eidolon_memory_canonical_stats"
+    )
+
+    async with backend.lock:
+        result = await asyncio.wait_for(tool.fn(), timeout=0.2)
+
+    assert result["assertions_total"] == 1
+    assert result["evidence_total"] == 1
+    assert result["kg_not_projected"] == 1
+
+
 async def test_dlq_mcp_list_detail_replay_resolve(tmp_path: Path) -> None:
     from unittest.mock import AsyncMock
 

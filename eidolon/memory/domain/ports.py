@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from eidolon.memory.application.working_memory import WorkingMemoryRing
     from eidolon.memory.domain.canonical_fact import (
         CanonicalFactRegistration,
+        CanonicalFactStats,
         ProjectionTarget,
     )
     from eidolon.memory.domain.command_status import CommandStatusRecord, CommandStatusStats
@@ -168,8 +169,15 @@ class ExtractionDecisionStore(Protocol):
 
 
 @runtime_checkable
-class CanonicalFactStore(Protocol):
-    """Exact structured fact identity and evidence; not a recall projection."""
+class CanonicalFactReader(Protocol):
+    """Read-only operational view; never participates in recall."""
+
+    async def stats(self) -> CanonicalFactStats: ...
+
+
+@runtime_checkable
+class CanonicalFactWriter(Protocol):
+    """Exact structured fact identity and evidence write port."""
 
     async def register(
         self,
@@ -193,6 +201,11 @@ class CanonicalFactStore(Protocol):
         *,
         targets: set[ProjectionTarget],
     ) -> None: ...
+
+
+@runtime_checkable
+class CanonicalFactStore(CanonicalFactReader, CanonicalFactWriter, Protocol):
+    """Combined canonical ledger port used only at the composition boundary."""
 
 
 @runtime_checkable

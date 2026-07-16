@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 from pydantic import Field
@@ -15,6 +16,20 @@ class CanonicalEvidenceConflict(RuntimeError):
 
 
 ProjectionTarget = Literal["drawer", "kg"]
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalFactStats:
+    assertions_total: int
+    evidence_total: int
+    drawer_not_projected: int
+    drawer_projected: int
+    kg_not_projected: int
+    kg_projected: int
+    database_bytes: int
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 class CanonicalFactRegistration(BaseEidolonModel):

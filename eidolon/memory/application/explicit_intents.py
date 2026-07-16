@@ -14,7 +14,7 @@ from eidolon_sdk.memory import (
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.domain.canonical_fact import ProjectionTarget
 from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.ports import CanonicalFactStore
+from eidolon.memory.domain.ports import CanonicalFactWriter
 
 
 class MemoryIntentRejected(ValueError):
@@ -25,7 +25,7 @@ async def apply_explicit_intent(
     backend: Any,
     kg: Any,
     cmd: MemoryIntentCommand,
-    canonical_facts: CanonicalFactStore | None = None,
+    canonical_facts: CanonicalFactWriter | None = None,
 ) -> str:
     """Project one explicit add/confirm intent without bypassing write ports.
 
