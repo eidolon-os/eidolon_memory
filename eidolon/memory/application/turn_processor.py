@@ -9,14 +9,13 @@ fail-mode for each (G7 KG failure does not block chat ack).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from pydantic import ValidationError
 from eidolon_sdk.memory import (
     USER_CONFIRMED_ROOM_PREFIX,
-    ConversationTurnPayload,
     ConsolidatorIngestThemeCommand,
+    ConversationTurnPayload,
     DeviceSyncBatchPayload,
     KgAddTripleCommand,
     KgInvalidateCommand,
@@ -25,6 +24,7 @@ from eidolon_sdk.memory import (
     parse_conversation_turn,
     parse_memory_command,
 )
+from pydantic import ValidationError
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.steward.common import (
@@ -34,6 +34,7 @@ from eidolon.memory.application.steward.common import (
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_dlq_log_path
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.steward import StewardDecision
+from eidolon.memory.infrastructure.command_status import CommandStatus, CommandStatusLedger
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -48,7 +49,7 @@ def append_dlq(settings: MemorySettings, payload: bytes, error: str, deliveries:
     path = resolve_dlq_log_path(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "error": error,
         "deliveries": deliveries,
         "payload_preview": payload[:500].decode("utf-8", errors="replace"),
@@ -357,16 +358,15 @@ async def process_command_message(
     kg: Any,
     settings: MemorySettings,
     expected_memory_space_id: str | None = None,
+    command_status: CommandStatusLedger | None = None,
 ) -> None:
     """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_token>``.
 
-    Commands are **always acked** after processing; the wrapper's idempotency
-    layer (LockedKnowledgeGraph G1) keeps redelivery safe, and admin actions
-    are explicit user intent — DLQ semantics would lose intent. Failures are
-    logged but don't NAK (the source is admin, not chat; chat ack-loop is the
-    one that needs strong delivery guarantees).
+    ACK means the command was applied (or reached a recorded terminal failure).
+    Transient failures are NAKed so explicit user/admin intent is not silently
+    lost. The command-status projection is deliberately separate from the main
+    memory backend, keeping status reads off the Chroma/KG critical section.
     """
-    del settings  # not currently consulted; reserved for future cmd kinds
     try:
         raw = json.loads(msg.data.decode("utf-8"))
         cmd: MemoryCommandPayload = parse_memory_command(raw)
@@ -385,10 +385,18 @@ async def process_command_message(
             got=cmd.memory_space_id,
             request_id=cmd.request_id,
         )
+        await _record_command_status(
+            command_status,
+            "failed",
+            cmd.request_id,
+            kind=cmd.kind,
+            error="memory_space mismatch",
+        )
         await msg.ack()
         return
 
     try:
+        resource_id: str | None = None
         if isinstance(cmd, KgAddTripleCommand):
             triple_id = await kg.add_triple(
                 subject=cmd.subject,
@@ -408,6 +416,7 @@ async def process_command_message(
                 predicate=cmd.predicate,
                 object=cmd.object,
             )
+            resource_id = str(triple_id)
         elif isinstance(cmd, KgInvalidateCommand):
             rows = await kg.invalidate(
                 subject=cmd.subject,
@@ -415,6 +424,15 @@ async def process_command_message(
                 object=cmd.object,
                 ended=cmd.ended,
             )
+            if rows == 0:
+                already_applied = await kg.find_invalidation_applied(
+                    cmd.subject,
+                    cmd.predicate,
+                    cmd.object,
+                    cmd.ended,
+                )
+                if not already_applied:
+                    raise LookupError("no matching triple to invalidate")
             log.info(
                 "cmd_kg_invalidate_ok",
                 request_id=cmd.request_id,
@@ -423,8 +441,9 @@ async def process_command_message(
                 predicate=cmd.predicate,
                 object=cmd.object,
             )
+            resource_id = f"invalidated:{rows}"
         elif isinstance(cmd, ConsolidatorIngestThemeCommand):
-            await _ingest_theme(backend, cmd)
+            resource_id = await _ingest_theme(backend, cmd)
             log.info(
                 "cmd_theme_ingest_ok",
                 request_id=cmd.request_id,
@@ -433,7 +452,7 @@ async def process_command_message(
                 confidence=cmd.confidence,
             )
         elif isinstance(cmd, UserConfirmedFactCommand):
-            await _ingest_user_confirmed(backend, cmd)
+            resource_id = await _ingest_user_confirmed(backend, cmd)
             log.info(
                 "cmd_user_confirm_ok",
                 request_id=cmd.request_id,
@@ -447,10 +466,95 @@ async def process_command_message(
                 request_id=cmd.request_id,
                 events=len(cmd.events),
             )
+            await _record_command_status(
+                command_status,
+                "failed",
+                cmd.request_id,
+                kind=cmd.kind,
+                error="device_sync_batch must use the sync subject",
+            )
+            await msg.ack()
+            return
     except Exception as exc:
-        log.error("cmd_apply_failed", request_id=cmd.request_id, error=str(exc))
+        deliveries = delivery_count(msg)
+        log.error(
+            "cmd_apply_failed",
+            request_id=cmd.request_id,
+            error=str(exc),
+            deliveries=deliveries,
+        )
+        if deliveries >= settings.nats.worker_max_deliveries:
+            await _record_command_status(
+                command_status,
+                "failed",
+                cmd.request_id,
+                kind=cmd.kind,
+                error=str(exc),
+            )
+            append_dlq(settings, msg.data, str(exc), deliveries)
+            await msg.ack()
+            log.error("cmd_dlq_ack", request_id=cmd.request_id, deliveries=deliveries)
+        else:
+            await _record_command_status(
+                command_status,
+                "retrying",
+                cmd.request_id,
+                kind=cmd.kind,
+                error=str(exc),
+            )
+            await msg.nak()
+        return
 
+    await _record_command_status(
+        command_status,
+        "applied",
+        cmd.request_id,
+        kind=cmd.kind,
+        resource_id=resource_id,
+    )
     await msg.ack()
+
+
+async def _record_command_status(
+    ledger: CommandStatusLedger | None,
+    transition: CommandStatus,
+    request_id: str,
+    *,
+    kind: str,
+    resource_id: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Best-effort projection update; never make a durable write look failed."""
+    if ledger is None:
+        return
+    try:
+        if transition == "applied":
+            await ledger.record_applied(
+                request_id,
+                kind=kind,
+                resource_id=resource_id,
+            )
+        elif transition == "retrying":
+            await ledger.record_retrying(
+                request_id,
+                kind=kind,
+                error=error or "command apply failed",
+            )
+        elif transition == "failed":
+            await ledger.record_failed(
+                request_id,
+                kind=kind,
+                error=error or "command failed",
+            )
+        else:
+            await ledger.record_accepted(request_id, kind=kind)
+    except Exception as exc:  # noqa: BLE001 - projection cannot own write outcome
+        log.error(
+            "command_status_projection_failed",
+            request_id=request_id,
+            transition=transition,
+            error=str(exc),
+        )
 
 
 async def process_sync_message(
@@ -543,7 +647,7 @@ async def process_sync_message(
     await msg.ack()
 
 
-async def _ingest_theme(backend: Any, cmd: "ConsolidatorIngestThemeCommand") -> None:
+async def _ingest_theme(backend: Any, cmd: ConsolidatorIngestThemeCommand) -> str:
     """Write a consolidator-produced theme directly as a Wing_Theme fragment.
 
     Skip the steward layer entirely — themes are already a steward output
@@ -584,11 +688,12 @@ async def _ingest_theme(backend: Any, cmd: "ConsolidatorIngestThemeCommand") -> 
         },
     )
     await ingest_memory_fragment(backend, fragment)
+    return fragment.memory_id
 
 
 async def _ingest_user_confirmed(
-    backend: Any, cmd: "UserConfirmedFactCommand",
-) -> None:
+    backend: Any, cmd: UserConfirmedFactCommand,
+) -> str:
     """Write a user-confirmed fact directly as a drawer in the chosen wing.
 
     Bypasses the steward by design: a user-confirmed fact is the user's
@@ -628,3 +733,4 @@ async def _ingest_user_confirmed(
         extensions=cmd.extensions,
     )
     await ingest_memory_fragment(backend, fragment)
+    return fragment.memory_id

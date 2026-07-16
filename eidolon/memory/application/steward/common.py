@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from eidolon.memory.application.forget import (
+    delete_exact_drawers,
+    find_forget_candidates,
+)
 from eidolon.memory.domain.errors import MemoryBackendUnsupported
 from eidolon.memory.support.logging import get_logger
 
@@ -15,6 +20,12 @@ if TYPE_CHECKING:
     from eidolon.memory.domain.steward import PrivacyAction
 
 log = get_logger(__name__)
+
+
+@dataclass(slots=True)
+class PrivacyActionResult:
+    deleted_keys: list[str] = field(default_factory=list)
+    unmatched_targets: list[str] = field(default_factory=list)
 
 
 def normalize_content(text: str) -> str:
@@ -129,14 +140,32 @@ async def apply_privacy_actions(
     *,
     memory_space_id: str,
     actions: list[PrivacyAction],
-) -> None:
-    """Best-effort archive/delete handling for privacy requests."""
+) -> PrivacyActionResult:
+    """Resolve privacy targets to real drawers, delete, and verify invisibility."""
+    result = PrivacyActionResult()
     for action in actions:
         if action.action == "do_not_store":
             continue
-        room = safe_room_token(action.target, prefix="privacy")
         try:
-            await backend.delete(memory_space_id, room)
+            candidates = await find_forget_candidates(
+                backend,
+                memory_space_id,
+                action.target,
+            )
+            if not candidates:
+                result.unmatched_targets.append(action.target)
+                log.warning(
+                    "privacy_action_no_candidate",
+                    action=action.action,
+                    target=action.target,
+                )
+                continue
+            deleted = await delete_exact_drawers(
+                backend,
+                memory_space_id,
+                [candidate.key for candidate in candidates],
+            )
+            result.deleted_keys.extend(deleted)
         except MemoryBackendUnsupported as exc:
             log.warning(
                 "privacy_action_backend_unsupported",
@@ -144,3 +173,5 @@ async def apply_privacy_actions(
                 target=action.target,
                 error=str(exc),
             )
+            result.unmatched_targets.append(action.target)
+    return result

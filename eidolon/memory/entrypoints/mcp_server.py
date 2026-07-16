@@ -2,8 +2,9 @@
 
 Each ``agent_runner`` process hosts its own FastMCP instance bound to the
 loopback control-plane port. There is no longer a standalone MCP server entrypoint;
-tools share the agent runner's ``LockedBackend`` (single PersistentClient per palace,
-single ``asyncio.Lock`` for read+write).
+memory reads share the agent runner's ``LockedBackend`` while asynchronous
+command-status reads use a separate SQLite projection and never contend on the
+Chroma/KG lock.
 """
 
 from __future__ import annotations
@@ -16,10 +17,10 @@ from typing import Any
 
 from eidolon_sdk.memory import (
     KG_PREDICATE_VALUES,
-    MemoryActorContext,
     SENSITIVE_PREDICATES,
     KgAddTripleCommand,
     KgInvalidateCommand,
+    MemoryActorContext,
     UserConfirmedFactCommand,
 )
 
@@ -35,6 +36,7 @@ from eidolon.memory.application.public_recall import (
 from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import MemoryBackend
+from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.palace_init import palace_is_initialized
 from eidolon.memory.support.logging import get_logger
@@ -53,6 +55,7 @@ def build_control_plane_mcp(
     lifespan: Any = None,
     kg: Any = None,
     command_publisher: Any = None,
+    command_status: CommandStatusLedger | None = None,
 ):
     """Construct a FastMCP server bound to ``(host, port)`` for one user's runner.
 
@@ -169,6 +172,19 @@ def build_control_plane_mcp(
             "wings": [w.model_dump() for w in settings.wings],
         }
 
+    if command_status is not None:
+
+        @mcp.tool()
+        async def eidolon_memory_command_status(request_id: str) -> dict[str, Any]:
+            """Read asynchronous write status without acquiring memory storage locks."""
+            clean_id = (request_id or "").strip()
+            if not clean_id:
+                return {"status": "error", "error": "request_id is required"}
+            record = await command_status.get(clean_id)
+            if record is None:
+                return {"status": "unknown", "request_id": clean_id}
+            return record.to_dict()
+
     @mcp.tool()
     async def eidolon_memory_list(
         limit: int = 500,
@@ -241,19 +257,84 @@ def build_control_plane_mcp(
 
     if command_publisher is not None:
         _register_user_confirm_tool(
-            mcp, command_publisher=command_publisher, memory_space_id=memory_space_id,
+            mcp,
+            command_publisher=command_publisher,
+            memory_space_id=memory_space_id,
+            command_status=command_status,
         )
 
     if kg is not None and command_publisher is not None:
         _register_kg_tools(
-            mcp, kg=kg, command_publisher=command_publisher, memory_space_id=memory_space_id
+            mcp,
+            kg=kg,
+            command_publisher=command_publisher,
+            memory_space_id=memory_space_id,
+            command_status=command_status,
         )
 
     return mcp
 
 
+async def _publish_with_status(
+    command_publisher: Any,
+    command_status: CommandStatusLedger | None,
+    command: Any,
+    *,
+    wait_seconds: float,
+) -> dict[str, Any]:
+    """Durably publish a write, then wait only on the lightweight projection."""
+    try:
+        await command_publisher.publish(command)
+    except Exception as exc:  # noqa: BLE001 - surface a truthful tool outcome
+        if command_status is not None:
+            try:
+                await command_status.record_failed(
+                    command.request_id,
+                    kind=command.kind,
+                    error=f"publish failed: {exc}",
+                )
+            except Exception as status_exc:  # noqa: BLE001 - preserve root error
+                log.error(
+                    "command_status_publish_failure_record_failed",
+                    request_id=command.request_id,
+                    error=str(status_exc),
+                )
+        return {
+            "status": "failed",
+            "request_id": command.request_id,
+            "error": f"publish failed: {exc}",
+        }
+
+    if command_status is None:
+        return {"status": "accepted", "request_id": command.request_id}
+
+    try:
+        # The worker can win this race. Ledger transition rules guarantee a
+        # late accepted update never downgrades applied/failed.
+        await command_status.record_accepted(command.request_id, kind=command.kind)
+        record = await command_status.wait_terminal(
+            command.request_id,
+            timeout_seconds=max(0.0, min(wait_seconds, 10.0)),
+        )
+    except Exception as exc:  # noqa: BLE001 - publish itself is already durable
+        log.error(
+            "command_status_read_failed",
+            request_id=command.request_id,
+            error=str(exc),
+        )
+        return {"status": "accepted", "request_id": command.request_id}
+
+    if record is None:
+        return {"status": "accepted", "request_id": command.request_id}
+    return record.to_dict()
+
+
 def _register_user_confirm_tool(
-    mcp: Any, *, command_publisher: Any, memory_space_id: str,
+    mcp: Any,
+    *,
+    command_publisher: Any,
+    memory_space_id: str,
+    command_status: CommandStatusLedger | None,
 ) -> None:
     """Phase 5.2 — verbatim-write tool, bypasses steward.
 
@@ -277,6 +358,7 @@ def _register_user_confirm_tool(
         source_instance_id: str = "",
         session_id: str = "",
         extensions: dict[str, dict[str, Any]] | None = None,
+        wait_applied_seconds: float = 0.75,
     ) -> dict[str, Any]:
         """Persist a user-confirmed fact verbatim, bypassing the LLM steward.
 
@@ -294,7 +376,7 @@ def _register_user_confirm_tool(
           - ``importance = 5`` default — explicit user intent ranks
             top of the importance ladder.
 
-        Returns ``{status: "pending", request_id, wing}``. Idempotency:
+        Returns a truthful ``accepted``/``applied``/``failed`` status. Idempotency:
         re-publishing the same ``request_id`` (caller can't drive that
         from the tool, but JetStream redelivery does) collapses at chroma.
         """
@@ -324,12 +406,13 @@ def _register_user_confirm_tool(
             session_id=session_id,
             extensions=dict(extensions or {}),
         )
-        await command_publisher.publish(cmd)
-        return {
-            "status": "pending",
-            "request_id": request_id,
-            "wing": wing,
-        }
+        outcome = await _publish_with_status(
+            command_publisher,
+            command_status,
+            cmd,
+            wait_seconds=wait_applied_seconds,
+        )
+        return {**outcome, "wing": wing}
 
 
 # palace_graph business logic lives in eidolon.memory.application.palace_graph
@@ -337,12 +420,18 @@ def _register_user_confirm_tool(
 
 
 def _register_kg_tools(
-    mcp: Any, *, kg: Any, command_publisher: Any, memory_space_id: str
+    mcp: Any,
+    *,
+    kg: Any,
+    command_publisher: Any,
+    memory_space_id: str,
+    command_status: CommandStatusLedger | None,
 ) -> None:
     """Register the 6 KG tools on the FastMCP instance (KG plan §3.3).
 
-    Write tools publish to NATS (sync-feel polling for visibility); read tools
-    query the LockedKnowledgeGraph directly.
+    Write tools publish to NATS and wait on the separate command-status
+    projection; read tools query the LockedKnowledgeGraph directly. A legacy
+    storage-polling fallback remains only for embedders that omit the ledger.
     """
     @mcp.tool()
     async def eidolon_memory_kg_add_triple(
@@ -354,7 +443,7 @@ def _register_kg_tools(
         confidence: float = 1.0,
         wait_visible_seconds: float = 2.0,
     ) -> dict[str, Any]:
-        """Queue a temporal triple write via NATS; polls until visible (≤2s).
+        """Queue a temporal triple write via NATS; wait for worker status (≤2s).
 
         All admin writes share the same JetStream pipeline as chat turns so
         rebuild-from-replay naturally recovers admin edits (D5).
@@ -373,8 +462,21 @@ def _register_kg_tools(
             source_drawer_id=f"req:{request_id}",
             adapter_name="admin",
         )
+        if command_status is not None:
+            outcome = await _publish_with_status(
+                command_publisher,
+                command_status,
+                cmd,
+                wait_seconds=wait_visible_seconds,
+            )
+            return {
+                **outcome,
+                "triple_id": outcome.get("resource_id"),
+            }
+
         await command_publisher.publish(cmd)
-        # Sync-feel polling
+        # Compatibility path for embedders that have not supplied the
+        # read-optimized status projection.
         deadline = time.monotonic() + wait_visible_seconds
         while time.monotonic() < deadline:
             tid = await kg.find_pending_triple_id(
@@ -409,6 +511,14 @@ def _register_kg_tools(
             object=object,
             ended=ended_iso,
         )
+        if command_status is not None:
+            return await _publish_with_status(
+                command_publisher,
+                command_status,
+                cmd,
+                wait_seconds=wait_visible_seconds,
+            )
+
         await command_publisher.publish(cmd)
         deadline = time.monotonic() + wait_visible_seconds
         while time.monotonic() < deadline:

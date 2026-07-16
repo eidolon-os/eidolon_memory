@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from eidolon_sdk.memory import ConversationTurnPayload
 
+from eidolon.memory.application.forget import extract_privacy_target
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.steward.common import (
     apply_privacy_actions,
@@ -110,7 +111,7 @@ class RuleBasedSteward:
             action = "archive_topic"
         else:
             action = "do_not_store"
-        target = user_text.strip()[:80] or "未命名隐私话题"
+        target = extract_privacy_target(user_text)[:80] or "未命名隐私话题"
         return [
             PrivacyAction(
                 action=action,

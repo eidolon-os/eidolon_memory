@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+
+SPACE = "default.alice.default"
 
 
 @pytest.fixture
@@ -18,29 +21,32 @@ def mcp_with_kg(tmp_path: Path):
     from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
     from eidolon.memory.config.memory_settings import load_memory_settings
     from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
     settings = load_memory_settings()
     backend = LockedBackend(FakeMemoryBackend())
     kg_db = tmp_path / "kg.sqlite3"
     locked_kg = LockedKnowledgeGraph(KnowledgeGraph(db_path=str(kg_db)), backend.lock)
     publisher = AsyncMock()
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
 
     mcp = build_control_plane_mcp(
         backend,
         settings,
-        memory_space_id="default.alice.default",
+        memory_space_id=SPACE,
         palace_path=str(tmp_path),
         host="127.0.0.1",
         port=9999,
         kg=locked_kg,
         command_publisher=publisher,
+        command_status=ledger,
     )
-    yield mcp, locked_kg, publisher
+    yield mcp, locked_kg, publisher, ledger, backend
     locked_kg.close()
 
 
 async def test_kg_tools_all_registered(mcp_with_kg) -> None:
-    mcp, _, _ = mcp_with_kg
+    mcp, _, _, _, _ = mcp_with_kg
     names = {t.name for t in mcp._tool_manager.list_tools()}
     expected = {
         "eidolon_memory_kg_add_triple",
@@ -49,6 +55,7 @@ async def test_kg_tools_all_registered(mcp_with_kg) -> None:
         "eidolon_memory_kg_timeline",
         "eidolon_memory_kg_stats",
         "eidolon_memory_kg_predicates",
+        "eidolon_memory_command_status",
     }
     missing = expected - names
     assert not missing, f"missing tools: {missing}"
@@ -75,7 +82,7 @@ async def test_kg_tools_omitted_without_publisher(tmp_path: Path) -> None:
 
 
 async def test_kg_predicates_tool_returns_whitelist(mcp_with_kg) -> None:
-    mcp, _, _ = mcp_with_kg
+    mcp, _, _, _, _ = mcp_with_kg
     tool = next(
         t for t in mcp._tool_manager.list_tools()
         if t.name == "eidolon_memory_kg_predicates"
@@ -86,22 +93,28 @@ async def test_kg_predicates_tool_returns_whitelist(mcp_with_kg) -> None:
     assert result["count"] >= 27
 
 
-async def test_kg_add_triple_publishes_then_polls(mcp_with_kg) -> None:
-    mcp, locked_kg, publisher = mcp_with_kg
+async def test_kg_add_triple_publishes_then_reads_status(mcp_with_kg) -> None:
+    mcp, locked_kg, publisher, ledger, _ = mcp_with_kg
     add_tool = next(
         t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_kg_add_triple"
     )
 
-    # Simulate worker applying immediately after publish (race the polling loop).
+    # Simulate worker applying immediately after publish. The worker wins the
+    # accepted/applied race, which must never downgrade the final status.
     async def _apply_then_publish(cmd):
         # The publisher mock IS the worker stand-in here: it commits the triple
         # via locked_kg directly, then returns.
-        await locked_kg.add_triple(
+        triple_id = await locked_kg.add_triple(
             subject=cmd.subject, predicate=cmd.predicate, object=cmd.object,
             valid_from=cmd.valid_from, valid_to=cmd.valid_to,
             confidence=cmd.confidence,
             source_turn_id=cmd.source_drawer_id or f"req:{cmd.request_id}",
             adapter_name=cmd.adapter_name,
+        )
+        await ledger.record_applied(
+            cmd.request_id,
+            kind=cmd.kind,
+            resource_id=triple_id,
         )
 
     publisher.publish.side_effect = _apply_then_publish
@@ -117,9 +130,9 @@ async def test_kg_add_triple_publishes_then_polls(mcp_with_kg) -> None:
     publisher.publish.assert_awaited_once()
 
 
-async def test_kg_add_triple_returns_pending_when_publisher_silent(mcp_with_kg) -> None:
-    """If the worker never applies, polling times out → pending status."""
-    mcp, _, publisher = mcp_with_kg
+async def test_kg_add_triple_returns_accepted_when_worker_silent(mcp_with_kg) -> None:
+    """Durably published is accepted, never falsely reported as applied."""
+    mcp, _, publisher, _, _ = mcp_with_kg
 
     async def _noop(cmd):
         return None
@@ -134,12 +147,12 @@ async def test_kg_add_triple_returns_pending_when_publisher_silent(mcp_with_kg) 
         object="never_applied",
         wait_visible_seconds=0.1,   # short for the test
     )
-    assert result["status"] == "pending"
+    assert result["status"] == "accepted"
     assert result["triple_id"] is None
 
 
 async def test_kg_query_entity_excludes_sensitive_by_default(mcp_with_kg) -> None:
-    mcp, locked_kg, _ = mcp_with_kg
+    mcp, locked_kg, _, _, _ = mcp_with_kg
     await locked_kg.add_triple(
         subject="self", predicate="has_health_condition", object="anxiety",
         source_turn_id="seed", adapter_name="test",
@@ -159,3 +172,64 @@ async def test_kg_query_entity_excludes_sensitive_by_default(mcp_with_kg) -> Non
     opt_in = await query_tool.fn(name="self", include_sensitive=True)
     preds_opt = {t["predicate"] for t in opt_in["triples"]}
     assert "has_health_condition" in preds_opt
+
+
+async def test_command_status_read_does_not_wait_for_backend_lock(mcp_with_kg) -> None:
+    """The asynchronous-write projection is physically separate from Chroma/KG."""
+    mcp, _, _, ledger, backend = mcp_with_kg
+    await ledger.record_applied(
+        "status-fast",
+        kind="user_confirm_fact",
+        resource_id="userconfirm:status-fast",
+    )
+    status_tool = next(
+        t
+        for t in mcp._tool_manager.list_tools()
+        if t.name == "eidolon_memory_command_status"
+    )
+
+    async with backend.lock:
+        result = await asyncio.wait_for(
+            status_tool.fn(request_id="status-fast"),
+            timeout=0.2,
+        )
+
+    assert result["status"] == "applied"
+    assert result["resource_id"] == "userconfirm:status-fast"
+
+
+async def test_user_confirm_reports_accepted_not_applied_when_worker_is_silent(
+    mcp_with_kg,
+) -> None:
+    mcp, _, publisher, ledger, _ = mcp_with_kg
+    publisher.publish.side_effect = lambda _command: None
+    tool = next(
+        t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_user_confirm"
+    )
+
+    result = await tool.fn(text="我喜欢乌龙茶", wait_applied_seconds=0.01)
+
+    assert result["status"] == "accepted"
+    record = await ledger.get(result["request_id"])
+    assert record is not None
+    assert record.status == "accepted"
+
+
+async def test_user_confirm_publish_failure_is_truthfully_failed(mcp_with_kg) -> None:
+    mcp, _, publisher, ledger, _ = mcp_with_kg
+
+    async def _fail(_command):
+        raise RuntimeError("NATS unavailable")
+
+    publisher.publish.side_effect = _fail
+    tool = next(
+        t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_user_confirm"
+    )
+
+    result = await tool.fn(text="我喜欢乌龙茶", wait_applied_seconds=0.01)
+
+    assert result["status"] == "failed"
+    assert "NATS unavailable" in result["error"]
+    record = await ledger.get(result["request_id"])
+    assert record is not None
+    assert record.status == "failed"
