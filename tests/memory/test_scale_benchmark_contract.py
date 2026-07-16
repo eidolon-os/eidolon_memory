@@ -6,7 +6,9 @@ import pytest
 
 from eidolon.memory.adapters.mempalace_python_backend import _drawer_id
 from scripts.bench_mempalace_scale_curve import (
+    MIXED_LOAD_MODEL,
     _doc,
+    _measure_point,
     _parse_concurrencies,
     _summary,
 )
@@ -55,7 +57,14 @@ def test_scale_summary_reports_tail_latency() -> None:
 
 
 def test_scale_concurrency_curve_is_positive_ordered_and_deduplicated() -> None:
+    import inspect
+
+    assert MIXED_LOAD_MODEL == "closed_loop_bounded_outstanding"
     assert _parse_concurrencies("8,1,4,2,4") == [1, 2, 4, 8]
+
+    source = inspect.getsource(_measure_point)
+    mixed = source[source.index("async def mixed_one") : source.index("await asyncio.gather")]
+    assert mixed.index("async with sem") < mixed.index("await _timed")
 
     with pytest.raises(ValueError, match="positive"):
         _parse_concurrencies("1,0,4")

@@ -73,6 +73,8 @@ CATEGORIES = [
     ),
 ]
 
+MIXED_LOAD_MODEL = "closed_loop_bounded_outstanding"
+
 
 def _settings(args: argparse.Namespace) -> MemorySettings:
     return MemorySettings.model_validate(
@@ -433,12 +435,15 @@ async def _measure_point(
             idx = sample_indices[n % len(sample_indices)]
             category, query = _query_for(idx)
             del category
-            # Time from task admission, not only from semaphore acquisition:
-            # this is the latency a burst caller sees while a single Realm's
-            # bounded read queue drains.
-            async def admitted_recall() -> Any:
-                async with sem:
-                    return await search_all_wings_mcp_style(
+            # Standard closed-loop load: the semaphore limits the number of
+            # outstanding callers. Load-generator queue time is excluded;
+            # waiting on the production Realm/backend lock is included.
+            async with sem:
+                await _timed(
+                    mixed_lat,
+                    mixed_errors,
+                    f"mixed:{size}:c{concurrency}:{n}",
+                    lambda query=query: search_all_wings_mcp_style(
                         backend,
                         settings,
                         query=query,
@@ -448,14 +453,8 @@ async def _measure_point(
                         room=None,
                         for_voice=bool(n % 2),
                         palace_path=palace,
-                    )
-
-            await _timed(
-                mixed_lat,
-                mixed_errors,
-                f"mixed:{size}:c{concurrency}:{n}",
-                admitted_recall,
-            )
+                    ),
+                )
 
         await asyncio.gather(*(mixed_one(n) for n in range(mixed_operations)))
         mixed_curve[str(concurrency)] = {
@@ -564,6 +563,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "queries_per_point": args.queries,
         "mixed_operations_per_concurrency": args.mixed_operations,
         "concurrencies": _parse_concurrencies(args.concurrencies),
+        "mixed_load_model": MIXED_LOAD_MODEL,
         "total_elapsed_ms": (time.perf_counter() - total_started) * 1000,
         "points": points,
     }
