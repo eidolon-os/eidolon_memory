@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from eidolon.memory.application.working_memory import WorkingMemoryRing
+    from eidolon.memory.domain.command_status import CommandStatusRecord
     from eidolon.memory.domain.fragments import MemoryFragment
     from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -103,5 +104,73 @@ class MemoryAdmin(Protocol):
 
 
 @runtime_checkable
-class MemoryBackend(MemoryReader, MemoryWriter, MemoryAdmin, Protocol):
+class MemoryPrivacyAdmin(Protocol):
+    """Tenant-scoped batch privacy mutations with verified success outcomes.
+
+    The concrete backend wrapper must serialize each batch as one critical
+    section. Candidate resolution intentionally stays outside this port and no
+    cross-call transaction is implied.
+    """
+
+    async def delete_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
+        """Hard-delete a tenant-scoped batch and verify every key is invisible."""
+
+    async def archive_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
+        """Mark a tenant-scoped batch do-not-recall and verify stored policy."""
+
+
+@runtime_checkable
+class MemoryBackend(MemoryReader, MemoryWriter, MemoryAdmin, MemoryPrivacyAdmin, Protocol):
     """Combined backend surface kept for compatibility with existing callers."""
+
+
+@runtime_checkable
+class CommandStatusReader(Protocol):
+    """Read-only projection used by MCP; never grants memory write access."""
+
+    async def get(self, request_id: str) -> CommandStatusRecord | None:
+        """Return the latest known outcome for one asynchronous command."""
+
+    async def wait_terminal(
+        self,
+        request_id: str,
+        *,
+        timeout_seconds: float,
+    ) -> CommandStatusRecord | None:
+        """Wait on projection state without polling or locking memory storage."""
+
+
+@runtime_checkable
+class CommandStatusWriter(Protocol):
+    """Projection writer; cannot mutate memory facts or KG state."""
+
+    async def record_accepted(self, request_id: str, *, kind: str) -> CommandStatusRecord: ...
+
+    async def record_retrying(
+        self,
+        request_id: str,
+        *,
+        kind: str,
+        error: str,
+    ) -> CommandStatusRecord: ...
+
+    async def record_applied(
+        self,
+        request_id: str,
+        *,
+        kind: str,
+        resource_id: str | None = None,
+    ) -> CommandStatusRecord: ...
+
+    async def record_failed(
+        self,
+        request_id: str,
+        *,
+        kind: str,
+        error: str,
+    ) -> CommandStatusRecord: ...
+
+
+@runtime_checkable
+class CommandStatusStore(CommandStatusReader, CommandStatusWriter, Protocol):
+    """Combined projection port used only at the composition boundary."""

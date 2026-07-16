@@ -51,6 +51,16 @@ def _stub_msg(payload: dict, *, delivery: int = 1) -> SimpleNamespace:
     )
 
 
+def test_command_dispatch_uses_only_the_sdk_wire_parser() -> None:
+    import inspect
+
+    from eidolon.memory.application import turn_processor
+
+    source = inspect.getsource(turn_processor.process_command_message)
+    assert "parse_memory_command(raw)" in source
+    assert "unwrap_memory_payload" not in source
+
+
 async def test_command_add_triple_flow(kg_setup, tmp_path: Path) -> None:
     """End-to-end inside the worker: a published KgAddTripleCommand applies to KG."""
     from eidolon.memory.application.turn_processor import process_command_message

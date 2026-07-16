@@ -61,6 +61,11 @@ class MemPalacePythonBackend(MemoryBackend):
         # recall's visibility gate (which compares against the caller's space)
         # doesn't reject every vector hit. See parse_search_tool_payload.
         self._memory_space_id = memory_space_id
+        # MemPalace's public vector payload intentionally omits custom metadata.
+        # Cache only restricted drawers so privacy can be rehydrated without an
+        # O(all drawers) scan on every recall. Ordinary public writes do not
+        # invalidate it; privacy mutations do.
+        self._restricted_metadata: dict[tuple[str, str, str], dict[str, Any]] | None = None
 
     async def search(
         self,
@@ -127,10 +132,72 @@ class MemPalacePythonBackend(MemoryBackend):
         )
         if isinstance(data, dict) and data.get("error"):
             raise MemoryBackendUnavailable(str(data.get("error")))
+        records = parse_search_tool_payload(
+            data,
+            default_memory_space_id=self._memory_space_id,
+        )
         return apply_recall_policy(
-            parse_search_tool_payload(data, default_memory_space_id=self._memory_space_id),
+            self._hydrate_restricted_metadata(records),
             self._settings,
         )
+
+    def _hydrate_restricted_metadata(
+        self,
+        records: list[MemoryWireRecord],
+    ) -> list[MemoryWireRecord]:
+        if not records:
+            return []
+        if self._restricted_metadata is None:
+            self._restricted_metadata = self._load_restricted_metadata()
+        hydrated: list[MemoryWireRecord] = []
+        for record in records:
+            identity = _privacy_identity(
+                record.metadata.get("wing"),
+                record.metadata.get("room") or record.key,
+                record.value,
+            )
+            restricted = self._restricted_metadata.get(identity)
+            if restricted is not None:
+                record.metadata = {**record.metadata, **restricted}
+            hydrated.append(record)
+        return hydrated
+
+    def _load_restricted_metadata(self) -> dict[tuple[str, str, str], dict[str, Any]]:
+        try:
+            collection = _get_collection(self._palace, create=False)
+            restricted: dict[tuple[str, str, str], dict[str, Any]] = {}
+            for privacy in ("private", "do_not_recall"):
+                result = collection.get(
+                    where={"privacy": privacy},
+                    include=["documents", "metadatas"],
+                )
+                ids = _ids(result)
+                documents = _documents(result)
+                metadatas = _metadatas(result)
+                if len(ids) != len(documents) or len(ids) != len(metadatas):
+                    raise MemoryBackendUnavailable(
+                        "restricted metadata query returned inconsistent rows"
+                    )
+                for _drawer_id_value, document, metadata in zip(
+                    ids,
+                    documents,
+                    metadatas,
+                    strict=True,
+                ):
+                    restricted[
+                        _privacy_identity(
+                            metadata.get("wing"),
+                            metadata.get("room"),
+                            document,
+                        )
+                    ] = metadata
+            return restricted
+        except Exception as exc:
+            # Privacy policy is fail-closed: a metadata-sidecar failure must
+            # degrade recall, never expose a potentially archived drawer.
+            raise MemoryBackendUnavailable(
+                f"failed to load restricted memory metadata: {exc}"
+            ) from exc
 
     async def ingest_text(
         self,
@@ -187,6 +254,14 @@ class MemPalacePythonBackend(MemoryBackend):
             if not _ids(inserted):
                 msg = "MemPalace acknowledged write but drawer is not readable"
                 raise MemoryBackendWriteFailed(msg)
+            privacy = str(meta.get("privacy") or "").lower()
+            if self._restricted_metadata is not None and privacy in {
+                "private",
+                "do_not_recall",
+            }:
+                self._restricted_metadata[
+                    _privacy_identity(wing, room, content)
+                ] = meta
         except MemoryBackendWriteFailed:
             raise
         except Exception as exc:
@@ -335,15 +410,79 @@ class MemPalacePythonBackend(MemoryBackend):
         return None
 
     async def delete(self, memory_space_id: str, key: str) -> None:
-        del memory_space_id
-        if not key.startswith("drawer_"):
-            msg = "delete expects a MemPalace drawer_id key"
-            raise MemoryBackendUnsupported(msg)
+        await self.delete_many(memory_space_id, [key])
+
+    async def delete_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
+        unique_ids = _validated_privacy_drawer_ids(keys)
         try:
             collection = _get_collection(self._palace, create=False)
-            collection.delete(ids=[key])
+            existing = collection.get(ids=unique_ids, include=["documents", "metadatas"])
+            _assert_privacy_batch_tenant(
+                existing,
+                memory_space_id=memory_space_id,
+                authoritative_space_id=self._memory_space_id,
+            )
+            collection.delete(ids=unique_ids)
+            remaining = collection.get(ids=unique_ids, include=[])
+            if _ids(remaining):
+                msg = f"drawers remain visible after delete: {_ids(remaining)!r}"
+                raise MemoryBackendWriteFailed(msg)
+            self._restricted_metadata = None
+            return unique_ids
         except ImportError as exc:
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
+        except MemoryBackendWriteFailed:
+            raise
+        except Exception as exc:
+            raise MemoryBackendWriteFailed(str(exc)) from exc
+
+    async def archive_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
+        unique_ids = _validated_privacy_drawer_ids(keys)
+        try:
+            collection = _get_collection(self._palace, create=False)
+            existing = collection.get(ids=unique_ids, include=["documents", "metadatas"])
+            _assert_privacy_batch_tenant(
+                existing,
+                memory_space_id=memory_space_id,
+                authoritative_space_id=self._memory_space_id,
+            )
+            existing_ids = _ids(existing)
+            if not existing_ids:
+                return []
+            metadata_by_id = dict(zip(existing_ids, _metadatas(existing), strict=False))
+            archived_at = _now_iso()
+            updated = [
+                _metadata_for_chroma(
+                    {
+                        **metadata_by_id.get(drawer_id, {}),
+                        "privacy": "do_not_recall",
+                        "archived_at": archived_at,
+                        "updated_at": archived_at,
+                    }
+                )
+                for drawer_id in existing_ids
+            ]
+            collection.update(ids=existing_ids, metadatas=updated)
+
+            verified = collection.get(ids=existing_ids, include=["metadatas"])
+            verified_by_id = dict(
+                zip(_ids(verified), _metadatas(verified), strict=False)
+            )
+            failed = [
+                drawer_id
+                for drawer_id in existing_ids
+                if str(verified_by_id.get(drawer_id, {}).get("privacy"))
+                != "do_not_recall"
+            ]
+            if failed:
+                msg = f"drawers remain recallable after archive: {failed!r}"
+                raise MemoryBackendWriteFailed(msg)
+            self._restricted_metadata = None
+            return existing_ids
+        except ImportError as exc:
+            raise MemoryBackendUnavailable("mempalace package is not installed") from exc
+        except MemoryBackendWriteFailed:
+            raise
         except Exception as exc:
             raise MemoryBackendWriteFailed(str(exc)) from exc
 
@@ -452,6 +591,30 @@ def _metadata_for_chroma(metadata: dict[str, Any]) -> dict[str, Any]:
     return out or {"source": "eidolon-memory"}
 
 
+def _privacy_identity(wing: Any, room: Any, value: Any) -> tuple[str, str, str]:
+    """Stable identity shared by stored drawers and projected vector hits."""
+    if isinstance(value, dict | list):
+        canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if stripped[:1] in {"{", "["}:
+            try:
+                parsed = json.loads(stripped)
+                canonical = json.dumps(
+                    parsed,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                canonical = value
+        else:
+            canonical = value
+    else:
+        canonical = str(value or "")
+    return str(wing or ""), str(room or ""), canonical
+
+
 def _ids(result: Any) -> list[str]:
     if isinstance(result, dict):
         return list(result.get("ids") or [])
@@ -468,6 +631,39 @@ def _metadatas(result: Any) -> list[dict[str, Any]]:
     if isinstance(result, dict):
         return list(result.get("metadatas") or [])
     return list(getattr(result, "metadatas", []) or [])
+
+
+def _validated_privacy_drawer_ids(keys: list[str]) -> list[str]:
+    unique_ids = list(dict.fromkeys(str(key).strip() for key in keys if str(key).strip()))
+    if not unique_ids or any(not key.startswith("drawer_") for key in unique_ids):
+        msg = "privacy mutation expects one or more MemPalace drawer_id keys"
+        raise MemoryBackendUnsupported(msg)
+    return unique_ids
+
+
+def _assert_privacy_batch_tenant(
+    result: Any,
+    *,
+    memory_space_id: str,
+    authoritative_space_id: str | None,
+) -> None:
+    expected = memory_space_id.strip()
+    if not expected:
+        raise MemoryBackendWriteFailed("memory_space_id is required for privacy mutation")
+    drawer_ids = _ids(result)
+    metadatas = _metadatas(result)
+    if len(metadatas) != len(drawer_ids) or any(
+        not isinstance(metadata, dict) for metadata in metadatas
+    ):
+        raise MemoryBackendWriteFailed("cannot verify drawer tenant metadata")
+    for drawer_id, metadata in zip(drawer_ids, metadatas, strict=True):
+        stored = str(metadata.get("memory_space_id") or authoritative_space_id or "").strip()
+        if not stored:
+            msg = f"cannot verify drawer tenant before privacy mutation: {drawer_id}"
+            raise MemoryBackendWriteFailed(msg)
+        if stored != expected:
+            msg = f"drawer belongs to another memory space: {drawer_id}"
+            raise MemoryBackendWriteFailed(msg)
 
 
 def _record_from_get_result(result: Any, index: int, *, drawer_id: str) -> MemoryWireRecord:

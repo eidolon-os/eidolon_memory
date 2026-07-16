@@ -35,8 +35,7 @@ from eidolon.memory.application.public_recall import (
 )
 from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.domain.ports import MemoryBackend
-from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+from eidolon.memory.domain.ports import CommandStatusStore, MemoryBackend
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.palace_init import palace_is_initialized
 from eidolon.memory.support.logging import get_logger
@@ -55,7 +54,7 @@ def build_control_plane_mcp(
     lifespan: Any = None,
     kg: Any = None,
     command_publisher: Any = None,
-    command_status: CommandStatusLedger | None = None,
+    command_status: CommandStatusStore | None = None,
 ):
     """Construct a FastMCP server bound to ``(host, port)`` for one user's runner.
 
@@ -277,7 +276,7 @@ def build_control_plane_mcp(
 
 async def _publish_with_status(
     command_publisher: Any,
-    command_status: CommandStatusLedger | None,
+    command_status: CommandStatusStore | None,
     command: Any,
     *,
     wait_seconds: float,
@@ -334,7 +333,7 @@ def _register_user_confirm_tool(
     *,
     command_publisher: Any,
     memory_space_id: str,
-    command_status: CommandStatusLedger | None,
+    command_status: CommandStatusStore | None,
 ) -> None:
     """Phase 5.2 — verbatim-write tool, bypasses steward.
 
@@ -425,7 +424,7 @@ def _register_kg_tools(
     kg: Any,
     command_publisher: Any,
     memory_space_id: str,
-    command_status: CommandStatusLedger | None,
+    command_status: CommandStatusStore | None,
 ) -> None:
     """Register the 6 KG tools on the FastMCP instance (KG plan §3.3).
 

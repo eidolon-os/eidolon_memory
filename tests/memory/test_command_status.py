@@ -76,3 +76,22 @@ async def test_status_survives_process_restart(tmp_path: Path) -> None:
     assert record is not None
     assert record.status == "applied"
     assert record.resource_id == "deleted:2"
+
+
+def test_status_ledger_implements_ports_without_application_infrastructure_import(
+    tmp_path: Path,
+) -> None:
+    import inspect
+
+    from eidolon.memory.application import turn_processor
+    from eidolon.memory.domain.ports import (
+        CommandStatusReader,
+        CommandStatusStore,
+        CommandStatusWriter,
+    )
+
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    assert isinstance(ledger, CommandStatusReader)
+    assert isinstance(ledger, CommandStatusWriter)
+    assert isinstance(ledger, CommandStatusStore)
+    assert "infrastructure.command_status" not in inspect.getsource(turn_processor)

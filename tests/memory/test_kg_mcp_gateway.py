@@ -201,7 +201,7 @@ async def test_command_status_read_does_not_wait_for_backend_lock(mcp_with_kg) -
 async def test_user_confirm_reports_accepted_not_applied_when_worker_is_silent(
     mcp_with_kg,
 ) -> None:
-    mcp, _, publisher, ledger, _ = mcp_with_kg
+    mcp, _, publisher, ledger, backend = mcp_with_kg
     publisher.publish.side_effect = lambda _command: None
     tool = next(
         t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_user_confirm"
@@ -213,6 +213,7 @@ async def test_user_confirm_reports_accepted_not_applied_when_worker_is_silent(
     record = await ledger.get(result["request_id"])
     assert record is not None
     assert record.status == "accepted"
+    assert backend.inner.docs == {}
 
 
 async def test_user_confirm_publish_failure_is_truthfully_failed(mcp_with_kg) -> None:

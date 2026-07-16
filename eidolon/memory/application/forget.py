@@ -6,10 +6,12 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from eidolon.memory.domain.ports import MemoryAdmin, MemoryPrivacyAdmin
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 _COMMAND_RE = re.compile(
-    r"(?:请|麻烦)?(?:帮我|把|给我)?(?:忘掉|删掉|删除|抹掉|不要记住|别记住|别记录)"
+    r"(?:请|麻烦)?(?:帮我|把|给我)?(?:忘掉|删掉|删除|抹掉|不要记住|别记住|别记录|"
+    r"不要再提|以后别再提|以后别提|别再提|别再说)"
 )
 _SUFFIX_RE = re.compile(r"(?:这条|这段|相关的|有关的)?(?:的)?(?:记忆|内容|信息|事情|事实)$")
 _NON_SEMANTIC_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
@@ -51,7 +53,7 @@ def _belongs_to_space(record: MemoryWireRecord, memory_space_id: str) -> bool:
 
 
 async def find_forget_candidates(
-    backend: Any,
+    backend: MemoryAdmin,
     memory_space_id: str,
     target: str,
     *,
@@ -115,25 +117,31 @@ async def find_forget_candidates(
 
 
 async def delete_exact_drawers(
-    backend: Any,
+    backend: MemoryPrivacyAdmin,
     memory_space_id: str,
     drawer_ids: list[str],
 ) -> list[str]:
-    """Idempotently delete confirmed IDs and prove each is no longer visible."""
+    """Delegate one confirmed ID batch to the privacy mutation port."""
     unique_ids = list(dict.fromkeys(key.strip() for key in drawer_ids if key.strip()))
     if not unique_ids:
         raise ValueError("at least one drawer_id is required")
 
-    deleted: list[str] = []
     for key in unique_ids:
         if not key.startswith("drawer_"):
             raise ValueError(f"invalid MemPalace drawer_id: {key}")
-        existing = await backend.get(memory_space_id, key)
-        if existing is not None and not _belongs_to_space(existing, memory_space_id):
-            raise PermissionError(f"drawer does not belong to memory space: {key}")
-        if existing is not None:
-            await backend.delete(memory_space_id, key)
-        if await backend.get(memory_space_id, key) is not None:
-            raise RuntimeError(f"drawer remains visible after delete: {key}")
-        deleted.append(key)
-    return deleted
+    return await backend.delete_many(memory_space_id, unique_ids)
+
+
+async def archive_exact_drawers(
+    backend: MemoryPrivacyAdmin,
+    memory_space_id: str,
+    drawer_ids: list[str],
+) -> list[str]:
+    """Mark one confirmed ID batch do-not-recall and verify the policy."""
+    unique_ids = list(dict.fromkeys(key.strip() for key in drawer_ids if key.strip()))
+    if not unique_ids:
+        raise ValueError("at least one drawer_id is required")
+    for key in unique_ids:
+        if not key.startswith("drawer_"):
+            raise ValueError(f"invalid MemPalace drawer_id: {key}")
+    return await backend.archive_many(memory_space_id, unique_ids)

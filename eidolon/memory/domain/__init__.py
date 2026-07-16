@@ -1,5 +1,6 @@
 """Domain layer: wire DTOs, message payloads, fragments, and backend ports."""
 
+from eidolon.memory.domain.command_status import CommandStatus, CommandStatusRecord
 from eidolon.memory.domain.errors import (
     MemoryBackendError,
     MemoryBackendUnavailable,
@@ -17,7 +18,16 @@ from eidolon.memory.domain.payloads import (
     MemoryResultPayload,
     MemoryStorePayload,
 )
-from eidolon.memory.domain.ports import MemoryAdmin, MemoryBackend, MemoryReader, MemoryWriter
+from eidolon.memory.domain.ports import (
+    CommandStatusReader,
+    CommandStatusStore,
+    CommandStatusWriter,
+    MemoryAdmin,
+    MemoryBackend,
+    MemoryPrivacyAdmin,
+    MemoryReader,
+    MemoryWriter,
+)
 from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
 from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -31,6 +41,12 @@ __all__ = [
     "MemoryFragment",
     "MemoryReader",
     "MemoryWriter",
+    "MemoryPrivacyAdmin",
+    "CommandStatus",
+    "CommandStatusRecord",
+    "CommandStatusReader",
+    "CommandStatusWriter",
+    "CommandStatusStore",
     "PrivacyAction",
     "StewardDecision",
     "StewardError",

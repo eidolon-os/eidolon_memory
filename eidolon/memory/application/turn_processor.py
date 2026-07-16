@@ -32,9 +32,10 @@ from eidolon.memory.application.steward.common import (
     stamp_fragment_identity,
 )
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_dlq_log_path
+from eidolon.memory.domain.command_status import CommandStatus
 from eidolon.memory.domain.fragments import MemoryFragment
+from eidolon.memory.domain.ports import CommandStatusWriter
 from eidolon.memory.domain.steward import StewardDecision
-from eidolon.memory.infrastructure.command_status import CommandStatus, CommandStatusLedger
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -358,7 +359,7 @@ async def process_command_message(
     kg: Any,
     settings: MemorySettings,
     expected_memory_space_id: str | None = None,
-    command_status: CommandStatusLedger | None = None,
+    command_status: CommandStatusWriter | None = None,
 ) -> None:
     """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_token>``.
 
@@ -516,7 +517,7 @@ async def process_command_message(
 
 
 async def _record_command_status(
-    ledger: CommandStatusLedger | None,
+    ledger: CommandStatusWriter | None,
     transition: CommandStatus,
     request_id: str,
     *,

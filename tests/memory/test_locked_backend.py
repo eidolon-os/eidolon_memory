@@ -22,7 +22,12 @@ async def test_locked_backend_passes_through_all_methods() -> None:
     assert rec is not None
     hits = await backend.search("hello", wing="W1", n_results=5)
     assert hits
-    await backend.delete("W1", rows[0].key)
+    archived = await backend.archive_many("W1", [rows[0].key])
+    assert archived == [rows[0].key]
+    rec = await backend.get("W1", rows[0].key)
+    assert rec is not None
+    assert rec.metadata["privacy"] == "do_not_recall"
+    await backend.delete_many("W1", [rows[0].key])
     rows_after = await backend.get_all("")
     assert rows_after == []
 
@@ -30,8 +35,6 @@ async def test_locked_backend_passes_through_all_methods() -> None:
 @pytest.mark.asyncio
 async def test_locked_backend_serializes_concurrent_writes() -> None:
     """All chromadb calls (including reads) share one ``asyncio.Lock``."""
-    backend = LockedBackend(FakeMemoryBackend())
-
     holding = asyncio.Event()
     release = asyncio.Event()
 

@@ -91,3 +91,11 @@ class LockedBackend(MemoryBackend):
     async def delete(self, user_id: str, key: str) -> None:
         async with self._lock:
             await self._inner.delete(user_id, key)
+
+    async def delete_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
+        async with self._lock:
+            return await self._inner.delete_many(memory_space_id, keys)
+
+    async def archive_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
+        async with self._lock:
+            return await self._inner.archive_many(memory_space_id, keys)

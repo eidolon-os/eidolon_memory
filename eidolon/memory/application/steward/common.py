@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from eidolon.memory.application.forget import (
+    archive_exact_drawers,
     delete_exact_drawers,
     find_forget_candidates,
 )
@@ -25,6 +26,7 @@ log = get_logger(__name__)
 @dataclass(slots=True)
 class PrivacyActionResult:
     deleted_keys: list[str] = field(default_factory=list)
+    archived_keys: list[str] = field(default_factory=list)
     unmatched_targets: list[str] = field(default_factory=list)
 
 
@@ -141,7 +143,12 @@ async def apply_privacy_actions(
     memory_space_id: str,
     actions: list[PrivacyAction],
 ) -> PrivacyActionResult:
-    """Resolve privacy targets to real drawers, delete, and verify invisibility."""
+    """Resolve targets, then run a serialized and verified privacy batch.
+
+    Resolution is read-only and deliberately separate from mutation. The
+    backend therefore guarantees the selected IDs, not a serializable
+    natural-language predicate spanning both calls.
+    """
     result = PrivacyActionResult()
     for action in actions:
         if action.action == "do_not_store":
@@ -160,12 +167,21 @@ async def apply_privacy_actions(
                     target=action.target,
                 )
                 continue
-            deleted = await delete_exact_drawers(
-                backend,
-                memory_space_id,
-                [candidate.key for candidate in candidates],
-            )
-            result.deleted_keys.extend(deleted)
+            keys = [candidate.key for candidate in candidates]
+            if action.action == "archive_topic":
+                archived = await archive_exact_drawers(
+                    backend,
+                    memory_space_id,
+                    keys,
+                )
+                result.archived_keys.extend(archived)
+            else:
+                deleted = await delete_exact_drawers(
+                    backend,
+                    memory_space_id,
+                    keys,
+                )
+                result.deleted_keys.extend(deleted)
         except MemoryBackendUnsupported as exc:
             log.warning(
                 "privacy_action_backend_unsupported",

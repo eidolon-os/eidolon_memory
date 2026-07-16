@@ -4,28 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
-CommandStatus = Literal["accepted", "retrying", "applied", "failed"]
-_TERMINAL = frozenset({"applied", "failed"})
-
-
-@dataclass(frozen=True, slots=True)
-class CommandStatusRecord:
-    request_id: str
-    kind: str
-    status: CommandStatus
-    resource_id: str | None
-    error: str | None
-    attempts: int
-    created_at: str
-    updated_at: str
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+from eidolon.memory.domain.command_status import (
+    TERMINAL_COMMAND_STATUSES,
+    CommandStatus,
+    CommandStatusRecord,
+)
 
 
 class CommandStatusLedger:
@@ -145,7 +131,7 @@ class CommandStatusLedger:
     ) -> CommandStatusRecord | None:
         latest = await self.get(request_id)
         timeout = max(0.0, timeout_seconds)
-        if latest is not None and latest.status in _TERMINAL:
+        if latest is not None and latest.status in TERMINAL_COMMAND_STATUSES:
             return latest
         if timeout <= 0:
             return latest
@@ -157,7 +143,7 @@ class CommandStatusLedger:
         self._terminal_waiters[request_id] = self._terminal_waiters.get(request_id, 0) + 1
         try:
             latest = await self.get(request_id)
-            if latest is not None and latest.status in _TERMINAL:
+            if latest is not None and latest.status in TERMINAL_COMMAND_STATUSES:
                 return latest
             try:
                 await asyncio.wait_for(event.wait(), timeout=timeout)

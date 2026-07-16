@@ -109,3 +109,14 @@ async def test_rules_privacy_action_blocks_normal_write(monkeypatch: pytest.Monk
     assert not decision.should_write
     assert not decision.fragments
     assert decision.privacy_actions[0].action == "do_not_store"
+
+
+@pytest.mark.asyncio
+async def test_rules_archive_phrase_is_not_misclassified_as_normal_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
+    decision = await RuleBasedSteward(load_memory_settings()).decide(_turn("以后别再提绿茶"))
+    assert not decision.should_write
+    assert decision.privacy_actions[0].action == "archive_topic"
+    assert decision.privacy_actions[0].target == "绿茶"

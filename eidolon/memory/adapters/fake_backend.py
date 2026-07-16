@@ -162,5 +162,24 @@ class FakeMemoryBackend:
         return None
 
     async def delete(self, memory_space_id: str, key: str) -> None:
-        did = self._doc_id(memory_space_id, key)
-        self.docs.pop(did, None)
+        await self.delete_many(memory_space_id, [key])
+
+    async def delete_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
+        unique = list(dict.fromkeys(keys))
+        for key in unique:
+            self.docs.pop(self._doc_id(memory_space_id, key), None)
+        return unique
+
+    async def archive_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
+        archived: list[str] = []
+        for key in dict.fromkeys(keys):
+            did = self._doc_id(memory_space_id, key)
+            record = self.docs.get(did)
+            if record is None:
+                continue
+            record.metadata = {
+                **record.metadata,
+                "privacy": "do_not_recall",
+            }
+            archived.append(key)
+        return archived

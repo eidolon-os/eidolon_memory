@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 SMALLTALK_RE = re.compile(r"^(你好|嗨|哈喽|hello|hi|早安|晚安|谢谢|嗯嗯|好的|ok)[。！!.\s]*$", re.I)
 
 PRIVACY_RE = re.compile(
-    r"(不要记住|别记|别记录|不用记|忘掉|删掉|删除|抹掉|不要再提|以后别提|别再说)"
+    r"(不要记住|别记|别记录|不用记|忘掉|删掉|删除|抹掉|不要再提|以后别再提|以后别提|别再提|别再说)"
 )
 INTERACTION_RE = re.compile(
     r"(叫我|昵称|专属梗|不要[说道]教|别爹|抱我|语气|希望你|对AI|跟AI|助手你|机器人你|人机|陪我)"
@@ -107,7 +107,7 @@ class RuleBasedSteward:
             return []
         if re.search(r"(忘掉|删掉|删除|抹掉)", user_text):
             action = "delete_request"
-        elif re.search(r"(不要再提|以后别提|别再说)", user_text):
+        elif re.search(r"(不要再提|以后别再提|以后别提|别再提|别再说)", user_text):
             action = "archive_topic"
         else:
             action = "do_not_store"
