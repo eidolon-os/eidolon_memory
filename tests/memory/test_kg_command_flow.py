@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from eidolon_sdk.memory import envelope_memory_payload
+from eidolon_sdk.memory import envelope_memory_payload, memory_command_subject
 
 SPACE = "default.alice.default"
 OTHER_SPACE = "default.bob.default"
@@ -43,6 +43,7 @@ def _stub_msg(payload: dict, *, delivery: int = 1) -> SimpleNamespace:
 
     return SimpleNamespace(
         data=json.dumps(envelope.model_dump(mode="json")).encode("utf-8"),
+        subject=memory_command_subject(str(payload.get("memory_space_id") or SPACE)),
         ack=_ack,
         nak=_nak,
         ack_calls=ack_calls,
@@ -98,6 +99,53 @@ async def test_command_add_triple_flow(kg_setup, tmp_path: Path) -> None:
     assert status.resource_id
 
 
+async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -> None:
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.application.turn_processor import process_command_message
+    from eidolon.memory.config.memory_settings import get_memory_settings
+    from eidolon.memory.domain.wire import MemoryWireRecord
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+
+    backend = FakeMemoryBackend()
+    for key in ("drawer_tea_1", "drawer_tea_2"):
+        backend.docs[f"{SPACE}::{key}"] = MemoryWireRecord(
+            memory_space_id=SPACE,
+            key=key,
+            value="绿茶",
+            metadata={"memory_space_id": SPACE, "wing": "Wing_Profile"},
+        )
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    msg = _stub_msg(
+        {
+            "kind": "privacy_mutation",
+            "request_id": "privacy-1",
+            "memory_space_id": SPACE,
+            "issued_at": "2026-05-19T10:00:00Z",
+            "action": "delete",
+            "drawer_ids": ["drawer_tea_1", "drawer_tea_2"],
+            "preview_id": "preview-1",
+            "target": "绿茶",
+        }
+    )
+
+    await process_command_message(
+        msg,
+        backend=backend,
+        kg=None,
+        settings=get_memory_settings(),
+        expected_memory_space_id=SPACE,
+        command_status=ledger,
+    )
+
+    assert msg.ack_calls == ["ack"]
+    assert await backend.get(SPACE, "drawer_tea_1") is None
+    assert await backend.get(SPACE, "drawer_tea_2") is None
+    status = await ledger.get("privacy-1")
+    assert status is not None
+    assert status.status == "applied"
+    assert status.resource_id == "delete:2:preview-1"
+
+
 async def test_command_failure_naks_and_reports_retrying(tmp_path: Path) -> None:
     from eidolon.memory.application.turn_processor import process_command_message
     from eidolon.memory.config.memory_settings import get_memory_settings
@@ -141,6 +189,7 @@ async def test_command_terminal_failure_is_dlq_and_truthfully_failed(tmp_path: P
     from eidolon.memory.application.turn_processor import process_command_message
     from eidolon.memory.config.memory_settings import load_memory_settings
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+    from eidolon.memory.infrastructure.dlq import DlqLedger
 
     class _BrokenKg:
         async def add_triple(self, **_kwargs):
@@ -150,6 +199,7 @@ async def test_command_terminal_failure_is_dlq_and_truthfully_failed(tmp_path: P
     settings.nats.worker_max_deliveries = 3
     settings.nats.dlq_log_path = str(tmp_path / "command_dlq.jsonl")
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    dlq = DlqLedger(tmp_path / "dlq.sqlite3")
     msg = _stub_msg(
         {
             "kind": "kg_add_triple",
@@ -170,6 +220,7 @@ async def test_command_terminal_failure_is_dlq_and_truthfully_failed(tmp_path: P
         settings=settings,
         expected_memory_space_id=SPACE,
         command_status=ledger,
+        dlq_writer=dlq,
     )
 
     assert msg.ack_calls == ["ack"]
@@ -178,7 +229,11 @@ async def test_command_terminal_failure_is_dlq_and_truthfully_failed(tmp_path: P
     assert status is not None
     assert status.status == "failed"
     assert "permanent KG outage" in (status.error or "")
-    assert (tmp_path / "command_dlq.jsonl").is_file()
+    assert not (tmp_path / "command_dlq.jsonl").exists()
+    dead_letters = await dlq.list(state="unresolved")
+    assert len(dead_letters) == 1
+    assert dead_letters[0].subject == memory_command_subject(SPACE)
+    assert dead_letters[0].payload_size > 0
 
 
 async def test_command_invalidate_flow(kg_setup) -> None:
@@ -270,6 +325,37 @@ async def test_command_bad_payload_acked_not_raised(kg_setup) -> None:
         expected_memory_space_id=SPACE,
     )
     assert msg.ack.await_count == 1
+
+
+async def test_command_bad_payload_is_inspectable_in_production_dlq(
+    kg_setup, tmp_path: Path
+) -> None:
+    from eidolon.memory.application.turn_processor import process_command_message
+    from eidolon.memory.config.memory_settings import get_memory_settings
+    from eidolon.memory.infrastructure.dlq import DlqLedger
+
+    msg = SimpleNamespace(
+        data=b"not json",
+        subject=memory_command_subject(SPACE),
+        ack=AsyncMock(),
+        metadata=SimpleNamespace(num_delivered=1),
+    )
+    dlq = DlqLedger(tmp_path / "dlq.sqlite3")
+
+    await process_command_message(
+        msg,
+        backend=None,
+        kg=kg_setup,
+        settings=get_memory_settings(),
+        expected_memory_space_id=SPACE,
+        dlq_writer=dlq,
+    )
+
+    assert msg.ack.await_count == 1
+    records = await dlq.list(state="unresolved")
+    assert len(records) == 1
+    assert records[0].subject == memory_command_subject(SPACE)
+    assert "invalid command payload" in records[0].error
 
 
 async def test_command_user_id_mismatch_acked(kg_setup) -> None:

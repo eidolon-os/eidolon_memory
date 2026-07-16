@@ -151,6 +151,43 @@ async def test_list_all_drawers_reads_pages_from_query_client():
     assert all(c["memory_space_id"] == "default.alice.mochi" for c in client.calls)
 
 
+async def test_grouped_wing_synthesis_is_bounded_parallel_and_ordered(monkeypatch):
+    import asyncio
+
+    from eidolon.memory.config.memory_settings import load_memory_settings
+    from eidolon.memory.entrypoints import consolidator
+
+    active = 0
+    peak = 0
+
+    async def _fake_synthesize(wing_id, records, *, settings):
+        nonlocal active, peak
+        del records, settings
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return [Theme(wing_id, wing_id, 0.8, [f"drawer_{wing_id}"])]
+
+    monkeypatch.setattr(consolidator, "synthesize_themes_for_wing", _fake_synthesize)
+    grouped = {
+        f"Wing_{index}": [{"key": f"drawer_{index}"}, {"key": f"drawer_{index}_b"}]
+        for index in range(7)
+    }
+
+    rows, themes = await consolidator.synthesize_grouped_wings(
+        grouped,
+        settings=load_memory_settings(),
+        min_drawers=2,
+        confidence_threshold=0.5,
+        max_parallel_wings=3,
+    )
+
+    assert peak == 3
+    assert [row["wing"] for row in rows] == sorted(grouped)
+    assert [theme.underlying_wing for theme in themes] == sorted(grouped)
+
+
 async def test_query_client_wait_until_ready_retries_no_responders(monkeypatch):
     sleeps: list[float] = []
 

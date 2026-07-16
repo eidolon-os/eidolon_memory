@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from eidolon_sdk.memory import MemoryActorContext
+
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.application.public_recall import search_all_wings_mcp_style
@@ -18,7 +20,6 @@ from eidolon.memory.infrastructure.mempalace_backend import (
     selected_mempalace_backend,
 )
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
-
 
 WINGS = [
     "Wing_Profile",
@@ -75,7 +76,16 @@ async def _seed(backend: Any, count: int) -> None:
                 f"Concurrency seed {idx}: Eidolon memory should stay fast, stable, "
                 f"and accurate while evaluating {wing}."
             ),
-            metadata={"user_id": "bench", "source_file": f"seed/concurrency/{idx}.txt"},
+            metadata={
+                "memory_space_id": "bench",
+                "memory_realm_id": "bench",
+                "user_id": "bench",
+                "wing": wing,
+                "privacy": "normal",
+                "scope": "global",
+                "visibility": "all_devices",
+                "source_file": f"seed/concurrency/{idx}.txt",
+            },
         )
 
 
@@ -92,7 +102,10 @@ async def _run_search(
         backend,
         settings,
         query=query,
-        user_id="bench",
+        context=MemoryActorContext(
+            memory_realm_id="bench",
+            memory_space_id="bench",
+        ),
         top_k=top_k,
         wing=None,
         room=None,
@@ -114,7 +127,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         env=mempalace_backend_env(settings),
     )
 
-    inner = MemPalacePythonBackend(settings, str(palace))
+    inner = MemPalacePythonBackend(settings, str(palace), memory_space_id="bench")
     backend: Any = inner if args.raw else LockedBackend(inner)
     await _seed(backend, args.seed)
 
@@ -133,9 +146,18 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                     await backend.ingest_text(
                         wing=WINGS[idx % len(WINGS)],
                         room=f"live_{idx % 7}",
-                        text=f"Concurrent write {idx}: backend {backend_name} mixed read write test.",
+                        text=(
+                            f"Concurrent write {idx}: backend {backend_name} "
+                            "mixed read write test."
+                        ),
                         metadata={
+                            "memory_space_id": "bench",
+                            "memory_realm_id": "bench",
                             "user_id": "bench",
+                            "wing": WINGS[idx % len(WINGS)],
+                            "privacy": "normal",
+                            "scope": "global",
+                            "visibility": "all_devices",
                             "source_file": f"stress/concurrency/{idx}.txt",
                         },
                     )

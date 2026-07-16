@@ -35,7 +35,7 @@ class JetStreamCommandPublisher:
         self._js: Any = None
 
     @classmethod
-    def from_memory_settings(cls, settings: MemorySettings) -> "JetStreamCommandPublisher":
+    def from_memory_settings(cls, settings: MemorySettings) -> JetStreamCommandPublisher:
         return cls(nats_url=settings.nats.url, stream_name=settings.nats.stream)
 
     async def connect(self) -> None:
@@ -64,3 +64,20 @@ class JetStreamCommandPublisher:
         envelope = envelope_memory_payload(payload, trace_id=payload.request_id)
         body = json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
         await self._js.publish(subject, body)
+
+    async def replay_raw(self, subject: str, payload: bytes) -> None:
+        """Replay one exact DLQ message without reinterpreting its wire envelope."""
+        clean_subject = (subject or "").strip()
+        allowed = (
+            "eidolon.memory.turn.",
+            "eidolon.memory.cmd.",
+            "eidolon.memory.sync.",
+        )
+        if not clean_subject.startswith(allowed):
+            raise ValueError("DLQ subject is missing or outside memory write subjects")
+        if not payload:
+            raise ValueError("DLQ payload is empty")
+        if self._js is None:
+            await self.connect()
+        assert self._js is not None
+        await self._js.publish(clean_subject, payload)

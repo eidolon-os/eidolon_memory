@@ -20,12 +20,14 @@ from eidolon_sdk.memory import (
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryCommandPayload,
+    PrivacyMutationCommand,
     UserConfirmedFactCommand,
     parse_conversation_turn,
     parse_memory_command,
 )
 from pydantic import ValidationError
 
+from eidolon.memory.application.forget import archive_exact_drawers, delete_exact_drawers
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.steward.common import (
     apply_privacy_actions,
@@ -34,7 +36,7 @@ from eidolon.memory.application.steward.common import (
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_dlq_log_path
 from eidolon.memory.domain.command_status import CommandStatus
 from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.ports import CommandStatusWriter
+from eidolon.memory.domain.ports import CommandStatusWriter, DlqWriter
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.logging import get_logger
 
@@ -57,6 +59,25 @@ def append_dlq(settings: MemorySettings, payload: bytes, error: str, deliveries:
     }
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+async def _record_dlq(
+    writer: DlqWriter | None,
+    settings: MemorySettings,
+    msg: Any,
+    error: str,
+    deliveries: int,
+) -> None:
+    """Persist recoverable bytes in production; retain JSONL as compatibility fallback."""
+    if writer is None:
+        append_dlq(settings, msg.data, error, deliveries)
+        return
+    await writer.add(
+        subject=str(getattr(msg, "subject", "") or ""),
+        payload=bytes(msg.data),
+        error=error,
+        deliveries=deliveries,
+    )
 
 
 def delivery_count(msg: Any) -> int:
@@ -87,6 +108,7 @@ async def process_turn_message(
     max_deliveries: int,
     expected_memory_space_id: str | None = None,
     audit_sink: Any = None,
+    dlq_writer: DlqWriter | None = None,
 ) -> None:
     """Decode + validate one turn, run steward, apply fragments + KG, ack / nak / DLQ.
 
@@ -101,6 +123,14 @@ async def process_turn_message(
         turn = parse_conversation_turn(raw)
     except (json.JSONDecodeError, UnicodeDecodeError, ValidationError, ValueError) as exc:
         log.error("turn_processor_bad_payload", error=str(exc))
+        if dlq_writer is not None:
+            await _record_dlq(
+                dlq_writer,
+                settings,
+                msg,
+                f"invalid turn payload: {exc}",
+                delivery_count(msg),
+            )
         await msg.ack()
         return
 
@@ -151,7 +181,7 @@ async def process_turn_message(
             turn_id=turn.turn_id,
         )
         if deliveries >= max_deliveries:
-            append_dlq(settings, msg.data, str(exc), deliveries)
+            await _record_dlq(dlq_writer, settings, msg, str(exc), deliveries)
             if audit_sink is not None:
                 await audit_sink.record_rejected(
                     turn, trace_id=trace_id, reason=str(exc), deliveries=deliveries
@@ -191,7 +221,7 @@ async def process_turn_message(
             turn_id=turn.turn_id,
         )
         if deliveries >= max_deliveries:
-            append_dlq(settings, msg.data, str(exc), deliveries)
+            await _record_dlq(dlq_writer, settings, msg, str(exc), deliveries)
             if audit_sink is not None:
                 await audit_sink.record_rejected(
                     turn, trace_id=trace_id, reason=str(exc), deliveries=deliveries
@@ -360,6 +390,7 @@ async def process_command_message(
     settings: MemorySettings,
     expected_memory_space_id: str | None = None,
     command_status: CommandStatusWriter | None = None,
+    dlq_writer: DlqWriter | None = None,
 ) -> None:
     """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_token>``.
 
@@ -373,6 +404,14 @@ async def process_command_message(
         cmd: MemoryCommandPayload = parse_memory_command(raw)
     except (json.JSONDecodeError, UnicodeDecodeError, ValidationError, ValueError) as exc:
         log.error("cmd_bad_payload", error=str(exc))
+        if dlq_writer is not None:
+            await _record_dlq(
+                dlq_writer,
+                settings,
+                msg,
+                f"invalid command payload: {exc}",
+                delivery_count(msg),
+            )
         await msg.ack()
         return
 
@@ -461,6 +500,23 @@ async def process_command_message(
                 memory_type=cmd.memory_type,
                 confidence=cmd.confidence,
             )
+        elif isinstance(cmd, PrivacyMutationCommand):
+            if cmd.action == "delete":
+                changed = await delete_exact_drawers(
+                    backend, cmd.memory_space_id, cmd.drawer_ids
+                )
+            else:
+                changed = await archive_exact_drawers(
+                    backend, cmd.memory_space_id, cmd.drawer_ids
+                )
+            resource_id = f"{cmd.action}:{len(changed)}:{cmd.preview_id}"
+            log.info(
+                "cmd_privacy_mutation_ok",
+                request_id=cmd.request_id,
+                preview_id=cmd.preview_id,
+                action=cmd.action,
+                drawer_count=len(changed),
+            )
         elif isinstance(cmd, DeviceSyncBatchPayload):
             log.info(
                 "cmd_device_sync_batch_ignored_on_cmd_subject",
@@ -492,7 +548,7 @@ async def process_command_message(
                 kind=cmd.kind,
                 error=str(exc),
             )
-            append_dlq(settings, msg.data, str(exc), deliveries)
+            await _record_dlq(dlq_writer, settings, msg, str(exc), deliveries)
             await msg.ack()
             log.error("cmd_dlq_ack", request_id=cmd.request_id, deliveries=deliveries)
         else:

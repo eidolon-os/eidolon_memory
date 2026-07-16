@@ -64,8 +64,8 @@ async def test_archive_then_delete_respects_read_write_protocols(
 
         assert await wait_for_visible(session, predicate=_fact_landed, timeout_s=30)
 
-        # Conversation turn is the only privacy-write path. Archive keeps the
-        # drawer for audit/user control but removes it from recall.
+        # Natural-language privacy intent uses the turn write path. Archive
+        # keeps the drawer for audit/user control but removes it from recall.
         await nats_publish_turn(
             handle.nats_url,
             user_id=handle.user_id,
@@ -97,3 +97,60 @@ async def test_archive_then_delete_respects_read_write_protocols(
             return all(record.get("value") != fact for record in await _list_records(s))
 
         assert await wait_for_visible(session, predicate=_deleted, timeout_s=30)
+
+
+async def test_ambiguous_delete_requires_preview_then_exact_id_command(
+    live_agent_runner,
+    mcp_session,
+) -> None:
+    handle = live_agent_runner(
+        user_id="e2e_privacy_confirm",
+        port=19120,
+        steward_mode="noop",
+    )
+    marker = "ambiguous-green-tea-marker"
+    facts = [f"{marker} old preference", f"{marker} shopping history"]
+    for fact in facts:
+        await nats_publish_user_confirm(
+            handle.nats_url,
+            user_id=handle.user_id,
+            text=fact,
+            wing="Wing_Profile",
+            memory_type="preference",
+        )
+
+    async with mcp_session(handle.mcp_url) as session:
+        async def _both_landed(s) -> bool:
+            values = {record.get("value") for record in await _list_records(s)}
+            return all(fact in values for fact in facts)
+
+        assert await wait_for_visible(session, predicate=_both_landed, timeout_s=30)
+
+        preview = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_forget_preview",
+                {"target": marker, "action": "delete"},
+            )
+        )
+        assert preview["status"] == "preview"
+        assert preview["requires_explicit_confirmation"] is True
+        assert len(preview["candidates"]) == 2
+        # Preview is provably read-only.
+        assert await _both_landed(session)
+
+        confirmed = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_forget_confirm",
+                {
+                    "confirmation_token": preview["confirmation_token"],
+                    "wait_applied_seconds": 2.0,
+                },
+            )
+        )
+        assert confirmed["status"] in {"accepted", "applied"}
+
+        async def _both_deleted(s) -> bool:
+            values = {record.get("value") for record in await _list_records(s)}
+            return all(fact not in values for fact in facts)
+
+        assert await wait_for_visible(session, predicate=_both_deleted, timeout_s=30)

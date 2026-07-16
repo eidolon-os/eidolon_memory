@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from eidolon.memory.application.working_memory import WorkingMemoryRing
-    from eidolon.memory.domain.command_status import CommandStatusRecord
+    from eidolon.memory.domain.command_status import CommandStatusRecord, CommandStatusStats
+    from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
     from eidolon.memory.domain.fragments import MemoryFragment
     from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -139,6 +140,9 @@ class CommandStatusReader(Protocol):
     ) -> CommandStatusRecord | None:
         """Wait on projection state without polling or locking memory storage."""
 
+    async def stats(self) -> CommandStatusStats:
+        """Return bounded-capacity and active-work metrics."""
+
 
 @runtime_checkable
 class CommandStatusWriter(Protocol):
@@ -174,3 +178,45 @@ class CommandStatusWriter(Protocol):
 @runtime_checkable
 class CommandStatusStore(CommandStatusReader, CommandStatusWriter, Protocol):
     """Combined projection port used only at the composition boundary."""
+
+
+@runtime_checkable
+class DlqReader(Protocol):
+    """Read/operations surface; it cannot mutate memory storage."""
+
+    async def get(self, entry_id: str) -> DlqRecord | None: ...
+
+    async def list(
+        self,
+        *,
+        state: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[DlqRecord]: ...
+
+    async def stats(self) -> DlqStats: ...
+
+    async def claim_replay(self, entry_id: str) -> DlqReplayItem | None: ...
+
+    async def mark_replayed(self, entry_id: str) -> DlqRecord: ...
+
+    async def release_replay(self, entry_id: str, *, error: str) -> DlqRecord: ...
+
+    async def resolve(self, entry_id: str, *, note: str) -> DlqRecord: ...
+
+
+@runtime_checkable
+class DlqWriter(Protocol):
+    async def add(
+        self,
+        *,
+        subject: str,
+        payload: bytes,
+        error: str,
+        deliveries: int,
+    ) -> DlqRecord: ...
+
+
+@runtime_checkable
+class DlqStore(DlqReader, DlqWriter, Protocol):
+    """Combined operational store used only at the composition boundary."""

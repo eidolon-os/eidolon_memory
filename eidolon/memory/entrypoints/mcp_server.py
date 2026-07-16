@@ -21,12 +21,18 @@ from eidolon_sdk.memory import (
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryActorContext,
+    PrivacyMutationCommand,
     UserConfirmedFactCommand,
 )
 
 from eidolon.memory.adapters.locked_kg import _now_iso
+from eidolon.memory.application.forget import (
+    ForgetResolutionLimitExceeded,
+    find_forget_candidates,
+)
 from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hierarchy_snapshot
 from eidolon.memory.application.palace_graph import build_palace_graph
+from eidolon.memory.application.privacy_confirmation import PrivacyConfirmationSigner
 from eidolon.memory.application.privacy_filter import row_visible_to_listing
 from eidolon.memory.application.public_recall import (
     recall_with_kg_fusion,
@@ -35,7 +41,7 @@ from eidolon.memory.application.public_recall import (
 )
 from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.domain.ports import CommandStatusStore, MemoryBackend
+from eidolon.memory.domain.ports import CommandStatusStore, DlqStore, MemoryBackend
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.palace_init import palace_is_initialized
 from eidolon.memory.support.logging import get_logger
@@ -55,6 +61,8 @@ def build_control_plane_mcp(
     kg: Any = None,
     command_publisher: Any = None,
     command_status: CommandStatusStore | None = None,
+    dlq_store: DlqStore | None = None,
+    replay_publisher: Any = None,
 ):
     """Construct a FastMCP server bound to ``(host, port)`` for one user's runner.
 
@@ -184,6 +192,18 @@ def build_control_plane_mcp(
                 return {"status": "unknown", "request_id": clean_id}
             return record.to_dict()
 
+        @mcp.tool()
+        async def eidolon_memory_command_status_stats() -> dict[str, Any]:
+            """Capacity and active-work metrics for the write-status projection."""
+            return (await command_status.stats()).to_dict()
+
+    if dlq_store is not None:
+        _register_dlq_tools(
+            mcp,
+            dlq_store=dlq_store,
+            replay_publisher=replay_publisher or command_publisher,
+        )
+
     @mcp.tool()
     async def eidolon_memory_list(
         limit: int = 500,
@@ -261,6 +281,13 @@ def build_control_plane_mcp(
             memory_space_id=memory_space_id,
             command_status=command_status,
         )
+        _register_privacy_tools(
+            mcp,
+            backend=backend,
+            command_publisher=command_publisher,
+            memory_space_id=memory_space_id,
+            command_status=command_status,
+        )
 
     if kg is not None and command_publisher is not None:
         _register_kg_tools(
@@ -272,6 +299,168 @@ def build_control_plane_mcp(
         )
 
     return mcp
+
+
+def _register_dlq_tools(
+    mcp: Any,
+    *,
+    dlq_store: DlqStore,
+    replay_publisher: Any,
+) -> None:
+    """Operational tools; raw payload bytes never cross the MCP boundary."""
+
+    @mcp.tool()
+    async def eidolon_memory_dlq_list(
+        state: str = "unresolved",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """List dead letters with bounded payload previews."""
+        selected = None if state == "all" else state
+        try:
+            records = await dlq_store.list(
+                state=selected,
+                limit=max(1, min(limit, 500)),
+                offset=max(0, offset),
+            )
+        except ValueError as exc:
+            return {"status": "error", "error": str(exc), "records": []}
+        return {
+            "status": "ok",
+            "records": [record.to_dict() for record in records],
+            "stats": (await dlq_store.stats()).to_dict(),
+        }
+
+    @mcp.tool()
+    async def eidolon_memory_dlq_detail(entry_id: str) -> dict[str, Any]:
+        """Inspect one dead letter without exposing its full sensitive payload."""
+        record = await dlq_store.get((entry_id or "").strip())
+        if record is None:
+            return {"status": "not_found", "entry_id": entry_id}
+        return {"status": "ok", "record": record.to_dict()}
+
+    @mcp.tool()
+    async def eidolon_memory_dlq_replay(entry_id: str) -> dict[str, Any]:
+        """Atomically claim and republish one unresolved original message."""
+        clean_id = (entry_id or "").strip()
+        item = await dlq_store.claim_replay(clean_id)
+        if item is None:
+            record = await dlq_store.get(clean_id)
+            state = record.state if record is not None else "not_found"
+            return {"status": "not_replayable", "entry_id": clean_id, "state": state}
+        if replay_publisher is None:
+            await dlq_store.release_replay(clean_id, error="replay publisher unavailable")
+            return {"status": "failed", "entry_id": clean_id, "error": "replay unavailable"}
+        try:
+            await replay_publisher.replay_raw(item.record.subject, item.payload)
+        except Exception as exc:  # noqa: BLE001 - return claim to unresolved
+            record = await dlq_store.release_replay(clean_id, error=f"replay failed: {exc}")
+            return {"status": "failed", "record": record.to_dict(), "error": str(exc)}
+        record = await dlq_store.mark_replayed(clean_id)
+        return {"status": "replayed", "record": record.to_dict()}
+
+    @mcp.tool()
+    async def eidolon_memory_dlq_resolve(entry_id: str, note: str) -> dict[str, Any]:
+        """Resolve a dead letter without replay, retaining an operator note."""
+        try:
+            record = await dlq_store.resolve((entry_id or "").strip(), note=note)
+        except ValueError as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "resolved", "record": record.to_dict()}
+
+
+def _register_privacy_tools(
+    mcp: Any,
+    *,
+    backend: MemoryBackend,
+    command_publisher: Any,
+    memory_space_id: str,
+    command_status: CommandStatusStore | None,
+) -> None:
+    """Read-only preview followed by an exact-ID command on the write stream."""
+    signer = PrivacyConfirmationSigner()
+
+    @mcp.tool()
+    async def eidolon_memory_forget_preview(
+        target: str,
+        action: str = "delete",
+    ) -> dict[str, Any]:
+        """Resolve a topic to exact drawers without changing memory.
+
+        Physical deletion should be confirmed when this preview is ambiguous.
+        The returned token binds the Realm, action and exact drawer IDs and
+        expires after ten minutes.
+        """
+        clean_target = (target or "").strip()
+        if not clean_target:
+            return {"status": "error", "error": "target is required"}
+        if action not in {"archive", "delete"}:
+            return {"status": "error", "error": "action must be archive or delete"}
+        try:
+            candidates = await find_forget_candidates(
+                backend, memory_space_id, clean_target
+            )
+        except ForgetResolutionLimitExceeded as exc:
+            return {
+                "status": "too_broad",
+                "error": str(exc),
+                "hint": "refine the target or preview an exact drawer_id",
+            }
+        if not candidates:
+            return {"status": "not_found", "target": clean_target, "candidates": []}
+        token, proof = signer.issue(
+            memory_space_id=memory_space_id,
+            action=action,  # type: ignore[arg-type]
+            target=clean_target,
+            drawer_ids=[candidate.key for candidate in candidates],
+        )
+        ambiguous = len(candidates) > 1 or any(candidate.score < 1.0 for candidate in candidates)
+        return {
+            "status": "preview",
+            "preview_id": proof.preview_id,
+            "target": clean_target,
+            "action": action,
+            "candidates": [candidate.to_dict() for candidate in candidates],
+            "requires_explicit_confirmation": action == "delete" and ambiguous,
+            "confirmation_token": token,
+            "expires_at": proof.expires_at,
+        }
+
+    @mcp.tool()
+    async def eidolon_memory_forget_confirm(
+        confirmation_token: str,
+        wait_applied_seconds: float = 0.75,
+    ) -> dict[str, Any]:
+        """Publish one previously previewed exact-ID archive/delete command."""
+        try:
+            proof = signer.verify(
+                (confirmation_token or "").strip(),
+                expected_memory_space_id=memory_space_id,
+            )
+        except ValueError as exc:
+            return {"status": "error", "error": str(exc)}
+        command = PrivacyMutationCommand(
+            request_id=uuid.uuid4().hex,
+            memory_space_id=memory_space_id,
+            issued_at=_now_iso(),
+            issuer="agent",
+            action=proof.action,
+            drawer_ids=proof.drawer_ids,
+            preview_id=proof.preview_id,
+            target=proof.target,
+        )
+        outcome = await _publish_with_status(
+            command_publisher,
+            command_status,
+            command,
+            wait_seconds=wait_applied_seconds,
+        )
+        return {
+            **outcome,
+            "preview_id": proof.preview_id,
+            "action": proof.action,
+            "drawer_ids": proof.drawer_ids,
+        }
 
 
 async def _publish_with_status(

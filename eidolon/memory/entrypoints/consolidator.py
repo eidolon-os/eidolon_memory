@@ -40,7 +40,7 @@ import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from eidolon_sdk.memory import ConsolidatorIngestThemeCommand
@@ -158,7 +158,7 @@ def group_drawers_by_wing(
     we'd rather over-include than under-include for theme synthesis.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     cutoff = now - timedelta(days=window_days)
     by_wing: dict[str, list[dict]] = defaultdict(list)
     for rec in drawers:
@@ -201,7 +201,7 @@ def _render_drawer_list(records: list[dict], *, max_items: int = 30) -> str:
     """Compact prompt body: oldest → newest, capped, with timestamp + text."""
     sorted_records = sorted(
         records[-max_items:],
-        key=lambda r: _parse_iso(r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda r: _parse_iso(r.get("created_at")) or datetime.min.replace(tzinfo=UTC),
     )
     lines: list[str] = []
     for r in sorted_records:
@@ -325,7 +325,7 @@ async def publish_themes(
         cmd = ConsolidatorIngestThemeCommand(
             request_id=request_id,
             memory_space_id=memory_space_id,
-            issued_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            issued_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             issuer="agent",
             text=theme.text,
             underlying_wing=theme.underlying_wing,
@@ -339,6 +339,56 @@ async def publish_themes(
         except Exception as exc:  # noqa: BLE001
             log.warning("consolidator_publish_failed", error=str(exc))
     return published
+
+
+async def synthesize_grouped_wings(
+    by_wing: dict[str, list[dict]],
+    *,
+    settings: MemorySettings,
+    min_drawers: int,
+    confidence_threshold: float,
+    max_parallel_wings: int = 3,
+) -> tuple[list[dict[str, Any]], list[Theme]]:
+    """Synthesize independent wings concurrently under a small LLM budget."""
+    if max_parallel_wings < 1:
+        raise ValueError("max_parallel_wings must be positive")
+    semaphore = asyncio.Semaphore(max_parallel_wings)
+
+    async def _one(
+        wing_id: str, recs: list[dict]
+    ) -> tuple[dict[str, Any], list[Theme]]:
+        if len(recs) < min_drawers:
+            return (
+                {
+                    "wing": wing_id,
+                    "drawer_count": len(recs),
+                    "themes_produced": 0,
+                    "themes_kept": 0,
+                    "skipped_reason": "below_min_drawers",
+                },
+                [],
+            )
+        async with semaphore:
+            produced = await synthesize_themes_for_wing(
+                wing_id, recs, settings=settings
+            )
+        kept = [theme for theme in produced if theme.confidence >= confidence_threshold]
+        return (
+            {
+                "wing": wing_id,
+                "drawer_count": len(recs),
+                "themes_produced": len(produced),
+                "themes_kept": len(kept),
+            },
+            kept,
+        )
+
+    results = await asyncio.gather(
+        *(_one(wing_id, recs) for wing_id, recs in sorted(by_wing.items()))
+    )
+    rows = [row for row, _themes in results]
+    themes = [theme for _row, kept in results for theme in kept]
+    return rows, themes
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -355,6 +405,7 @@ async def consolidate_once(
     confidence_threshold: float = 0.6,
     query_timeout_seconds: float = 5.0,
     query_startup_wait_seconds: float = 300.0,
+    max_parallel_wings: int = 3,
 ) -> dict[str, Any]:
     """One full pass — returns a result dict suitable for logging or assertion.
 
@@ -391,27 +442,13 @@ async def consolidate_once(
         drawers = await _list_all_drawers(query_client, memory_space_id=memory_space_id)
         by_wing = group_drawers_by_wing(drawers, window_days=window_days)
 
-        rows: list[dict[str, Any]] = []
-        all_themes: list[Theme] = []
-        for wing_id, recs in sorted(by_wing.items()):
-            if len(recs) < min_drawers:
-                rows.append({
-                    "wing": wing_id,
-                    "drawer_count": len(recs),
-                    "themes_produced": 0,
-                    "themes_kept": 0,
-                    "skipped_reason": "below_min_drawers",
-                })
-                continue
-            produced = await synthesize_themes_for_wing(wing_id, recs, settings=settings)
-            kept = [t for t in produced if t.confidence >= confidence_threshold]
-            all_themes.extend(kept)
-            rows.append({
-                "wing": wing_id,
-                "drawer_count": len(recs),
-                "themes_produced": len(produced),
-                "themes_kept": len(kept),
-            })
+        rows, all_themes = await synthesize_grouped_wings(
+            by_wing,
+            settings=settings,
+            min_drawers=min_drawers,
+            confidence_threshold=confidence_threshold,
+            max_parallel_wings=max_parallel_wings,
+        )
 
         published = await publish_themes(
             all_themes,
@@ -436,6 +473,7 @@ async def _run(args: argparse.Namespace) -> int:
             confidence_threshold=args.min_confidence,
             query_timeout_seconds=args.query_timeout,
             query_startup_wait_seconds=args.query_startup_wait,
+            max_parallel_wings=args.max_parallel_wings,
         )
         log.info("consolidator_once_done", **{k: v for k, v in result.items() if k != "wings"})
         for row in result["wings"]:
@@ -456,6 +494,7 @@ async def _run(args: argparse.Namespace) -> int:
                 confidence_threshold=args.min_confidence,
                 query_timeout_seconds=args.query_timeout,
                 query_startup_wait_seconds=args.query_startup_wait,
+                max_parallel_wings=args.max_parallel_wings,
             )
         except Exception as exc:  # noqa: BLE001
             log.error("consolidator_pass_failed", error=str(exc))
@@ -484,6 +523,8 @@ def main() -> int:
                         help="Seconds to wait for the agent_runner NATS query reply")
     parser.add_argument("--query-startup-wait", type=float, default=300.0,
                         help="Seconds to wait for the agent_runner query responder at startup")
+    parser.add_argument("--max-parallel-wings", type=int, default=3,
+                        help="Maximum concurrent per-wing LLM calls (default 3)")
     args = parser.parse_args()
     return asyncio.run(_run(args))
 

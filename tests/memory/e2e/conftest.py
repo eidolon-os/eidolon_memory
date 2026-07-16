@@ -787,6 +787,7 @@ async def wait_for_visible(
     predicate,
     timeout_s: float = 60.0,
     poll_interval_s: float = 0.5,
+    predicate_timeout_s: float = 10.0,
 ) -> bool:
     """Poll the MCP session via ``predicate(session) -> bool/awaitable[bool]``
     until it returns truthy or timeout.
@@ -800,9 +801,16 @@ async def wait_for_visible(
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        result = predicate(session)
-        if inspect.isawaitable(result):
-            result = await result
+        try:
+            result = predicate(session)
+            if inspect.isawaitable(result):
+                remaining = max(0.01, deadline - time.monotonic())
+                result = await asyncio.wait_for(
+                    result,
+                    timeout=min(max(0.01, predicate_timeout_s), remaining),
+                )
+        except TimeoutError:
+            result = False
         if result:
             return True
         await asyncio.sleep(poll_interval_s)

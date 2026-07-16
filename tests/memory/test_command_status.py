@@ -23,6 +23,30 @@ async def test_command_status_never_downgrades_terminal_state(tmp_path: Path) ->
     assert record.attempts == 1
 
 
+async def test_command_status_stats_expose_capacity_and_active_work(tmp_path: Path) -> None:
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+
+    ledger = CommandStatusLedger(
+        tmp_path / "command_status.sqlite3",
+        retention_days=7,
+        max_records=123,
+    )
+    await ledger.record_accepted("a", kind="test")
+    await ledger.record_retrying("b", kind="test", error="temporary")
+    await ledger.record_applied("c", kind="test")
+
+    stats = await ledger.stats()
+
+    assert stats.total == 3
+    assert stats.accepted == 1
+    assert stats.retrying == 1
+    assert stats.applied == 1
+    assert stats.retention_days == 7
+    assert stats.max_records == 123
+    assert stats.database_bytes > 0
+    assert stats.oldest_active_at is not None
+
+
 async def test_retrying_can_recover_to_applied(tmp_path: Path) -> None:
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
 

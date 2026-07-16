@@ -22,3 +22,19 @@ class CommandStatusRecord:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class CommandStatusStats:
+    total: int
+    accepted: int
+    retrying: int
+    applied: int
+    failed: int
+    database_bytes: int
+    retention_days: int
+    max_records: int
+    oldest_active_at: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)

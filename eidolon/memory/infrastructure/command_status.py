@@ -12,6 +12,7 @@ from eidolon.memory.domain.command_status import (
     TERMINAL_COMMAND_STATUSES,
     CommandStatus,
     CommandStatusRecord,
+    CommandStatusStats,
 )
 
 
@@ -139,6 +140,9 @@ class CommandStatusLedger:
     async def get(self, request_id: str) -> CommandStatusRecord | None:
         return await asyncio.to_thread(self._get_sync, request_id)
 
+    async def stats(self) -> CommandStatusStats:
+        return await asyncio.to_thread(self._stats_sync)
+
     async def prune(self) -> int:
         """Remove expired/overflow terminal rows without touching active work."""
         return await asyncio.to_thread(self._prune_sync)
@@ -192,6 +196,28 @@ class CommandStatusLedger:
                 (request_id,),
             ).fetchone()
         return self._from_row(row) if row is not None else None
+
+    def _stats_sync(self) -> CommandStatusStats:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS count FROM command_status GROUP BY status"
+            ).fetchall()
+            oldest = conn.execute(
+                "SELECT MIN(created_at) FROM command_status "
+                "WHERE status IN ('accepted', 'retrying')"
+            ).fetchone()[0]
+        counts = {str(row["status"]): int(row["count"]) for row in rows}
+        return CommandStatusStats(
+            total=sum(counts.values()),
+            accepted=counts.get("accepted", 0),
+            retrying=counts.get("retrying", 0),
+            applied=counts.get("applied", 0),
+            failed=counts.get("failed", 0),
+            database_bytes=self.path.stat().st_size if self.path.exists() else 0,
+            retention_days=self.retention_days,
+            max_records=self.max_records,
+            oldest_active_at=str(oldest) if oldest is not None else None,
+        )
 
     def _transition(
         self,

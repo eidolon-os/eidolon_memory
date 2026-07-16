@@ -1,6 +1,11 @@
 """Domain layer: wire DTOs, message payloads, fragments, and backend ports."""
 
-from eidolon.memory.domain.command_status import CommandStatus, CommandStatusRecord
+from eidolon.memory.domain.command_status import (
+    CommandStatus,
+    CommandStatusRecord,
+    CommandStatusStats,
+)
+from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqState, DlqStats
 from eidolon.memory.domain.errors import (
     MemoryBackendError,
     MemoryBackendUnavailable,
@@ -22,6 +27,9 @@ from eidolon.memory.domain.ports import (
     CommandStatusReader,
     CommandStatusStore,
     CommandStatusWriter,
+    DlqReader,
+    DlqStore,
+    DlqWriter,
     MemoryAdmin,
     MemoryBackend,
     MemoryPrivacyAdmin,
@@ -44,9 +52,17 @@ __all__ = [
     "MemoryPrivacyAdmin",
     "CommandStatus",
     "CommandStatusRecord",
+    "CommandStatusStats",
     "CommandStatusReader",
     "CommandStatusWriter",
     "CommandStatusStore",
+    "DlqState",
+    "DlqRecord",
+    "DlqReplayItem",
+    "DlqStats",
+    "DlqReader",
+    "DlqWriter",
+    "DlqStore",
     "PrivacyAction",
     "StewardDecision",
     "StewardError",
