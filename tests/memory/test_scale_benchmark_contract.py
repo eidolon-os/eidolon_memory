@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
+
 from eidolon.memory.adapters.mempalace_python_backend import _drawer_id
-from scripts.bench_mempalace_scale_curve import _doc, _summary
+from scripts.bench_mempalace_scale_curve import (
+    _doc,
+    _parse_concurrencies,
+    _summary,
+)
 
 
 def test_concurrency_benchmark_uses_current_actor_context_protocol() -> None:
@@ -46,3 +52,13 @@ def test_scale_summary_reports_tail_latency() -> None:
 
     assert summary["p95"] == 100.0
     assert summary["p99"] == 100.0
+
+
+def test_scale_concurrency_curve_is_positive_ordered_and_deduplicated() -> None:
+    assert _parse_concurrencies("8,1,4,2,4") == [1, 2, 4, 8]
+
+    with pytest.raises(ValueError, match="positive"):
+        _parse_concurrencies("1,0,4")
+
+    with pytest.raises(ValueError, match="at least one"):
+        _parse_concurrencies("")

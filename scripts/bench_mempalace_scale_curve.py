@@ -112,6 +112,15 @@ def _summary(values: list[float]) -> dict[str, float | int]:
     }
 
 
+def _parse_concurrencies(value: str) -> list[int]:
+    values = sorted({int(part.strip()) for part in value.split(",") if part.strip()})
+    if not values:
+        raise ValueError("concurrencies must contain at least one value")
+    if values[0] <= 0:
+        raise ValueError("concurrencies must be positive")
+    return values
+
+
 def _max_rss_bytes() -> int:
     value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     return value if sys.platform == "darwin" else value * 1024
@@ -266,7 +275,8 @@ async def _measure_point(
     top_k: int,
     queries: int,
     write_samples: int,
-    concurrency: int,
+    concurrencies: list[int],
+    mixed_operations: int,
 ) -> dict[str, Any]:
     errors: list[str] = []
     normal_lat: list[float] = []
@@ -413,33 +423,47 @@ async def _measure_point(
             ),
         )
 
-    mixed_errors: list[str] = []
-    mixed_lat: list[float] = []
-    sem = asyncio.Semaphore(concurrency)
+    mixed_curve: dict[str, Any] = {}
+    for concurrency in concurrencies:
+        mixed_errors: list[str] = []
+        mixed_lat: list[float] = []
+        sem = asyncio.Semaphore(concurrency)
 
-    async def mixed_one(n: int) -> None:
-        idx = sample_indices[n % len(sample_indices)]
-        category, query = _query_for(idx)
-        del category
-        async with sem:
+        async def mixed_one(n: int) -> None:
+            idx = sample_indices[n % len(sample_indices)]
+            category, query = _query_for(idx)
+            del category
+            # Time from task admission, not only from semaphore acquisition:
+            # this is the latency a burst caller sees while a single Realm's
+            # bounded read queue drains.
+            async def admitted_recall() -> Any:
+                async with sem:
+                    return await search_all_wings_mcp_style(
+                        backend,
+                        settings,
+                        query=query,
+                        context=context,
+                        top_k=top_k,
+                        wing=None,
+                        room=None,
+                        for_voice=bool(n % 2),
+                        palace_path=palace,
+                    )
+
             await _timed(
                 mixed_lat,
                 mixed_errors,
-                f"mixed:{size}:{n}",
-                lambda query=query: search_all_wings_mcp_style(
-                    backend,
-                    settings,
-                    query=query,
-                    context=context,
-                    top_k=top_k,
-                    wing=None,
-                    room=None,
-                    for_voice=bool(n % 2),
-                    palace_path=palace,
-                ),
+                f"mixed:{size}:c{concurrency}:{n}",
+                admitted_recall,
             )
 
-    await asyncio.gather(*(mixed_one(n) for n in range(concurrency * 2)))
+        await asyncio.gather(*(mixed_one(n) for n in range(mixed_operations)))
+        mixed_curve[str(concurrency)] = {
+            "operations": mixed_operations,
+            "latency_ms": _summary(mixed_lat),
+            "error_count": len(mixed_errors),
+            "errors": mixed_errors[:20],
+        }
 
     return {
         "target_size": size,
@@ -455,8 +479,7 @@ async def _measure_point(
         "sample_write_ms": _summary(write_lat),
         "privacy_deep_scan_ms": _summary(privacy_scan_lat),
         "privacy_deep_candidate_count": len(privacy_candidates or []),
-        "mixed_recall_ms": _summary(mixed_lat),
-        "mixed_error_count": len(mixed_errors),
+        "mixed_recall_by_concurrency": mixed_curve,
         "privacy_leak_count": privacy_leak_count,
         "process_max_rss_bytes": _max_rss_bytes(),
         "palace_bytes": sum(
@@ -476,6 +499,8 @@ async def _measure_point(
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
     if args.initial_size < 0:
         raise ValueError("initial_size must be non-negative")
+    if args.mixed_operations < 1:
+        raise ValueError("mixed_operations must be positive")
     settings = _settings(args)
     apply_mempalace_backend_env(settings)
     backend_name = selected_mempalace_backend(settings)
@@ -521,7 +546,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             top_k=args.top_k,
             queries=args.queries,
             write_samples=args.write_samples,
-            concurrency=args.concurrency,
+            concurrencies=_parse_concurrencies(args.concurrencies),
+            mixed_operations=args.mixed_operations,
         )
         points.append({"seed": seed, "measure": measured})
     return {
@@ -536,6 +562,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "seed_batch_size": args.seed_batch_size,
         "initial_size": args.initial_size,
         "queries_per_point": args.queries,
+        "mixed_operations_per_concurrency": args.mixed_operations,
+        "concurrencies": _parse_concurrencies(args.concurrencies),
         "total_elapsed_ms": (time.perf_counter() - total_started) * 1000,
         "points": points,
     }
@@ -557,7 +585,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed-batch-size", type=int, default=256)
     parser.add_argument("--queries", type=int, default=16)
     parser.add_argument("--write-samples", type=int, default=8)
-    parser.add_argument("--concurrency", type=int, default=12)
+    parser.add_argument("--concurrencies", default="1,2,4,8")
+    parser.add_argument("--mixed-operations", type=int, default=32)
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument(
         "--long-term-records-per-day",
@@ -568,11 +597,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qdrant-url", default="http://127.0.0.1:6333")
     parser.add_argument("--qdrant-namespace", default="eidolon-scale")
     parser.add_argument("--qdrant-timeout", type=float, default=10.0)
+    parser.add_argument("--output", help="Write the JSON report to this path.")
     return parser.parse_args()
 
 
 def main() -> None:
-    print(json.dumps(asyncio.run(_run(parse_args())), indent=2, ensure_ascii=False))
+    args = parse_args()
+    rendered = json.dumps(asyncio.run(_run(args)), indent=2, ensure_ascii=False)
+    if args.output:
+        output = Path(args.output).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered + "\n", encoding="utf-8")
+        print(json.dumps({"output": str(output)}, ensure_ascii=False))
+        return
+    print(rendered)
 
 
 if __name__ == "__main__":
