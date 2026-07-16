@@ -381,15 +381,28 @@ async def process_turn_message(
                         intent,
                         targets={"kg"},
                     )
-                    if "kg" not in registration.pending_targets:
+                    kg_pending = "kg" in registration.pending_targets
+                    should_verify = (
+                        not kg_pending
+                        or not registration.evidence_created
+                        or registration.evidence_count > 1
+                    )
+                    if should_verify:
                         if await _canonical_kg_visible(kg, intent):
+                            if kg_pending:
+                                await canonical_facts.mark_projected(
+                                    memory_space_id,
+                                    registration.assertion_id,
+                                    targets={"kg"},
+                                )
                             kg_exact_noop += 1
                             continue
-                        await canonical_facts.mark_projection_pending(
-                            memory_space_id,
-                            registration.assertion_id,
-                            targets={"kg"},
-                        )
+                        if not kg_pending:
+                            await canonical_facts.mark_projection_pending(
+                                memory_space_id,
+                                registration.assertion_id,
+                                targets={"kg"},
+                            )
                 await kg.add_triple(
                     subject=t.subject,
                     predicate=t.predicate,

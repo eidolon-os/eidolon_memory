@@ -47,6 +47,45 @@ class _StatefulKG:
         return [row for row in self.rows.values() if row.subject == entity_id]
 
 
+class _FailOnceMarkStore:
+    def __init__(self, inner: CanonicalFactLedger, target: str) -> None:
+        self.inner = inner
+        self.target = target
+        self.failed = False
+
+    async def register(self, intent, *, targets):
+        return await self.inner.register(intent, targets=targets)
+
+    async def mark_projection_pending(
+        self,
+        memory_space_id,
+        assertion_id,
+        *,
+        targets,
+    ) -> None:
+        await self.inner.mark_projection_pending(
+            memory_space_id,
+            assertion_id,
+            targets=targets,
+        )
+
+    async def mark_projected(
+        self,
+        memory_space_id,
+        assertion_id,
+        *,
+        targets,
+    ) -> None:
+        if self.target in targets and not self.failed:
+            self.failed = True
+            raise RuntimeError(f"fail marking {self.target}")
+        await self.inner.mark_projected(
+            memory_space_id,
+            assertion_id,
+            targets=targets,
+        )
+
+
 def _turn_message(turn_id: str) -> SimpleNamespace:
     payload = {
         "turn_id": turn_id,
@@ -207,3 +246,47 @@ async def test_repeated_automatic_fact_keeps_one_projection_and_two_evidence(
     assert kg.add_triple.await_count == 1
     assert len(backend.inner.docs) == 0
     assert await ledger.evidence_count(assertion_id) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_target", ["drawer", "kg"])
+async def test_explicit_retry_repairs_mark_failure_without_rewriting_projection(
+    tmp_path,
+    failed_target,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    store = _FailOnceMarkStore(ledger, failed_target)
+
+    with pytest.raises(RuntimeError, match=f"fail marking {failed_target}"):
+        await apply_explicit_intent(
+            backend,
+            kg,
+            _explicit_command(),
+            canonical_facts=store,
+        )
+    await apply_explicit_intent(
+        backend,
+        kg,
+        _explicit_command(),
+        canonical_facts=store,
+    )
+
+    assert len(backend.inner.ingests) == 1
+    assert kg.add_triple.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_new_evidence_repairs_mark_failure_without_kg_rewrite(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    store = _FailOnceMarkStore(ledger, "kg")
+
+    await _apply_automatic("turn-auto-1", backend=backend, kg=kg, ledger=store)
+    await _apply_automatic("turn-auto-2", backend=backend, kg=kg, ledger=store)
+
+    assert kg.add_triple.await_count == 1

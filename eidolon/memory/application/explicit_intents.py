@@ -101,13 +101,16 @@ async def apply_explicit_intent(
         projection_identity = registration.assertion_id
         pending_targets = set(registration.pending_targets)
         projected_targets = requested_targets - pending_targets
-        if projected_targets:
+        targets_to_verify = set(projected_targets)
+        if not registration.evidence_created or registration.evidence_count > 1:
+            targets_to_verify.update(pending_targets)
+        if targets_to_verify:
             visible_targets = await _visible_canonical_targets(
                 backend,
                 kg,
                 intent,
                 registration.assertion_id,
-                projected_targets,
+                targets_to_verify,
             )
             missing_targets = projected_targets - visible_targets
             if missing_targets:
@@ -117,6 +120,14 @@ async def apply_explicit_intent(
                     targets=missing_targets,
                 )
                 pending_targets.update(missing_targets)
+            recovered_targets = pending_targets & visible_targets
+            if recovered_targets:
+                await canonical_facts.mark_projected(
+                    intent.memory_space_id,
+                    registration.assertion_id,
+                    targets=recovered_targets,
+                )
+                pending_targets.difference_update(recovered_targets)
             if not pending_targets:
                 return (
                     f"confirmed:{registration.assertion_id}:"

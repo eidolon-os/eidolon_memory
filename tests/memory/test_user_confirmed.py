@@ -323,7 +323,8 @@ async def test_canonical_projection_remains_pending_until_all_projections_succee
     kg = SimpleNamespace(
         add_triple=AsyncMock(
             side_effect=[RuntimeError("temporary KG failure"), "triple-1"]
-        )
+        ),
+        query_entity=AsyncMock(return_value=[]),
     )
     canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
     command = _intent_command(request_id="projection-retry")
