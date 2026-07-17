@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -82,8 +82,14 @@ active commitment 逐字复制，target_candidates 只包含输入 ID。
 class LiteLLMCommitmentShadowProposer:
     """Call one configured model without registering in the runtime worker."""
 
-    def __init__(self, llm: LlmConfig) -> None:
+    def __init__(
+        self,
+        llm: LlmConfig,
+        *,
+        thinking: Literal["enabled", "disabled"] = "enabled",
+    ) -> None:
         self._llm = llm
+        self._thinking = thinking
 
     @property
     def extraction_version(self) -> str:
@@ -92,6 +98,8 @@ class LiteLLMCommitmentShadowProposer:
                 "model": self._llm.model,
                 "base_url": self._llm.base_url,
                 "temperature": 0.0,
+                "thinking": self._thinking,
+                "thinking_transport": "extra_body",
                 "prompt": _SYSTEM_PROMPT,
                 "max_tokens": 1200,
                 "max_active_commitments": 10,
@@ -149,6 +157,7 @@ class LiteLLMCommitmentShadowProposer:
                 },
             ],
             "temperature": 0.0,
+            "extra_body": {"thinking": {"type": self._thinking}},
             "max_tokens": 1200,
             "timeout": self._llm.timeout_seconds,
             "response_format": {"type": "json_object"},
