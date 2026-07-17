@@ -36,11 +36,11 @@
 {"id":"future-001","category":"future_plans","query":"我以后想做什么","expected_entities":["place:日本"],"expected_vector_contains":["日本","樱花","攒钱"],"negative":false}
 {"id":"future-002","category":"future_plans","query":"我答应了妈妈什么","expected_entities":["mother:张丽","mother"],"expected_vector_contains":["陪","医院"],"negative":false}
 {"id":"future-003","category":"future_plans","query":"我计划去哪里","expected_entities":["place:日本","place"],"expected_vector_contains":["日本"],"negative":false}
-{"id":"negative-001","category":"negative","query":"我家鸟会说话吗","expected_entities":[],"expected_vector_contains":[],"negative":true,"forbidden_entities":["pet:铁锤"],"forbidden_contains":["铁锤"]}
-{"id":"negative-002","category":"negative","query":"我哥结婚的事","expected_entities":[],"expected_vector_contains":[],"negative":true,"forbidden_entities":[],"forbidden_contains":[]}
-{"id":"negative-003","category":"negative","query":"我爸去世的事","expected_entities":[],"expected_vector_contains":[],"negative":true,"forbidden_entities":[],"forbidden_contains":["去世","爸"]}
-{"id":"negative-004","category":"negative","query":"前任的事","expected_entities":[],"expected_vector_contains":[],"negative":true,"forbidden_entities":[],"forbidden_contains":["前任"]}
-{"id":"negative-005","category":"negative","query":"我儿子的学习","expected_entities":[],"expected_vector_contains":[],"negative":true,"forbidden_entities":[],"forbidden_contains":[]}
+{"id":"negative-001","category":"abstention","query":"我家鸟会说话吗","expect_abstention":true,"forbidden_entities":["pet:铁锤"],"forbidden_contains":["铁锤"]}
+{"id":"negative-002","category":"abstention","query":"我哥结婚的事","expect_abstention":true,"forbidden_entities":[],"forbidden_contains":[]}
+{"id":"negative-003","category":"abstention","query":"我爸去世的事","expect_abstention":true,"forbidden_entities":[],"forbidden_contains":["去世","爸"]}
+{"id":"negative-004","category":"abstention","query":"前任的事","expect_abstention":true,"forbidden_entities":[],"forbidden_contains":["前任"]}
+{"id":"negative-005","category":"abstention","query":"我儿子的学习","expect_abstention":true,"forbidden_entities":[],"forbidden_contains":[]}
 {"id":"event-001","category":"event","query":"铁锤打疫苗","expected_entities":["pet:铁锤","pet"],"expected_vector_contains":["疫苗","铁锤"],"negative":false}
 {"id":"event-002","category":"event","query":"我去医院的事","expected_entities":[],"expected_vector_contains":["医院"],"negative":false}
 {"id":"event-003","category":"event","query":"我跟客户吵架了","expected_entities":["project:OP-3091","project"],"expected_vector_contains":["甲方","推回","项目"],"negative":false}

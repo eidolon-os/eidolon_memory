@@ -13,9 +13,10 @@
 | **JetStream turn → recall 可见 P95** | `bench_write_jetstream.py` | ≤ 5 s(steward LLM 调用主导) |
 | **JetStream turn → recall 可见 max** | `bench_write_jetstream.py` | ≤ 15 s |
 | **chromadb 单写 P95** | `bench_chroma_write.py` | ≤ 50 ms (FULL sync) |
-| **Steward 召回质量 precision** | `eval_steward_prompt.py` | triples ≥ 0.85 / invalidations ≥ 0.90 |
+| **Steward 操作级质量** | `eval_steward_prompt.py` | triples precision ≥ 0.85 / recall ≥ 0.70；invalidations precision ≥ 0.90；should-write ≥ 0.90；privacy errors = 0 |
+| **真实召回证据质量** | `bench_memory_retrieve_quality.py` | 报告 full-case accuracy、evidence-group recall、omissions、clean abstention 与 latency |
 
-## 5 个 bench(各自独立)
+## 6 个 bench（各自独立）
 
 ### R-01 `bench_read_livekit.py` — recall 端到端
 
@@ -71,9 +72,30 @@ MCP recall 反验"什么时候我能查到刚发的 turn"。
     --dataset tests/memory/eval_steward_dataset.example.jsonl
 ```
 
-用人工标注的 JSONL 数据集喂给 `LiteLLMSteward.decide()`,算 triples /
-invalidations / privacy_actions 的 precision/recall。Steward prompt 改了
-一定跑这个。
+用人工标注的 JSONL 数据集喂给 `LiteLLMSteward.decide()`，把写入链路拆成
+extraction、update、should-write、entity resolution 与 privacy 操作分别评分。
+报告同时给出 precision/recall、hallucination rate、omission rate 和分类明细。
+Steward prompt、模型或抽取契约改了都要跑这个；它只评估候选，不授权写入。
+
+样本必须有 `category`，不得用 `unknown`/`null` 之类占位对象冒充证据。
+当前 example 集合覆盖语义角色边界、问题/猜测/不确定表达、敏感信息、更新、
+实体消解与 no-write。具体句子是评测数据，不进入生产路由或谓词判断。
+
+### Q `bench_memory_retrieve_quality.py` — 真实证据检索质量
+
+该脚本走隔离 Realm 的真实 `NATS → steward LLM → MemPalace/KG → MCP` 链路。
+一个正例只有在全部标注证据组（KG、vector、working memory）分别命中时才算
+fully correct；不能再用某一通道的偶然命中掩盖另一通道的遗漏。拒答案例要求
+Memory 检索边界不返回无依据证据，Agent 最终是否诚实拒答由 Agent live replay
+单独评估。
+
+```bash
+.venv/bin/python scripts/benchmark/bench_memory_retrieve_quality.py
+```
+
+报告同时保留端到端 MCP latency，避免通过无限扩大 top-k/context 换取表面准确率。
+只验证真实管线契约时可用 `--steward-mode rules --min-triples 0
+--min-fragments 5`；质量报告必须保留默认 `llm`，两种结果不得混为同一基线。
 
 ## 一键全跑
 

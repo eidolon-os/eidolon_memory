@@ -8,7 +8,7 @@ Workflow:
       "expect": {
           "triples":           [{"subject":..,"predicate":..,"object":..}, ...],
           "invalidations":     [{"subject":..,"predicate":..,"object":..}, ...],
-          "privacy_action":    str | null,        # do_not_store / archive_topic / delete_request / null
+          "privacy_action":    str | null,  # do_not_store/archive_topic/delete_request/null
           "should_write":      bool,
       }}
 2. For each sample, run LiteLLMSteward.decide() against the live LLM endpoint.
@@ -73,19 +73,98 @@ def _mention_confusion(expected: list, actual: list) -> tuple[int, int, int]:
     return len(e & a), len(a - e), len(e - a)
 
 
+def _triple_diff(expected: list, actual: list) -> dict[str, list[dict[str, str]]]:
+    expected_keys = {_triple_key(item) for item in expected}
+    actual_keys = {_triple_key(item) for item in actual}
+
+    def rows(keys: set[tuple[str, str, str]]) -> list[dict[str, str]]:
+        return [
+            {"subject": subject, "predicate": predicate, "object": object_}
+            for subject, predicate, object_ in sorted(keys)
+        ]
+
+    return {
+        "expected": rows(expected_keys),
+        "actual": rows(actual_keys),
+        "false_positive": rows(actual_keys - expected_keys),
+        "false_negative": rows(expected_keys - actual_keys),
+    }
+
+
+def _mention_diff(expected: list, actual: list) -> dict[str, list[dict[str, str]]]:
+    expected_keys = {_mention_key(item) for item in expected}
+    actual_keys = {_mention_key(item) for item in actual}
+
+    def rows(keys: set[tuple[str, str]]) -> list[dict[str, str]]:
+        return [
+            {"entity_id": entity_id, "alias": alias}
+            for entity_id, alias in sorted(keys)
+        ]
+
+    return {
+        "expected": rows(expected_keys),
+        "actual": rows(actual_keys),
+        "false_positive": rows(actual_keys - expected_keys),
+        "false_negative": rows(expected_keys - actual_keys),
+    }
+
+
 def _precision_recall(tp: int, fp: int, fn: int) -> tuple[float, float]:
     p = tp / (tp + fp) if (tp + fp) > 0 else 1.0  # no FP if nothing produced
     r = tp / (tp + fn) if (tp + fn) > 0 else 1.0
     return p, r
 
 
+def _error_rates(*, tp: int, fp: int, fn: int) -> tuple[float, float]:
+    """Return hallucination and omission rates for one memory operation."""
+
+    hallucination = fp / (tp + fp) if (tp + fp) > 0 else 0.0
+    omission = fn / (tp + fn) if (tp + fn) > 0 else 0.0
+    return hallucination, omission
+
+
+def _validate_samples(samples: list[dict]) -> None:
+    """Keep live labels explicit, unique, and within the wire predicate set."""
+
+    from eidolon_sdk.memory import KG_PREDICATE_VALUES
+
+    predicates = set(KG_PREDICATE_VALUES)
+    seen: set[str] = set()
+    placeholders = {"unknown", "none", "null", "未知"}
+    for index, sample in enumerate(samples, 1):
+        name = str(sample.get("name") or f"line {index}")
+        if not sample.get("name") or not sample.get("category"):
+            raise ValueError(f"{name}: name and category are required")
+        if name in seen:
+            raise ValueError(f"{name}: duplicate sample name")
+        seen.add(name)
+        expect = sample.get("expect")
+        if not isinstance(expect, dict) or not isinstance(expect.get("should_write"), bool):
+            raise ValueError(f"{name}: expect.should_write must be boolean")
+        triples = list(expect.get("triples") or [])
+        invalidations = list(expect.get("invalidations") or [])
+        if not expect["should_write"] and (triples or invalidations):
+            raise ValueError(f"{name}: no-write sample cannot label writes")
+        for item in triples + invalidations:
+            predicate = str(item.get("predicate") or "")
+            if predicate not in predicates:
+                raise ValueError(f"{name}: unsupported predicate {predicate!r}")
+            if str(item.get("object") or "").strip().lower() in placeholders:
+                raise ValueError(f"{name}: placeholder objects are not evidence")
+
+
 async def _run_one(sample: dict, steward, user_id: str) -> dict:
-    from eidolon_sdk.memory import ConversationTurnPayload
+    from eidolon_sdk.memory import ConversationTurnPayload, build_memory_actor_context
 
     turn = ConversationTurnPayload(
         turn_id=uuid.uuid4().hex,
-        user_id=user_id,
-        session_id="eval",
+        context=build_memory_actor_context(
+            owner_id=user_id,
+            companion_id="steward-eval",
+            memory_realm_id=f"r:{user_id}:steward-eval",
+            device_id="steward-eval",
+            session_id="eval",
+        ),
         timestamp="2026-05-19T10:00:00Z",
         user_text=sample["user_text"],
         assistant_text=sample.get("assistant_text", ""),
@@ -113,29 +192,46 @@ async def _run_one(sample: dict, steward, user_id: str) -> dict:
 
     return {
         "name": sample["name"],
+        "category": sample.get("category") or "uncategorized",
         "elapsed_ms": round(elapsed_ms, 1),
         "should_write_expected": expect.get("should_write"),
         "should_write_actual": decision.should_write,
+        "should_write_ok": expect.get("should_write") is decision.should_write,
         "triples": {"tp": tp_t, "fp": fp_t, "fn": fn_t},
+        "triple_diff": _triple_diff(expect.get("triples", []), decision.triples),
         "invalidations": {"tp": tp_i, "fp": fp_i, "fn": fn_i},
+        "invalidation_diff": _triple_diff(
+            expect.get("invalidations", []), decision.invalidations
+        ),
         "mentions": {"tp": tp_m, "fp": fp_m, "fn": fn_m},
+        "mention_diff": _mention_diff(
+            expect.get("mentions", []), getattr(decision, "mentions", None) or []
+        ),
         "privacy_ok": privacy_ok,
         "privacy_expected": privacy_expected,
         "privacy_actual": privacy_actual,
     }
 
 
-def _aggregate(results: list[dict]) -> dict:
+def _aggregate(results: list[dict], *, requested_count: int | None = None) -> dict:
     sum_t = {"tp": 0, "fp": 0, "fn": 0}
     sum_i = {"tp": 0, "fp": 0, "fn": 0}
     sum_m = {"tp": 0, "fp": 0, "fn": 0}
     privacy_misses = 0
+    privacy_errors = 0
     privacy_expected_count = 0
+    should_write_correct = 0
+    should_write_total = 0
     for r in results:
         for k in ("tp", "fp", "fn"):
             sum_t[k] += r["triples"][k]
             sum_i[k] += r["invalidations"][k]
             sum_m[k] += r.get("mentions", {}).get(k, 0)
+        if r.get("should_write_expected") is not None:
+            should_write_total += 1
+            should_write_correct += int(bool(r.get("should_write_ok")))
+        if not r["privacy_ok"]:
+            privacy_errors += 1
         if r["privacy_expected"]:
             privacy_expected_count += 1
             if not r["privacy_ok"]:
@@ -144,15 +240,30 @@ def _aggregate(results: list[dict]) -> dict:
     tp, rp = _precision_recall(**sum_t)
     ip, ir = _precision_recall(**sum_i)
     mp, mr = _precision_recall(**sum_m)
+    triple_hallucination, triple_omission = _error_rates(**sum_t)
+    update_hallucination, update_omission = _error_rates(**sum_i)
+    should_write_accuracy = should_write_correct / max(1, should_write_total)
 
+    requested = len(results) if requested_count is None else requested_count
     gates = {
+        "requested_samples": requested,
+        "evaluated_samples": len(results),
+        "failed_samples": max(0, requested - len(results)),
         "triples_precision": round(tp, 3),
         "triples_recall": round(rp, 3),
         "invalidations_precision": round(ip, 3),
         "invalidations_recall": round(ir, 3),
         "mentions_precision": round(mp, 3),
         "mentions_recall": round(mr, 3),
+        "triple_hallucination_rate": round(triple_hallucination, 3),
+        "triple_omission_rate": round(triple_omission, 3),
+        "update_hallucination_rate": round(update_hallucination, 3),
+        "update_omission_rate": round(update_omission, 3),
+        "should_write_accuracy": round(should_write_accuracy, 3),
+        "should_write_correct": should_write_correct,
+        "should_write_total": should_write_total,
         "privacy_misses": privacy_misses,
+        "privacy_errors": privacy_errors,
         "privacy_expected_count": privacy_expected_count,
         "pass_triples_precision": tp >= 0.85,
         "pass_triples_recall": rp >= 0.70,
@@ -160,7 +271,9 @@ def _aggregate(results: list[dict]) -> dict:
         # Phase 3 plan: mentions precision ≥ 0.80 (don't let LLM hallucinate
         # alias→entity bindings) — recall is informational only.
         "pass_mentions_precision": mp >= 0.80,
-        "pass_privacy": privacy_misses == 0,
+        "pass_should_write": should_write_accuracy >= 0.90,
+        "pass_privacy": privacy_errors == 0,
+        "pass_coverage": requested > 0 and len(results) == requested,
     }
     gates["overall_pass"] = all(
         gates[k] for k in (
@@ -168,13 +281,48 @@ def _aggregate(results: list[dict]) -> dict:
             "pass_triples_recall",
             "pass_invalidations_precision",
             "pass_mentions_precision",
+            "pass_should_write",
             "pass_privacy",
+            "pass_coverage",
         )
     )
     return {
         "sums": {"triples": sum_t, "invalidations": sum_i, "mentions": sum_m},
+        "categories": _category_breakdown(results),
         "gates": gates,
     }
+
+
+def _category_breakdown(results: list[dict]) -> dict[str, dict]:
+    grouped: dict[str, list[dict]] = {}
+    for result in results:
+        grouped.setdefault(result.get("category") or "uncategorized", []).append(result)
+
+    report: dict[str, dict] = {}
+    for category, items in sorted(grouped.items()):
+        triples = {
+            key: sum(item["triples"][key] for item in items)
+            for key in ("tp", "fp", "fn")
+        }
+        invalidations = {
+            key: sum(item["invalidations"][key] for item in items)
+            for key in ("tp", "fp", "fn")
+        }
+        t_hallucination, t_omission = _error_rates(**triples)
+        i_hallucination, i_omission = _error_rates(**invalidations)
+        report[category] = {
+            "samples": len(items),
+            "should_write_accuracy": round(
+                sum(bool(item.get("should_write_ok")) for item in items)
+                / max(1, len(items)),
+                3,
+            ),
+            "triple_hallucination_rate": round(t_hallucination, 3),
+            "triple_omission_rate": round(t_omission, 3),
+            "update_hallucination_rate": round(i_hallucination, 3),
+            "update_omission_rate": round(i_omission, 3),
+        }
+    return report
 
 
 async def _amain(args) -> int:
@@ -182,7 +330,17 @@ async def _amain(args) -> int:
     from eidolon.memory.config.memory_settings import get_memory_settings
 
     settings = get_memory_settings()
-    steward = create_steward(settings)
+    # A live LLM evaluation must never silently grade RuleBasedSteward output.
+    # Production may keep its availability fallback; the offline evaluator
+    # fails closed so network/model outages cannot masquerade as quality data.
+    eval_settings = settings.model_copy(
+        update={
+            "steward": settings.steward.model_copy(
+                update={"mode": "llm", "fallback_to_rules": False}
+            )
+        }
+    )
+    steward = create_steward(eval_settings)
     user_id = args.user_id
 
     dataset_path = Path(args.dataset)
@@ -191,14 +349,21 @@ async def _amain(args) -> int:
         return 2
 
     samples = [json.loads(line) for line in dataset_path.read_text().splitlines() if line.strip()]
-    print(f"[eval] {len(samples)} samples; LLM={settings.llm.model}")
+    try:
+        _validate_samples(samples)
+    except ValueError as exc:
+        print(f"[eval] invalid dataset: {exc}")
+        return 2
+    print(f"[eval] {len(samples)} samples; LLM={eval_settings.llm.model}; fallback=disabled")
 
     results = []
+    errors: list[dict[str, str]] = []
     for s in samples:
         try:
             r = await _run_one(s, steward, user_id)
         except Exception as exc:
             print(f"[eval][ERR] {s['name']}: {exc}")
+            errors.append({"name": s["name"], "error": str(exc)})
             continue
         results.append(r)
         print(
@@ -210,8 +375,17 @@ async def _amain(args) -> int:
             f"{r['elapsed_ms']}ms"
         )
 
-    agg = _aggregate(results)
-    report = {"samples": results, "aggregate": agg}
+    agg = _aggregate(results, requested_count=len(samples))
+    report = {
+        "evaluation": {
+            "requested": len(samples),
+            "succeeded": len(results),
+            "failed": len(errors),
+        },
+        "samples": results,
+        "errors": errors,
+        "aggregate": agg,
+    }
     print("\n[eval] aggregate:")
     print(json.dumps(agg, indent=2, ensure_ascii=False))
 
