@@ -20,7 +20,13 @@ from eidolon.memory.domain.commitment_shadow import (
     score_commitment_shadow,
     validate_shadow_candidate,
 )
-from scripts.benchmark.eval_commitment_shadow import _amain, _run_case
+from scripts.benchmark.eval_commitment_shadow import (
+    AUTHORIZES_COMMITMENT_WRITES,
+    DEFAULT_RUNS,
+    GATE_PROFILE,
+    _amain,
+    _run_case,
+)
 
 
 def _target(commitment_id: str = "commitment-1") -> CommitmentShadowTarget:
@@ -390,6 +396,12 @@ async def test_benchmark_rejects_unbounded_runs_before_live_call() -> None:
     negative_limit = await _amain(SimpleNamespace(runs=1, limit=-1))
 
     assert negative_limit == 2
+
+
+def test_benchmark_defaults_satisfy_repeat_gate_without_authorizing_writes() -> None:
+    assert DEFAULT_RUNS == 2
+    assert GATE_PROFILE == "provisional_offline_v1"
+    assert AUTHORIZES_COMMITMENT_WRITES is False
 
 
 def test_fixed_shadow_dataset_is_bounded_and_covers_lifecycle() -> None:

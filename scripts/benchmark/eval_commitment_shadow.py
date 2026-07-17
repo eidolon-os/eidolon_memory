@@ -24,6 +24,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+DEFAULT_RUNS = 2
+GATE_PROFILE = "provisional_offline_v1"
+AUTHORIZES_COMMITMENT_WRITES = False
+
 
 async def _run_case(sample: dict, proposer, *, run_index: int = 1) -> dict:
     from eidolon.memory.domain.commitment_shadow import (
@@ -134,6 +138,8 @@ async def _amain(args: argparse.Namespace) -> int:
         "schema_version": "eidolon_memory.commitment_shadow_eval.v1",
         "extractor_version": proposer.extraction_version,
         "model": llm.model,
+        "gate_profile": GATE_PROFILE,
+        "authorizes_commitment_writes": AUTHORIZES_COMMITMENT_WRITES,
         "runs_per_sample": args.runs,
         "attempts_per_case": 1,
         "retry_policy": "none",
@@ -167,7 +173,7 @@ def main() -> int:
     parser.add_argument(
         "--runs",
         type=int,
-        default=1,
+        default=DEFAULT_RUNS,
         help="repeat the fixed set 1-100 times without retrying failed calls",
     )
     parser.add_argument(
