@@ -7,6 +7,7 @@ import json
 import os
 import uuid
 
+import httpx
 import pytest
 
 from tests.memory.e2e.conftest import (
@@ -85,6 +86,38 @@ async def _wait_for_command(session, request_id: str) -> dict:
             return latest
         await asyncio.sleep(0.25)
     pytest.fail(f"live command did not become terminal: {request_id} latest={latest}")
+
+
+def _chat_turn_id(sse_body: str) -> str:
+    for line in sse_body.splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = json.loads(line.removeprefix("data:").strip())
+        turn_id = str(payload.get("turn_id") or "")
+        if turn_id:
+            return turn_id
+    raise AssertionError(f"agent chat response did not contain a turn id: {sse_body}")
+
+
+async def _wait_for_agent_turn(
+    client: httpx.AsyncClient,
+    agent_admin_url: str,
+    turn_id: str,
+) -> dict:
+    latest_status = 0
+    for _ in range(100):
+        response = await client.get(
+            f"{agent_admin_url}/api/admin/conversations/turns/{turn_id}"
+        )
+        latest_status = response.status_code
+        if latest_status == 200:
+            return response.json()
+        if latest_status != 404:
+            response.raise_for_status()
+        await asyncio.sleep(0.1)
+    raise AssertionError(
+        f"agent turn {turn_id} was not persisted; latest HTTP {latest_status}"
+    )
 
 
 async def test_live_realms_empty_write_visible_and_isolated(mcp_session) -> None:
@@ -606,3 +639,98 @@ async def test_live_commitment_supplement_and_fulfilment_lifecycle(
             and row.get("valid_to") is None
             for row in triples
         )
+
+
+async def test_live_commitment_reaches_agent_product_context(mcp_session) -> None:
+    """Dogfood the deployed NATS → Realm → Agent chat context path."""
+    if os.environ.get("EIDOLON_MEMORY_LIVE_CANONICAL_WRITE") != "1":
+        pytest.skip("set EIDOLON_MEMORY_LIVE_CANONICAL_WRITE=1 for write canary")
+    owner_id = os.environ.get("EIDOLON_MEMORY_LIVE_OWNER_ID", "").strip()
+    companion_id = os.environ.get("EIDOLON_MEMORY_LIVE_COMPANION_ID", "").strip()
+    if not owner_id or not companion_id:
+        pytest.skip("set live owner and companion ids for Agent context dogfood")
+
+    target = _realms()[0]
+    realm_id = str(target["realm_id"])
+    port = int(target["port"])
+    nats_url = os.environ.get(
+        "EIDOLON_MEMORY_LIVE_NATS_URL",
+        "nats://127.0.0.1:4222",
+    )
+    agent_admin_url = os.environ.get(
+        "EIDOLON_MEMORY_LIVE_AGENT_ADMIN_URL",
+        "http://127.0.0.1:8081",
+    ).rstrip("/")
+    marker = uuid.uuid4().hex[:12]
+    action = f"dogfood commitment context {marker}"
+    commitment_id = ""
+
+    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+        try:
+            create_id = await nats_publish_commitment(
+                nats_url,
+                user_id=realm_id,
+                subject=companion_id,
+                action=action,
+                text=f"显式创建陪伴上下文 dogfood {marker}",
+                operation_hint="confirm",
+                request_id=f"live-context-create-{uuid.uuid4().hex}",
+                beneficiaries=[owner_id],
+                due_at="2026-07-17T00:00:00+08:00",
+            )
+            created = await _wait_for_command(session, create_id)
+            assert created["status"] == "applied", created
+            commitment_id = str(created.get("resource_id") or "").split(
+                ":revision:", 1
+            )[0]
+            assert commitment_id.startswith("commitment:")
+
+            async with httpx.AsyncClient(timeout=90.0, trust_env=False) as client:
+                chat = await client.post(
+                    f"{agent_admin_url}/api/admin/chat/test",
+                    json={
+                        "owner_id": owner_id,
+                        "companion_id": companion_id,
+                        "text": "只回复收到，不执行任何背景计划。",
+                        "persist_memory": False,
+                    },
+                )
+                chat.raise_for_status()
+                turn_id = _chat_turn_id(chat.text)
+                detail = await _wait_for_agent_turn(
+                    client,
+                    agent_admin_url,
+                    turn_id,
+                )
+
+            assert detail["memory_realm_id"] == realm_id
+            trace = detail["metadata"]["commitment_context_trace"]
+            assert trace["attempted"] is True
+            assert trace["degraded"] is False
+            assert trace["context_injected"] is True
+            assert commitment_id in trace["commitment_ids"]
+            commitment_segments = [
+                row
+                for row in detail["metadata"]["context_ledger"]["segments"]
+                if row["kind"] == "commitment"
+            ]
+            assert len(commitment_segments) == 1
+            assert (
+                commitment_segments[0]["metadata"]["actionability"]
+                == "must_not_execute"
+            )
+        finally:
+            if commitment_id:
+                fulfil_id = await nats_publish_commitment(
+                    nats_url,
+                    user_id=realm_id,
+                    subject=companion_id,
+                    action=action,
+                    text=f"清理陪伴上下文 dogfood {marker}",
+                    operation_hint="update",
+                    request_id=f"live-context-fulfil-{uuid.uuid4().hex}",
+                    target_id=commitment_id,
+                    status="fulfilled",
+                )
+                fulfilled = await _wait_for_command(session, fulfil_id)
+                assert fulfilled["status"] == "applied", fulfilled

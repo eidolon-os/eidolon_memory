@@ -813,6 +813,7 @@ async def nats_publish_commitment(
     status: str | None = None,
     beneficiaries: list[str] | None = None,
     participants: list[str] | None = None,
+    due_at: str | None = None,
 ) -> str:
     """Publish one explicit structured commitment revision."""
     payload = _base_cmd(user_id, "memory_intent", request_id)
@@ -821,6 +822,8 @@ async def nats_publish_commitment(
         attributes["beneficiaries"] = beneficiaries
     if participants is not None:
         attributes["participants"] = participants
+    if due_at is not None:
+        attributes["due_at"] = due_at
     if status is not None:
         attributes["status"] = status
     intent: dict[str, Any] = {

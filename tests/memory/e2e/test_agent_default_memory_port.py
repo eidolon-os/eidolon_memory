@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +44,18 @@ try:
         "eidolon_agent.infra.memory.discovery",
         reason="eidolon_agent package is required for the cross-repo agent memory e2e",
     )
+    agent_context_compiler = pytest.importorskip(
+        "eidolon_agent.domain.context.compiler",
+        reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+    )
+    agent_history_manager = pytest.importorskip(
+        "eidolon_agent.domain.history.manager",
+        reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+    )
+    agent_identity_types = pytest.importorskip(
+        "eidolon_agent.core.types.identity",
+        reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+    )
     agent_mcp_client = pytest.importorskip(
         "eidolon_agent.infra.memory.mcp_client",
         reason="eidolon_agent package is required for the cross-repo agent memory e2e",
@@ -55,6 +68,14 @@ try:
         "eidolon_agent.infra.memory.port_adapter",
         reason="eidolon_agent package is required for the cross-repo agent memory e2e",
     )
+    agent_persona_realizer = pytest.importorskip(
+        "eidolon_agent.domain.personas.realizer",
+        reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+    )
+    agent_turn_types = pytest.importorskip(
+        "eidolon_agent.core.types.turn",
+        reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+    )
 finally:
     # Do not let the sibling checkout's regular ``tests`` package shadow this
     # repository's namespace package during full-suite pytest collection.
@@ -64,11 +85,19 @@ finally:
 MemoryEndpoint = agent_settings.MemoryEndpoint
 NatsSettings = agent_settings.NatsSettings
 MemoryQueryPlan = agent_memory_types.MemoryQueryPlan
+ContextCompiler = agent_context_compiler.ContextCompiler
+HistoryManager = agent_history_manager.HistoryManager
+CallerContext = agent_identity_types.CallerContext
+CallerKind = agent_identity_types.CallerKind
+Identity = agent_identity_types.Identity
 NatsEventBus = agent_nats_bus.NatsEventBus
 MemoryRoutingTable = agent_discovery.MemoryRoutingTable
 McpClientPool = agent_mcp_client.McpClientPool
 MemoryNatsPublisher = agent_nats_pub.MemoryNatsPublisher
 EidolonMemoryPort = agent_port_adapter.EidolonMemoryPort
+PersonaRealizer = agent_persona_realizer.PersonaRealizer
+TurnInput = agent_turn_types.TurnInput
+TurnTrigger = agent_turn_types.TurnTrigger
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
@@ -105,6 +134,56 @@ def _mcp_tool_json(result):
     if isinstance(payload, dict) and set(payload) == {"result"}:
         return payload["result"]
     return payload
+
+
+class _E2EPersonas:
+    """Keep persona deterministic while exercising real Commitment reads."""
+
+    def __init__(self) -> None:
+        self._realizer = PersonaRealizer()
+
+    async def realize_context(self, **_kwargs):
+        return SimpleNamespace(system_prompt="[PERSONA]\ne2e companion", debug_trace=())
+
+    def realize_commitment_context(self, commitments):
+        return self._realizer.realize_commitment_context(commitments)
+
+
+def _turn_input(
+    *,
+    owner_id: str,
+    companion_id: str,
+    memory_realm_id: str,
+    turn_id: str,
+    text: str,
+) -> TurnInput:
+    return TurnInput(
+        turn_id=turn_id,
+        conversation_id="conversation-e2e-commitment",
+        session_id="session-e2e",
+        caller=CallerContext(
+            identity=Identity(
+                owner_id=owner_id,
+                companion_id=companion_id,
+                device_id="device-e2e",
+                memory_realm_id=memory_realm_id,
+                genome_id="genome-e2e",
+            ),
+            caller_kind=CallerKind.ADMIN_TEST,
+            trace_id=f"trace-{turn_id}",
+            request_id=f"request-{turn_id}",
+        ),
+        trigger=TurnTrigger.USER_UTTERANCE,
+        text=text,
+    )
+
+
+def _active_commitment_section(system_prompt: str) -> str:
+    marker = "[ACTIVE COMMITMENTS]"
+    if marker not in system_prompt:
+        return ""
+    tail = system_prompt.split(marker, 1)[1]
+    return tail.split("\n\n[", 1)[0]
 
 
 async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runner) -> None:
@@ -271,33 +350,37 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         assert prioritized.truncated is True
         assert marker in prioritized.commitments[0].action
 
-        # ContextCompiler performs these reads concurrently on the same
-        # Realm-bound MCP session. Exercise that transport shape against the
-        # real process instead of assuming ClientSession multiplexing works.
-        recall_result, commitment_result = await asyncio.gather(
-            port.recall_context(
-                owner_id,
-                "今天聊点别的",
-                memory_realm_id=handle.user_id,
-                plan=MemoryQueryPlan(semantic_k=3, voice=False),
-                companion_id=companion_id,
-                device_id="device-e2e",
-                session_id="session-e2e",
-                timeout_s=5.0,
+        # Exercise the actual product path. ContextCompiler performs recall and
+        # Commitment reads concurrently through the same Realm-bound MCP pool,
+        # then PersonaRealizer renders only the bounded active set.
+        compiler = ContextCompiler(
+            personas_service=_E2EPersonas(),
+            instance_locator=lambda _owner, companion, _conversation: (
+                companion,
+                "genome-e2e",
             ),
-            port.read_active_commitments(
-                owner_id,
-                companion_id=companion_id,
-                memory_realm_id=handle.user_id,
-                device_id="device-e2e",
-                session_id="session-e2e",
-                limit=3,
-                timeout_s=5.0,
-            ),
+            history_manager=HistoryManager(),
+            memory_port=port,
+            memory_timeout_s=5.0,
+            active_commitment_limit=1,
+            active_commitment_timeout_s=5.0,
+            context_budget_mode="disabled",
         )
-        assert recall_result.degraded is False
-        assert commitment_result.degraded is False
-        assert any(marker in item.action for item in commitment_result.commitments)
+        before_turn = _turn_input(
+            owner_id=owner_id,
+            companion_id=companion_id,
+            memory_realm_id=handle.user_id,
+            turn_id=f"turn-context-before-{marker}",
+            text="今天聊点别的",
+        )
+        before_messages = await compiler.compile(before_turn)
+        before_active = _active_commitment_section(before_messages[0].content)
+        assert marker in before_active
+        assert later_marker not in before_active
+        assert "actionability=must_not_execute" in before_active
+        assert before_turn.metadata["commitment_context_trace"]["total"] == 2
+        assert before_turn.metadata["commitment_context_trace"]["truncated"] is True
+        assert before_turn.metadata["commitment_context_trace"]["context_injected"] is True
 
         fulfil_request_id = await port.apply_commitment(
             owner_id,
@@ -340,6 +423,21 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         assert after_fulfilment.total == 1
         assert after_fulfilment.truncated is False
         assert later_marker in after_fulfilment.commitments[0].action
+
+        after_turn = _turn_input(
+            owner_id=owner_id,
+            companion_id=companion_id,
+            memory_realm_id=handle.user_id,
+            turn_id=f"turn-context-after-{marker}",
+            text="继续聊点别的",
+        )
+        after_messages = await compiler.compile(after_turn)
+        after_active = _active_commitment_section(after_messages[0].content)
+        assert marker not in after_active
+        assert later_marker in after_active
+        assert after_turn.metadata["commitment_context_trace"]["total"] == 1
+        assert after_turn.metadata["commitment_context_trace"]["truncated"] is False
+        assert after_turn.metadata["commitment_context_trace"]["context_injected"] is True
     finally:
         await port.close()
         await bus.close()
