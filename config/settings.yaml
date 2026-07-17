@@ -11,7 +11,7 @@ nats:
   url: nats://127.0.0.1:4222
 llm:
   model: openai/deepseek-v4-flash
-  base_url: http://mopai.geni.dyxnet.com.cn/v1
+  base_url: https://api.deepseek.com/v1
   api_key_env: EIDOLON_MEMORY_LLM_API_KEY
   timeout_seconds: 30
   temperature: 0.0
