@@ -189,6 +189,30 @@ def test_shadow_score_exposes_false_positive_and_schema_gates() -> None:
     assert result["gates"]["overall_pass"] is False
 
 
+def test_shadow_score_separates_provider_schema_and_policy_failures() -> None:
+    observations = [
+        {"error": "empty", "error_type": "provider_empty"},
+        {"error": "invalid schema", "error_type": "schema_invalid"},
+        {"error": "unknown target", "error_type": "policy_rejected"},
+    ]
+
+    result = score_commitment_shadow(observations)
+
+    assert result["counts"]["provider_failures"] == 1
+    assert result["counts"]["schema_failures"] == 1
+    assert result["counts"]["policy_rejections"] == 1
+    assert result["metrics"]["provider_failure_rate"] == pytest.approx(
+        1 / 3, abs=0.0001
+    )
+    assert result["metrics"]["schema_failure_rate"] == pytest.approx(
+        1 / 3, abs=0.0001
+    )
+    assert result["metrics"]["policy_rejection_rate"] == pytest.approx(
+        1 / 3, abs=0.0001
+    )
+    assert result["gates"]["overall_pass"] is False
+
+
 @pytest.mark.asyncio
 async def test_litellm_shadow_proposer_uses_json_mode_and_never_writes(
     monkeypatch: pytest.MonkeyPatch,
@@ -239,12 +263,33 @@ async def test_litellm_shadow_proposer_uses_json_mode_and_never_writes(
     assert candidate.operation == "fulfil"
     assert candidate.target_candidates[0].commitment_id == "commitment-1"
     assert captured["temperature"] == 0.0
+    assert captured["max_tokens"] == 1200
     assert captured["response_format"] == {"type": "json_object"}
     prompt_input = json.loads(captured["messages"][1]["content"])
     assert prompt_input["memory_space_id"] == "realm-1"
     assert len(prompt_input["active_commitments"]) == 1
     assert not hasattr(proposer, "apply")
     assert not hasattr(proposer, "writer")
+
+
+@pytest.mark.asyncio
+async def test_litellm_shadow_proposer_reports_empty_provider_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_acompletion(**kwargs):
+        return {"choices": [{"message": {"content": None}}]}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        SimpleNamespace(acompletion=fake_acompletion),
+    )
+    proposer = LiteLLMCommitmentShadowProposer(LlmConfig(model="openai/test"))
+
+    with pytest.raises(CommitmentShadowOutputError) as raised:
+        await proposer.propose(_input())
+
+    assert raised.value.failure_type == "provider_empty"
 
 
 def test_fixed_shadow_dataset_is_bounded_and_covers_lifecycle() -> None:

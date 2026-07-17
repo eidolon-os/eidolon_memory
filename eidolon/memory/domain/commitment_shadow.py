@@ -26,6 +26,10 @@ CommitmentShadowOperation = Literal[
 class CommitmentShadowOutputError(ValueError):
     """A shadow result violates the bounded input or evidence contract."""
 
+    def __init__(self, message: str, *, failure_type: str = "policy_rejected") -> None:
+        super().__init__(message)
+        self.failure_type = failure_type
+
 
 class CommitmentShadowTarget(BaseEidolonModel):
     """Small active-only target snapshot supplied by a Realm-bound reader."""
@@ -144,7 +148,18 @@ def score_commitment_shadow(observations: list[dict]) -> dict:
     """Aggregate fixed-set metrics and conservative offline review gates."""
     total = len(observations)
     valid = [row for row in observations if not row.get("error")]
-    schema_failures = total - len(valid)
+    failed = [row for row in observations if row.get("error")]
+    schema_failures = sum(
+        (row.get("error_type") or "schema_invalid") == "schema_invalid"
+        for row in failed
+    )
+    provider_failures = sum(
+        row.get("error_type") in {"provider_error", "provider_empty"}
+        for row in failed
+    )
+    policy_rejections = sum(
+        row.get("error_type") == "policy_rejected" for row in failed
+    )
     operation_correct = sum(
         row.get("actual_operation") == row.get("expected_operation")
         for row in valid
@@ -185,12 +200,16 @@ def score_commitment_shadow(observations: list[dict]) -> dict:
         _ratio(none_false_positives, len(none_rows)) if none_rows else 0.0
     )
     schema_failure_rate = _ratio(schema_failures, total)
+    provider_failure_rate = _ratio(provider_failures, total)
+    policy_rejection_rate = _ratio(policy_rejections, total)
     gates = {
         "operation_accuracy": operation_accuracy >= 0.90,
         "action_exact_accuracy": action_exact_accuracy >= 0.80,
         "target_top1_accuracy": target_top1_accuracy >= 0.90,
         "none_false_positive_rate": none_false_positive_rate <= 0.05,
         "schema_failure_rate": schema_failure_rate == 0.0,
+        "provider_failure_rate": provider_failure_rate == 0.0,
+        "policy_rejection_rate": policy_rejection_rate == 0.0,
         "high_confidence_errors": high_confidence_errors == 0,
         "action_case_coverage": bool(action_rows),
         "target_case_coverage": bool(target_rows),
@@ -202,6 +221,8 @@ def score_commitment_shadow(observations: list[dict]) -> dict:
             "total": total,
             "valid": len(valid),
             "schema_failures": schema_failures,
+            "provider_failures": provider_failures,
+            "policy_rejections": policy_rejections,
             "operation_correct": operation_correct,
             "action_cases": len(action_rows),
             "action_correct": action_correct,
@@ -217,6 +238,8 @@ def score_commitment_shadow(observations: list[dict]) -> dict:
             "target_top1_accuracy": target_top1_accuracy,
             "none_false_positive_rate": none_false_positive_rate,
             "schema_failure_rate": schema_failure_rate,
+            "provider_failure_rate": provider_failure_rate,
+            "policy_rejection_rate": policy_rejection_rate,
         },
         "gates": gates,
     }

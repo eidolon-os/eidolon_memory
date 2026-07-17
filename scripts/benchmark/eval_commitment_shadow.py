@@ -26,7 +26,10 @@ if str(_ROOT) not in sys.path:
 
 
 async def _run_case(sample: dict, proposer) -> dict:
-    from eidolon.memory.domain.commitment_shadow import CommitmentShadowInput
+    from eidolon.memory.domain.commitment_shadow import (
+        CommitmentShadowInput,
+        CommitmentShadowOutputError,
+    )
 
     shadow_input = CommitmentShadowInput.model_validate(sample["input"])
     expected = sample["expect"]
@@ -34,6 +37,11 @@ async def _run_case(sample: dict, proposer) -> dict:
     try:
         candidate = await proposer.propose(shadow_input)
     except Exception as exc:  # noqa: BLE001 - report every model/schema failure
+        error_type = (
+            exc.failure_type
+            if isinstance(exc, CommitmentShadowOutputError)
+            else "provider_error"
+        )
         return {
             "name": sample["name"],
             "expected_operation": expected["operation"],
@@ -44,6 +52,7 @@ async def _run_case(sample: dict, proposer) -> dict:
             "actual_action": None,
             "actual_confidence": None,
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+            "error_type": error_type,
             "error": f"{type(exc).__name__}: {exc}",
         }
     top_target = (
@@ -62,6 +71,7 @@ async def _run_case(sample: dict, proposer) -> dict:
         "actual_confidence": candidate.confidence,
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
         "candidate": candidate.model_dump(mode="json"),
+        "error_type": None,
         "error": None,
     }
 

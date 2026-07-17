@@ -37,13 +37,43 @@ _SYSTEM_PROMPT = """你是 Commitment shadow evaluator。你只能解释当前�
   "evidence_quote": "来自本轮 owner 或 companion 文本的原句",
   "reason": "string"
 }
+所有字段都必须出现。string 字段不得输出 null；不适用时用 ""。
+
+none 格式示例：
+{
+  "operation": "none",
+  "promisor": "",
+  "predicate": null,
+  "action": "",
+  "beneficiaries": [],
+  "participants": [],
+  "condition": null,
+  "due_at": null,
+  "target_candidates": [],
+  "confidence": 0.9,
+  "evidence_quote": "",
+  "reason": "不是承诺"
+}
+
+命中已有 Commitment 时，例如 fulfil，promisor/predicate/action/beneficiaries 从
+active commitment 逐字复制，target_candidates 只包含输入 ID。
 
 规则：
 - 目标、愿望、玩笑、反事实、引用他人或明确否认承诺，输出 none。
+- user_text 中的“我”是 owner，assistant_text 中的“我”是 companion；
+  promisor 只用 owner/companion 或输入 active commitment 已有的精确值。
 - create 表示本轮产生了新的明确承诺；不能带 target_candidates。
+- action 是 Commitment identity 的完整核心动作；不能丢失原句中无法转为绝对
+  due_at 的“明早”、“周六”等相对时间，人称必须规范为 owner/companion。
+- supplement 只表示补充 participants/condition/due_at，不改变核心动作；
+  promisor/predicate/action/beneficiaries 必须逐字沿用命中的 active commitment。
+- fulfil/cancel 必须逐字沿用命中的 active commitment identity 字段。
+- supersede 只用于核心 action 被新承诺替代；仅修改时间、参与者或条件是
+  supplement，不是 supersede。
 - supplement/fulfil/cancel/supersede 必须关联输入中的 active commitment，
   最多返回 5 个候选，按置信度降序。
 - 无法可靠区分多个 target 时输出 none，不要猜。
+- none 的 target_candidates 必须是 []，即使你曾经比较过多个候选也不得返回它们。
 - evidence_quote 必须逐字来自本轮文本；none 时可以为空。
 - 不输出 MemoryIntent，不决定写入、履约、取消或 supersede，只给离线评测建议。
 """
@@ -63,6 +93,7 @@ class LiteLLMCommitmentShadowProposer:
                 "base_url": self._llm.base_url,
                 "temperature": 0.0,
                 "prompt": _SYSTEM_PROMPT,
+                "max_tokens": 1200,
                 "max_active_commitments": 10,
                 "max_target_candidates": 5,
             },
@@ -80,12 +111,24 @@ class LiteLLMCommitmentShadowProposer:
         if not self._llm.model:
             raise CommitmentShadowOutputError("llm.model is not configured")
         raw = await self._call_llm(shadow_input)
+        if not raw.strip():
+            raise CommitmentShadowOutputError(
+                "provider returned empty commitment shadow output",
+                failure_type="provider_empty",
+            )
         try:
             payload = json.loads(_strip_json_fence(raw))
-            candidate = CommitmentShadowCandidate.model_validate(payload)
-        except (json.JSONDecodeError, ValidationError) as exc:
+        except json.JSONDecodeError as exc:
             raise CommitmentShadowOutputError(
-                f"invalid commitment shadow output: {exc}"
+                f"invalid commitment shadow JSON: {exc}",
+                failure_type="schema_invalid",
+            ) from exc
+        try:
+            candidate = CommitmentShadowCandidate.model_validate(payload)
+        except ValidationError as exc:
+            raise CommitmentShadowOutputError(
+                f"invalid commitment shadow schema: {exc}",
+                failure_type="schema_invalid",
             ) from exc
         return validate_shadow_candidate(shadow_input, candidate)
 
@@ -106,6 +149,7 @@ class LiteLLMCommitmentShadowProposer:
                 },
             ],
             "temperature": 0.0,
+            "max_tokens": 1200,
             "timeout": self._llm.timeout_seconds,
             "response_format": {"type": "json_object"},
         }
@@ -119,13 +163,13 @@ class LiteLLMCommitmentShadowProposer:
 
 def _extract_content(response: Any) -> str:
     if isinstance(response, dict):
-        return str(response["choices"][0]["message"]["content"])
+        return response["choices"][0]["message"].get("content") or ""
     choices = getattr(response, "choices", None)
     if choices:
         message = getattr(choices[0], "message", None)
         if isinstance(message, dict):
-            return str(message.get("content", ""))
-        return str(getattr(message, "content", ""))
+            return message.get("content") or ""
+        return getattr(message, "content", "") or ""
     return str(response)
 
 
