@@ -267,6 +267,8 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         )
         assert prioritized.degraded is False
         assert len(prioritized.commitments) == 1
+        assert prioritized.total == 2
+        assert prioritized.truncated is True
         assert marker in prioritized.commitments[0].action
 
         # ContextCompiler performs these reads concurrently on the same
@@ -335,6 +337,8 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         )
         assert after_fulfilment.degraded is False
         assert len(after_fulfilment.commitments) == 1
+        assert after_fulfilment.total == 1
+        assert after_fulfilment.truncated is False
         assert later_marker in after_fulfilment.commitments[0].action
     finally:
         await port.close()

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from eidolon.memory.domain.command_status import CommandStatusRecord, CommandStatusStats
     from eidolon.memory.domain.commitment import (
         CommitmentApplyResult,
+        CommitmentListPage,
         CommitmentRecord,
         CommitmentRevisionRecord,
     )
@@ -278,6 +279,14 @@ class CommitmentReader(Protocol):
         include_terminal: bool = False,
         limit: int = 100,
     ) -> list[CommitmentRecord]: ...
+
+    async def list_current_page(
+        self,
+        memory_space_id: str,
+        *,
+        include_terminal: bool = False,
+        limit: int = 100,
+    ) -> CommitmentListPage: ...
 
     async def history(
         self,

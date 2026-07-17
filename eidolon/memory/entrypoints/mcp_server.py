@@ -263,7 +263,7 @@ def build_control_plane_mcp(
             limit: int = 100,
         ) -> dict[str, Any]:
             """List current commitments, optionally including terminal history."""
-            records = await commitments.list_current(
+            page = await commitments.list_current_page(
                 memory_space_id,
                 include_terminal=include_terminal,
                 limit=max(1, min(limit, 200)),
@@ -271,7 +271,11 @@ def build_control_plane_mcp(
             return {
                 "memory_space_id": memory_space_id,
                 "include_terminal": include_terminal,
-                "commitments": [row.model_dump(mode="json") for row in records],
+                "total": page.total,
+                "truncated": page.truncated,
+                "commitments": [
+                    row.model_dump(mode="json") for row in page.commitments
+                ],
             }
 
         @mcp.tool()

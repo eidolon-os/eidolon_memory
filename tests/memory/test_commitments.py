@@ -87,6 +87,7 @@ async def test_active_commitments_prioritize_due_time_before_recent_updates(
 
     current = await ledger.list_current(SPACE)
     bounded = await ledger.list_current(SPACE, limit=2)
+    page = await ledger.list_current_page(SPACE, limit=2)
 
     assert [row.action for row in current] == [
         "最早承诺",
@@ -95,6 +96,10 @@ async def test_active_commitments_prioritize_due_time_before_recent_updates(
         "无期限承诺",
     ]
     assert [row.action for row in bounded] == ["最早承诺", "中间承诺"]
+    assert [row.action for row in page.commitments] == ["最早承诺", "中间承诺"]
+    assert page.total == 4
+    assert page.limit == 2
+    assert page.truncated is True
 
 
 def _command(intent: MemoryIntent) -> MemoryIntentCommand:

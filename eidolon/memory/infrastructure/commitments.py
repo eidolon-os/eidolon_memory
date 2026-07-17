@@ -18,6 +18,7 @@ from eidolon.memory.domain.commitment import (
     TERMINAL_COMMITMENT_STATUSES,
     CommitmentApplyResult,
     CommitmentConflict,
+    CommitmentListPage,
     CommitmentRecord,
     CommitmentRevisionRecord,
     CommitmentStatus,
@@ -124,8 +125,22 @@ class CommitmentLedger:
         include_terminal: bool = False,
         limit: int = 100,
     ) -> list[CommitmentRecord]:
+        page = await self.list_current_page(
+            memory_space_id,
+            include_terminal=include_terminal,
+            limit=limit,
+        )
+        return page.commitments
+
+    async def list_current_page(
+        self,
+        memory_space_id: str,
+        *,
+        include_terminal: bool = False,
+        limit: int = 100,
+    ) -> CommitmentListPage:
         return await asyncio.to_thread(
-            self._list_current_sync,
+            self._list_current_page_sync,
             memory_space_id,
             include_terminal,
             limit,
@@ -360,12 +375,19 @@ class CommitmentLedger:
             ).fetchone()
         return _record(row) if row is not None else None
 
-    def _list_current_sync(
+    def _list_current_page_sync(
         self, memory_space_id: str, include_terminal: bool, limit: int
-    ) -> list[CommitmentRecord]:
+    ) -> CommitmentListPage:
         bounded = max(1, min(int(limit), 200))
         with self._connect() as conn:
+            conn.execute("BEGIN")
             if include_terminal:
+                total = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM commitments WHERE memory_space_id = ?",
+                        (memory_space_id,),
+                    ).fetchone()[0]
+                )
                 rows = conn.execute(
                     """
                     SELECT * FROM commitments WHERE memory_space_id = ?
@@ -375,6 +397,16 @@ class CommitmentLedger:
                 ).fetchall()
             else:
                 placeholders = ",".join("?" for _ in ACTIVE_COMMITMENT_STATUSES)
+                params = (memory_space_id, *sorted(ACTIVE_COMMITMENT_STATUSES))
+                total = int(
+                    conn.execute(
+                        f"""
+                        SELECT COUNT(*) FROM commitments
+                        WHERE memory_space_id = ? AND status IN ({placeholders})
+                        """,
+                        params,
+                    ).fetchone()[0]
+                )
                 rows = conn.execute(
                     f"""
                     SELECT * FROM commitments
@@ -386,9 +418,15 @@ class CommitmentLedger:
                         commitment_id ASC
                     LIMIT ?
                     """,
-                    (memory_space_id, *sorted(ACTIVE_COMMITMENT_STATUSES), bounded),
+                    (*params, bounded),
                 ).fetchall()
-        return [_record(row) for row in rows]
+        commitments = [_record(row) for row in rows]
+        return CommitmentListPage(
+            commitments=commitments,
+            total=total,
+            limit=bounded,
+            truncated=total > len(commitments),
+        )
 
     def _history_sync(
         self, memory_space_id: str, commitment_id: str, limit: int

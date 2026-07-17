@@ -68,6 +68,15 @@ class CommitmentApplyResult(BaseEidolonModel):
     revision_created: bool
 
 
+class CommitmentListPage(BaseEidolonModel):
+    """One bounded current read with an exact same-snapshot total."""
+
+    commitments: list[CommitmentRecord] = Field(default_factory=list)
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    truncated: bool
+
+
 def normalize_commitment_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).strip().casefold().split())
 
