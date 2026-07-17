@@ -48,10 +48,17 @@ async def invalidate_exact_canonical_fact(
         intent.object,
     )
     registration = await canonical_facts.register_invalidation(intent)
+    if registration.state == "applied":
+        return ExactInvalidationResult(
+            assertion_id=assertion_id,
+            drawer_archived=False,
+            kg_rows_invalidated=0,
+            canonical_matched=registration.matched,
+        )
 
     drawer = await backend.get_by_source_turn_id(
         intent.memory_space_id,
-        f"canonical:{assertion_id}",
+        f"canonical:{registration.projection_id or assertion_id}",
     )
     drawer_archived = False
     if drawer is not None and str(drawer.metadata.get("privacy")) != "do_not_recall":

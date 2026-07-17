@@ -52,6 +52,7 @@ from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import (
     CanonicalFactWriter,
     CommandStatusWriter,
+    CommitmentWriter,
     DlqWriter,
     ExtractionDecisionStore,
 )
@@ -413,7 +414,7 @@ async def process_turn_message(
                         intent,
                         targets={"kg"},
                     )
-                    if registration.state == "invalidated":
+                    if registration.state != "active":
                         kg_exact_noop += 1
                         continue
                     kg_pending = "kg" in registration.pending_targets
@@ -615,6 +616,7 @@ async def process_command_message(
     command_status: CommandStatusWriter | None = None,
     dlq_writer: DlqWriter | None = None,
     canonical_facts: CanonicalFactWriter | None = None,
+    commitments: CommitmentWriter | None = None,
 ) -> None:
     """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_token>``.
 
@@ -721,6 +723,7 @@ async def process_command_message(
                 kg,
                 cmd,
                 canonical_facts=canonical_facts,
+                commitments=commitments,
             )
             log.info(
                 "cmd_memory_intent_ok",

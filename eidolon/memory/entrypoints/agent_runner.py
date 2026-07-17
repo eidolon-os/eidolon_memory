@@ -62,6 +62,7 @@ from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+from eidolon.memory.infrastructure.commitments import CommitmentLedger
 from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
 from eidolon.memory.infrastructure.dlq import DlqLedger
 from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
@@ -168,6 +169,7 @@ async def _nats_subscriber_loop(
     dlq: DlqLedger,
     decision_store: ExtractionDecisionLedger,
     canonical_facts: CanonicalFactLedger,
+    commitments: CommitmentLedger,
     stop: asyncio.Event,
     ready: asyncio.Event | None = None,
 ) -> None:
@@ -380,6 +382,7 @@ async def _nats_subscriber_loop(
                     command_status=command_status,
                     dlq_writer=dlq,
                     canonical_facts=canonical_facts,
+                    commitments=commitments,
                 )
 
             def _sync_handler(m):
@@ -450,6 +453,7 @@ def _compose_starlette_lifespan(
     dlq: DlqLedger,
     decision_store: ExtractionDecisionLedger,
     canonical_facts: CanonicalFactLedger,
+    commitments: CommitmentLedger,
     palace_path: str,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
@@ -497,6 +501,7 @@ def _compose_starlette_lifespan(
                     dlq=dlq,
                     decision_store=decision_store,
                     canonical_facts=canonical_facts,
+                    commitments=commitments,
                     stop=stop_event,
                     ready=nats_ready_event,
                 ),
@@ -668,6 +673,7 @@ def main(argv: list[str] | None = None) -> None:
     canonical_facts = CanonicalFactLedger(
         palace_path / "canonical_facts.sqlite3"
     )
+    commitments = CommitmentLedger(palace_path / "commitments.sqlite3")
     log.info(
         "agent_runner_backend_open_done",
         memory_space_id=memory_space_id,
@@ -690,6 +696,7 @@ def main(argv: list[str] | None = None) -> None:
         command_publisher=command_publisher,
         command_status=command_status,
         canonical_facts=canonical_facts,
+        commitments=commitments,
         dlq_store=dlq,
         replay_publisher=command_publisher,
     )
@@ -739,6 +746,7 @@ def main(argv: list[str] | None = None) -> None:
         dlq=dlq,
         decision_store=decision_store,
         canonical_facts=canonical_facts,
+        commitments=commitments,
         palace_path=str(palace_path),
     )
 

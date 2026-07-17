@@ -719,6 +719,7 @@ async def nats_publish_user_confirm(
     subject: str | None = None,
     predicate: str | None = None,
     object_value: str | None = None,
+    operation_hint: str = "confirm",
 ) -> str:
     """Publish an explicit ``MemoryIntentCommand`` to the cmd subject.
 
@@ -739,7 +740,7 @@ async def nats_publish_user_confirm(
                 "authority": "explicit_user",
                 "intent_type": intent_type,
                 "raw_claim": text,
-                "operation_hint": "confirm",
+                "operation_hint": operation_hint,
                 "confidence": 0.99,
                 "attributes": {
                     "wing": wing,
@@ -795,6 +796,51 @@ async def nats_publish_exact_correction(
             },
         }
     )
+    await _publish_command(nats_url, payload)
+    return str(payload["request_id"])
+
+
+async def nats_publish_commitment(
+    nats_url: str,
+    *,
+    user_id: str,
+    subject: str,
+    action: str,
+    text: str,
+    operation_hint: str,
+    request_id: str,
+    target_id: str | None = None,
+    status: str | None = None,
+    beneficiaries: list[str] | None = None,
+    participants: list[str] | None = None,
+) -> str:
+    """Publish one explicit structured commitment revision."""
+    payload = _base_cmd(user_id, "memory_intent", request_id)
+    attributes: dict[str, Any] = {}
+    if beneficiaries is not None:
+        attributes["beneficiaries"] = beneficiaries
+    if participants is not None:
+        attributes["participants"] = participants
+    if status is not None:
+        attributes["status"] = status
+    intent: dict[str, Any] = {
+        "intent_id": f"intent:{payload['request_id']}",
+        "memory_space_id": payload["memory_space_id"],
+        "source_event_id": f"e2e:{payload['request_id']}",
+        "authority": "explicit_user",
+        "intent_type": "commitment",
+        "raw_claim": text,
+        "operation_hint": operation_hint,
+        "subject": subject,
+        "predicate": "promised",
+        "object": action,
+        "occurred_at": payload["issued_at"],
+        "confidence": 1.0,
+        "attributes": attributes,
+    }
+    if target_id is not None:
+        intent["target_id"] = target_id
+    payload.update({"issuer": "agent", "intent": intent})
     await _publish_command(nats_url, payload)
     return str(payload["request_id"])
 

@@ -11,18 +11,26 @@ from eidolon_sdk.memory import MemoryIntent
 
 from eidolon.memory.domain.canonical_fact import (
     CanonicalEvidenceConflict,
+    CanonicalFactConflict,
+    CanonicalFactEvidenceRecord,
+    CanonicalFactHistoryRecord,
     CanonicalFactInactive,
     CanonicalFactInvalidation,
+    CanonicalFactRecord,
     CanonicalFactRegistration,
     CanonicalFactStats,
+    CanonicalFactTransitionRecord,
     ProjectionTarget,
     canonical_assertion_id,
 )
+from eidolon.memory.domain.predicates import PredicateCardinality, predicate_definition
 
 _TARGET_COLUMNS: dict[ProjectionTarget, str] = {
     "drawer": "drawer_projection_state",
     "kg": "kg_projection_state",
 }
+_HISTORY_FACT_LIMIT = 100
+_HISTORY_EVENT_LIMIT = 200
 
 
 class CanonicalFactLedger:
@@ -63,6 +71,7 @@ class CanonicalFactLedger:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     last_confirmed_at TEXT NOT NULL,
+                    activation_count INTEGER NOT NULL DEFAULT 1,
                     UNIQUE(memory_space_id, subject, predicate, object_value)
                 );
                 CREATE TABLE IF NOT EXISTS canonical_evidence (
@@ -91,11 +100,29 @@ class CanonicalFactLedger:
                     reason TEXT NOT NULL,
                     recorded_at TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'pending',
+                    result_state TEXT NOT NULL DEFAULT 'invalidated',
                     FOREIGN KEY(assertion_id)
                         REFERENCES canonical_assertions(assertion_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_canonical_invalidations_assertion
                     ON canonical_invalidations(assertion_id, recorded_at);
+                CREATE TABLE IF NOT EXISTS canonical_reactivations (
+                    intent_id TEXT PRIMARY KEY,
+                    memory_space_id TEXT NOT NULL,
+                    assertion_id TEXT NOT NULL,
+                    source_event_id TEXT NOT NULL,
+                    raw_claim TEXT NOT NULL,
+                    reactivated_at TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    prior_state TEXT NOT NULL,
+                    activation_number INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    FOREIGN KEY(assertion_id)
+                        REFERENCES canonical_assertions(assertion_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_canonical_reactivations_assertion
+                    ON canonical_reactivations(assertion_id, recorded_at);
                 """
             )
             columns = {
@@ -116,6 +143,13 @@ class CanonicalFactLedger:
                         f"UPDATE canonical_assertions SET {column} = 'projected' "
                         "WHERE projection_state = 'projected'"
                     )
+            if "activation_count" not in columns:
+                conn.execute(
+                    """
+                    ALTER TABLE canonical_assertions
+                    ADD COLUMN activation_count INTEGER NOT NULL DEFAULT 1
+                    """
+                )
             invalidation_columns = {
                 str(row["name"])
                 for row in conn.execute("PRAGMA table_info(canonical_invalidations)")
@@ -125,6 +159,13 @@ class CanonicalFactLedger:
                     """
                     ALTER TABLE canonical_invalidations
                     ADD COLUMN state TEXT NOT NULL DEFAULT 'applied'
+                    """
+                )
+            if "result_state" not in invalidation_columns:
+                conn.execute(
+                    """
+                    ALTER TABLE canonical_invalidations
+                    ADD COLUMN result_state TEXT NOT NULL DEFAULT 'invalidated'
                     """
                 )
 
@@ -169,6 +210,57 @@ class CanonicalFactLedger:
     async def evidence_count(self, assertion_id: str) -> int:
         return await asyncio.to_thread(self._evidence_count_sync, assertion_id)
 
+    async def active_for_slot(
+        self,
+        memory_space_id: str,
+        subject: str,
+        predicate: str,
+    ) -> list[CanonicalFactRecord]:
+        return await asyncio.to_thread(
+            self._active_for_slot_sync,
+            memory_space_id,
+            subject,
+            predicate,
+        )
+
+    async def get_fact(
+        self,
+        memory_space_id: str,
+        subject: str,
+        predicate: str,
+        object_value: str,
+    ) -> CanonicalFactRecord | None:
+        return await asyncio.to_thread(
+            self._get_fact_sync,
+            memory_space_id,
+            subject,
+            predicate,
+            object_value,
+        )
+
+    async def register_reactivation(
+        self,
+        intent: MemoryIntent,
+        *,
+        targets: set[ProjectionTarget],
+    ) -> CanonicalFactRegistration:
+        return await asyncio.to_thread(
+            self._register_reactivation_sync,
+            intent,
+            targets,
+        )
+
+    async def mark_reactivated(
+        self,
+        memory_space_id: str,
+        intent_id: str,
+    ) -> None:
+        await asyncio.to_thread(
+            self._mark_reactivated_sync,
+            memory_space_id,
+            intent_id,
+        )
+
     async def register_invalidation(
         self,
         intent: MemoryIntent,
@@ -188,6 +280,24 @@ class CanonicalFactLedger:
 
     async def stats(self) -> CanonicalFactStats:
         return await asyncio.to_thread(self._stats_sync)
+
+    async def history(
+        self,
+        memory_space_id: str,
+        subject: str,
+        predicate: str,
+        *,
+        object_value: str | None = None,
+        limit: int = 100,
+    ) -> list[CanonicalFactHistoryRecord]:
+        return await asyncio.to_thread(
+            self._history_sync,
+            memory_space_id,
+            subject,
+            predicate,
+            object_value,
+            limit,
+        )
 
     def _register_sync(
         self,
@@ -211,6 +321,22 @@ class CanonicalFactLedger:
                 "SELECT * FROM canonical_assertions WHERE assertion_id = ?",
                 (assertion_id,),
             ).fetchone()
+            definition = predicate_definition(intent.predicate)
+            if assertion is None and definition.cardinality == PredicateCardinality.SINGLE:
+                occupied = conn.execute(
+                    """
+                    SELECT assertion_id, object_value
+                    FROM canonical_assertions
+                    WHERE memory_space_id = ? AND subject = ? AND predicate = ?
+                      AND state = 'active'
+                    """,
+                    (intent.memory_space_id, intent.subject, intent.predicate),
+                ).fetchall()
+                if occupied:
+                    objects = ", ".join(str(row["object_value"]) for row in occupied)
+                    raise CanonicalFactConflict(
+                        f"single predicate slot is already active: {objects}"
+                    )
             if assertion is None:
                 conn.execute(
                     """
@@ -271,20 +397,24 @@ class CanonicalFactLedger:
                     raise CanonicalEvidenceConflict(
                         "intent id reused with different canonical evidence"
                     )
-                if assertion is not None and str(assertion["state"]) == "invalidated":
+                if assertion is not None and str(assertion["state"]) != "active":
                     return CanonicalFactRegistration(
                         assertion_id=assertion_id,
                         memory_space_id=intent.memory_space_id,
                         intent_id=intent.intent_id,
                         evidence_count=int(assertion["evidence_count"]),
                         evidence_created=False,
-                        state="invalidated",
+                        state=str(assertion["state"]),
                         pending_targets=[],
+                        projection_id=_projection_id(
+                            assertion_id,
+                            int(assertion["activation_count"]),
+                        ),
                     )
             else:
-                if assertion is not None and str(assertion["state"]) == "invalidated":
+                if assertion is not None and str(assertion["state"]) != "active":
                     raise CanonicalFactInactive(
-                        "invalidated canonical fact requires an explicit reactivation flow"
+                        "inactive canonical fact requires an explicit reactivation flow"
                     )
                 conn.execute(
                     """
@@ -334,6 +464,10 @@ class CanonicalFactLedger:
                 for target in targets
                 if projection_states[target] != "projected"
             ),
+            projection_id=_projection_id(
+                assertion_id,
+                1 if assertion is None else int(assertion["activation_count"]),
+            ),
         )
 
     def _register_invalidation_sync(
@@ -359,6 +493,9 @@ class CanonicalFactLedger:
         now = datetime.now(UTC).isoformat()
         ended_at = intent.occurred_at or now
         reason = str(intent.attributes.get("reason") or "")
+        result_state = str(intent.attributes.get("result_state") or "invalidated")
+        if result_state not in {"invalidated", "superseded"}:
+            raise ValueError("canonical invalidation result_state is invalid")
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             assertion = conn.execute(
@@ -393,6 +530,7 @@ class CanonicalFactLedger:
                         and str(existing["ended_at"]) != ended_at
                     )
                     or str(existing["reason"]) != reason
+                    or str(existing["result_state"]) != result_state
                 ):
                     raise CanonicalEvidenceConflict(
                         "intent id reused with different canonical invalidation"
@@ -402,8 +540,8 @@ class CanonicalFactLedger:
                     """
                     INSERT INTO canonical_invalidations (
                         intent_id, memory_space_id, assertion_id, source_event_id,
-                        raw_claim, ended_at, reason, recorded_at, state
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                        raw_claim, ended_at, reason, recorded_at, state, result_state
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
                     """,
                     (
                         intent.intent_id,
@@ -414,6 +552,7 @@ class CanonicalFactLedger:
                         ended_at,
                         reason,
                         now,
+                        result_state,
                     ),
                 )
             count = int(
@@ -435,7 +574,257 @@ class CanonicalFactLedger:
             state=(
                 "pending" if existing is None else str(existing["state"])
             ),
+            result_state=result_state,
+            projection_id=_projection_id(
+                assertion_id,
+                int(assertion["activation_count"]),
+            ),
         )
+
+    def _register_reactivation_sync(
+        self,
+        intent: MemoryIntent,
+        targets: set[ProjectionTarget],
+    ) -> CanonicalFactRegistration:
+        if (
+            intent.operation_hint != "update"
+            or not intent.subject
+            or not intent.predicate
+            or not intent.object
+        ):
+            raise ValueError("canonical reactivation requires an exact update triple")
+        if not targets or not targets.issubset(_TARGET_COLUMNS):
+            raise ValueError("canonical reactivation requires known projection targets")
+        assertion_id = canonical_assertion_id(
+            intent.memory_space_id,
+            intent.subject,
+            intent.predicate,
+            intent.object,
+        )
+        now = datetime.now(UTC).isoformat()
+        reactivated_at = intent.occurred_at or now
+        reason = str(intent.attributes.get("reason") or "explicit reactivation")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            assertion = conn.execute(
+                "SELECT * FROM canonical_assertions WHERE assertion_id = ?",
+                (assertion_id,),
+            ).fetchone()
+            if assertion is None:
+                raise LookupError("canonical assertion not found for reactivation")
+            if str(assertion["memory_space_id"]) != intent.memory_space_id:
+                raise CanonicalEvidenceConflict(
+                    "canonical reactivation resolved outside memory space"
+                )
+
+            existing = conn.execute(
+                "SELECT * FROM canonical_reactivations WHERE intent_id = ?",
+                (intent.intent_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    str(existing["memory_space_id"]) != intent.memory_space_id
+                    or str(existing["assertion_id"]) != assertion_id
+                    or str(existing["source_event_id"]) != intent.source_event_id
+                    or str(existing["raw_claim"]) != intent.raw_claim
+                    or str(existing["reactivated_at"]) != reactivated_at
+                    or str(existing["reason"]) != reason
+                ):
+                    raise CanonicalEvidenceConflict(
+                        "intent id reused with different canonical reactivation"
+                    )
+                activation_number = int(existing["activation_number"])
+                projection_states = {
+                    target: str(assertion[column])
+                    for target, column in _TARGET_COLUMNS.items()
+                }
+                event_state = str(existing["state"])
+                return CanonicalFactRegistration(
+                    assertion_id=assertion_id,
+                    memory_space_id=intent.memory_space_id,
+                    intent_id=intent.intent_id,
+                    evidence_count=int(assertion["evidence_count"]),
+                    evidence_created=False,
+                    state=(
+                        "active"
+                        if event_state == "applied"
+                        else str(assertion["state"])
+                    ),
+                    pending_targets=(
+                        []
+                        if event_state == "applied"
+                        else sorted(
+                            target
+                            for target in targets
+                            if projection_states[target] != "projected"
+                        )
+                    ),
+                    projection_id=_projection_id(assertion_id, activation_number),
+                    reactivation_pending=event_state == "pending",
+                )
+
+            prior_state = str(assertion["state"])
+            if prior_state == "active":
+                raise CanonicalFactConflict("canonical assertion is already active")
+            if prior_state not in {"invalidated", "superseded"}:
+                raise CanonicalFactConflict(
+                    f"canonical assertion cannot reactivate from {prior_state}"
+                )
+            definition = predicate_definition(intent.predicate)
+            if definition.cardinality == PredicateCardinality.SINGLE:
+                occupied = conn.execute(
+                    """
+                    SELECT object_value FROM canonical_assertions
+                    WHERE memory_space_id = ? AND subject = ? AND predicate = ?
+                      AND state = 'active' AND assertion_id != ?
+                    """,
+                    (
+                        intent.memory_space_id,
+                        intent.subject,
+                        intent.predicate,
+                        assertion_id,
+                    ),
+                ).fetchall()
+                if occupied:
+                    raise CanonicalFactConflict(
+                        "single predicate slot must be vacated before reactivation"
+                    )
+
+            existing_evidence = conn.execute(
+                "SELECT * FROM canonical_evidence WHERE intent_id = ?",
+                (intent.intent_id,),
+            ).fetchone()
+            if existing_evidence is not None:
+                raise CanonicalEvidenceConflict(
+                    "reactivation intent id already belongs to canonical evidence"
+                )
+            activation_number = int(assertion["activation_count"]) + 1
+            conn.execute(
+                """
+                INSERT INTO canonical_reactivations (
+                    intent_id, memory_space_id, assertion_id, source_event_id,
+                    raw_claim, reactivated_at, reason, prior_state,
+                    activation_number, recorded_at, state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (
+                    intent.intent_id,
+                    intent.memory_space_id,
+                    assertion_id,
+                    intent.source_event_id,
+                    intent.raw_claim,
+                    reactivated_at,
+                    reason,
+                    prior_state,
+                    activation_number,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO canonical_evidence (
+                    intent_id, memory_space_id, assertion_id, source_event_id,
+                    tool_call_id, authority, raw_claim, confidence,
+                    occurred_at, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    intent.intent_id,
+                    intent.memory_space_id,
+                    assertion_id,
+                    intent.source_event_id,
+                    intent.tool_call_id,
+                    intent.authority,
+                    intent.raw_claim,
+                    intent.confidence,
+                    intent.occurred_at,
+                    now,
+                ),
+            )
+            assignments = ", ".join(
+                f"{_TARGET_COLUMNS[target]} = 'pending'" for target in sorted(targets)
+            )
+            conn.execute(
+                f"""
+                UPDATE canonical_assertions
+                SET evidence_count = evidence_count + 1,
+                    updated_at = ?, last_confirmed_at = ?, {assignments}
+                WHERE assertion_id = ?
+                """,
+                (now, now, assertion_id),
+            )
+            evidence_count = int(assertion["evidence_count"]) + 1
+        return CanonicalFactRegistration(
+            assertion_id=assertion_id,
+            memory_space_id=intent.memory_space_id,
+            intent_id=intent.intent_id,
+            evidence_count=evidence_count,
+            evidence_created=True,
+            state=prior_state,
+            pending_targets=sorted(targets),
+            projection_id=_projection_id(assertion_id, activation_number),
+            reactivation_pending=True,
+        )
+
+    def _mark_reactivated_sync(
+        self,
+        memory_space_id: str,
+        intent_id: str,
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            event = conn.execute(
+                "SELECT * FROM canonical_reactivations WHERE intent_id = ?",
+                (intent_id,),
+            ).fetchone()
+            if event is None:
+                raise LookupError("canonical reactivation not registered")
+            if str(event["memory_space_id"]) != memory_space_id:
+                raise CanonicalEvidenceConflict(
+                    "canonical reactivation belongs to another memory space"
+                )
+            if str(event["state"]) == "applied":
+                return
+            assertion_id = str(event["assertion_id"])
+            assertion = conn.execute(
+                "SELECT * FROM canonical_assertions WHERE assertion_id = ?",
+                (assertion_id,),
+            ).fetchone()
+            if assertion is None:
+                raise LookupError("canonical assertion not found for reactivation")
+            pending = [
+                target
+                for target, column in _TARGET_COLUMNS.items()
+                if str(assertion[column]) != "projected"
+            ]
+            if pending:
+                raise RuntimeError(
+                    "canonical reactivation projections are still pending: "
+                    + ",".join(sorted(pending))
+                )
+            result = conn.execute(
+                """
+                UPDATE canonical_assertions
+                SET state = 'active', activation_count = ?, updated_at = ?
+                WHERE assertion_id = ? AND memory_space_id = ?
+                  AND state IN ('invalidated', 'superseded')
+                """,
+                (
+                    int(event["activation_number"]),
+                    now,
+                    assertion_id,
+                    memory_space_id,
+                ),
+            )
+            if result.rowcount != 1:
+                raise CanonicalFactConflict(
+                    "canonical assertion changed before reactivation completed"
+                )
+            conn.execute(
+                "UPDATE canonical_reactivations SET state = 'applied' WHERE intent_id = ?",
+                (intent_id,),
+            )
 
     def _mark_invalidated_sync(
         self,
@@ -447,7 +836,7 @@ class CanonicalFactLedger:
             conn.execute("BEGIN IMMEDIATE")
             invalidation = conn.execute(
                 """
-                SELECT assertion_id, memory_space_id, state
+                SELECT assertion_id, memory_space_id, state, result_state
                 FROM canonical_invalidations
                 WHERE intent_id = ?
                 """,
@@ -462,6 +851,9 @@ class CanonicalFactLedger:
             if str(invalidation["state"]) == "applied":
                 return
             assertion_id = str(invalidation["assertion_id"])
+            result_state = str(invalidation["result_state"])
+            if result_state not in {"invalidated", "superseded"}:
+                raise ValueError("canonical invalidation result_state is invalid")
             conn.execute(
                 """
                 UPDATE canonical_invalidations SET state = 'applied'
@@ -472,10 +864,10 @@ class CanonicalFactLedger:
             result = conn.execute(
                 """
                 UPDATE canonical_assertions
-                SET state = 'invalidated', updated_at = ?
+                SET state = ?, updated_at = ?
                 WHERE assertion_id = ? AND memory_space_id = ?
                 """,
-                (now, assertion_id, memory_space_id),
+                (result_state, now, assertion_id, memory_space_id),
             )
             if result.rowcount != 1:
                 raise LookupError("canonical assertion not found in memory space")
@@ -516,6 +908,171 @@ class CanonicalFactLedger:
             ).fetchone()
         return int(row["count"])
 
+    def _active_for_slot_sync(
+        self,
+        memory_space_id: str,
+        subject: str,
+        predicate: str,
+    ) -> list[CanonicalFactRecord]:
+        predicate_definition(predicate)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT assertion_id, memory_space_id, subject, predicate,
+                       object_value, state, activation_count
+                FROM canonical_assertions
+                WHERE memory_space_id = ? AND subject = ? AND predicate = ?
+                  AND state = 'active'
+                ORDER BY created_at, assertion_id
+                """,
+                (memory_space_id, subject, predicate),
+            ).fetchall()
+        return [
+            _fact_record(row)
+            for row in rows
+        ]
+
+    def _get_fact_sync(
+        self,
+        memory_space_id: str,
+        subject: str,
+        predicate: str,
+        object_value: str,
+    ) -> CanonicalFactRecord | None:
+        predicate_definition(predicate)
+        assertion_id = canonical_assertion_id(
+            memory_space_id,
+            subject,
+            predicate,
+            object_value,
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT assertion_id, memory_space_id, subject, predicate,
+                       object_value, state, activation_count
+                FROM canonical_assertions
+                WHERE assertion_id = ? AND memory_space_id = ?
+                """,
+                (assertion_id, memory_space_id),
+            ).fetchone()
+        return _fact_record(row) if row is not None else None
+
+    def _history_sync(
+        self,
+        memory_space_id: str,
+        subject: str,
+        predicate: str,
+        object_value: str | None,
+        limit: int,
+    ) -> list[CanonicalFactHistoryRecord]:
+        predicate_definition(predicate)
+        bounded_limit = max(1, min(int(limit), _HISTORY_FACT_LIMIT))
+        clauses = [
+            "memory_space_id = ?",
+            "subject = ?",
+            "predicate = ?",
+        ]
+        params: list[object] = [memory_space_id, subject, predicate]
+        if object_value is not None:
+            clauses.append("object_value = ?")
+            params.append(object_value)
+        with self._connect() as conn:
+            assertions = conn.execute(
+                f"""
+                SELECT * FROM canonical_assertions
+                WHERE {' AND '.join(clauses)}
+                ORDER BY updated_at DESC, assertion_id
+                LIMIT ?
+                """,
+                (*params, bounded_limit),
+            ).fetchall()
+            result: list[CanonicalFactHistoryRecord] = []
+            for assertion in assertions:
+                assertion_id = str(assertion["assertion_id"])
+                evidence_rows = conn.execute(
+                    """
+                    SELECT * FROM canonical_evidence
+                    WHERE assertion_id = ?
+                    ORDER BY recorded_at DESC, intent_id DESC
+                    LIMIT ?
+                    """,
+                    (assertion_id, _HISTORY_EVENT_LIMIT + 1),
+                ).fetchall()
+                invalidation_rows = conn.execute(
+                    """
+                    SELECT * FROM canonical_invalidations
+                    WHERE assertion_id = ? AND state = 'applied'
+                    ORDER BY recorded_at DESC, intent_id DESC
+                    LIMIT ?
+                    """,
+                    (assertion_id, _HISTORY_EVENT_LIMIT + 1),
+                ).fetchall()
+                reactivation_rows = conn.execute(
+                    """
+                    SELECT * FROM canonical_reactivations
+                    WHERE assertion_id = ? AND state = 'applied'
+                    ORDER BY recorded_at DESC, intent_id DESC
+                    LIMIT ?
+                    """,
+                    (assertion_id, _HISTORY_EVENT_LIMIT + 1),
+                ).fetchall()
+                evidence_capped = len(evidence_rows) > _HISTORY_EVENT_LIMIT
+                evidence_rows = list(
+                    reversed(evidence_rows[:_HISTORY_EVENT_LIMIT])
+                )
+                transitions = [
+                    CanonicalFactTransitionRecord(
+                        intent_id=str(row["intent_id"]),
+                        transition=str(row["result_state"]),
+                        occurred_at=str(row["ended_at"]),
+                        recorded_at=str(row["recorded_at"]),
+                        reason=str(row["reason"]),
+                        from_state="active",
+                        to_state=str(row["result_state"]),
+                    )
+                    for row in invalidation_rows
+                ]
+                transitions.extend(
+                    CanonicalFactTransitionRecord(
+                        intent_id=str(row["intent_id"]),
+                        transition="reactivated",
+                        occurred_at=str(row["reactivated_at"]),
+                        recorded_at=str(row["recorded_at"]),
+                        reason=str(row["reason"]),
+                        from_state=str(row["prior_state"]),
+                        to_state="active",
+                    )
+                    for row in reactivation_rows
+                )
+                transitions.sort(key=lambda row: (row.recorded_at, row.intent_id))
+                transitions_capped = len(transitions) > _HISTORY_EVENT_LIMIT
+                transitions = transitions[-_HISTORY_EVENT_LIMIT:]
+                result.append(
+                    CanonicalFactHistoryRecord(
+                        fact=_fact_record(assertion),
+                        created_at=str(assertion["created_at"]),
+                        updated_at=str(assertion["updated_at"]),
+                        last_confirmed_at=str(assertion["last_confirmed_at"]),
+                        evidence=[
+                            CanonicalFactEvidenceRecord(
+                                intent_id=str(row["intent_id"]),
+                                source_event_id=str(row["source_event_id"]),
+                                authority=str(row["authority"]),
+                                raw_claim=str(row["raw_claim"]),
+                                confidence=float(row["confidence"]),
+                                occurred_at=row["occurred_at"] or None,
+                                recorded_at=str(row["recorded_at"]),
+                            )
+                            for row in evidence_rows
+                        ],
+                        transitions=transitions,
+                        evidence_capped=evidence_capped,
+                        transitions_capped=transitions_capped,
+                    )
+                )
+        return result
+
     def _stats_sync(self) -> CanonicalFactStats:
         with self._connect() as conn:
             row = conn.execute(
@@ -525,6 +1082,8 @@ class CanonicalFactLedger:
                     COALESCE(SUM(state = 'active'), 0) AS assertions_active,
                     COALESCE(SUM(state = 'invalidated'), 0)
                         AS assertions_invalidated,
+                    COALESCE(SUM(state = 'superseded'), 0)
+                        AS assertions_superseded,
                     COALESCE(SUM(
                         state = 'active' AND drawer_projection_state = 'pending'
                     ), 0)
@@ -549,24 +1108,87 @@ class CanonicalFactLedger:
             )
             invalidations_total = int(
                 conn.execute(
-                    "SELECT COUNT(*) FROM canonical_invalidations WHERE state = 'applied'"
+                    """
+                    SELECT COUNT(*) FROM canonical_invalidations
+                    WHERE state = 'applied' AND result_state = 'invalidated'
+                    """
+                ).fetchone()[0]
+            )
+            supersessions_total = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM canonical_invalidations
+                    WHERE state = 'applied' AND result_state = 'superseded'
+                    """
+                ).fetchone()[0]
+            )
+            reactivations_total = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM canonical_reactivations
+                    WHERE state = 'applied'
+                    """
+                ).fetchone()[0]
+            )
+            reactivations_pending = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM canonical_reactivations
+                    WHERE state = 'pending'
+                    """
                 ).fetchone()[0]
             )
             invalidations_pending = int(
                 conn.execute(
-                    "SELECT COUNT(*) FROM canonical_invalidations WHERE state = 'pending'"
+                    """
+                    SELECT COUNT(*) FROM canonical_invalidations
+                    WHERE state = 'pending' AND result_state = 'invalidated'
+                    """
+                ).fetchone()[0]
+            )
+            supersessions_pending = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM canonical_invalidations
+                    WHERE state = 'pending' AND result_state = 'superseded'
+                    """
                 ).fetchone()[0]
             )
         return CanonicalFactStats(
             assertions_total=int(row["assertions_total"]),
             assertions_active=int(row["assertions_active"]),
             assertions_invalidated=int(row["assertions_invalidated"]),
+            assertions_superseded=int(row["assertions_superseded"]),
             evidence_total=evidence_total,
             invalidations_total=invalidations_total,
+            supersessions_total=supersessions_total,
+            reactivations_total=reactivations_total,
+            reactivations_pending=reactivations_pending,
             invalidations_pending=invalidations_pending,
+            supersessions_pending=supersessions_pending,
             drawer_not_projected=int(row["drawer_not_projected"]),
             drawer_projected=int(row["drawer_projected"]),
             kg_not_projected=int(row["kg_not_projected"]),
             kg_projected=int(row["kg_projected"]),
             database_bytes=self.path.stat().st_size if self.path.exists() else 0,
         )
+
+
+def _projection_id(assertion_id: str, activation_count: int) -> str:
+    if activation_count <= 1:
+        return assertion_id
+    return f"{assertion_id}:activation:{activation_count}"
+
+
+def _fact_record(row: sqlite3.Row) -> CanonicalFactRecord:
+    assertion_id = str(row["assertion_id"])
+    activation_count = int(row["activation_count"])
+    return CanonicalFactRecord(
+        assertion_id=assertion_id,
+        memory_space_id=str(row["memory_space_id"]),
+        subject=str(row["subject"]),
+        predicate=str(row["predicate"]),
+        object=str(row["object_value"]),
+        state=str(row["state"]),
+        projection_id=_projection_id(assertion_id, activation_count),
+    )

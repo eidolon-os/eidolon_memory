@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from eidolon_sdk.memory import (
@@ -14,10 +15,20 @@ from eidolon_sdk.memory import (
 from eidolon.memory.application.canonical_invalidation import (
     invalidate_exact_canonical_fact,
 )
+from eidolon.memory.application.commitments import apply_explicit_commitment
 from eidolon.memory.application.ingest import ingest_memory_fragment
-from eidolon.memory.domain.canonical_fact import ProjectionTarget
+from eidolon.memory.domain.canonical_fact import (
+    CanonicalFactRegistration,
+    ProjectionTarget,
+)
+from eidolon.memory.domain.commitment import CommitmentConflict
 from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.ports import CanonicalFactWriter
+from eidolon.memory.domain.ports import CanonicalFactWriter, CommitmentWriter
+from eidolon.memory.domain.predicates import (
+    PredicateCardinality,
+    PredicateUpdatePolicy,
+    predicate_definition,
+)
 
 
 class MemoryIntentRejected(ValueError):
@@ -29,6 +40,7 @@ async def apply_explicit_intent(
     kg: Any,
     cmd: MemoryIntentCommand,
     canonical_facts: CanonicalFactWriter | None = None,
+    commitments: CommitmentWriter | None = None,
 ) -> str:
     """Project one explicit intent without bypassing write ports.
 
@@ -46,6 +58,20 @@ async def apply_explicit_intent(
         raise MemoryIntentRejected(
             "forget intents require the exact privacy preview/confirm flow"
         )
+    if intent.intent_type == "commitment":
+        if commitments is None or kg is None:
+            raise MemoryIntentRejected(
+                "commitment intent requires commitment and KG ports"
+            )
+        try:
+            return await apply_explicit_commitment(
+                backend,
+                kg,
+                cmd,
+                commitments,
+            )
+        except (CommitmentConflict, ValueError) as exc:
+            raise MemoryIntentRejected(str(exc)) from exc
     if intent.intent_type == "correction":
         if (
             intent.operation_hint != "invalidate"
@@ -85,8 +111,34 @@ async def apply_explicit_intent(
             if not already_applied:
                 raise MemoryIntentRejected("exact correction matched no fact")
         return f"invalidated:{result.assertion_id}"
-    if intent.operation_hint not in {None, "add", "confirm"}:
-        raise MemoryIntentRejected("update/invalidate intents require reconciliation")
+    structured = (intent.subject, intent.predicate, intent.object)
+    if any(structured) and not all(structured):
+        raise MemoryIntentRejected(
+            "structured intent requires subject, predicate, and object"
+        )
+    if all(structured):
+        if intent.predicate not in KG_PREDICATE_VALUES:
+            raise MemoryIntentRejected(
+                f"unsupported KG predicate: {intent.predicate}"
+            )
+        if kg is None:
+            raise RuntimeError("structured memory intent requires KG backend")
+
+    prepared_registration = None
+    if intent.operation_hint == "update":
+        if not all(structured) or canonical_facts is None:
+            raise MemoryIntentRejected(
+                "update requires a structured fact and canonical fact port"
+            )
+        prepared_registration = await _prepare_explicit_update(
+            backend,
+            kg,
+            intent,
+            canonical_facts,
+            occurred_at=intent.occurred_at or cmd.issued_at,
+        )
+    elif intent.operation_hint not in {None, "add", "confirm"}:
+        raise MemoryIntentRejected("unsupported memory intent operation")
 
     attributes = intent.attributes
     defaults = {
@@ -116,33 +168,21 @@ async def apply_explicit_intent(
     extensions = attributes.get("extensions", {})
     if not isinstance(extensions, dict):
         extensions = {}
-    structured = (intent.subject, intent.predicate, intent.object)
-    if any(structured) and not all(structured):
-        raise MemoryIntentRejected(
-            "structured intent requires subject, predicate, and object"
-        )
-    if all(structured):
-        if intent.predicate not in KG_PREDICATE_VALUES:
-            raise MemoryIntentRejected(
-                f"unsupported KG predicate: {intent.predicate}"
-            )
-        if kg is None:
-            raise RuntimeError("structured memory intent requires KG backend")
-
-    registration = None
+    registration = prepared_registration
     projection_identity = intent.intent_id
     pending_targets: set[ProjectionTarget] = {"drawer"}
     if all(structured):
         pending_targets.add("kg")
     if all(structured) and canonical_facts is not None:
         requested_targets: set[ProjectionTarget] = {"drawer", "kg"}
-        registration = await canonical_facts.register(
-            intent,
-            targets=requested_targets,
-        )
-        if registration.state == "invalidated":
-            return f"invalidated:{registration.assertion_id}"
-        projection_identity = registration.assertion_id
+        if registration is None:
+            registration = await canonical_facts.register(
+                intent,
+                targets=requested_targets,
+            )
+        if registration.state != "active" and not registration.reactivation_pending:
+            return f"{registration.state}:{registration.assertion_id}"
+        projection_identity = registration.projection_id or registration.assertion_id
         pending_targets = set(registration.pending_targets)
         projected_targets = requested_targets - pending_targets
         targets_to_verify = set(projected_targets)
@@ -153,7 +193,7 @@ async def apply_explicit_intent(
                 backend,
                 kg,
                 intent,
-                registration.assertion_id,
+                projection_identity,
                 targets_to_verify,
             )
             missing_targets = projected_targets - visible_targets
@@ -173,6 +213,12 @@ async def apply_explicit_intent(
                 )
                 pending_targets.difference_update(recovered_targets)
             if not pending_targets:
+                if registration.reactivation_pending:
+                    await canonical_facts.mark_reactivated(
+                        intent.memory_space_id,
+                        registration.intent_id,
+                    )
+                    return f"reactivated:{registration.assertion_id}"
                 return (
                     f"confirmed:{registration.assertion_id}:"
                     f"evidence:{registration.evidence_count}"
@@ -195,7 +241,10 @@ async def apply_explicit_intent(
                 _optional_attribute(attributes, "source_instance_id") or cmd.issuer
             ),
             wing=wing,
-            room=f"{USER_CONFIRMED_ROOM_PREFIX}{projection_identity[-16:]}",
+            room=(
+                f"{USER_CONFIRMED_ROOM_PREFIX}"
+                f"{_projection_room_token(projection_identity)}"
+            ),
             content=intent.raw_claim,
             memory_type=memory_type,
             importance=importance,
@@ -248,7 +297,149 @@ async def apply_explicit_intent(
                 registration.assertion_id,
                 targets={"kg"},
             )
+    if registration is not None and registration.reactivation_pending:
+        await canonical_facts.mark_reactivated(
+            intent.memory_space_id,
+            registration.intent_id,
+        )
+        return f"reactivated:{registration.assertion_id}"
     return resource_id
+
+
+async def _prepare_explicit_update(
+    backend: Any,
+    kg: Any,
+    intent: MemoryIntent,
+    canonical_facts: CanonicalFactWriter,
+    *,
+    occurred_at: str,
+) -> CanonicalFactRegistration | None:
+    """Plan exact reactivation or end a replaceable current single slot.
+
+    The caller has already enforced explicit authority and a complete triple.
+    Exact inactive facts may be reactivated without guessing. A different
+    object may be replaced only when the product registry explicitly permits
+    single-slot supersession.
+    """
+
+    assert intent.subject is not None
+    assert intent.predicate is not None
+    assert intent.object is not None
+    definition = predicate_definition(intent.predicate)
+    exact = await canonical_facts.get_fact(
+        intent.memory_space_id,
+        intent.subject,
+        intent.predicate,
+        intent.object,
+    )
+    if exact is not None and exact.state == "active":
+        return None
+
+    if exact is not None:
+        if definition.cardinality == PredicateCardinality.SINGLE:
+            await _supersede_explicit_single_slot(
+                backend,
+                kg,
+                intent,
+                canonical_facts,
+                occurred_at=occurred_at,
+            )
+        return await canonical_facts.register_reactivation(
+            intent.model_copy(update={"occurred_at": occurred_at}),
+            targets={"drawer", "kg"},
+        )
+
+    if (
+        definition.cardinality != PredicateCardinality.SINGLE
+        or definition.update_policy != PredicateUpdatePolicy.SUPERSEDE_EXPLICIT
+    ):
+        raise MemoryIntentRejected(
+            f"predicate {intent.predicate} requires exact correction, not update"
+        )
+    await _supersede_explicit_single_slot(
+        backend,
+        kg,
+        intent,
+        canonical_facts,
+        occurred_at=occurred_at,
+    )
+    return None
+
+
+def _projection_room_token(projection_identity: str) -> str:
+    if ":activation:" not in projection_identity:
+        return projection_identity[-16:]
+    return hashlib.sha256(projection_identity.encode("utf-8")).hexdigest()[:16]
+
+
+async def _supersede_explicit_single_slot(
+    backend: Any,
+    kg: Any,
+    intent: MemoryIntent,
+    canonical_facts: CanonicalFactWriter,
+    *,
+    occurred_at: str,
+) -> None:
+    assert intent.subject is not None
+    assert intent.predicate is not None
+    assert intent.object is not None
+    definition = predicate_definition(intent.predicate)
+    if (
+        definition.cardinality != PredicateCardinality.SINGLE
+        or definition.update_policy != PredicateUpdatePolicy.SUPERSEDE_EXPLICIT
+    ):
+        active = await canonical_facts.active_for_slot(
+            intent.memory_space_id,
+            intent.subject,
+            intent.predicate,
+        )
+        if any(fact.object != intent.object for fact in active):
+            raise MemoryIntentRejected(
+                f"predicate {intent.predicate} requires exact correction, not update"
+            )
+        return
+
+    active = await canonical_facts.active_for_slot(
+        intent.memory_space_id,
+        intent.subject,
+        intent.predicate,
+    )
+    different = [fact for fact in active if fact.object != intent.object]
+    same = [fact for fact in active if fact.object == intent.object]
+    if len(different) > 1 or (different and same):
+        raise MemoryIntentRejected("single predicate slot has conflicting active facts")
+    if not different:
+        return
+
+    old = different[0]
+    invalidation = MemoryIntent(
+        intent_id=f"{intent.intent_id}:supersede:{old.assertion_id}",
+        memory_space_id=intent.memory_space_id,
+        source_event_id=intent.source_event_id,
+        authority=intent.authority,
+        intent_type="correction",
+        raw_claim=intent.raw_claim,
+        operation_hint="invalidate",
+        subject=old.subject,
+        predicate=old.predicate,
+        object=old.object,
+        occurred_at=occurred_at,
+        tool_call_id=intent.tool_call_id,
+        confidence=intent.confidence,
+        attributes={
+            "reason": f"superseded by {intent.intent_id}",
+            "result_state": "superseded",
+            "superseded_by_intent_id": intent.intent_id,
+        },
+    )
+    result = await invalidate_exact_canonical_fact(
+        backend,
+        kg,
+        invalidation,
+        canonical_facts,
+    )
+    if not result.canonical_matched:
+        raise MemoryIntentRejected("single predicate update lost its active fact")
 
 
 def _non_blank_attribute(attributes: dict[str, Any], key: str, default: str) -> str:

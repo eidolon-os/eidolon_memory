@@ -15,7 +15,10 @@ from eidolon_sdk.memory import (
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
-from eidolon.memory.application.explicit_intents import apply_explicit_intent
+from eidolon.memory.application.explicit_intents import (
+    _projection_room_token,
+    apply_explicit_intent,
+)
 from eidolon.memory.application.turn_processor import process_turn_message
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.canonical_fact import canonical_assertion_id
@@ -133,24 +136,54 @@ def _steward() -> MagicMock:
     return steward
 
 
-def _explicit_command() -> MemoryIntentCommand:
+def _explicit_command(
+    *,
+    request_id: str = "explicit-1",
+    intent_id: str = "intent:explicit-1",
+    predicate: str = "likes",
+    object_: str = "oolong",
+    operation_hint: str = "confirm",
+    raw_claim: str = "我喜欢乌龙茶",
+) -> MemoryIntentCommand:
     return MemoryIntentCommand(
-        request_id="explicit-1",
+        request_id=request_id,
         memory_space_id=MEMORY_SPACE_ID,
         issued_at="2026-06-01T00:01:00Z",
         issuer="agent",
         intent=MemoryIntent(
-            intent_id="intent:explicit-1",
+            intent_id=intent_id,
             memory_space_id=MEMORY_SPACE_ID,
             source_event_id="turn-explicit",
             authority="explicit_user",
             intent_type="preference",
-            raw_claim="我喜欢乌龙茶",
-            operation_hint="confirm",
+            raw_claim=raw_claim,
+            operation_hint=operation_hint,
+            subject="self",
+            predicate=predicate,
+            object=object_,
+            confidence=0.99,
+        ),
+    )
+
+
+def _exact_correction_command() -> MemoryIntentCommand:
+    return MemoryIntentCommand(
+        request_id="correction-1",
+        memory_space_id=MEMORY_SPACE_ID,
+        issued_at="2026-06-02T00:00:00Z",
+        issuer="agent",
+        intent=MemoryIntent(
+            intent_id="intent:correction-1",
+            memory_space_id=MEMORY_SPACE_ID,
+            source_event_id="turn-correction",
+            authority="explicit_user",
+            intent_type="correction",
+            raw_claim="我不再喜欢乌龙茶",
+            operation_hint="invalidate",
             subject="self",
             predicate="likes",
             object="oolong",
-            confidence=0.99,
+            confidence=1.0,
         ),
     )
 
@@ -381,6 +414,166 @@ async def test_exact_change_archives_canonical_drawer_and_keeps_fact_history(
     assert stats.invalidations_total == 1
     assert stats.drawer_projected == 0
     assert stats.kg_projected == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_single_slot_update_supersedes_old_fact_via_existing_ports(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+
+    await apply_explicit_intent(
+        backend,
+        kg,
+        _explicit_command(
+            predicate="lives_in",
+            object_="常州",
+            raw_claim="我住在常州",
+        ),
+        canonical_facts=ledger,
+    )
+    result = await apply_explicit_intent(
+        backend,
+        kg,
+        _explicit_command(
+            request_id="explicit-2",
+            intent_id="intent:explicit-2",
+            predicate="lives_in",
+            object_="苏州",
+            operation_hint="update",
+            raw_claim="我现在住在苏州",
+        ),
+        canonical_facts=ledger,
+    )
+
+    assert result.startswith("memoryintent:fact:")
+    assert ("self", "lives_in", "常州") not in kg.rows
+    assert ("self", "lives_in", "苏州") in kg.rows
+    old_id = canonical_assertion_id(
+        MEMORY_SPACE_ID, "self", "lives_in", "常州"
+    )
+    old_drawer = await backend.get_by_source_turn_id(
+        MEMORY_SPACE_ID, f"canonical:{old_id}"
+    )
+    assert old_drawer is not None
+    assert old_drawer.metadata["privacy"] == "do_not_recall"
+    active = await ledger.active_for_slot(MEMORY_SPACE_ID, "self", "lives_in")
+    assert [fact.object for fact in active] == ["苏州"]
+    stats = await ledger.stats()
+    assert stats.assertions_active == 1
+    assert stats.assertions_superseded == 1
+    assert stats.assertions_invalidated == 0
+    assert stats.supersessions_total == 1
+    assert stats.invalidations_total == 0
+
+    replay = await apply_explicit_intent(
+        backend,
+        kg,
+        _explicit_command(
+            predicate="lives_in",
+            object_="常州",
+            raw_claim="我住在常州",
+        ),
+        canonical_facts=ledger,
+    )
+    assert replay.startswith("superseded:")
+    assert ("self", "lives_in", "常州") not in kg.rows
+    assert ("self", "lives_in", "苏州") in kg.rows
+
+
+@pytest.mark.asyncio
+async def test_explicit_update_does_not_guess_replacement_for_multi_value_fact(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+
+    await apply_explicit_intent(
+        backend,
+        kg,
+        _explicit_command(),
+        canonical_facts=ledger,
+    )
+
+    with pytest.raises(ValueError, match="requires exact correction"):
+        await apply_explicit_intent(
+            backend,
+            kg,
+            _explicit_command(
+                request_id="explicit-2",
+                intent_id="intent:explicit-2",
+                object_="coffee",
+                operation_hint="update",
+                raw_claim="我现在更喜欢咖啡",
+            ),
+            canonical_facts=ledger,
+        )
+
+    assert ("self", "likes", "oolong") in kg.rows
+    assert ("self", "likes", "coffee") not in kg.rows
+
+
+@pytest.mark.asyncio
+async def test_explicit_exact_update_reactivates_without_stale_replay_damage(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    original = _explicit_command()
+    correction = _exact_correction_command()
+
+    await apply_explicit_intent(
+        backend, kg, original, canonical_facts=ledger
+    )
+    await apply_explicit_intent(
+        backend, kg, correction, canonical_facts=ledger
+    )
+    reactivated = await apply_explicit_intent(
+        backend,
+        kg,
+        _explicit_command(
+            request_id="reactivate-1",
+            intent_id="intent:reactivate-1",
+            operation_hint="update",
+            raw_claim="我又开始喜欢乌龙茶了",
+        ),
+        canonical_facts=ledger,
+    )
+
+    assert reactivated.startswith("reactivated:")
+    assert ("self", "likes", "oolong") in kg.rows
+    records = await backend.get_all(MEMORY_SPACE_ID)
+    matching = [row for row in records if "乌龙茶" in str(row.value)]
+    assert len(matching) == 2
+    assert sum(row.metadata.get("privacy") == "do_not_recall" for row in matching) == 1
+    assert sum(row.metadata.get("privacy") == "normal" for row in matching) == 1
+
+    stale_replay = await apply_explicit_intent(
+        backend, kg, correction, canonical_facts=ledger
+    )
+    assert stale_replay.startswith("invalidated:")
+    assert ("self", "likes", "oolong") in kg.rows
+    history = await ledger.history(
+        MEMORY_SPACE_ID, "self", "likes", object_value="oolong"
+    )
+    assert history[0].fact.state == "active"
+    assert [event.transition for event in history[0].transitions] == [
+        "invalidated",
+        "reactivated",
+    ]
+
+
+def test_reactivation_projection_rooms_do_not_collide_between_facts() -> None:
+    first = _projection_room_token("fact:first:activation:2")
+    second = _projection_room_token("fact:second:activation:2")
+
+    assert first != second
+    assert len(first) == 16
+    assert _projection_room_token("fact:0123456789abcdef") == "0123456789abcdef"
 
 
 @pytest.mark.asyncio

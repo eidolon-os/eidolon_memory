@@ -11,6 +11,7 @@ import pytest
 
 from tests.memory.e2e.conftest import (
     mcp_tool_json,
+    nats_publish_commitment,
     nats_publish_exact_correction,
     nats_publish_kg_add_triple,
     nats_publish_user_confirm,
@@ -293,4 +294,315 @@ async def test_live_exact_canonical_invalidation_archives_current_projection(
         assert not any(
             row.get("object") == marker
             for row in (current or {}).get("triples") or []
+        )
+
+
+async def test_live_explicit_single_slot_update_retains_superseded_history(
+    mcp_session,
+) -> None:
+    if os.environ.get("EIDOLON_MEMORY_LIVE_CANONICAL_WRITE") != "1":
+        pytest.skip("set EIDOLON_MEMORY_LIVE_CANONICAL_WRITE=1 for write canary")
+    target = _realms()[0]
+    realm_id = str(target["realm_id"])
+    port = int(target["port"])
+    nats_url = os.environ.get(
+        "EIDOLON_MEMORY_LIVE_NATS_URL",
+        "nats://127.0.0.1:4222",
+    )
+    marker = uuid.uuid4().hex[:12]
+    subject = f"person:update-canary:{marker}"
+    old_city = f"old-city:{marker}"
+    new_city = f"new-city:{marker}"
+
+    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+        before = mcp_tool_json(
+            await session.call_tool("eidolon_memory_canonical_stats", {})
+        )
+        add_id = await nats_publish_user_confirm(
+            nats_url,
+            user_id=realm_id,
+            text=f"{subject} lives in {old_city}",
+            request_id=f"live-update-add-{uuid.uuid4().hex}",
+            subject=subject,
+            predicate="lives_in",
+            object_value=old_city,
+        )
+        assert (await _wait_for_command(session, add_id))["status"] == "applied"
+
+        update_id = await nats_publish_user_confirm(
+            nats_url,
+            user_id=realm_id,
+            text=f"{subject} now lives in {new_city}",
+            request_id=f"live-update-replace-{uuid.uuid4().hex}",
+            subject=subject,
+            predicate="lives_in",
+            object_value=new_city,
+            operation_hint="update",
+        )
+        update = await _wait_for_command(session, update_id)
+        assert update["status"] == "applied", update
+
+        after = mcp_tool_json(
+            await session.call_tool("eidolon_memory_canonical_stats", {})
+        )
+        assert after["assertions_total"] == before["assertions_total"] + 2
+        assert after["assertions_active"] == before["assertions_active"] + 1
+        assert after["assertions_superseded"] == before["assertions_superseded"] + 1
+        assert after["supersessions_total"] == before["supersessions_total"] + 1
+        assert after["invalidations_total"] == before["invalidations_total"]
+
+        records, historical = await _snapshot(session)
+        old_drawer = next(
+            row for row in records if old_city in str(row.get("value") or "")
+        )
+        assert (old_drawer.get("metadata") or {}).get("privacy") == "do_not_recall"
+        old_rows = [
+            row
+            for row in historical
+            if row.get("subject") == subject
+            and row.get("predicate") == "lives_in"
+            and row.get("object") == old_city
+        ]
+        assert len(old_rows) == 1
+        assert old_rows[0].get("valid_to") is not None
+
+        current = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_kg_snapshot",
+                {
+                    "max_triples": 5000,
+                    "current_only": True,
+                    "include_sensitive": True,
+                },
+            )
+        )
+        current_rows = list((current or {}).get("triples") or [])
+        assert not any(row.get("object") == old_city for row in current_rows)
+        assert any(
+            row.get("subject") == subject
+            and row.get("predicate") == "lives_in"
+            and row.get("object") == new_city
+            for row in current_rows
+        )
+
+
+async def test_live_exact_fact_reactivation_creates_new_validity_period(
+    mcp_session,
+) -> None:
+    if os.environ.get("EIDOLON_MEMORY_LIVE_CANONICAL_WRITE") != "1":
+        pytest.skip("set EIDOLON_MEMORY_LIVE_CANONICAL_WRITE=1 for write canary")
+    target = _realms()[0]
+    realm_id = str(target["realm_id"])
+    port = int(target["port"])
+    nats_url = os.environ.get(
+        "EIDOLON_MEMORY_LIVE_NATS_URL",
+        "nats://127.0.0.1:4222",
+    )
+    marker = uuid.uuid4().hex[:12]
+    subject = f"person:reactivation-canary:{marker}"
+    object_value = f"topic:reactivation:{marker}"
+
+    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+        before = mcp_tool_json(
+            await session.call_tool("eidolon_memory_canonical_stats", {})
+        )
+        add_id = await nats_publish_user_confirm(
+            nats_url,
+            user_id=realm_id,
+            text=f"{subject} likes {object_value}",
+            request_id=f"live-reactivation-add-{uuid.uuid4().hex}",
+            subject=subject,
+            predicate="likes",
+            object_value=object_value,
+        )
+        assert (await _wait_for_command(session, add_id))["status"] == "applied"
+
+        correction_id = await nats_publish_exact_correction(
+            nats_url,
+            user_id=realm_id,
+            subject=subject,
+            predicate="likes",
+            object_value=object_value,
+            text=f"{subject} no longer likes {object_value}",
+            request_id=f"live-reactivation-end-{uuid.uuid4().hex}",
+        )
+        assert (
+            await _wait_for_command(session, correction_id)
+        )["status"] == "applied"
+
+        reactivation_id = await nats_publish_user_confirm(
+            nats_url,
+            user_id=realm_id,
+            text=f"{subject} likes {object_value} again",
+            request_id=f"live-reactivation-again-{uuid.uuid4().hex}",
+            subject=subject,
+            predicate="likes",
+            object_value=object_value,
+            operation_hint="update",
+        )
+        reactivated = await _wait_for_command(session, reactivation_id)
+        assert reactivated["status"] == "applied", reactivated
+        assert str(reactivated.get("resource_id") or "").startswith("reactivated:")
+
+        after = mcp_tool_json(
+            await session.call_tool("eidolon_memory_canonical_stats", {})
+        )
+        assert after["assertions_total"] == before["assertions_total"] + 1
+        assert after["assertions_active"] == before["assertions_active"] + 1
+        assert after["reactivations_total"] == before["reactivations_total"] + 1
+        assert after["reactivations_pending"] == 0
+
+        history = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_fact_history",
+                {
+                    "subject": subject,
+                    "predicate": "likes",
+                    "object_value": object_value,
+                },
+            )
+        )
+        assert history["status"] == "ok"
+        fact = history["facts"][0]
+        assert fact["fact"]["state"] == "active"
+        assert fact["fact"]["projection_id"].endswith(":activation:2")
+        assert [row["transition"] for row in fact["transitions"]] == [
+            "invalidated",
+            "reactivated",
+        ]
+        assert len(fact["evidence"]) == 2
+
+        records, triples = await _snapshot(session)
+        drawers = [
+            row for row in records if object_value in str(row.get("value") or "")
+        ]
+        assert len(drawers) == 2
+        assert sum(
+            (row.get("metadata") or {}).get("privacy") == "do_not_recall"
+            for row in drawers
+        ) == 1
+        exact_rows = [
+            row
+            for row in triples
+            if row.get("subject") == subject
+            and row.get("predicate") == "likes"
+            and row.get("object") == object_value
+        ]
+        assert len(exact_rows) == 2
+        assert sum(row.get("valid_to") is None for row in exact_rows) == 1
+        assert sum(row.get("valid_to") is not None for row in exact_rows) == 1
+
+
+async def test_live_commitment_supplement_and_fulfilment_lifecycle(
+    mcp_session,
+) -> None:
+    if os.environ.get("EIDOLON_MEMORY_LIVE_CANONICAL_WRITE") != "1":
+        pytest.skip("set EIDOLON_MEMORY_LIVE_CANONICAL_WRITE=1 for write canary")
+    target = _realms()[0]
+    realm_id = str(target["realm_id"])
+    port = int(target["port"])
+    nats_url = os.environ.get(
+        "EIDOLON_MEMORY_LIVE_NATS_URL",
+        "nats://127.0.0.1:4222",
+    )
+    marker = uuid.uuid4().hex[:12]
+    subject = f"person:commitment-canary:{marker}"
+    action = f"带 companion:test 去恐龙园 {marker}"
+    beneficiary = f"companion:test:{marker}"
+
+    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+        create_id = await nats_publish_commitment(
+            nats_url,
+            user_id=realm_id,
+            subject=subject,
+            action=action,
+            text=f"以后我带你去恐龙园 {marker}",
+            operation_hint="confirm",
+            request_id=f"live-commitment-create-{uuid.uuid4().hex}",
+            beneficiaries=[beneficiary],
+        )
+        created = await _wait_for_command(session, create_id)
+        assert created["status"] == "applied", created
+        resource_id = str(created.get("resource_id") or "")
+        commitment_id = resource_id.split(":revision:", 1)[0]
+        assert commitment_id.startswith("commitment:")
+
+        supplement_id = await nats_publish_commitment(
+            nats_url,
+            user_id=realm_id,
+            subject=subject,
+            action=action,
+            text=f"到时候带朋友一起 {marker}",
+            operation_hint="update",
+            request_id=f"live-commitment-supplement-{uuid.uuid4().hex}",
+            target_id=commitment_id,
+            participants=[f"friend:小明:{marker}", f"friend:小红:{marker}"],
+        )
+        supplemented = await _wait_for_command(session, supplement_id)
+        assert supplemented["status"] == "applied", supplemented
+
+        current = mcp_tool_json(
+            await session.call_tool("eidolon_memory_commitments", {})
+        )
+        commitment = next(
+            row
+            for row in current["commitments"]
+            if row["commitment_id"] == commitment_id
+        )
+        assert commitment["status"] == "confirmed"
+        assert commitment["revision"] == 2
+        assert commitment["participants"] == [
+            f"friend:小明:{marker}",
+            f"friend:小红:{marker}",
+        ]
+        assert commitment["drawer_projection_state"] == "projected"
+        assert commitment["kg_projection_state"] == "projected"
+
+        fulfil_id = await nats_publish_commitment(
+            nats_url,
+            user_id=realm_id,
+            subject=subject,
+            action=action,
+            text=f"我们已经去过恐龙园了 {marker}",
+            operation_hint="update",
+            request_id=f"live-commitment-fulfil-{uuid.uuid4().hex}",
+            target_id=commitment_id,
+            status="fulfilled",
+        )
+        fulfilled = await _wait_for_command(session, fulfil_id)
+        assert fulfilled["status"] == "applied", fulfilled
+
+        current = mcp_tool_json(
+            await session.call_tool("eidolon_memory_commitments", {})
+        )
+        assert not any(
+            row["commitment_id"] == commitment_id
+            for row in current["commitments"]
+        )
+        history = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_commitment_history",
+                {"commitment_id": commitment_id},
+            )
+        )
+        assert history["status"] == "ok"
+        assert [row["status"] for row in history["revisions"]] == [
+            "confirmed",
+            "confirmed",
+            "fulfilled",
+        ]
+
+        records, triples = await _snapshot(session)
+        drawers = [row for row in records if marker in str(row.get("value") or "")]
+        assert len(drawers) == 2
+        assert all(
+            (row.get("metadata") or {}).get("privacy") == "do_not_recall"
+            for row in drawers
+        )
+        assert not any(
+            row.get("subject") == subject
+            and row.get("predicate") == "promised"
+            and row.get("object") == action
+            and row.get("valid_to") is None
+            for row in triples
         )

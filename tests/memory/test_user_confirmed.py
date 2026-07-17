@@ -424,7 +424,9 @@ async def test_exact_correction_uses_canonical_lifecycle_and_is_replay_safe(
     )
     assert drawer is not None
     assert drawer.metadata["privacy"] == "do_not_recall"
-    assert kg.invalidate.await_count == 2
+    # An already-applied lifecycle event is a full no-op. Replaying it after a
+    # future reactivation must never end the new KG validity period.
+    assert kg.invalidate.await_count == 1
     stats = await canonical.stats()
     assert stats.assertions_invalidated == 1
     assert stats.invalidations_total == 1

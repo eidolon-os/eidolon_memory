@@ -10,6 +10,7 @@ from eidolon_sdk.memory import MemoryIntent
 
 from eidolon.memory.domain.canonical_fact import (
     CanonicalEvidenceConflict,
+    CanonicalFactConflict,
     CanonicalFactInactive,
     canonical_assertion_id,
 )
@@ -118,6 +119,86 @@ async def test_new_confirmation_keeps_one_fact_and_adds_provenance(
     assert confirmed.evidence_count == 2
     assert confirmed.pending_targets == []
     assert await ledger.evidence_count(first.assertion_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_single_slot_rejects_parallel_active_values(tmp_path: Path) -> None:
+    ledger = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    first = _intent("intent:1", object_="常州").model_copy(
+        update={"predicate": "lives_in", "raw_claim": "我住在常州"}
+    )
+    second = _intent(
+        "intent:2", object_="苏州", source_event_id="turn-2"
+    ).model_copy(update={"predicate": "lives_in", "raw_claim": "我住在苏州"})
+
+    await ledger.register(first, targets={"kg"})
+
+    with pytest.raises(CanonicalFactConflict, match="single predicate slot"):
+        await ledger.register(second, targets={"kg"})
+
+    active = await ledger.active_for_slot(MEMORY_SPACE_ID, "self", "lives_in")
+    assert [fact.object for fact in active] == ["常州"]
+
+
+@pytest.mark.asyncio
+async def test_reactivation_stays_inactive_until_new_projections_are_visible(
+    tmp_path: Path,
+) -> None:
+    ledger = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    original = _intent("intent:1")
+    await ledger.register(original, targets={"drawer", "kg"})
+    await ledger.register_invalidation(_invalidation())
+    await ledger.mark_invalidated(MEMORY_SPACE_ID, _invalidation().intent_id)
+    reactivation = _intent(
+        "intent:reactivate", source_event_id="turn-reactivate"
+    ).model_copy(
+        update={
+            "operation_hint": "update",
+            "raw_claim": "我又开始喜欢乌龙茶了",
+            "occurred_at": "2026-07-01T00:00:00Z",
+        }
+    )
+
+    pending = await ledger.register_reactivation(
+        reactivation,
+        targets={"drawer", "kg"},
+    )
+
+    assert pending.reactivation_pending is True
+    assert pending.projection_id == f"{pending.assertion_id}:activation:2"
+    assert (await ledger.get_fact(
+        MEMORY_SPACE_ID, "self", "likes", "乌龙茶"
+    )).state == "invalidated"
+    with pytest.raises(RuntimeError, match="projections are still pending"):
+        await ledger.mark_reactivated(MEMORY_SPACE_ID, reactivation.intent_id)
+
+    await ledger.mark_projected(
+        MEMORY_SPACE_ID,
+        pending.assertion_id,
+        targets={"drawer", "kg"},
+    )
+    await ledger.mark_reactivated(MEMORY_SPACE_ID, reactivation.intent_id)
+
+    active = await ledger.get_fact(
+        MEMORY_SPACE_ID, "self", "likes", "乌龙茶"
+    )
+    assert active is not None
+    assert active.state == "active"
+    assert active.projection_id.endswith(":activation:2")
+    history = await ledger.history(
+        MEMORY_SPACE_ID, "self", "likes", object_value="乌龙茶"
+    )
+    assert [event.transition for event in history[0].transitions] == [
+        "invalidated",
+        "reactivated",
+    ]
+    assert [item.intent_id for item in history[0].evidence] == [
+        "intent:1",
+        "intent:reactivate",
+    ]
+    stats = await ledger.stats()
+    assert stats.reactivations_total == 1
+    assert stats.reactivations_pending == 0
 
 
 @pytest.mark.asyncio

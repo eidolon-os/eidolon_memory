@@ -18,12 +18,19 @@ if TYPE_CHECKING:
 
     from eidolon.memory.application.working_memory import WorkingMemoryRing
     from eidolon.memory.domain.canonical_fact import (
+        CanonicalFactHistoryRecord,
         CanonicalFactInvalidation,
+        CanonicalFactRecord,
         CanonicalFactRegistration,
         CanonicalFactStats,
         ProjectionTarget,
     )
     from eidolon.memory.domain.command_status import CommandStatusRecord, CommandStatusStats
+    from eidolon.memory.domain.commitment import (
+        CommitmentApplyResult,
+        CommitmentRecord,
+        CommitmentRevisionRecord,
+    )
     from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
     from eidolon.memory.domain.extraction_decision import ExtractionDecisionRecord
     from eidolon.memory.domain.fragments import MemoryFragment
@@ -175,6 +182,16 @@ class CanonicalFactReader(Protocol):
 
     async def stats(self) -> CanonicalFactStats: ...
 
+    async def history(
+        self,
+        memory_space_id: str,
+        subject: str,
+        predicate: str,
+        *,
+        object_value: str | None = None,
+        limit: int = 100,
+    ) -> list[CanonicalFactHistoryRecord]: ...
+
 
 @runtime_checkable
 class CanonicalFactWriter(Protocol):
@@ -186,6 +203,34 @@ class CanonicalFactWriter(Protocol):
         *,
         targets: set[ProjectionTarget],
     ) -> CanonicalFactRegistration: ...
+
+    async def active_for_slot(
+        self,
+        memory_space_id: str,
+        subject: str,
+        predicate: str,
+    ) -> list[CanonicalFactRecord]: ...
+
+    async def get_fact(
+        self,
+        memory_space_id: str,
+        subject: str,
+        predicate: str,
+        object_value: str,
+    ) -> CanonicalFactRecord | None: ...
+
+    async def register_reactivation(
+        self,
+        intent: MemoryIntent,
+        *,
+        targets: set[ProjectionTarget],
+    ) -> CanonicalFactRegistration: ...
+
+    async def mark_reactivated(
+        self,
+        memory_space_id: str,
+        intent_id: str,
+    ) -> None: ...
 
     async def mark_projected(
         self,
@@ -218,6 +263,48 @@ class CanonicalFactWriter(Protocol):
 @runtime_checkable
 class CanonicalFactStore(CanonicalFactReader, CanonicalFactWriter, Protocol):
     """Combined canonical ledger port used only at the composition boundary."""
+
+
+@runtime_checkable
+class CommitmentReader(Protocol):
+    async def get(
+        self, memory_space_id: str, commitment_id: str
+    ) -> CommitmentRecord | None: ...
+
+    async def list_current(
+        self,
+        memory_space_id: str,
+        *,
+        include_terminal: bool = False,
+        limit: int = 100,
+    ) -> list[CommitmentRecord]: ...
+
+    async def history(
+        self,
+        memory_space_id: str,
+        commitment_id: str,
+        *,
+        limit: int = 200,
+    ) -> list[CommitmentRevisionRecord]: ...
+
+
+@runtime_checkable
+class CommitmentWriter(Protocol):
+    async def apply(self, intent: MemoryIntent) -> CommitmentApplyResult: ...
+
+    async def mark_projected(
+        self,
+        memory_space_id: str,
+        commitment_id: str,
+        revision: int,
+        *,
+        targets: set[ProjectionTarget],
+    ) -> None: ...
+
+
+@runtime_checkable
+class CommitmentStore(CommitmentReader, CommitmentWriter, Protocol):
+    """Combined commitment aggregate at the Realm composition boundary."""
 
 
 @runtime_checkable

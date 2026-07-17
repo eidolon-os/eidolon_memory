@@ -45,9 +45,11 @@ from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import (
     CanonicalFactReader,
     CommandStatusStore,
+    CommitmentReader,
     DlqStore,
     MemoryBackend,
 )
+from eidolon.memory.domain.predicates import predicate_definition
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.palace_init import palace_is_initialized
 from eidolon.memory.support.logging import get_logger
@@ -68,6 +70,7 @@ def build_control_plane_mcp(
     command_publisher: Any = None,
     command_status: CommandStatusStore | None = None,
     canonical_facts: CanonicalFactReader | None = None,
+    commitments: CommitmentReader | None = None,
     dlq_store: DlqStore | None = None,
     replay_publisher: Any = None,
 ):
@@ -210,6 +213,87 @@ def build_control_plane_mcp(
         async def eidolon_memory_canonical_stats() -> dict[str, Any]:
             """Read exact-fact evidence and projection-state counts."""
             return (await canonical_facts.stats()).to_dict()
+
+        @mcp.tool()
+        async def eidolon_memory_fact_history(
+            subject: str,
+            predicate: str,
+            object_value: str | None = None,
+            limit: int = 100,
+            include_sensitive: bool = False,
+        ) -> dict[str, Any]:
+            """Current state and auditable lifecycle for one canonical fact slot."""
+            clean_subject = (subject or "").strip()
+            clean_predicate = (predicate or "").strip()
+            clean_object = (object_value or "").strip() or None
+            if not clean_subject or not clean_predicate:
+                return {"status": "error", "error": "subject and predicate are required"}
+            try:
+                definition = predicate_definition(clean_predicate)
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+            if definition.sensitive and not include_sensitive:
+                return {
+                    "status": "redacted",
+                    "predicate": clean_predicate,
+                    "reason": "include_sensitive is required",
+                    "facts": [],
+                }
+            records = await canonical_facts.history(
+                memory_space_id,
+                clean_subject,
+                clean_predicate,
+                object_value=clean_object,
+                limit=max(1, min(limit, 100)),
+            )
+            return {
+                "status": "ok",
+                "memory_space_id": memory_space_id,
+                "subject": clean_subject,
+                "predicate": clean_predicate,
+                "object": clean_object,
+                "facts": [record.model_dump(mode="json") for record in records],
+            }
+
+    if commitments is not None:
+
+        @mcp.tool()
+        async def eidolon_memory_commitments(
+            include_terminal: bool = False,
+            limit: int = 100,
+        ) -> dict[str, Any]:
+            """List current commitments, optionally including terminal history."""
+            records = await commitments.list_current(
+                memory_space_id,
+                include_terminal=include_terminal,
+                limit=max(1, min(limit, 200)),
+            )
+            return {
+                "memory_space_id": memory_space_id,
+                "include_terminal": include_terminal,
+                "commitments": [row.model_dump(mode="json") for row in records],
+            }
+
+        @mcp.tool()
+        async def eidolon_memory_commitment_history(
+            commitment_id: str,
+            limit: int = 200,
+        ) -> dict[str, Any]:
+            """Read immutable revisions for one Realm-bound commitment."""
+            clean_id = (commitment_id or "").strip()
+            if not clean_id:
+                return {"status": "error", "error": "commitment_id is required"}
+            revisions = await commitments.history(
+                memory_space_id,
+                clean_id,
+                limit=max(1, min(limit, 500)),
+            )
+            return {
+                "status": "ok" if revisions else "not_found",
+                "memory_space_id": memory_space_id,
+                "commitment_id": clean_id,
+                "revisions": [row.model_dump(mode="json") for row in revisions],
+            }
 
     if dlq_store is not None:
         _register_dlq_tools(
