@@ -160,6 +160,27 @@ def score_commitment_shadow(observations: list[dict]) -> dict:
     policy_rejections = sum(
         row.get("error_type") == "policy_rejected" for row in failed
     )
+    elapsed_ms = sorted(
+        float(row["elapsed_ms"])
+        for row in observations
+        if row.get("elapsed_ms") is not None
+    )
+    named_groups: dict[str, list[dict]] = {}
+    for row in observations:
+        if name := str(row.get("name") or "").strip():
+            named_groups.setdefault(name, []).append(row)
+    runs_per_case = [len(rows) for rows in named_groups.values()]
+    repeat_case_coverage = bool(runs_per_case) and min(runs_per_case) >= 2
+    consistent_cases = sum(
+        len({_outcome_key(row) for row in rows}) == 1
+        for rows in named_groups.values()
+    )
+    all_runs_correct_cases = sum(
+        all(not row.get("error") and _observation_correct(row) for row in rows)
+        for rows in named_groups.values()
+    )
+    case_consistency_rate = _ratio(consistent_cases, len(named_groups))
+    all_runs_correct_rate = _ratio(all_runs_correct_cases, len(named_groups))
     operation_correct = sum(
         row.get("actual_operation") == row.get("expected_operation")
         for row in valid
@@ -210,6 +231,8 @@ def score_commitment_shadow(observations: list[dict]) -> dict:
         "schema_failure_rate": schema_failure_rate == 0.0,
         "provider_failure_rate": provider_failure_rate == 0.0,
         "policy_rejection_rate": policy_rejection_rate == 0.0,
+        "repeat_case_coverage": repeat_case_coverage,
+        "case_consistency_rate": case_consistency_rate >= 0.95,
         "high_confidence_errors": high_confidence_errors == 0,
         "action_case_coverage": bool(action_rows),
         "target_case_coverage": bool(target_rows),
@@ -241,6 +264,21 @@ def score_commitment_shadow(observations: list[dict]) -> dict:
             "provider_failure_rate": provider_failure_rate,
             "policy_rejection_rate": policy_rejection_rate,
         },
+        "latency_ms": {
+            "samples": len(elapsed_ms),
+            "p50": _percentile(elapsed_ms, 50),
+            "p95": _percentile(elapsed_ms, 95),
+            "p99": _percentile(elapsed_ms, 99),
+        },
+        "stability": {
+            "cases": len(named_groups),
+            "min_runs_per_case": min(runs_per_case) if runs_per_case else 0,
+            "max_runs_per_case": max(runs_per_case) if runs_per_case else 0,
+            "consistent_cases": consistent_cases,
+            "case_consistency_rate": case_consistency_rate,
+            "all_runs_correct_cases": all_runs_correct_cases,
+            "all_runs_correct_rate": all_runs_correct_rate,
+        },
         "gates": gates,
     }
 
@@ -263,10 +301,26 @@ def _observation_correct(row: dict) -> bool:
     return True
 
 
+def _outcome_key(row: dict) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("error_type") or ""),
+        str(row.get("actual_operation") or ""),
+        str(row.get("actual_target_id") or ""),
+        _normalize(str(row.get("actual_action") or "")),
+    )
+
+
 def _ratio(numerator: int, denominator: int) -> float:
     if denominator == 0:
         return 1.0
     return round(numerator / denominator, 4)
+
+
+def _percentile(values: list[float], percentile: int) -> float | None:
+    if not values:
+        return None
+    rank = max(1, (len(values) * percentile + 99) // 100)
+    return round(values[min(rank, len(values)) - 1], 1)
 
 
 __all__ = [

@@ -20,6 +20,7 @@ from eidolon.memory.domain.commitment_shadow import (
     score_commitment_shadow,
     validate_shadow_candidate,
 )
+from scripts.benchmark.eval_commitment_shadow import _amain, _run_case
 
 
 def _target(commitment_id: str = "commitment-1") -> CommitmentShadowTarget:
@@ -139,6 +140,7 @@ def test_shadow_score_exposes_false_positive_and_schema_gates() -> None:
             "expected_action": "周六陪妈妈去医院",
             "actual_action": "周六陪妈妈去医院",
             "actual_confidence": 0.95,
+            "elapsed_ms": 10.0,
             "error": None,
         },
         {
@@ -149,6 +151,7 @@ def test_shadow_score_exposes_false_positive_and_schema_gates() -> None:
             "expected_action": "陪妈妈去医院复查",
             "actual_action": "陪妈妈去医院复查",
             "actual_confidence": 0.95,
+            "elapsed_ms": 20.0,
             "error": None,
         },
         {
@@ -159,6 +162,7 @@ def test_shadow_score_exposes_false_positive_and_schema_gates() -> None:
             "expected_action": None,
             "actual_action": "去冰岛",
             "actual_confidence": 0.9,
+            "elapsed_ms": 30.0,
             "error": None,
         },
         {
@@ -169,6 +173,7 @@ def test_shadow_score_exposes_false_positive_and_schema_gates() -> None:
             "expected_action": "另一件事",
             "actual_action": None,
             "actual_confidence": None,
+            "elapsed_ms": 40.0,
             "error": "schema invalid",
         },
     ]
@@ -186,6 +191,12 @@ def test_shadow_score_exposes_false_positive_and_schema_gates() -> None:
     assert result["gates"]["target_case_coverage"] is True
     assert result["gates"]["none_case_coverage"] is True
     assert result["counts"]["high_confidence_errors"] == 1
+    assert result["latency_ms"] == {
+        "samples": 4,
+        "p50": 20.0,
+        "p95": 40.0,
+        "p99": 40.0,
+    }
     assert result["gates"]["overall_pass"] is False
 
 
@@ -211,6 +222,63 @@ def test_shadow_score_separates_provider_schema_and_policy_failures() -> None:
         1 / 3, abs=0.0001
     )
     assert result["gates"]["overall_pass"] is False
+
+
+def test_shadow_score_requires_consistent_repeated_cases() -> None:
+    observations = []
+    for run_index in (1, 2):
+        observations.extend(
+            [
+                {
+                    "name": "create",
+                    "run_index": run_index,
+                    "expected_operation": "create",
+                    "actual_operation": "create",
+                    "expected_action": "周六陪妈妈去医院",
+                    "actual_action": "周六陪妈妈去医院",
+                    "actual_confidence": 0.9,
+                    "error": None,
+                },
+                {
+                    "name": "fulfil",
+                    "run_index": run_index,
+                    "expected_operation": "fulfil",
+                    "actual_operation": "fulfil",
+                    "expected_target_id": "commitment-1",
+                    "actual_target_id": "commitment-1",
+                    "expected_action": "陪妈妈去医院",
+                    "actual_action": "陪妈妈去医院",
+                    "actual_confidence": 0.9,
+                    "error": None,
+                },
+                {
+                    "name": "none",
+                    "run_index": run_index,
+                    "expected_operation": "none",
+                    "actual_operation": "none",
+                    "actual_confidence": 0.9,
+                    "error": None,
+                },
+            ]
+        )
+
+    passed = score_commitment_shadow(observations)
+
+    assert passed["stability"]["min_runs_per_case"] == 2
+    assert passed["stability"]["case_consistency_rate"] == 1.0
+    assert passed["stability"]["all_runs_correct_rate"] == 1.0
+    assert passed["gates"]["repeat_case_coverage"] is True
+    assert passed["gates"]["overall_pass"] is True
+
+    observations[-2]["actual_operation"] = "none"
+    inconsistent = score_commitment_shadow(observations)
+
+    assert inconsistent["stability"]["consistent_cases"] == 2
+    assert inconsistent["stability"]["case_consistency_rate"] == pytest.approx(
+        2 / 3, abs=0.0001
+    )
+    assert inconsistent["gates"]["case_consistency_rate"] is False
+    assert inconsistent["gates"]["overall_pass"] is False
 
 
 @pytest.mark.asyncio
@@ -290,6 +358,35 @@ async def test_litellm_shadow_proposer_reports_empty_provider_output(
         await proposer.propose(_input())
 
     assert raised.value.failure_type == "provider_empty"
+
+
+@pytest.mark.asyncio
+async def test_benchmark_case_records_repeat_index() -> None:
+    class _Proposer:
+        async def propose(self, shadow_input):
+            return CommitmentShadowCandidate(
+                operation="none",
+                confidence=0.9,
+            )
+
+    sample = {
+        "name": "repeat-none",
+        "input": _input().model_dump(mode="json"),
+        "expect": {"operation": "none"},
+    }
+
+    row = await _run_case(sample, _Proposer(), run_index=3)
+
+    assert row["name"] == "repeat-none"
+    assert row["run_index"] == 3
+    assert row["actual_operation"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_benchmark_rejects_unbounded_runs_before_live_call() -> None:
+    result = await _amain(SimpleNamespace(runs=101))
+
+    assert result == 2
 
 
 def test_fixed_shadow_dataset_is_bounded_and_covers_lifecycle() -> None:

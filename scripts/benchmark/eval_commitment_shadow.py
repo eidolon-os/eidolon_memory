@@ -25,7 +25,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
-async def _run_case(sample: dict, proposer) -> dict:
+async def _run_case(sample: dict, proposer, *, run_index: int = 1) -> dict:
     from eidolon.memory.domain.commitment_shadow import (
         CommitmentShadowInput,
         CommitmentShadowOutputError,
@@ -44,6 +44,7 @@ async def _run_case(sample: dict, proposer) -> dict:
         )
         return {
             "name": sample["name"],
+            "run_index": run_index,
             "expected_operation": expected["operation"],
             "expected_target_id": expected.get("target_id"),
             "expected_action": expected.get("action"),
@@ -62,6 +63,7 @@ async def _run_case(sample: dict, proposer) -> dict:
     )
     return {
         "name": sample["name"],
+        "run_index": run_index,
         "expected_operation": expected["operation"],
         "expected_target_id": expected.get("target_id"),
         "expected_action": expected.get("action"),
@@ -83,6 +85,9 @@ async def _amain(args: argparse.Namespace) -> int:
     from eidolon.memory.config.memory_settings import get_memory_settings
     from eidolon.memory.domain.commitment_shadow import score_commitment_shadow
 
+    if not 1 <= args.runs <= 100:
+        print("[commitment-shadow] --runs must be between 1 and 100")
+        return 2
     if os.environ.get("EIDOLON_MEMORY_RUN_LIVE") != "1":
         print("[commitment-shadow] set EIDOLON_MEMORY_RUN_LIVE=1 to call the LLM")
         return 2
@@ -96,27 +101,37 @@ async def _amain(args: argparse.Namespace) -> int:
         if line.strip()
     ]
     settings = get_memory_settings()
-    proposer = LiteLLMCommitmentShadowProposer(settings.llm)
+    llm = (
+        settings.llm.model_copy(update={"model": args.model})
+        if args.model
+        else settings.llm
+    )
+    proposer = LiteLLMCommitmentShadowProposer(llm)
     print(
-        f"[commitment-shadow] samples={len(samples)} "
-        f"version={proposer.extraction_version} model={settings.llm.model}"
+        f"[commitment-shadow] samples={len(samples)} runs={args.runs} "
+        f"version={proposer.extraction_version} model={llm.model}"
     )
     observations = []
-    for sample in samples:
-        row = await _run_case(sample, proposer)
-        observations.append(row)
-        print(
-            f"  {row['name']:<34s} expected={row['expected_operation']:<10s} "
-            f"actual={str(row['actual_operation']):<10s} "
-            f"target={str(row['actual_target_id']):<24s} "
-            f"{row['elapsed_ms']}ms"
-            + (f" error={row['error']}" if row["error"] else "")
-        )
+    for run_index in range(1, args.runs + 1):
+        for sample in samples:
+            row = await _run_case(sample, proposer, run_index=run_index)
+            observations.append(row)
+            print(
+                f"  run={run_index:<3d} {row['name']:<34s} "
+                f"expected={row['expected_operation']:<10s} "
+                f"actual={str(row['actual_operation']):<10s} "
+                f"target={str(row['actual_target_id']):<24s} "
+                f"{row['elapsed_ms']}ms"
+                + (f" error={row['error']}" if row["error"] else "")
+            )
     aggregate = score_commitment_shadow(observations)
     report = {
         "schema_version": "eidolon_memory.commitment_shadow_eval.v1",
         "extractor_version": proposer.extraction_version,
-        "model": settings.llm.model,
+        "model": llm.model,
+        "runs_per_sample": args.runs,
+        "attempts_per_case": 1,
+        "retry_policy": "none",
         "authoritative_writes": 0,
         "dataset": str(dataset_path),
         "observations": observations,
@@ -143,6 +158,17 @@ def main() -> int:
     parser.add_argument(
         "--out",
         default="reports/commitment_shadow_eval.json",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="repeat the fixed set 1-100 times without retrying failed calls",
+    )
+    parser.add_argument(
+        "--model",
+        default="",
+        help="override llm.model for an explicit offline A/B run",
     )
     return asyncio.run(_amain(parser.parse_args()))
 
