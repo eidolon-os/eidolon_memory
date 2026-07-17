@@ -19,7 +19,7 @@ from eidolon.memory.application.explicit_intents import apply_explicit_intent
 from eidolon.memory.application.turn_processor import process_turn_message
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.canonical_fact import canonical_assertion_id
-from eidolon.memory.domain.kg import KgTripleAction
+from eidolon.memory.domain.kg import KgInvalidationAction, KgTripleAction
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 
@@ -31,7 +31,7 @@ class _StatefulKG:
         self.rows: dict[tuple[str, str, str], SimpleNamespace] = {}
         self.add_triple = AsyncMock(side_effect=self._add_triple)
         self.query_entity = AsyncMock(side_effect=self._query_entity)
-        self.invalidate = AsyncMock(return_value=0)
+        self.invalidate = AsyncMock(side_effect=self._invalidate)
         self.record_entity_mention = AsyncMock()
 
     async def _add_triple(self, **kwargs) -> str:
@@ -45,6 +45,10 @@ class _StatefulKG:
 
     async def _query_entity(self, entity_id: str, **_kwargs) -> list[SimpleNamespace]:
         return [row for row in self.rows.values() if row.subject == entity_id]
+
+    async def _invalidate(self, **kwargs) -> int:
+        key = (kwargs["subject"], kwargs["predicate"], kwargs["object"])
+        return int(self.rows.pop(key, None) is not None)
 
 
 class _FailOnceMarkStore:
@@ -161,6 +165,32 @@ async def _apply_automatic(
     await process_turn_message(
         msg,
         steward=_steward(),
+        backend=backend,
+        kg=kg,
+        settings=load_memory_settings(),
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=ledger,
+    )
+    msg.ack.assert_awaited_once()
+    msg.nak.assert_not_awaited()
+
+
+async def _apply_decision(
+    turn_id: str,
+    decision: StewardDecision,
+    *,
+    backend: LockedBackend,
+    kg: _StatefulKG,
+    ledger: CanonicalFactLedger,
+) -> None:
+    steward = MagicMock()
+    steward.extraction_version = "test-extractor"
+    steward.decide = AsyncMock(return_value=decision)
+    msg = _turn_message(turn_id)
+    await process_turn_message(
+        msg,
+        steward=steward,
         backend=backend,
         kg=kg,
         settings=load_memory_settings(),
@@ -290,3 +320,63 @@ async def test_automatic_new_evidence_repairs_mark_failure_without_kg_rewrite(
     await _apply_automatic("turn-auto-2", backend=backend, kg=kg, ledger=store)
 
     assert kg.add_triple.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_change_archives_canonical_drawer_and_keeps_fact_history(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+
+    await apply_explicit_intent(
+        backend,
+        kg,
+        _explicit_command(),
+        canonical_facts=ledger,
+    )
+    decision = StewardDecision(
+        should_write=True,
+        reason="changed preference",
+        triples=[
+            KgTripleAction(
+                subject="self",
+                predicate="likes",
+                object="tea",
+                confidence=0.95,
+            )
+        ],
+        invalidations=[
+            KgInvalidationAction(
+                subject="self",
+                predicate="likes",
+                object="oolong",
+                reason="user changed preference",
+            )
+        ],
+    )
+
+    await _apply_decision(
+        "turn-change",
+        decision,
+        backend=backend,
+        kg=kg,
+        ledger=ledger,
+    )
+
+    old_drawer = await backend.get_by_source_turn_id(
+        MEMORY_SPACE_ID,
+        "canonical:"
+        + canonical_assertion_id(MEMORY_SPACE_ID, "self", "likes", "oolong"),
+    )
+    assert old_drawer is not None
+    assert old_drawer.metadata["privacy"] == "do_not_recall"
+    assert ("self", "likes", "oolong") not in kg.rows
+    assert ("self", "likes", "tea") in kg.rows
+    stats = await ledger.stats()
+    assert stats.assertions_active == 1
+    assert stats.assertions_invalidated == 1
+    assert stats.invalidations_total == 1
+    assert stats.drawer_projected == 0
+    assert stats.kg_projected == 1

@@ -11,6 +11,7 @@ import pytest
 
 from tests.memory.e2e.conftest import (
     mcp_tool_json,
+    nats_publish_exact_correction,
     nats_publish_kg_add_triple,
     nats_publish_user_confirm,
 )
@@ -217,3 +218,79 @@ async def test_live_exact_canonical_dedup_evidence_and_isolation(mcp_session) ->
             records, triples = await _snapshot(session)
         assert not any(marker in str(row.get("value") or "") for row in records)
         assert not any(row.get("object") == marker for row in triples)
+
+
+async def test_live_exact_canonical_invalidation_archives_current_projection(
+    mcp_session,
+) -> None:
+    if os.environ.get("EIDOLON_MEMORY_LIVE_CANONICAL_WRITE") != "1":
+        pytest.skip("set EIDOLON_MEMORY_LIVE_CANONICAL_WRITE=1 for write canary")
+    target = _realms()[0]
+    realm_id = str(target["realm_id"])
+    port = int(target["port"])
+    nats_url = os.environ.get(
+        "EIDOLON_MEMORY_LIVE_NATS_URL",
+        "nats://127.0.0.1:4222",
+    )
+    marker = f"live-invalidation-{uuid.uuid4().hex[:12]}"
+
+    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+        before = mcp_tool_json(
+            await session.call_tool("eidolon_memory_canonical_stats", {})
+        )
+        add_id = await nats_publish_user_confirm(
+            nats_url,
+            user_id=realm_id,
+            text=f"self likes {marker}",
+            request_id=f"live-invalidation-add-{uuid.uuid4().hex}",
+            subject="self",
+            predicate="likes",
+            object_value=marker,
+        )
+        assert (await _wait_for_command(session, add_id))["status"] == "applied"
+
+        correction_id = await nats_publish_exact_correction(
+            nats_url,
+            user_id=realm_id,
+            subject="self",
+            predicate="likes",
+            object_value=marker,
+            text=f"self no longer likes {marker}",
+            request_id=f"live-invalidation-end-{uuid.uuid4().hex}",
+        )
+        correction = await _wait_for_command(session, correction_id)
+        assert correction["status"] == "applied", correction
+
+        after = mcp_tool_json(
+            await session.call_tool("eidolon_memory_canonical_stats", {})
+        )
+        assert after["assertions_total"] == before["assertions_total"] + 1
+        assert after["assertions_invalidated"] == before["assertions_invalidated"] + 1
+        assert after["invalidations_total"] == before["invalidations_total"] + 1
+        records, triples = await _snapshot(session)
+        drawer = next(row for row in records if marker in str(row.get("value") or ""))
+        assert (drawer.get("metadata") or {}).get("privacy") == "do_not_recall"
+        historical = [
+            row
+            for row in triples
+            if row.get("subject") == "self"
+            and row.get("predicate") == "likes"
+            and row.get("object") == marker
+        ]
+        assert len(historical) == 1
+        assert historical[0].get("valid_to") is not None
+
+        current = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_kg_snapshot",
+                {
+                    "max_triples": 5000,
+                    "current_only": True,
+                    "include_sensitive": True,
+                },
+            )
+        )
+        assert not any(
+            row.get("object") == marker
+            for row in (current or {}).get("triples") or []
+        )

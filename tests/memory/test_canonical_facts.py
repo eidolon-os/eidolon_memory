@@ -10,6 +10,7 @@ from eidolon_sdk.memory import MemoryIntent
 
 from eidolon.memory.domain.canonical_fact import (
     CanonicalEvidenceConflict,
+    CanonicalFactInactive,
     canonical_assertion_id,
 )
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
@@ -36,6 +37,24 @@ def _intent(
         object=object_,
         tool_call_id=f"call:{intent_id}",
         confidence=0.99,
+    )
+
+
+def _invalidation(intent_id: str = "intent:invalidate-1") -> MemoryIntent:
+    return MemoryIntent(
+        intent_id=intent_id,
+        memory_space_id=MEMORY_SPACE_ID,
+        source_event_id="turn-invalidate",
+        authority="extracted_user",
+        intent_type="correction",
+        raw_claim="invalidate self likes 乌龙茶",
+        operation_hint="invalidate",
+        subject="self",
+        predicate="likes",
+        object="乌龙茶",
+        occurred_at="2026-06-02T00:00:00Z",
+        confidence=1.0,
+        attributes={"reason": "changed preference"},
     )
 
 
@@ -224,3 +243,94 @@ async def test_stats_report_capacity_and_projection_state(tmp_path: Path) -> Non
     assert stats.kg_not_projected == 1
     assert stats.kg_projected == 1
     assert stats.database_bytes > 0
+
+
+@pytest.mark.asyncio
+async def test_exact_invalidation_is_historical_and_replay_safe(tmp_path: Path) -> None:
+    ledger = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    original = _intent("intent:1")
+    registered = await ledger.register(original, targets={"drawer", "kg"})
+    await ledger.mark_projected(
+        MEMORY_SPACE_ID,
+        registered.assertion_id,
+        targets={"drawer", "kg"},
+    )
+
+    first = await ledger.register_invalidation(_invalidation())
+    assert (await ledger.stats()).invalidations_pending == 1
+    await ledger.mark_invalidated(MEMORY_SPACE_ID, _invalidation().intent_id)
+    replay = await ledger.register_invalidation(_invalidation())
+    old_add_replay = await ledger.register(original, targets={"drawer", "kg"})
+    stats = await ledger.stats()
+
+    assert first.matched is True
+    assert first.invalidation_created is True
+    assert first.invalidation_count == 1
+    assert replay.invalidation_created is False
+    assert replay.state == "applied"
+    assert replay.invalidation_count == 1
+    assert old_add_replay.state == "invalidated"
+    assert old_add_replay.pending_targets == []
+    assert stats.assertions_active == 0
+    assert stats.assertions_invalidated == 1
+    assert stats.invalidations_total == 1
+    assert stats.invalidations_pending == 0
+
+
+@pytest.mark.asyncio
+async def test_new_evidence_cannot_silently_reactivate_invalidated_fact(
+    tmp_path: Path,
+) -> None:
+    ledger = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    await ledger.register(_intent("intent:1"), targets={"kg"})
+    await ledger.register_invalidation(_invalidation())
+    await ledger.mark_invalidated(MEMORY_SPACE_ID, _invalidation().intent_id)
+
+    with pytest.raises(CanonicalFactInactive):
+        await ledger.register(
+            _intent("intent:2", source_event_id="turn-later"),
+            targets={"kg"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_invalidation_without_canonical_assertion_does_not_create_fact(
+    tmp_path: Path,
+) -> None:
+    ledger = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+
+    result = await ledger.register_invalidation(_invalidation())
+    stats = await ledger.stats()
+
+    assert result.matched is False
+    assert result.invalidation_created is False
+    assert stats.assertions_total == 0
+    assert stats.invalidations_total == 0
+
+
+@pytest.mark.asyncio
+async def test_invalidation_intent_conflict_is_rejected_while_pending(
+    tmp_path: Path,
+) -> None:
+    ledger = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    await ledger.register(_intent("intent:add-1"), targets={"kg"})
+    await ledger.register(
+        _intent("intent:add-2", object_="咖啡", source_event_id="turn-2"),
+        targets={"kg"},
+    )
+    invalidation = _invalidation("intent:shared-invalidation")
+    await ledger.register_invalidation(invalidation)
+
+    with pytest.raises(CanonicalEvidenceConflict):
+        await ledger.register_invalidation(
+            invalidation.model_copy(
+                update={
+                    "object": "咖啡",
+                    "raw_claim": "invalidate self likes 咖啡",
+                }
+            )
+        )
+
+    stats = await ledger.stats()
+    assert stats.assertions_active == 2
+    assert stats.invalidations_pending == 1

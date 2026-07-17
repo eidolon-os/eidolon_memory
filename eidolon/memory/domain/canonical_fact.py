@@ -15,13 +15,22 @@ class CanonicalEvidenceConflict(RuntimeError):
     """One intent id was reused for a different canonical assertion."""
 
 
+class CanonicalFactInactive(RuntimeError):
+    """New evidence cannot implicitly reactivate an invalidated assertion."""
+
+
 ProjectionTarget = Literal["drawer", "kg"]
+CanonicalFactState = Literal["active", "invalidated"]
 
 
 @dataclass(frozen=True, slots=True)
 class CanonicalFactStats:
     assertions_total: int
+    assertions_active: int
+    assertions_invalidated: int
     evidence_total: int
+    invalidations_total: int
+    invalidations_pending: int
     drawer_not_projected: int
     drawer_projected: int
     kg_not_projected: int
@@ -38,7 +47,18 @@ class CanonicalFactRegistration(BaseEidolonModel):
     intent_id: str
     evidence_count: int = Field(ge=1)
     evidence_created: bool
+    state: CanonicalFactState = "active"
     pending_targets: list[ProjectionTarget] = Field(default_factory=list)
+
+
+class CanonicalFactInvalidation(BaseEidolonModel):
+    assertion_id: str
+    memory_space_id: str
+    intent_id: str
+    matched: bool
+    invalidation_created: bool = False
+    invalidation_count: int = Field(ge=0, default=0)
+    state: Literal["pending", "applied"] | None = None
 
 
 def canonical_assertion_id(

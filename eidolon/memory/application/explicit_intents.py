@@ -11,6 +11,9 @@ from eidolon_sdk.memory import (
     MemoryIntentCommand,
 )
 
+from eidolon.memory.application.canonical_invalidation import (
+    invalidate_exact_canonical_fact,
+)
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.domain.canonical_fact import ProjectionTarget
 from eidolon.memory.domain.fragments import MemoryFragment
@@ -27,22 +30,61 @@ async def apply_explicit_intent(
     cmd: MemoryIntentCommand,
     canonical_facts: CanonicalFactWriter | None = None,
 ) -> str:
-    """Project one explicit add/confirm intent without bypassing write ports.
+    """Project one explicit intent without bypassing write ports.
 
-    Reconciliation operations intentionally fail closed here. Natural-language
-    correction/forget/update cannot safely select an existing fact; exact
-    privacy mutation remains a separate preview/confirm command until the
-    canonical reconciler owns those semantics.
+    Adds/confirms create canonical projections. A correction is accepted only
+    for a complete triple and uses the same exact invalidation lifecycle as
+    automatic extraction. Natural-language update/forget remains fail-closed;
+    privacy mutation stays on its preview/confirm protocol.
     """
     intent = cmd.intent
     if intent.authority not in {"explicit_user", "explicit_admin"}:
         raise MemoryIntentRejected(
             "memory_intent command requires explicit authority"
         )
-    if intent.intent_type in {"forget", "correction"}:
+    if intent.intent_type == "forget":
         raise MemoryIntentRejected(
-            "forget/correction intents require exact privacy or reconciliation flow"
+            "forget intents require the exact privacy preview/confirm flow"
         )
+    if intent.intent_type == "correction":
+        if (
+            intent.operation_hint != "invalidate"
+            or not intent.subject
+            or not intent.predicate
+            or not intent.object
+        ):
+            raise MemoryIntentRejected(
+                "correction requires an exact subject/predicate/object invalidation"
+            )
+        if intent.predicate not in KG_PREDICATE_VALUES:
+            raise MemoryIntentRejected(
+                f"unsupported KG predicate: {intent.predicate}"
+            )
+        if kg is None or canonical_facts is None:
+            raise MemoryIntentRejected(
+                "exact correction requires KG and canonical fact ports"
+            )
+        stamped = (
+            intent
+            if intent.occurred_at is not None
+            else intent.model_copy(update={"occurred_at": cmd.issued_at})
+        )
+        result = await invalidate_exact_canonical_fact(
+            backend,
+            kg,
+            stamped,
+            canonical_facts,
+        )
+        if not result.canonical_matched and result.kg_rows_invalidated == 0:
+            already_applied = await kg.find_invalidation_applied(
+                intent.subject,
+                intent.predicate,
+                intent.object,
+                stamped.occurred_at,
+            )
+            if not already_applied:
+                raise MemoryIntentRejected("exact correction matched no fact")
+        return f"invalidated:{result.assertion_id}"
     if intent.operation_hint not in {None, "add", "confirm"}:
         raise MemoryIntentRejected("update/invalidate intents require reconciliation")
 
@@ -98,6 +140,8 @@ async def apply_explicit_intent(
             intent,
             targets=requested_targets,
         )
+        if registration.state == "invalidated":
+            return f"invalidated:{registration.assertion_id}"
         projection_identity = registration.assertion_id
         pending_targets = set(registration.pending_targets)
         projected_targets = requested_targets - pending_targets

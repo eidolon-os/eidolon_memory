@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from eidolon.memory.application.working_memory import WorkingMemoryRing
     from eidolon.memory.domain.canonical_fact import (
+        CanonicalFactInvalidation,
         CanonicalFactRegistration,
         CanonicalFactStats,
         ProjectionTarget,
@@ -200,6 +201,17 @@ class CanonicalFactWriter(Protocol):
         assertion_id: str,
         *,
         targets: set[ProjectionTarget],
+    ) -> None: ...
+
+    async def register_invalidation(
+        self,
+        intent: MemoryIntent,
+    ) -> CanonicalFactInvalidation: ...
+
+    async def mark_invalidated(
+        self,
+        memory_space_id: str,
+        intent_id: str,
     ) -> None: ...
 
 

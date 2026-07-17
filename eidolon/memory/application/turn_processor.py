@@ -27,6 +27,9 @@ from eidolon_sdk.memory import (
 )
 from pydantic import ValidationError
 
+from eidolon.memory.application.canonical_invalidation import (
+    invalidate_exact_canonical_fact,
+)
 from eidolon.memory.application.explicit_intents import (
     MemoryIntentRejected,
     apply_explicit_intent,
@@ -339,14 +342,35 @@ async def process_turn_message(
     if kg is not None:
         # Invalidations first so a "change of mind" turn always ends the old
         # fact before any new one referencing the same (s,p,o) shape lands.
-        for inv in decision.invalidations:
+        invalidation_intents: dict[int, MemoryIntent] = {}
+        for intent in memory_intents:
+            source_index = intent.attributes.get("source_index")
+            if (
+                intent.attributes.get("source_kind") == "invalidation"
+                and isinstance(source_index, int)
+                and not isinstance(source_index, bool)
+            ):
+                invalidation_intents[source_index] = intent
+        for index, inv in enumerate(decision.invalidations):
             try:
-                rows = await kg.invalidate(
-                    subject=inv.subject,
-                    predicate=inv.predicate,
-                    object=inv.object,
-                    ended=inv.ended or turn_ts,
-                )
+                intent = invalidation_intents.get(index)
+                if canonical_facts is not None and intent is not None:
+                    if intent.occurred_at is None:
+                        intent = intent.model_copy(update={"occurred_at": turn_ts})
+                    result = await invalidate_exact_canonical_fact(
+                        backend,
+                        kg,
+                        intent,
+                        canonical_facts,
+                    )
+                    rows = result.kg_rows_invalidated
+                else:
+                    rows = await kg.invalidate(
+                        subject=inv.subject,
+                        predicate=inv.predicate,
+                        object=inv.object,
+                        ended=inv.ended or turn_ts,
+                    )
                 if rows > 0:
                     kg_invalidations_applied += 1
                 else:
@@ -381,6 +405,9 @@ async def process_turn_message(
                         intent,
                         targets={"kg"},
                     )
+                    if registration.state == "invalidated":
+                        kg_exact_noop += 1
+                        continue
                     kg_pending = "kg" in registration.pending_targets
                     should_verify = (
                         not kg_pending

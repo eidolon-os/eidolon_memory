@@ -29,6 +29,7 @@ from eidolon.memory.application.explicit_intents import apply_explicit_intent
 from eidolon.memory.application.public_recall import recall_with_kg_fusion
 from eidolon.memory.application.turn_processor import process_command_message
 from eidolon.memory.config.memory_settings import load_memory_settings
+from eidolon.memory.domain.canonical_fact import canonical_assertion_id
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 
@@ -102,6 +103,31 @@ def _structured_command(
                 }
             )
         }
+    )
+
+
+def _correction_command(
+    request_id: str = "correct-1",
+    *,
+    source_event_id: str = "turn-2",
+) -> MemoryIntentCommand:
+    return MemoryIntentCommand(
+        request_id=request_id,
+        memory_space_id=MEMORY_SPACE_ID,
+        issued_at="2026-05-27T00:00:00Z",
+        issuer="agent",
+        intent=MemoryIntent(
+            intent_id=f"intent:{request_id}",
+            memory_space_id=MEMORY_SPACE_ID,
+            source_event_id=source_event_id,
+            authority="explicit_user",
+            intent_type="correction",
+            raw_claim="我不再喜欢乌龙茶",
+            operation_hint="invalidate",
+            subject="user",
+            predicate="likes",
+            object="oolong",
+        ),
     )
 
 
@@ -351,6 +377,125 @@ async def test_canonical_projection_remains_pending_until_all_projections_succee
     assert resource_id.startswith("memoryintent:fact:")
     assert len(backend.inner.docs) == 1
     assert kg.add_triple.await_count == 2
+
+
+async def test_exact_correction_uses_canonical_lifecycle_and_is_replay_safe(
+    tmp_path,
+):
+    backend = LockedBackend(FakeMemoryBackend())
+    rows = {("user", "likes", "oolong")}
+
+    async def _invalidate(**kwargs):
+        key = (kwargs["subject"], kwargs["predicate"], kwargs["object"])
+        if key not in rows:
+            return 0
+        rows.remove(key)
+        return 1
+
+    kg = SimpleNamespace(
+        add_triple=AsyncMock(return_value="triple-1"),
+        query_entity=AsyncMock(
+            return_value=[
+                SimpleNamespace(subject="user", predicate="likes", object="oolong")
+            ]
+        ),
+        invalidate=AsyncMock(side_effect=_invalidate),
+        find_invalidation_applied=AsyncMock(return_value=True),
+    )
+    canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    original = _structured_command("original", source_event_id="turn-1")
+    await apply_explicit_intent(
+        backend, kg, original, canonical_facts=canonical
+    )
+    correction = _correction_command()
+
+    first = await apply_explicit_intent(
+        backend, kg, correction, canonical_facts=canonical
+    )
+    replay = await apply_explicit_intent(
+        backend, kg, correction, canonical_facts=canonical
+    )
+
+    assert first == replay
+    drawer = await backend.get_by_source_turn_id(
+        MEMORY_SPACE_ID,
+        "canonical:"
+        + canonical_assertion_id(MEMORY_SPACE_ID, "user", "likes", "oolong"),
+    )
+    assert drawer is not None
+    assert drawer.metadata["privacy"] == "do_not_recall"
+    assert kg.invalidate.await_count == 2
+    stats = await canonical.stats()
+    assert stats.assertions_invalidated == 1
+    assert stats.invalidations_total == 1
+
+
+async def test_exact_correction_failure_stays_pending_and_retry_completes(
+    tmp_path,
+):
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = SimpleNamespace(
+        add_triple=AsyncMock(return_value="triple-1"),
+        query_entity=AsyncMock(
+            return_value=[
+                SimpleNamespace(subject="user", predicate="likes", object="oolong")
+            ]
+        ),
+        invalidate=AsyncMock(
+            side_effect=[RuntimeError("temporary KG failure"), 1]
+        ),
+        find_invalidation_applied=AsyncMock(return_value=False),
+    )
+    canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    await apply_explicit_intent(
+        backend,
+        kg,
+        _structured_command("original", source_event_id="turn-1"),
+        canonical_facts=canonical,
+    )
+    correction = _correction_command("retry-correction")
+
+    with pytest.raises(RuntimeError, match="temporary KG failure"):
+        await apply_explicit_intent(
+            backend, kg, correction, canonical_facts=canonical
+        )
+    pending = await canonical.stats()
+    assert pending.assertions_active == 1
+    assert pending.invalidations_pending == 1
+    assert pending.invalidations_total == 0
+
+    await apply_explicit_intent(
+        backend, kg, correction, canonical_facts=canonical
+    )
+    completed = await canonical.stats()
+    assert completed.assertions_active == 0
+    assert completed.assertions_invalidated == 1
+    assert completed.invalidations_pending == 0
+    assert completed.invalidations_total == 1
+
+
+async def test_correction_without_exact_triple_fails_closed(tmp_path):
+    backend = LockedBackend(FakeMemoryBackend())
+    canonical = CanonicalFactLedger(tmp_path / "canonical_facts.sqlite3")
+    command = _intent_command(request_id="fuzzy-correction").model_copy(
+        update={
+            "intent": _intent_command().intent.model_copy(
+                update={
+                    "intent_type": "correction",
+                    "operation_hint": "invalidate",
+                    "raw_claim": "我不喜欢之前那个饮料了",
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="exact subject/predicate/object"):
+        await apply_explicit_intent(
+            backend,
+            SimpleNamespace(),
+            command,
+            canonical_facts=canonical,
+        )
 
 
 # ─── Cmd dispatcher routes the kind ───────────────────────────────────────

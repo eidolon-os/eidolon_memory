@@ -11,6 +11,8 @@ from eidolon_sdk.memory import MemoryIntent
 
 from eidolon.memory.domain.canonical_fact import (
     CanonicalEvidenceConflict,
+    CanonicalFactInactive,
+    CanonicalFactInvalidation,
     CanonicalFactRegistration,
     CanonicalFactStats,
     ProjectionTarget,
@@ -79,6 +81,21 @@ class CanonicalFactLedger:
                 );
                 CREATE INDEX IF NOT EXISTS idx_canonical_evidence_assertion
                     ON canonical_evidence(assertion_id, recorded_at);
+                CREATE TABLE IF NOT EXISTS canonical_invalidations (
+                    intent_id TEXT PRIMARY KEY,
+                    memory_space_id TEXT NOT NULL,
+                    assertion_id TEXT NOT NULL,
+                    source_event_id TEXT NOT NULL,
+                    raw_claim TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    FOREIGN KEY(assertion_id)
+                        REFERENCES canonical_assertions(assertion_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_canonical_invalidations_assertion
+                    ON canonical_invalidations(assertion_id, recorded_at);
                 """
             )
             columns = {
@@ -99,6 +116,17 @@ class CanonicalFactLedger:
                         f"UPDATE canonical_assertions SET {column} = 'projected' "
                         "WHERE projection_state = 'projected'"
                     )
+            invalidation_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(canonical_invalidations)")
+            }
+            if "state" not in invalidation_columns:
+                conn.execute(
+                    """
+                    ALTER TABLE canonical_invalidations
+                    ADD COLUMN state TEXT NOT NULL DEFAULT 'applied'
+                    """
+                )
 
     async def register(
         self,
@@ -140,6 +168,23 @@ class CanonicalFactLedger:
 
     async def evidence_count(self, assertion_id: str) -> int:
         return await asyncio.to_thread(self._evidence_count_sync, assertion_id)
+
+    async def register_invalidation(
+        self,
+        intent: MemoryIntent,
+    ) -> CanonicalFactInvalidation:
+        return await asyncio.to_thread(self._register_invalidation_sync, intent)
+
+    async def mark_invalidated(
+        self,
+        memory_space_id: str,
+        intent_id: str,
+    ) -> None:
+        await asyncio.to_thread(
+            self._mark_invalidated_sync,
+            memory_space_id,
+            intent_id,
+        )
 
     async def stats(self) -> CanonicalFactStats:
         return await asyncio.to_thread(self._stats_sync)
@@ -226,7 +271,21 @@ class CanonicalFactLedger:
                     raise CanonicalEvidenceConflict(
                         "intent id reused with different canonical evidence"
                     )
+                if assertion is not None and str(assertion["state"]) == "invalidated":
+                    return CanonicalFactRegistration(
+                        assertion_id=assertion_id,
+                        memory_space_id=intent.memory_space_id,
+                        intent_id=intent.intent_id,
+                        evidence_count=int(assertion["evidence_count"]),
+                        evidence_created=False,
+                        state="invalidated",
+                        pending_targets=[],
+                    )
             else:
+                if assertion is not None and str(assertion["state"]) == "invalidated":
+                    raise CanonicalFactInactive(
+                        "invalidated canonical fact requires an explicit reactivation flow"
+                    )
                 conn.execute(
                     """
                     INSERT INTO canonical_evidence (
@@ -269,12 +328,157 @@ class CanonicalFactLedger:
             intent_id=intent.intent_id,
             evidence_count=evidence_count,
             evidence_created=evidence_created,
+            state="active",
             pending_targets=sorted(
                 target
                 for target in targets
                 if projection_states[target] != "projected"
             ),
         )
+
+    def _register_invalidation_sync(
+        self,
+        intent: MemoryIntent,
+    ) -> CanonicalFactInvalidation:
+        if (
+            intent.intent_type != "correction"
+            or intent.operation_hint != "invalidate"
+            or not intent.subject
+            or not intent.predicate
+            or not intent.object
+        ):
+            raise ValueError(
+                "canonical invalidation requires an exact correction triple"
+            )
+        assertion_id = canonical_assertion_id(
+            intent.memory_space_id,
+            intent.subject,
+            intent.predicate,
+            intent.object,
+        )
+        now = datetime.now(UTC).isoformat()
+        ended_at = intent.occurred_at or now
+        reason = str(intent.attributes.get("reason") or "")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            assertion = conn.execute(
+                "SELECT * FROM canonical_assertions WHERE assertion_id = ?",
+                (assertion_id,),
+            ).fetchone()
+            if assertion is None:
+                return CanonicalFactInvalidation(
+                    assertion_id=assertion_id,
+                    memory_space_id=intent.memory_space_id,
+                    intent_id=intent.intent_id,
+                    matched=False,
+                )
+            if str(assertion["memory_space_id"]) != intent.memory_space_id:
+                raise CanonicalEvidenceConflict(
+                    "canonical invalidation resolved outside memory space"
+                )
+
+            existing = conn.execute(
+                "SELECT * FROM canonical_invalidations WHERE intent_id = ?",
+                (intent.intent_id,),
+            ).fetchone()
+            created = existing is None
+            if existing is not None:
+                if (
+                    str(existing["memory_space_id"]) != intent.memory_space_id
+                    or str(existing["assertion_id"]) != assertion_id
+                    or str(existing["source_event_id"]) != intent.source_event_id
+                    or str(existing["raw_claim"]) != intent.raw_claim
+                    or (
+                        intent.occurred_at is not None
+                        and str(existing["ended_at"]) != ended_at
+                    )
+                    or str(existing["reason"]) != reason
+                ):
+                    raise CanonicalEvidenceConflict(
+                        "intent id reused with different canonical invalidation"
+                    )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO canonical_invalidations (
+                        intent_id, memory_space_id, assertion_id, source_event_id,
+                        raw_claim, ended_at, reason, recorded_at, state
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                    """,
+                    (
+                        intent.intent_id,
+                        intent.memory_space_id,
+                        assertion_id,
+                        intent.source_event_id,
+                        intent.raw_claim,
+                        ended_at,
+                        reason,
+                        now,
+                    ),
+                )
+            count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM canonical_invalidations
+                    WHERE assertion_id = ?
+                    """,
+                    (assertion_id,),
+                ).fetchone()[0]
+            )
+        return CanonicalFactInvalidation(
+            assertion_id=assertion_id,
+            memory_space_id=intent.memory_space_id,
+            intent_id=intent.intent_id,
+            matched=True,
+            invalidation_created=created,
+            invalidation_count=count,
+            state=(
+                "pending" if existing is None else str(existing["state"])
+            ),
+        )
+
+    def _mark_invalidated_sync(
+        self,
+        memory_space_id: str,
+        intent_id: str,
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            invalidation = conn.execute(
+                """
+                SELECT assertion_id, memory_space_id, state
+                FROM canonical_invalidations
+                WHERE intent_id = ?
+                """,
+                (intent_id,),
+            ).fetchone()
+            if invalidation is None:
+                raise LookupError("canonical invalidation not registered")
+            if str(invalidation["memory_space_id"]) != memory_space_id:
+                raise CanonicalEvidenceConflict(
+                    "canonical invalidation belongs to another memory space"
+                )
+            if str(invalidation["state"]) == "applied":
+                return
+            assertion_id = str(invalidation["assertion_id"])
+            conn.execute(
+                """
+                UPDATE canonical_invalidations SET state = 'applied'
+                WHERE intent_id = ?
+                """,
+                (intent_id,),
+            )
+            result = conn.execute(
+                """
+                UPDATE canonical_assertions
+                SET state = 'invalidated', updated_at = ?
+                WHERE assertion_id = ? AND memory_space_id = ?
+                """,
+                (now, assertion_id, memory_space_id),
+            )
+            if result.rowcount != 1:
+                raise LookupError("canonical assertion not found in memory space")
 
     def _set_projection_state_sync(
         self,
@@ -318,13 +522,24 @@ class CanonicalFactLedger:
                 """
                 SELECT
                     COUNT(*) AS assertions_total,
-                    COALESCE(SUM(drawer_projection_state = 'pending'), 0)
+                    COALESCE(SUM(state = 'active'), 0) AS assertions_active,
+                    COALESCE(SUM(state = 'invalidated'), 0)
+                        AS assertions_invalidated,
+                    COALESCE(SUM(
+                        state = 'active' AND drawer_projection_state = 'pending'
+                    ), 0)
                         AS drawer_not_projected,
-                    COALESCE(SUM(drawer_projection_state = 'projected'), 0)
+                    COALESCE(SUM(
+                        state = 'active' AND drawer_projection_state = 'projected'
+                    ), 0)
                         AS drawer_projected,
-                    COALESCE(SUM(kg_projection_state = 'pending'), 0)
+                    COALESCE(SUM(
+                        state = 'active' AND kg_projection_state = 'pending'
+                    ), 0)
                         AS kg_not_projected,
-                    COALESCE(SUM(kg_projection_state = 'projected'), 0)
+                    COALESCE(SUM(
+                        state = 'active' AND kg_projection_state = 'projected'
+                    ), 0)
                         AS kg_projected
                 FROM canonical_assertions
                 """
@@ -332,9 +547,23 @@ class CanonicalFactLedger:
             evidence_total = int(
                 conn.execute("SELECT COUNT(*) FROM canonical_evidence").fetchone()[0]
             )
+            invalidations_total = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM canonical_invalidations WHERE state = 'applied'"
+                ).fetchone()[0]
+            )
+            invalidations_pending = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM canonical_invalidations WHERE state = 'pending'"
+                ).fetchone()[0]
+            )
         return CanonicalFactStats(
             assertions_total=int(row["assertions_total"]),
+            assertions_active=int(row["assertions_active"]),
+            assertions_invalidated=int(row["assertions_invalidated"]),
             evidence_total=evidence_total,
+            invalidations_total=invalidations_total,
+            invalidations_pending=invalidations_pending,
             drawer_not_projected=int(row["drawer_not_projected"]),
             drawer_projected=int(row["drawer_projected"]),
             kg_not_projected=int(row["kg_not_projected"]),

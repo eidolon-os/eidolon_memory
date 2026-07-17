@@ -764,6 +764,41 @@ async def nats_publish_user_confirm(
     return str(payload["request_id"])
 
 
+async def nats_publish_exact_correction(
+    nats_url: str,
+    *,
+    user_id: str,
+    subject: str,
+    predicate: str,
+    object_value: str,
+    text: str,
+    request_id: str | None = None,
+) -> str:
+    """Publish a business-level exact correction through ``MemoryIntent``."""
+    payload = _base_cmd(user_id, "memory_intent", request_id)
+    payload.update(
+        {
+            "issuer": "agent",
+            "intent": {
+                "intent_id": f"intent:{payload['request_id']}",
+                "memory_space_id": payload["memory_space_id"],
+                "source_event_id": f"e2e:{payload['request_id']}",
+                "authority": "explicit_user",
+                "intent_type": "correction",
+                "raw_claim": text,
+                "operation_hint": "invalidate",
+                "subject": subject,
+                "predicate": predicate,
+                "object": object_value,
+                "occurred_at": payload["issued_at"],
+                "confidence": 1.0,
+            },
+        }
+    )
+    await _publish_command(nats_url, payload)
+    return str(payload["request_id"])
+
+
 # ─── MCP tool result unwrapping ────────────────────────────────────────────
 
 
