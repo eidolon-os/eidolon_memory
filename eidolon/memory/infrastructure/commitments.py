@@ -379,7 +379,12 @@ class CommitmentLedger:
                     f"""
                     SELECT * FROM commitments
                     WHERE memory_space_id = ? AND status IN ({placeholders})
-                    ORDER BY updated_at DESC LIMIT ?
+                    ORDER BY
+                        CASE WHEN due_at IS NULL THEN 1 ELSE 0 END,
+                        julianday(due_at) ASC,
+                        updated_at DESC,
+                        commitment_id ASC
+                    LIMIT ?
                     """,
                     (memory_space_id, *sorted(ACTIVE_COMMITMENT_STATUSES), bounded),
                 ).fetchall()

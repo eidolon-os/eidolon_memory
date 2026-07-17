@@ -189,6 +189,7 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         publisher=MemoryNatsPublisher(event_bus=bus, routes=routes),
     )
     marker = f"agent-commitment-context-{uuid.uuid4().hex[:8]}"
+    later_marker = f"agent-commitment-later-{uuid.uuid4().hex[:8]}"
     owner_id = "owner-e2e"
     companion_id = "companion-e2e"
     try:
@@ -209,6 +210,22 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
             status="confirmed",
         )
         assert request_id
+        later_request_id = await port.apply_commitment(
+            owner_id,
+            companion_id,
+            handle.user_id,
+            "小忆",
+            "promised",
+            f"下个月陪 owner 去博物馆 {later_marker}",
+            f"我答应下个月陪你去博物馆 {later_marker}",
+            source_event_id=f"turn-create-{later_marker}",
+            tool_call_id=f"call-create-{later_marker}",
+            operation="confirm",
+            beneficiaries=[owner_id],
+            due_at="2026-08-18T09:00:00+08:00",
+            status="confirmed",
+        )
+        assert later_request_id
 
         current = None
 
@@ -232,12 +249,25 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
                 ),
                 None,
             )
-            return current is not None
+            return current is not None and any(
+                later_marker in item.action for item in result.commitments
+            )
 
         assert await _wait_for_true(_active_visible, timeout_s=30)
         assert current is not None
         assert current.status == "confirmed"
         assert set(current.participants) == {"朋友甲", "朋友乙"}
+
+        prioritized = await port.read_active_commitments(
+            owner_id,
+            companion_id=companion_id,
+            memory_realm_id=handle.user_id,
+            limit=1,
+            timeout_s=5.0,
+        )
+        assert prioritized.degraded is False
+        assert len(prioritized.commitments) == 1
+        assert marker in prioritized.commitments[0].action
 
         # ContextCompiler performs these reads concurrently on the same
         # Realm-bound MCP session. Exercise that transport shape against the
@@ -295,6 +325,17 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
             return all(marker not in item.action for item in result.commitments)
 
         assert await _wait_for_true(_terminal_absent, timeout_s=30)
+
+        after_fulfilment = await port.read_active_commitments(
+            owner_id,
+            companion_id=companion_id,
+            memory_realm_id=handle.user_id,
+            limit=1,
+            timeout_s=5.0,
+        )
+        assert after_fulfilment.degraded is False
+        assert len(after_fulfilment.commitments) == 1
+        assert later_marker in after_fulfilment.commitments[0].action
     finally:
         await port.close()
         await bus.close()

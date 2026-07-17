@@ -19,6 +19,8 @@ def _intent(
     status: str | None = None,
     target_id: str | None = None,
     participants: list[str] | None = None,
+    action: str = "带 companion:default 去常州中华恐龙园",
+    due_at: str | None = None,
 ) -> MemoryIntent:
     attributes = {
         "beneficiaries": ["companion:default"],
@@ -27,6 +29,8 @@ def _intent(
     }
     if status is not None:
         attributes["status"] = status
+    if due_at is not None:
+        attributes["due_at"] = due_at
     return MemoryIntent(
         intent_id=intent_id,
         memory_space_id=SPACE,
@@ -38,10 +42,59 @@ def _intent(
         target_id=target_id,
         subject="self",
         predicate="promised",
-        object="带 companion:default 去常州中华恐龙园",
+        object=action,
         confidence=1.0,
         attributes=attributes,
     )
+
+
+@pytest.mark.asyncio
+async def test_active_commitments_prioritize_due_time_before_recent_updates(
+    tmp_path,
+) -> None:
+    ledger = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    await ledger.apply(
+        _intent(
+            "intent:undated",
+            operation="confirm",
+            action="无期限承诺",
+        )
+    )
+    await ledger.apply(
+        _intent(
+            "intent:later",
+            operation="confirm",
+            action="较晚承诺",
+            due_at="2026-07-20T02:00:00Z",
+        )
+    )
+    await ledger.apply(
+        _intent(
+            "intent:earliest",
+            operation="confirm",
+            action="最早承诺",
+            due_at="2026-07-19T20:00:00Z",
+        )
+    )
+    await ledger.apply(
+        _intent(
+            "intent:middle",
+            operation="confirm",
+            action="中间承诺",
+            due_at="2026-07-20T09:00:00+08:00",
+        )
+    )
+
+    current = await ledger.list_current(SPACE)
+    bounded = await ledger.list_current(SPACE, limit=2)
+
+    assert [row.action for row in current] == [
+        "最早承诺",
+        "中间承诺",
+        "较晚承诺",
+        "无期限承诺",
+    ]
+    assert [row.action for row in bounded] == ["最早承诺", "中间承诺"]
 
 
 def _command(intent: MemoryIntent) -> MemoryIntentCommand:
