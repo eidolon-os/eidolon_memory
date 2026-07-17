@@ -111,7 +111,7 @@ async def _amain(args: argparse.Namespace) -> int:
         if args.model
         else settings.llm
     )
-    proposer = LiteLLMCommitmentShadowProposer(llm, thinking=args.thinking)
+    proposer = LiteLLMCommitmentShadowProposer(llm)
     print(
         f"[commitment-shadow] samples={len(samples)} runs={args.runs} "
         f"version={proposer.extraction_version} model={llm.model}"
@@ -134,7 +134,6 @@ async def _amain(args: argparse.Namespace) -> int:
         "schema_version": "eidolon_memory.commitment_shadow_eval.v1",
         "extractor_version": proposer.extraction_version,
         "model": llm.model,
-        "thinking": args.thinking,
         "runs_per_sample": args.runs,
         "attempts_per_case": 1,
         "retry_policy": "none",
@@ -175,12 +174,6 @@ def main() -> int:
         "--model",
         default="",
         help="override llm.model for an explicit offline A/B run",
-    )
-    parser.add_argument(
-        "--thinking",
-        choices=("enabled", "disabled"),
-        default="enabled",
-        help="set the provider thinking mode explicitly",
     )
     parser.add_argument(
         "--limit",

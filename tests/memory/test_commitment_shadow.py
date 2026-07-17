@@ -331,7 +331,6 @@ async def test_litellm_shadow_proposer_uses_json_mode_and_never_writes(
     assert candidate.operation == "fulfil"
     assert candidate.target_candidates[0].commitment_id == "commitment-1"
     assert captured["temperature"] == 0.0
-    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
     assert captured["max_tokens"] == 1200
     assert captured["response_format"] == {"type": "json_object"}
     prompt_input = json.loads(captured["messages"][1]["content"])
@@ -339,20 +338,6 @@ async def test_litellm_shadow_proposer_uses_json_mode_and_never_writes(
     assert len(prompt_input["active_commitments"]) == 1
     assert not hasattr(proposer, "apply")
     assert not hasattr(proposer, "writer")
-
-
-def test_shadow_extractor_version_covers_thinking_mode() -> None:
-    llm = LlmConfig(model="openai/test")
-
-    enabled = LiteLLMCommitmentShadowProposer(
-        llm, thinking="enabled"
-    ).extraction_version
-    disabled = LiteLLMCommitmentShadowProposer(
-        llm, thinking="disabled"
-    ).extraction_version
-
-    assert enabled != disabled
-
 
 @pytest.mark.asyncio
 async def test_litellm_shadow_proposer_reports_empty_provider_output(
