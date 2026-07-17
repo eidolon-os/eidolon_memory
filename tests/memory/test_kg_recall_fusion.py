@@ -363,6 +363,46 @@ async def test_fusion_kg_timeout_degrades_silently(fusion_setup) -> None:
     assert "vector" in result
 
 
+async def test_explicit_subject_scope_bypasses_query_language_routing(
+    fusion_setup,
+) -> None:
+    from eidolon.memory.application.public_recall import recall_with_kg_fusion
+    from eidolon.memory.domain.kg import KgTripleRecord
+
+    backend, _, settings = fusion_setup
+    kg = MagicMock()
+    kg.match_entities_for_query = AsyncMock(return_value=["wrong-route"])
+    kg.query_subjects = AsyncMock(
+        return_value=[
+            KgTripleRecord(
+                id="t1",
+                subject="self",
+                predicate="likes",
+                object="tea",
+            )
+        ]
+    )
+
+    result = await recall_with_kg_fusion(
+        backend,
+        settings,
+        query="an arbitrary personal-memory question",
+        context=_ctx(),
+        top_k=5,
+        kg=kg,
+        kg_subjects=["self"],
+    )
+
+    assert [row.id for row in result["kg"]] == ["t1"]
+    kg.match_entities_for_query.assert_not_awaited()
+    kg.query_subjects.assert_awaited_once_with(
+        ["self"],
+        as_of=None,
+        include_sensitive=False,
+        limit_per_subject=settings.recall.kg_max_triples_per_entity,
+    )
+
+
 async def test_group_recall_context_appends_kg_section() -> None:
     from eidolon.memory.application.recall_renderer import group_recall_context
     from eidolon.memory.domain.kg import KgTripleRecord

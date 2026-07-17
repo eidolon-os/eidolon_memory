@@ -27,12 +27,20 @@ async def query_kg_for_recall(
     kg,
     *,
     entity_names: list[str],
+    subject_names: list[str] | None = None,
     now_iso: str | None = None,
     window_days: int,
     max_triples_per_entity: int,
     include_sensitive: bool = False,
 ) -> list[KgTripleRecord]:
     """One SQL `IN (?,...)` over `entities` → triples; capped per entity."""
+    if subject_names:
+        return await kg.query_subjects(
+            subject_names,
+            as_of=now_iso,
+            include_sensitive=include_sensitive,
+            limit_per_subject=max_triples_per_entity,
+        )
     if not entity_names:
         return []
     return await kg.query_entity_combined(

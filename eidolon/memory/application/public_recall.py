@@ -291,6 +291,7 @@ async def recall_with_kg_fusion(
     user_utterance: str = "",
     palace_path: str | None = None,
     include_sensitive_kg: bool = False,
+    kg_subjects: list[str] | None = None,
 ) -> dict[str, list]:
     """KG plan §5: parallel vector + KG via ``asyncio.gather``.
 
@@ -331,6 +332,7 @@ async def recall_with_kg_fusion(
                 max_triples_per_entity=settings.recall.kg_max_triples_per_entity,
                 timeout_s=kg_timeout,
                 include_sensitive=include_sensitive_kg,
+                subject_names=kg_subjects,
             )
         )
 
@@ -470,6 +472,7 @@ async def _kg_path_with_timeout(
     max_triples_per_entity: int,
     timeout_s: float,
     include_sensitive: bool,
+    subject_names: list[str] | None = None,
 ) -> list:
     """Route entity candidates → one combined SQL; degrade silently on timeout.
 
@@ -482,7 +485,9 @@ async def _kg_path_with_timeout(
     try:
 
         async def _inner():
-            candidates = await kg.match_entities_for_query(query, cap=max_entities)
+            candidates = list(dict.fromkeys(subject_names or []))[:max_entities]
+            if not candidates:
+                candidates = await kg.match_entities_for_query(query, cap=max_entities)
             if not candidates:
                 log.debug(
                     "kg_recall_result",
@@ -495,6 +500,7 @@ async def _kg_path_with_timeout(
             triples = await query_kg_for_recall(
                 kg,
                 entity_names=candidates,
+                subject_names=candidates if subject_names else None,
                 window_days=window_days,
                 max_triples_per_entity=max_triples_per_entity,
                 include_sensitive=include_sensitive,

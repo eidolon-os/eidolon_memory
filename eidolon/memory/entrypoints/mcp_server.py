@@ -134,6 +134,7 @@ def build_control_plane_mcp(
         voice: bool = False,
         include_kg: bool | None = None,
         include_sensitive_kg: bool = False,
+        kg_subjects: list[str] | None = None,
     ) -> dict[str, Any]:
         """Aggregated recall: vector + (optional) KG triples in parallel.
 
@@ -144,6 +145,11 @@ def build_control_plane_mcp(
         ``include_sensitive_kg`` opt-in for health predicates.
         """
         ctx = MemoryActorContext.model_validate(context)
+        bounded_subjects = [
+            value.strip()
+            for value in (kg_subjects or [])[: settings.recall.kg_max_entities]
+            if isinstance(value, str) and value.strip()
+        ]
         want_kg = settings.recall.kg_in_recall if include_kg is None else include_kg
         fused = await recall_with_kg_fusion(
             backend,
@@ -155,6 +161,7 @@ def build_control_plane_mcp(
             for_voice=voice,
             palace_path=palace_path,
             include_sensitive_kg=include_sensitive_kg,
+            kg_subjects=bounded_subjects,
         )
         records = fused["vector"]
         kg_records = fused["kg"]

@@ -168,6 +168,27 @@ async def test_query_entity_combined_uses_in_clause(kg_pair) -> None:
     assert ("charlie", "lives_in") in names
 
 
+async def test_query_subjects_returns_only_bounded_outgoing_facts(kg_pair) -> None:
+    await kg_pair.add_triple(
+        subject="alpha", predicate="friend_of", object="beta",
+        source_turn_id="t1", adapter_name="test",
+    )
+    await kg_pair.add_triple(
+        subject="alpha", predicate="likes", object="gamma",
+        source_turn_id="t2", adapter_name="test",
+    )
+    await kg_pair.add_triple(
+        subject="delta", predicate="friend_of", object="alpha",
+        source_turn_id="t3", adapter_name="test",
+    )
+
+    rows = await kg_pair.query_subjects(["alpha"], limit_per_subject=1)
+
+    assert len(rows) == 1
+    assert rows[0].subject == "alpha"
+    assert rows[0].object != "delta"
+
+
 async def test_list_entity_names_returns_unique_names(kg_pair) -> None:
     await kg_pair.add_triple(
         subject="alice", predicate="friend_of", object="bob",

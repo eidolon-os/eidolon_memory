@@ -235,6 +235,29 @@ class LockedKnowledgeGraph:
             )
         return _filter_sensitive(rows, include_sensitive)
 
+    async def query_subjects(
+        self,
+        names: list[str],
+        *,
+        as_of: str | None = None,
+        include_sensitive: bool = False,
+        limit_per_subject: int = 8,
+    ) -> list[KgTripleRecord]:
+        """Return bounded current outgoing facts for explicit subjects.
+
+        Unlike entity discovery, this read does not inspect query language and
+        does not include triples where the requested entity is only an object.
+        """
+        if not names or limit_per_subject <= 0:
+            return []
+        names = list(dict.fromkeys(names))
+        as_of_iso = _canonical_temporal(as_of) or _now_iso()
+        async with self._lock:
+            rows = await asyncio.to_thread(
+                self._query_subject_rows, names, as_of_iso, limit_per_subject
+            )
+        return _filter_sensitive(rows, include_sensitive)
+
     async def timeline(
         self,
         entity_name: str | None = None,
@@ -521,6 +544,34 @@ class LockedKnowledgeGraph:
         out: list[KgTripleRecord] = []
         for _name, recs in by_subj.items():
             out.extend(recs[:limit_per_entity])
+        return out
+
+    def _query_subject_rows(
+        self, names: list[str], as_of_iso: str, limit_per_subject: int
+    ) -> list[KgTripleRecord]:
+        placeholders = ",".join("?" * len(names))
+        rows = self._inner._conn().execute(
+            f"SELECT t.id, e_sub.name AS subject_name, t.predicate, "
+            f"       e_obj.name AS object_name, t.valid_from, t.valid_to, "
+            f"       t.confidence, t.source_drawer_id, t.adapter_name "
+            f"FROM triples t "
+            f"JOIN entities e_sub ON e_sub.id = t.subject "
+            f"JOIN entities e_obj ON e_obj.id = t.object "
+            f"WHERE e_sub.name IN ({placeholders}) "
+            f"  AND (t.valid_from IS NULL OR t.valid_from <= ?) "
+            f"  AND (t.valid_to   IS NULL OR t.valid_to   >  ?) "
+            f"ORDER BY t.confidence DESC, t.valid_from DESC, t.extracted_at DESC "
+            f"LIMIT ?",
+            (*names, as_of_iso, as_of_iso, limit_per_subject * len(names)),
+        ).fetchall()
+
+        by_subject: dict[str, list[KgTripleRecord]] = {}
+        for row in rows:
+            record = _row_to_record(row)
+            by_subject.setdefault(record.subject, []).append(record)
+        out: list[KgTripleRecord] = []
+        for records in by_subject.values():
+            out.extend(records[:limit_per_subject])
         return out
 
     def _timeline_rows(
