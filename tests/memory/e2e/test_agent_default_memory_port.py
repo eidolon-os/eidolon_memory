@@ -166,6 +166,140 @@ async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runn
         await bus.close()
 
 
+async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -> None:
+    """Real NATS + Realm MCP: active is injected; fulfilled disappears."""
+    handle = live_agent_runner(
+        user_id="e2e_agent_commitment_context",
+        port=19133,
+        steward_mode="noop",
+    )
+    routes = MemoryRoutingTable.from_static(
+        endpoints=[
+            MemoryEndpoint(
+                memory_space_id=handle.user_id,
+                mcp_url=handle.mcp_url,
+            )
+        ],
+        nats=NatsSettings(url=handle.nats_url),
+    )
+    bus = NatsEventBus(handle.nats_url)
+    pool = McpClientPool(routes=routes)
+    port = EidolonMemoryPort(
+        pool=pool,
+        publisher=MemoryNatsPublisher(event_bus=bus, routes=routes),
+    )
+    marker = f"agent-commitment-context-{uuid.uuid4().hex[:8]}"
+    owner_id = "owner-e2e"
+    companion_id = "companion-e2e"
+    try:
+        request_id = await port.apply_commitment(
+            owner_id,
+            companion_id,
+            handle.user_id,
+            "小忆",
+            "promised",
+            f"周六陪 owner 去恐龙园 {marker}",
+            f"我答应周六陪你去恐龙园 {marker}",
+            source_event_id=f"turn-create-{marker}",
+            tool_call_id=f"call-create-{marker}",
+            operation="confirm",
+            beneficiaries=[owner_id],
+            participants=["朋友甲", "朋友乙"],
+            due_at="2026-07-18T09:00:00+08:00",
+            status="confirmed",
+        )
+        assert request_id
+
+        current = None
+
+        async def _active_visible() -> bool:
+            nonlocal current
+            result = await port.read_active_commitments(
+                owner_id,
+                companion_id=companion_id,
+                memory_realm_id=handle.user_id,
+                device_id="device-e2e",
+                session_id="session-e2e",
+                limit=3,
+                timeout_s=5.0,
+            )
+            assert result.degraded is False, result.degraded_reason
+            current = next(
+                (
+                    item
+                    for item in result.commitments
+                    if marker in item.action
+                ),
+                None,
+            )
+            return current is not None
+
+        assert await _wait_for_true(_active_visible, timeout_s=30)
+        assert current is not None
+        assert current.status == "confirmed"
+        assert set(current.participants) == {"朋友甲", "朋友乙"}
+
+        # ContextCompiler performs these reads concurrently on the same
+        # Realm-bound MCP session. Exercise that transport shape against the
+        # real process instead of assuming ClientSession multiplexing works.
+        recall_result, commitment_result = await asyncio.gather(
+            port.recall_context(
+                owner_id,
+                "今天聊点别的",
+                memory_realm_id=handle.user_id,
+                plan=MemoryQueryPlan(semantic_k=3, voice=False),
+                companion_id=companion_id,
+                device_id="device-e2e",
+                session_id="session-e2e",
+                timeout_s=5.0,
+            ),
+            port.read_active_commitments(
+                owner_id,
+                companion_id=companion_id,
+                memory_realm_id=handle.user_id,
+                device_id="device-e2e",
+                session_id="session-e2e",
+                limit=3,
+                timeout_s=5.0,
+            ),
+        )
+        assert recall_result.degraded is False
+        assert commitment_result.degraded is False
+        assert any(marker in item.action for item in commitment_result.commitments)
+
+        fulfil_request_id = await port.apply_commitment(
+            owner_id,
+            companion_id,
+            handle.user_id,
+            "小忆",
+            "promised",
+            current.action,
+            f"我们已经去过恐龙园了 {marker}",
+            source_event_id=f"turn-fulfil-{marker}",
+            tool_call_id=f"call-fulfil-{marker}",
+            operation="update",
+            target_id=current.commitment_id,
+            status="fulfilled",
+        )
+        assert fulfil_request_id
+
+        async def _terminal_absent() -> bool:
+            result = await port.read_active_commitments(
+                owner_id,
+                companion_id=companion_id,
+                memory_realm_id=handle.user_id,
+                limit=3,
+                timeout_s=5.0,
+            )
+            assert result.degraded is False, result.degraded_reason
+            return all(marker not in item.action for item in result.commitments)
+
+        assert await _wait_for_true(_terminal_absent, timeout_s=30)
+    finally:
+        await port.close()
+        await bus.close()
+
+
 async def test_agent_memory_port_delete_is_previewed_and_terminally_applied(
     live_agent_runner,
     mcp_session,
