@@ -207,7 +207,8 @@ async def process_turn_message(
 
     Failure model (G7 from KG plan §4.4):
       * fragment write fails → NAK / DLQ (chroma is source of truth for chat)
-      * KG write fails → log + ack (KG is incremental; chat conversation must not stall)
+      * auxiliary KG write fails → log + ack (chat conversation must not stall)
+      * persisted canonical invalidation fails → NAK / DLQ (safe deterministic replay)
       * privacy-action fails → log + ack (don't redeliver delete requests)
     """
     deliveries = delivery_count(msg)
@@ -329,7 +330,7 @@ async def process_turn_message(
             await msg.nak()
         return
 
-    # ── KG writes (G7: failure logged, never NAK) ──────────────────────────
+    # ── KG writes ──────────────────────────────────────────────────────────
     kg_triples_added = 0
     kg_invalidations_applied = 0
     mentions_written = 0
@@ -337,6 +338,7 @@ async def process_turn_message(
     kg_skipped_low_confidence = 0
     kg_exact_noop = 0
     kg_failures: list[str] = []
+    canonical_invalidation_failures: list[str] = []
     min_conf = settings.kg.min_confidence_to_write if kg is not None else 1.0
 
     if kg is not None:
@@ -352,8 +354,8 @@ async def process_turn_message(
             ):
                 invalidation_intents[source_index] = intent
         for index, inv in enumerate(decision.invalidations):
+            intent = invalidation_intents.get(index)
             try:
-                intent = invalidation_intents.get(index)
                 if canonical_facts is not None and intent is not None:
                     if intent.occurred_at is None:
                         intent = intent.model_copy(update={"occurred_at": turn_ts})
@@ -382,6 +384,12 @@ async def process_turn_message(
                     )
             except Exception as exc:
                 kg_failures.append(f"inv:{exc}")
+                if (
+                    canonical_facts is not None
+                    and decision_store is not None
+                    and intent is not None
+                ):
+                    canonical_invalidation_failures.append(str(exc))
                 log.warning("kg_invalidate_failed", error=str(exc))
 
         triple_intents: dict[int, MemoryIntent] = {}
@@ -480,10 +488,38 @@ async def process_turn_message(
         kg_exact_noop=kg_exact_noop,
         kg_failures=len(kg_failures),
         kg_failure_sample=kg_failures[:2],
+        canonical_invalidation_failures=len(canonical_invalidation_failures),
         privacy_actions=len(decision.privacy_actions),
         mentions=mentions_written if kg is not None else 0,
         mentions_rejected=mentions_rejected if kg is not None else 0,
     )
+    if canonical_invalidation_failures:
+        error = "canonical invalidation projection failed: " + "; ".join(
+            canonical_invalidation_failures[:2]
+        )
+        if deliveries >= max_deliveries:
+            await _record_dlq(dlq_writer, settings, msg, error, deliveries)
+            if audit_sink is not None:
+                await audit_sink.record_rejected(
+                    turn,
+                    trace_id=trace_id,
+                    reason=error,
+                    deliveries=deliveries,
+                )
+            await msg.ack()
+            log.error(
+                "turn_processor_canonical_invalidation_dlq_ack",
+                deliveries=deliveries,
+                error=error,
+            )
+        else:
+            await msg.nak()
+            log.warning(
+                "turn_processor_canonical_invalidation_nak",
+                deliveries=deliveries,
+                error=error,
+            )
+        return
     if audit_sink is not None:
         await audit_sink.record_absorbed(
             turn,

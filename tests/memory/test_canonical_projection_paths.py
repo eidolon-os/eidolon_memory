@@ -22,6 +22,7 @@ from eidolon.memory.domain.canonical_fact import canonical_assertion_id
 from eidolon.memory.domain.kg import KgInvalidationAction, KgTripleAction
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
+from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 
 MEMORY_SPACE_ID = "r:alice:default"
 
@@ -380,3 +381,137 @@ async def test_exact_change_archives_canonical_drawer_and_keeps_fact_history(
     assert stats.invalidations_total == 1
     assert stats.drawer_projected == 0
     assert stats.kg_projected == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_exact_invalidation_naks_then_repairs_pending_state(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    await apply_explicit_intent(
+        backend,
+        kg,
+        _explicit_command(),
+        canonical_facts=ledger,
+    )
+    decision = StewardDecision(
+        should_write=True,
+        reason="changed preference",
+        invalidations=[
+            KgInvalidationAction(
+                subject="self",
+                predicate="likes",
+                object="oolong",
+            )
+        ],
+    )
+    attempts = 0
+
+    async def _fail_once(**kwargs) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary invalidation failure")
+        return await kg._invalidate(**kwargs)
+
+    kg.invalidate.side_effect = _fail_once
+    steward = MagicMock()
+    steward.extraction_version = "test-extractor"
+    steward.decide = AsyncMock(return_value=decision)
+
+    first = _turn_message("turn-auto-correction")
+    await process_turn_message(
+        first,
+        steward=steward,
+        backend=backend,
+        kg=kg,
+        settings=load_memory_settings(),
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=ledger,
+        decision_store=decisions,
+    )
+    assert first.nak.await_count == 1
+    first.ack.assert_not_awaited()
+    pending = await ledger.stats()
+    assert pending.assertions_active == 1
+    assert pending.invalidations_pending == 1
+
+    second = _turn_message("turn-auto-correction")
+    second.metadata.num_delivered = 2
+    await process_turn_message(
+        second,
+        steward=steward,
+        backend=backend,
+        kg=kg,
+        settings=load_memory_settings(),
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=ledger,
+        decision_store=decisions,
+    )
+    second.ack.assert_awaited_once()
+    second.nak.assert_not_awaited()
+    completed = await ledger.stats()
+    assert completed.assertions_active == 0
+    assert completed.assertions_invalidated == 1
+    assert completed.invalidations_pending == 0
+    assert completed.invalidations_total == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_exact_invalidation_enters_dlq_at_delivery_limit(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    await apply_explicit_intent(
+        backend,
+        kg,
+        _explicit_command(),
+        canonical_facts=ledger,
+    )
+    kg.invalidate.side_effect = RuntimeError("persistent invalidation failure")
+    decision = StewardDecision(
+        should_write=True,
+        reason="changed preference",
+        invalidations=[
+            KgInvalidationAction(
+                subject="self",
+                predicate="likes",
+                object="oolong",
+            )
+        ],
+    )
+    steward = MagicMock()
+    steward.extraction_version = "test-extractor"
+    steward.decide = AsyncMock(return_value=decision)
+    dlq = SimpleNamespace(add=AsyncMock(return_value=SimpleNamespace()))
+    msg = _turn_message("turn-auto-correction-dlq")
+    msg.metadata.num_delivered = 3
+
+    await process_turn_message(
+        msg,
+        steward=steward,
+        backend=backend,
+        kg=kg,
+        settings=load_memory_settings(),
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=ledger,
+        dlq_writer=dlq,
+        decision_store=decisions,
+    )
+
+    msg.ack.assert_awaited_once()
+    msg.nak.assert_not_awaited()
+    dlq.add.assert_awaited_once()
+    assert "persistent invalidation failure" in dlq.add.await_args.kwargs["error"]
+    stats = await ledger.stats()
+    assert stats.assertions_active == 1
+    assert stats.invalidations_pending == 1
