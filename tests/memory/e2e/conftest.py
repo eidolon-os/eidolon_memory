@@ -716,6 +716,9 @@ async def nats_publish_user_confirm(
     wing: str = "Wing_Profile",
     memory_type: str = "preference",
     request_id: str | None = None,
+    subject: str | None = None,
+    predicate: str | None = None,
+    object_value: str | None = None,
 ) -> str:
     """Publish an explicit ``MemoryIntentCommand`` to the cmd subject.
 
@@ -746,6 +749,17 @@ async def nats_publish_user_confirm(
             },
         }
     )
+    structured = (subject, predicate, object_value)
+    if any(structured):
+        if not all(structured):
+            raise ValueError("structured confirmation requires subject/predicate/object")
+        payload["intent"].update(
+            {
+                "subject": subject,
+                "predicate": predicate,
+                "object": object_value,
+            }
+        )
     await _publish_command(nats_url, payload)
     return str(payload["request_id"])
 

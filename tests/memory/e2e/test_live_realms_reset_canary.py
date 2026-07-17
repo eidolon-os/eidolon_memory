@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 
 import pytest
 
@@ -65,6 +66,23 @@ async def _wait_for_canary(
         f"live Realm canary was not visible: drawer={drawer_marker!r} kg={kg_marker!r} "
         f"records={latest_records!r} triples={latest_triples!r}"
     )
+
+
+async def _wait_for_command(session, request_id: str) -> dict:
+    latest: dict = {}
+    for _ in range(120):
+        payload = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_command_status",
+                {"request_id": request_id},
+            )
+        )
+        if isinstance(payload, dict):
+            latest = payload
+        if latest.get("status") in {"applied", "failed"}:
+            return latest
+        await asyncio.sleep(0.25)
+    pytest.fail(f"live command did not become terminal: {request_id} latest={latest}")
 
 
 async def test_live_realms_empty_write_visible_and_isolated(mcp_session) -> None:
@@ -128,3 +146,74 @@ async def test_live_realms_empty_write_visible_and_isolated(mcp_session) -> None
         seen_kg = {str(record.get("object", "")) for record in triples}
         assert seen_drawers & all_drawer_markers == {own_drawer}
         assert seen_kg & all_kg_markers == {own_kg}
+
+
+async def test_live_exact_canonical_dedup_evidence_and_isolation(mcp_session) -> None:
+    if os.environ.get("EIDOLON_MEMORY_LIVE_CANONICAL_WRITE") != "1":
+        pytest.skip("set EIDOLON_MEMORY_LIVE_CANONICAL_WRITE=1 for write canary")
+    realms = _realms()
+    if len(realms) < 2:
+        pytest.skip("canonical isolation canary requires at least two live Realms")
+    nats_url = os.environ.get(
+        "EIDOLON_MEMORY_LIVE_NATS_URL",
+        "nats://127.0.0.1:4222",
+    )
+    target = realms[0]
+    target_realm = str(target["realm_id"])
+    target_port = int(target["port"])
+    marker = f"live-canonical-{uuid.uuid4().hex[:12]}"
+
+    async with mcp_session(f"http://127.0.0.1:{target_port}/mcp") as session:
+        before = mcp_tool_json(
+            await session.call_tool("eidolon_memory_canonical_stats", {})
+        )
+        first_id = await nats_publish_user_confirm(
+            nats_url,
+            user_id=target_realm,
+            text=f"self likes {marker}",
+            request_id=f"live-canonical-1-{uuid.uuid4().hex}",
+            subject="self",
+            predicate="likes",
+            object_value=marker,
+        )
+        second_id = await nats_publish_user_confirm(
+            nats_url,
+            user_id=target_realm,
+            text=f"self likes {marker}",
+            request_id=f"live-canonical-2-{uuid.uuid4().hex}",
+            subject="self",
+            predicate="likes",
+            object_value=marker,
+        )
+        first = await _wait_for_command(session, first_id)
+        second = await _wait_for_command(session, second_id)
+        assert first["status"] == "applied", first
+        assert second["status"] == "applied", second
+        assert str(second.get("resource_id") or "").endswith(":evidence:2")
+
+        after = mcp_tool_json(
+            await session.call_tool("eidolon_memory_canonical_stats", {})
+        )
+        assert after["assertions_total"] == before["assertions_total"] + 1
+        assert after["evidence_total"] == before["evidence_total"] + 2
+        assert after["kg_not_projected"] == 0
+        records, triples = await _snapshot(session)
+        assert sum(marker in str(row.get("value") or "") for row in records) == 1
+        assert (
+            sum(
+                row.get("subject") == "self"
+                and row.get("predicate") == "likes"
+                and row.get("object") == marker
+                and row.get("valid_to") is None
+                for row in triples
+            )
+            == 1
+        )
+
+    for item in realms[1:]:
+        async with mcp_session(
+            f"http://127.0.0.1:{int(item['port'])}/mcp"
+        ) as session:
+            records, triples = await _snapshot(session)
+        assert not any(marker in str(row.get("value") or "") for row in records)
+        assert not any(row.get("object") == marker for row in triples)
