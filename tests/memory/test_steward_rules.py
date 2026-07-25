@@ -103,6 +103,29 @@ async def test_rules_emotion_wing(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "wing", "memory_type"),
+    [
+        ("明天我要去北京", "Wing_Event", "event"),
+        ("我家住在北京", "Wing_Profile", "profile"),
+        ("我工作在常州", "Wing_Work", "work"),
+    ],
+)
+async def test_rules_route_common_product_claims(
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    wing: str,
+    memory_type: str,
+) -> None:
+    monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
+    decision = await RuleBasedSteward(load_memory_settings()).decide(_turn(text))
+
+    assert decision.should_write
+    assert decision.fragments[0].wing == wing
+    assert decision.fragments[0].memory_type == memory_type
+
+
+@pytest.mark.asyncio
 async def test_rules_privacy_action_blocks_normal_write(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
     decision = await RuleBasedSteward(load_memory_settings()).decide(_turn("这件事不要记住"))

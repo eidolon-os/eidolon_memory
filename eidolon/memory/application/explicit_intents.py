@@ -15,6 +15,7 @@ from eidolon_sdk.memory import (
 from eidolon.memory.application.canonical_invalidation import (
     invalidate_exact_canonical_fact,
 )
+from eidolon.memory.application.claim_routing import route_explicit_claim
 from eidolon.memory.application.commitments import apply_explicit_commitment
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.domain.canonical_fact import (
@@ -141,16 +142,19 @@ async def apply_explicit_intent(
         raise MemoryIntentRejected("unsupported memory intent operation")
 
     attributes = intent.attributes
-    defaults = {
-        "fact": ("Wing_Profile", "profile"),
-        "preference": ("Wing_Life", "preference"),
-        "commitment": ("Wing_Future", "goal"),
-        "episode": ("Wing_Life", "event"),
-    }
-    default_wing, default_memory_type = defaults[intent.intent_type]
-    wing = _non_blank_attribute(attributes, "wing", default_wing)
-    memory_type = _non_blank_attribute(
-        attributes, "memory_type", default_memory_type
+    route = route_explicit_claim(
+        intent.raw_claim,
+        intent_type=intent.intent_type,
+    )
+    requested_wing = _non_blank_attribute(attributes, "wing", "auto")
+    requested_memory_type = _non_blank_attribute(
+        attributes, "memory_type", "auto"
+    )
+    wing = route.wing if requested_wing == "auto" else requested_wing
+    memory_type = (
+        route.memory_type
+        if requested_memory_type == "auto"
+        else requested_memory_type
     )
     importance = _bounded_int_attribute(attributes, "importance", 5, 1, 5)
     tags = _string_list_attribute(attributes, "tags")

@@ -467,6 +467,29 @@ async def test_user_confirm_reports_accepted_not_applied_when_worker_is_silent(
     assert command.intent.raw_claim == "我喜欢乌龙茶"
 
 
+async def test_user_confirm_accepts_idempotency_key_and_auto_routes_event(
+    mcp_with_kg,
+) -> None:
+    mcp, _, publisher, _, _ = mcp_with_kg
+    publisher.publish.side_effect = lambda _command: None
+    tool = next(
+        t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_user_confirm"
+    )
+
+    result = await tool.fn(
+        text="明天我要去北京",
+        request_id="turn-1.memory-1",
+        wait_applied_seconds=0.01,
+    )
+
+    assert result["request_id"] == "turn-1.memory-1"
+    assert result["wing"] == "Wing_Event"
+    assert result["memory_type"] == "event"
+    command = publisher.publish.await_args.args[0]
+    assert command.intent.attributes["wing"] == "Wing_Event"
+    assert command.intent.attributes["memory_type"] == "event"
+
+
 async def test_user_confirm_publish_failure_is_truthfully_failed(mcp_with_kg) -> None:
     mcp, _, publisher, ledger, _ = mcp_with_kg
 

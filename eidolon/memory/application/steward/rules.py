@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from eidolon_sdk.memory import ConversationTurnPayload
 
+from eidolon.memory.application.claim_routing import PROFILE_RE, TEMPORAL_EVENT_RE
 from eidolon.memory.application.forget import extract_privacy_target
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.steward.common import (
@@ -58,7 +59,7 @@ class RuleBasedSteward:
     @property
     def extraction_version(self) -> str:
         """Bump when deterministic extraction semantics change."""
-        return "rules:v1"
+        return "rules:v2"
 
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         text = f"{turn.user_text}\n{turn.assistant_text}".strip()
@@ -172,6 +173,19 @@ class RuleBasedSteward:
             wing = "Wing_Life"
             memory_type = "preference"
             room = "preference_life"
+            importance = 4
+        elif TEMPORAL_EVENT_RE.search(text):
+            wing = "Wing_Event"
+            memory_type = "event"
+            room = safe_room_token(
+                _first_match(TEMPORAL_EVENT_RE, text),
+                prefix="event",
+            )
+            importance = 4
+        elif PROFILE_RE.search(text):
+            wing = "Wing_Profile"
+            memory_type = "profile"
+            room = "profile_background"
             importance = 4
         else:
             wing = "Wing_Life"

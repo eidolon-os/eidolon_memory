@@ -265,6 +265,32 @@ async def process_turn_message(
         except Exception as exc:  # noqa: BLE001 - defensive: never break turn ack
             log.warning("working_memory_append_failed", error=str(exc))
 
+    # The explicit verbatim command is authoritative for a source turn. A
+    # delayed generic turn event must not ask the steward to create a second
+    # paraphrased/classified copy. Agent-side suppression is the fast path;
+    # this source-turn check is the service-owned safety net.
+    try:
+        existing = await backend.get_by_source_turn_id(memory_space_id, turn.turn_id)
+    except Exception as exc:  # noqa: BLE001 - dedup lookup must not lose the turn
+        log.warning(
+            "turn_processor_explicit_dedup_lookup_failed",
+            turn_id=turn.turn_id,
+            error=str(exc),
+        )
+    else:
+        if (
+            existing is not None
+            and isinstance(existing.metadata, dict)
+            and existing.metadata.get("source") == "user-confirmed"
+        ):
+            log.info(
+                "turn_processor_skipped_after_explicit_write",
+                turn_id=turn.turn_id,
+                memory_space_id=memory_space_id,
+            )
+            await msg.ack()
+            return
+
     # ── decide ─────────────────────────────────────────────────────────────
     try:
         decision, memory_intents = await _decide_once(

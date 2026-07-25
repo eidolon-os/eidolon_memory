@@ -10,6 +10,7 @@ Chroma/KG lock.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from importlib.metadata import PackageNotFoundError, version
@@ -28,6 +29,7 @@ from eidolon_sdk.memory import (
 )
 
 from eidolon.memory.adapters.locked_kg import _now_iso
+from eidolon.memory.application.claim_routing import route_explicit_claim
 from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     find_forget_candidates,
@@ -653,8 +655,8 @@ def _register_user_confirm_tool(
     @mcp.tool()
     async def eidolon_memory_user_confirm(
         text: str,
-        wing: str = "Wing_Profile",
-        memory_type: str = "profile",
+        wing: str = "auto",
+        memory_type: str = "auto",
         importance: int = 5,
         confidence: float = 0.99,
         tags: list[str] | None = None,
@@ -667,6 +669,7 @@ def _register_user_confirm_tool(
         extensions: dict[str, dict[str, Any]] | None = None,
         source_event_id: str = "",
         tool_call_id: str = "",
+        request_id: str = "",
         wait_applied_seconds: float = 0.75,
     ) -> dict[str, Any]:
         """Persist a user-confirmed fact verbatim, bypassing the LLM steward.
@@ -695,24 +698,44 @@ def _register_user_confirm_tool(
                 "status": "error",
                 "error": "text must be a non-empty string",
             }
-        request_id = uuid.uuid4().hex
+        clean_request_id = request_id.strip()
+        if clean_request_id and (
+            len(clean_request_id) > 128
+            or re.fullmatch(r"[A-Za-z0-9._:-]+", clean_request_id) is None
+        ):
+            return {
+                "status": "error",
+                "error": "request_id contains unsupported characters",
+            }
+        request_id = clean_request_id or uuid.uuid4().hex
         event_id = source_event_id.strip() or request_id
+        requested_memory_type = memory_type.strip() or "auto"
+        intent_type = (
+            "preference"
+            if requested_memory_type.lower() == "preference"
+            else "fact"
+        )
+        route = route_explicit_claim(clean, intent_type=intent_type)
+        selected_wing = route.wing if wing.strip() in {"", "auto"} else wing.strip()
+        selected_memory_type = (
+            route.memory_type
+            if requested_memory_type.lower() == "auto"
+            else requested_memory_type
+        )
         intent = MemoryIntent(
             intent_id=f"intent:{request_id}",
             memory_space_id=memory_space_id,
             source_event_id=event_id,
             authority="explicit_user",
-            intent_type=(
-                "preference" if memory_type.strip().lower() == "preference" else "fact"
-            ),
+            intent_type=intent_type,
             raw_claim=clean,
             operation_hint="confirm",
             occurred_at=_now_iso(),
             tool_call_id=tool_call_id.strip() or None,
             confidence=max(0.0, min(1.0, confidence)),
             attributes={
-                "wing": wing,
-                "memory_type": memory_type,
+                "wing": selected_wing,
+                "memory_type": selected_memory_type,
                 "importance": max(1, min(5, importance)),
                 "tags": list(tags or []),
                 "scope": scope,
@@ -739,7 +762,8 @@ def _register_user_confirm_tool(
         )
         return {
             **outcome,
-            "wing": wing,
+            "wing": selected_wing,
+            "memory_type": selected_memory_type,
             "intent_id": intent.intent_id,
             "source_event_id": event_id,
         }

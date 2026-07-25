@@ -92,6 +92,57 @@ def _make_steward(decision):
     return s
 
 
+async def test_generic_turn_is_skipped_when_explicit_write_owns_source_turn(
+    settings,
+    backend,
+) -> None:
+    from eidolon.memory.application.ingest import ingest_memory_fragment
+    from eidolon.memory.application.turn_processor import process_turn_message
+    from eidolon.memory.domain.fragments import MemoryFragment
+
+    turn_id = "turn-explicit-1"
+    await ingest_memory_fragment(
+        backend,
+        MemoryFragment(
+            memory_id="memoryintent:explicit-1",
+            memory_space_id=MEMORY_SPACE_ID,
+            memory_realm_id=MEMORY_SPACE_ID,
+            source_device_id="device",
+            source_instance_id="test",
+            wing="Wing_Event",
+            room="user_confirmed_explicit",
+            content="明天我要去北京",
+            memory_type="event",
+            importance=5,
+            confidence=0.99,
+            source_turn_id=turn_id,
+            session_id="s1",
+            metadata={"source": "user-confirmed"},
+        ),
+    )
+    steward = MagicMock()
+    steward.decide = AsyncMock()
+    msg = _stub_msg(
+        _turn_payload(
+            turn_id=turn_id,
+            user_text="请记住：明天我要去北京",
+        )
+    )
+
+    await process_turn_message(
+        msg,
+        steward=steward,
+        backend=backend,
+        settings=settings,
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+    )
+
+    steward.decide.assert_not_awaited()
+    assert msg.ack_calls == ["ack"]
+    assert msg.nak_calls == []
+
+
 # ─── G7: KG write failure does not block ack ─────────────────────────────
 
 
