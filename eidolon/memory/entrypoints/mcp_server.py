@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -50,8 +51,10 @@ from eidolon.memory.domain.ports import (
     MemoryBackend,
 )
 from eidolon.memory.domain.predicates import predicate_definition
-from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
-from eidolon.memory.infrastructure.palace_init import palace_is_initialized
+from eidolon.memory.infrastructure.mempalace_backend import (
+    inspect_configured_backend,
+    selected_mempalace_backend,
+)
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -179,17 +182,24 @@ def build_control_plane_mcp(
     async def eidolon_memory_status() -> dict[str, Any]:
         """Report this agent runner's memory service status."""
         mempalace_backend = selected_mempalace_backend(settings)
-        initialized = palace_is_initialized(
+        try:
+            mempalace_version = version("mempalace")
+        except PackageNotFoundError:
+            mempalace_version = "unknown"
+        artifact_report = inspect_configured_backend(
             Path(palace_path),
-            backend=mempalace_backend,
+            mempalace_backend,
         )
+        initialized = artifact_report.ready
         return {
             "backend": "mempalace-python",
+            "mempalace_version": mempalace_version,
             "mempalace_backend": mempalace_backend,
             "memory_space_id": memory_space_id,
             "palace_path": palace_path,
             "palace_initialized": initialized,
             "ready": initialized,
+            **artifact_report.to_dict(),
             "steward_mode": settings.steward.mode,
             "mcp_transport": "streamable-http",
             "mcp_http_url": settings.mcp_http.base_url(port=port),

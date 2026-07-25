@@ -16,7 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "faststream[nats]>=0.5",
     "litellm>=1.0",
-    "mempalace==3.5.0",
+    "mempalace==3.6.0",
     "python-dotenv>=1.0",
     "nats-py>=2.9",
     "mcp>=1.2.0",

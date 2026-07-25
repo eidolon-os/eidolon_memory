@@ -76,6 +76,7 @@ from eidolon.memory.infrastructure.integrity import (
 from eidolon.memory.infrastructure.mempalace_backend import (
     apply_mempalace_backend_env,
     mempalace_backend_env,
+    reconcile_configured_backend,
     selected_mempalace_backend,
     vector_sqlite_integrity_targets,
 )
@@ -579,6 +580,15 @@ def main(argv: list[str] | None = None) -> None:
         raise
 
     configure_process_temp(settings, palace_path, memory_space_id)
+
+    artifact_report = reconcile_configured_backend(palace_path, backend_name)
+    if artifact_report.removed_artifacts:
+        log.warning(
+            "agent_runner_removed_empty_backend_artifacts",
+            memory_space_id=memory_space_id,
+            configured_backend=backend_name,
+            removed=list(artifact_report.removed_artifacts),
+        )
 
     step_started = time.perf_counter()
     ensure_palace_initialized(

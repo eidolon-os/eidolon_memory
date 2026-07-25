@@ -1,4 +1,4 @@
-"""Executable contracts for MemPalace behavior Eidolon relies on since 3.5.0."""
+"""Executable contracts for MemPalace 3.6.0 behavior Eidolon relies on."""
 
 from __future__ import annotations
 
@@ -8,8 +8,16 @@ from pathlib import Path
 import pytest
 
 
-def test_runtime_is_exactly_mempalace_350() -> None:
-    assert version("mempalace") == "3.5.0"
+def test_runtime_is_exactly_mempalace_360() -> None:
+    assert version("mempalace") == "3.6.0"
+
+
+def test_empty_sqlite_file_is_not_detected_as_backend(tmp_path: Path) -> None:
+    from mempalace.backends import detect_backends_for_path
+
+    (tmp_path / "sqlite_exact.sqlite3").touch()
+
+    assert detect_backends_for_path(str(tmp_path)) == []
 
 
 def test_repair_preserves_knowledge_graph_sqlite_sidecars(tmp_path: Path) -> None:

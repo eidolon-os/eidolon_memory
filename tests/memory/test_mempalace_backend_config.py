@@ -6,9 +6,12 @@ import pytest
 
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.infrastructure.mempalace_backend import (
+    BackendArtifactError,
     backend_artifact_path,
     backend_is_initialized,
+    inspect_configured_backend,
     mempalace_backend_env,
+    reconcile_configured_backend,
     selected_mempalace_backend,
     vector_sqlite_integrity_targets,
 )
@@ -93,3 +96,65 @@ def test_backend_artifacts_and_integrity_targets(tmp_path: Path) -> None:
     assert vector_sqlite_integrity_targets(tmp_path, "chroma") == [
         ("chroma", tmp_path / "chroma.sqlite3")
     ]
+
+
+def _sqlite_with_tables(path: Path, *tables: str) -> None:
+    import sqlite3
+
+    connection = sqlite3.connect(path)
+    try:
+        for table in tables:
+            connection.execute(f'CREATE TABLE "{table}" (id TEXT)')
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_empty_foreign_artifact_is_invalid_and_removed(tmp_path: Path) -> None:
+    _sqlite_with_tables(tmp_path / "chroma.sqlite3", "collections", "embeddings")
+    stale = tmp_path / "sqlite_exact.sqlite3"
+    stale.touch()
+
+    before = inspect_configured_backend(tmp_path, "chroma")
+    assert before.state == "stale_artifact"
+
+    after = reconcile_configured_backend(tmp_path, "chroma")
+    assert after.ready is True
+    assert after.removed_artifacts == (str(stale),)
+    assert not stale.exists()
+
+
+def test_valid_foreign_backend_fails_closed(tmp_path: Path) -> None:
+    _sqlite_with_tables(tmp_path / "chroma.sqlite3", "collections", "embeddings")
+    _sqlite_with_tables(
+        tmp_path / "sqlite_exact.sqlite3", "collections", "documents"
+    )
+
+    with pytest.raises(BackendArtifactError) as exc_info:
+        reconcile_configured_backend(tmp_path, "chroma")
+
+    assert exc_info.value.report.state == "conflict"
+    assert "sqlite_exact" in str(exc_info.value)
+
+
+def test_nonempty_invalid_foreign_artifact_is_not_deleted(tmp_path: Path) -> None:
+    _sqlite_with_tables(tmp_path / "chroma.sqlite3", "collections", "embeddings")
+    stale = tmp_path / "sqlite_exact.sqlite3"
+    stale.write_bytes(b"not a sqlite database")
+
+    with pytest.raises(BackendArtifactError) as exc_info:
+        reconcile_configured_backend(tmp_path, "chroma")
+
+    assert exc_info.value.report.state == "stale_artifact"
+    assert stale.read_bytes() == b"not a sqlite database"
+
+
+def test_empty_selected_artifact_is_reinitialized_candidate(tmp_path: Path) -> None:
+    selected = tmp_path / "sqlite_exact.sqlite3"
+    selected.touch()
+
+    report = reconcile_configured_backend(tmp_path, "sqlite_exact")
+
+    assert report.state == "uninitialized"
+    assert report.removed_artifacts == (str(selected),)
+    assert not selected.exists()

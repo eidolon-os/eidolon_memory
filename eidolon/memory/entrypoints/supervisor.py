@@ -42,13 +42,14 @@ from eidolon.memory.config.users import (
 from eidolon.memory.entrypoints.admin_api import build_admin_api
 from eidolon.memory.infrastructure.mempalace_backend import (
     mempalace_backend_env,
+    inspect_configured_backend,
+    reconcile_configured_backend,
     selected_mempalace_backend,
 )
 from eidolon.memory.infrastructure.palace_init import (
     PalaceInitError,
     _resolve_mempalace_cli,
     ensure_palace_initialized,
-    palace_is_initialized,
 )
 from eidolon.memory.infrastructure.process_temp import process_temp_subprocess_env
 from eidolon.memory.support.logging import get_logger
@@ -303,10 +304,10 @@ class Supervisor:
         return self._palace_for(user)
 
     def palace_initialized(self, user: UserEntry) -> bool:
-        return palace_is_initialized(
+        return inspect_configured_backend(
             self._palace_for(user),
-            backend=selected_mempalace_backend(self._settings),
-        )
+            selected_mempalace_backend(self._settings),
+        ).ready
 
     async def reconcile_now(self) -> None:
         """Run one reconcile pass synchronously (await until children align).
@@ -471,6 +472,14 @@ class Supervisor:
                 backend=backend,
             )
             try:
+                artifact_report = reconcile_configured_backend(palace, backend)
+                if artifact_report.removed_artifacts:
+                    log.warning(
+                        "supervisor_removed_empty_backend_artifacts",
+                        user_id=user.id,
+                        configured_backend=backend,
+                        removed=list(artifact_report.removed_artifacts),
+                    )
                 ensure_palace_initialized(
                     user.id,
                     palace,
