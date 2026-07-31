@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "eidolon-memory-contracts"
+version = "0.1.0"
+description = "Wire contracts for the Eidolon memory service — NATS subjects, payloads, and the read/write interface"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# Deliberately pydantic-only. Consumers of the memory service (agents, admin
+# consoles) depend on this package to speak the protocol; they must not be
+# forced to install the service's storage stack (mempalace, chromadb,
+# onnxruntime) just to construct a payload.
+dependencies = [
+    "pydantic>=2.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["eidolon_memory_contracts"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"eidolon_memory_contracts/__init__.py" = ["F401"]
