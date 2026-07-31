@@ -260,6 +260,9 @@ async def _nats_subscriber_loop(
                 async def _checkpoint_targets() -> None:
                     # KG is Eidolon-owned SQLite. Chroma's native client owns
                     # chroma.sqlite3 and its compaction lifecycle exclusively.
+                    # With the graph off there is no such file to checkpoint.
+                    if kg is None:
+                        return
                     await asyncio.to_thread(checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE")
                     await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
 
@@ -606,20 +609,30 @@ def main(argv: list[str] | None = None) -> None:
 
     # KG plan §3.2 G3: explicitly create the KG SQLite so integrity_check sees a
     # committed file (mempalace KnowledgeGraph initializes tables on first open).
+    # Skipped entirely when the graph is switched off — there is then no file to
+    # create, and none to refuse startup over.
     kg_sqlite_path = palace_path / "knowledge_graph.sqlite3"
-    step_started = time.perf_counter()
-    _materialize_kg_file(kg_sqlite_path)
-    log.info(
-        "agent_runner_kg_materialize_done",
-        memory_space_id=memory_space_id,
-        kg=str(kg_sqlite_path),
-        elapsed_ms=_elapsed_ms(step_started),
-    )
+    kg_enabled = settings.kg.enabled
+    if kg_enabled:
+        step_started = time.perf_counter()
+        _materialize_kg_file(kg_sqlite_path)
+        log.info(
+            "agent_runner_kg_materialize_done",
+            memory_space_id=memory_space_id,
+            kg=str(kg_sqlite_path),
+            elapsed_ms=_elapsed_ms(step_started),
+        )
+    else:
+        log.info(
+            "agent_runner_kg_disabled",
+            memory_space_id=memory_space_id,
+            detail="kg.backend=none; serving vector recall only",
+        )
 
     # D2 + KG G3: integrity check — refuse to come up on a malformed palace OR KG.
     integrity_targets = [
         *vector_sqlite_integrity_targets(palace_path, backend_name),
-        ("kg", kg_sqlite_path),
+        *([("kg", kg_sqlite_path)] if kg_enabled else []),
     ]
     step_started = time.perf_counter()
     checked: list[str] = []
@@ -660,12 +673,18 @@ def main(argv: list[str] | None = None) -> None:
 
     # KG plan §3.0: LockedKnowledgeGraph shares backend.lock so chroma + KG
     # reads/writes stay coherent inside one agent_runner process.
-    from mempalace.knowledge_graph import KnowledgeGraph
+    #
+    # None means the graph is off. Every consumer already handles that: recall
+    # falls back to vector-only, the MCP graph tools are not registered, and a
+    # graph command is answered with a failure rather than left hanging.
+    kg = None
+    if kg_enabled:
+        from mempalace.knowledge_graph import KnowledgeGraph
 
-    kg = LockedKnowledgeGraph(
-        KnowledgeGraph(db_path=str(kg_sqlite_path)),
-        backend.lock,
-    )
+        kg = LockedKnowledgeGraph(
+            KnowledgeGraph(db_path=str(kg_sqlite_path)),
+            backend.lock,
+        )
 
     # KG plan §3.3: write tools publish through the same JetStream stream
     # that handles chat turns; admin is just another "agent" client.

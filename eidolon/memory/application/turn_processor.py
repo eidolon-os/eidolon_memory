@@ -687,6 +687,24 @@ async def process_command_message(
         await msg.ack()
         return
 
+    if kg is None and isinstance(cmd, (KgAddTripleCommand, KgInvalidateCommand)):
+        # The graph is switched off for this deployment. Say so, rather than
+        # leaving the caller to time out waiting for a terminal status.
+        log.info(
+            "cmd_kg_not_configured",
+            request_id=cmd.request_id,
+            kind=cmd.kind,
+        )
+        await _record_command_status(
+            command_status,
+            "failed",
+            cmd.request_id,
+            kind=cmd.kind,
+            error="kg_not_configured",
+        )
+        await msg.ack()
+        return
+
     try:
         resource_id: str | None = None
         if isinstance(cmd, KgAddTripleCommand):
