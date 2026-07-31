@@ -3,10 +3,35 @@
 陪伴智能体的语义记忆服务。提供向量召回 + bi-temporal 知识图谱融合,300ms 硬预算,
 以 MCP / NATS / 同进程 三条契约对外暴露。
 
-> 完整设计:[`docs/memory-architecture-plan.md`](docs/memory-architecture-plan.md)(架构基线)、
-> [`docs/architecture-d1-readwrite-split.md`](docs/architecture-d1-readwrite-split.md)(D1 进程拓扑)、
-> [`docs/plan-kg-integration.md`](docs/plan-kg-integration.md)(KG 集成)。
+> ⚠️ 本 README 的部分章节落后于代码(subject 名、MCP 工具数量、端口、路径)。
+> 已核对为准确的是:本节、§依赖与部署形态、§配置。其余章节以代码为准。
+>
+> 真正的架构文档在父仓库 `docs/子项目/eidolon_memory/`。
 > 本 README 是**外部集成方**的快速入口。
+
+---
+
+## 0. 依赖与部署形态
+
+本服务**不依赖 eidolon OS**,可独立构建与发布。运行时依赖只有 mempalace / nats-py /
+mcp / litellm 这些第三方包,加上同仓库自持的 `eidolon-memory-contracts`。
+
+- **协议包**:`contracts/`(`eidolon-memory-contracts`)是客户端唯一需要装的东西 —— 只依赖
+  pydantic,不会把本服务的存储栈(mempalace、chromadb、onnxruntime)拖进调用方。
+- **OS 集成是可选的**:`eidolon/memory/integrations/` 下放与宿主系统的接线,由
+  `[eidolon-os]` extra 提供。核心不 import 任何 `eidolon_*` 包,由
+  `tests/memory/test_os_import_boundary.py` 把守(静态扫描 + 子进程屏蔽 OS 包后加载全部
+  entrypoint)。
+- **独立形态**:`registry.source: static` + NATS + 本地 chroma 即可完整服务任何客户端,
+  无需 admin 服务在场。
+
+| 部署形态 | 向量 | 知识图谱 | 名册来源 |
+|---|---|---|---|
+| 本地单机 | chroma(palace 目录内文件) | sqlite(同上)或 `none` | admin HTTP 或 static YAML |
+| 跨主机 | milvus(server / Zilliz) | postgres | 同上 |
+
+两者共用一套配置 schema,只换值 —— 见 `config/settings.example.yaml` 与
+`config/settings.cloud.example.yaml`(有测试断言两者字段集一致)。
 
 ---
 
@@ -15,11 +40,14 @@
 | 你是 | 走哪条 |
 |------|--------|
 | LiveKit voice 主进程 / 同 monorepo 的 Python | **同进程 API**(import,零开销,300ms 含 ONNX) |
-| 外部 Python / Node / Cursor / Claude IDE | **MCP Streamable HTTP**(默认 `http://127.0.0.1:8030/mcp`) |
+| 外部 Python / Node / Cursor / Claude IDE | **MCP Streamable HTTP**(端口按 memory space 确定性派生,见 discovery) |
 | 写一条对话后异步落盘(steward 后台抽取) | **NATS JetStream**(发 `ConversationTurnPayload`) |
 | eidolon-agent 启动 / 周期刷新路由 | **Discovery HTTP**(`http://127.0.0.1:8020/api/discovery/agent-routing`) |
 
 读写都最终经同一个 `LockedBackend` + `LockedKnowledgeGraph`(单个 `asyncio.Lock` 串行 chromadb + KG SQLite 调用),保证 D1 single-owner-per-palace 不变量。
+
+> 锁属于**嵌入式**存储。远端后端(milvus / postgres)自己管并发,其适配器的 `lock` 为
+> `None` —— 跨网络调用持锁会把并发召回串行化。
 
 ---
 
@@ -212,15 +240,19 @@ uv sync --extra dev
 # 2. 起 NATS(任何方式都行 — 不在本仓库 scope)
 nats-server -js &
 
-# 3a. 生产形态 — supervisor 读 eidolon_admin registry,自动 spawn 每个 enabled user 的 agent
+# 3a. 生产形态 — supervisor 读名册,自动 spawn 每个 enabled space 的 agent
 eidolon-memory-supervisor &
 eidolon-memory-discovery &
 # 配置改动后 SIGHUP supervisor: kill -HUP $(pgrep -f eidolon-memory-supervisor)
 
-# 3b. 开发形态 — 单用户 ad-hoc(不走 supervisor)
-eidolon-memory-agent --user-id default --port 8030 &
+# 3b. 开发形态 — 单 space ad-hoc(不走 supervisor)
+eidolon-memory-agent --memory-space-id default --port 10030 &
 eidolon-memory-discovery &
 ```
+
+名册来源由 `registry.source` 决定:`eidolon-admin`(向 admin 服务要,OS 内的形态)或
+`static`(读 YAML,独立部署的形态,模板见 `config/registry.example.yaml`)。
+独立形态下不需要 admin 服务在场。
 
 首次启动会自动 `mempalace init` 对应 palace(lazy)。配置文件见第 8 节。
 本仓库**不再提供**启动脚本——三个 console-scripts (`eidolon-memory-{supervisor,agent,discovery}`)
@@ -542,7 +574,7 @@ nats:
 
 mcp_http:
   host: "127.0.0.1"
-  port: 8030                     # 仅用于 ad-hoc 单用户;多用户走 admin registry
+  port: 10030                    # ad-hoc 单 space 用;多 space 时端口按 id 确定性派生
   path: "/mcp"
   bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN  # 值在 config/.env
 
@@ -550,6 +582,10 @@ discovery_http:
   host: "127.0.0.1"
   port: 8020
   path: "/api/discovery/agent-routing"
+
+registry:
+  source: eidolon-admin          # eidolon-admin | static
+  static_path: ""                # source=static 时的名册路径(相对于 settings.yaml)
 
 steward:
   mode: "llm"                    # llm | rule | noop
@@ -563,10 +599,19 @@ recall:
   livekit_timeout_seconds: 0.3   # LiveKit 整体 wait_for
   kg_in_recall: true             # 默认启用 KG 融合
   kg_timeout_seconds: 0.05       # voice 路径 KG 子超时
+  kg_timeout_seconds_normal: 0.3 # 非 voice 路径(曾是硬编码 1.0s)
   top_k: 5
 
 kg:
+  backend: sqlite                # none | sqlite | postgres —— none 时纯向量召回可运行
+  postgres_dsn_env: EIDOLON_MEMORY_KG_PG_DSN  # backend=postgres 时读此环境变量
   min_confidence_to_write: 0.6   # steward 输出低于此置信的 triple 丢弃 (G10)
+
+mempalace:
+  backend: chroma                # chroma | milvus
+  milvus_uri: ""                 # 设了就必须同时设 milvus_db_name(否则拒绝启动)
+  milvus_db_name: ""
+  milvus_token_env: EIDOLON_MEMORY_MILVUS_TOKEN
 
 chromadb:
   synchronous: FULL              # D3 hard-kill 持久性
@@ -581,10 +626,14 @@ supervisor:
 | 变量 | 用途 |
 |------|------|
 | `EIDOLON_MEMORY_SETTINGS_YAML` | 主配置文件路径 |
-| `EIDOLON_ADMIN_API_URL` | admin registry API base URL |
-| `EIDOLON_MEMORY_PALACES_ROOT` | per-user palace 目录的父根 |
+| `EIDOLON_ADMIN_API_URL` | admin registry API base URL(`registry.source=eidolon-admin` 时) |
+| `EIDOLON_MEMORY_PALACES_ROOT` | palace 目录的父根 |
 | `EIDOLON_MEMORY_MCP_TOKEN` | MCP HTTP bearer token |
 | `EIDOLON_MEMORY_LLM_API_KEY` | steward LLM 密钥 |
+| `EIDOLON_MEMORY_MILVUS_TOKEN` | Milvus / Zilliz token(`mempalace.backend=milvus` 时) |
+| `EIDOLON_MEMORY_KG_PG_DSN` | KG Postgres 连接串(`kg.backend=postgres` 时) |
+
+密钥一律不写进 YAML —— 配置里只出现 `*_env` 字段名,值放 `config/.env`。
 
 ### 8.3 Palace 目录布局
 
@@ -642,8 +691,16 @@ KG 写也走 JetStream(`agent.memory.cmd.*`),所以 admin 写过的三元组**�
 ## 11. 测试
 
 ```bash
-# 单元 + 集成 (T1+T2+T3 + 跨层闭环):
-uv run pytest tests -q                           # 145 passed, 2 skipped
+# 快反馈:单元 + 契约 + 集成,不含 e2e。~6s
+uv run pytest tests -q --ignore=tests/memory/e2e
+
+# 全量(e2e 会起真实 nats-server + agent_runner 子进程,含 LLM 调用,~16min)
+uv run pytest tests -q
+
+# 云端向量路径(默认跳过;需要一个可达的 Milvus)
+EIDOLON_MEMORY_MILVUS_TEST_URI=http://host:19530 \
+EIDOLON_MEMORY_MILVUS_TEST_DB=eidolon \
+  uv run --extra milvus pytest tests/memory/test_live_milvus.py
 
 # 性能基线 (300ms SLA):
 .venv/bin/python scripts/benchmark/bench_read_livekit.py
@@ -653,14 +710,34 @@ uv run pytest tests -q                           # 145 passed, 2 skipped
 `tests/memory/test_kg_fusion_integration.py` 是跨 T1/T2/T3 的闭环用例(对话 → steward → KG → 召回),
 作为外部集成方的**可执行规约**参考。
 
+守护性测试(改架构时会先撞到它们):
+
+| 文件 | 守什么 |
+|---|---|
+| `test_os_import_boundary.py` | 核心不 import `eidolon_*`;子进程屏蔽 OS 包后仍能加载全部 entrypoint |
+| `test_lazy_import_guard.py` | 禁内部 lazy import(长驻进程 + 磁盘改动会让 `sys.modules` 错配) |
+| `test_deployment_profiles.py` | 本地/云端两份 profile 字段集一致 —— 切换只该是改值 |
+| `test_kg_optional.py` | `kg.backend=none` 下服务完整可用,且关闭不销毁数据 |
+| `test_backend_contract.py` | 后端契约面 + 隐私批量操作的跨 space 保护 |
+
 ---
 
 ## 12. 不在范围(下一计划)
 
-- 跨用户共享记忆 — D1 物理隔离,陪伴场景永远不该跨用户(Alice 的 AI 不能知道 Bob 的事)
+- 跨 **owner** 共享记忆 — 物理隔离,陪伴场景永远不该跨 owner(Alice 的 AI 不能知道 Bob 的事)。
+  同一 owner 的多个 companion 之间如何共享是另一回事,见下。
 - KG 清理 / consolidation — 现在 invalidate 只写 `valid_to` 不删行,3-5 年陪伴单用户量级毫无压力
-- Hybrid 召回(BM25+dense+RRF)、reranker、entity 规范化进化 — 见 `docs/plan-kg-integration.md`
 - 多模态 fragments(图像/音频片段) — 当前只有文本
+
+进行中(重构):
+
+- **两层可见性**:owner 层(关于 owner 本人的事实,所有 companion 可见)与 companion 层
+  (与特定 companion 的互动/情感/承诺,私有)。契约里的 `audience` 已定义
+  (`eidolon_memory_contracts.audience`),存储侧尚未落地。
+- **KG 自写 + Postgres 实现**:目前 sqlite 图仍由 mempalace 提供;`kg.backend=postgres`
+  已有配置与校验,实现待补。
+- **MCP 契约 v2**:`focus_subjects` 取代 `kg_subjects`,并从返回中移除 `kg_triples` /
+  `working_memory` —— 让调用方无法推断本服务是否有知识图谱。
 
 ---
 
