@@ -1,24 +1,22 @@
-"""Memory service wire contracts shared across Eidolon projects."""
+"""Wire contracts for talking to the Eidolon memory service.
 
-from .kg import (
-    KG_PREDICATE_VALUES,
-    SENSITIVE_PREDICATES,
-    USER_CONFIRMED_ROOM_PREFIX,
-    ConsolidatorIngestThemeCommand,
-    DeviceSyncBatchPayload,
-    DeviceSyncEvent,
-    KgAddTripleCommand,
-    KgInvalidateCommand,
-    KgPredicate,
-    MemoryIntentCommand,
-    MemoryCommandPayload,
-    PrivacyMutationCommand,
-)
-from .intent import (
-    MemoryIntent,
-    MemoryIntentAuthority,
-    MemoryIntentOperation,
-    MemoryIntentType,
+The service splits along how urgently a caller needs an answer: reads are
+synchronous and never raise (:class:`MemoryReadContract`), writes are published
+asynchronously except when the caller must be truthful about what was stored
+(:class:`MemoryWriteContract`).
+
+Nothing here describes how memory is stored, ranked or fused. A client cannot
+tell from this contract whether the service keeps a knowledge graph, which
+vector backend it uses, or whether it runs locally or in a cluster.
+"""
+
+from .audience import (
+    OWNER_AUDIENCE,
+    audience_companion_id,
+    companion_audience,
+    is_companion_audience,
+    readable_audiences,
+    validate_audience,
 )
 from .envelope import (
     MEMORY_SCHEMA_VERSION,
@@ -29,10 +27,48 @@ from .envelope import (
     parse_memory_command,
     unwrap_memory_payload,
 )
+from .intent import (
+    MemoryIntent,
+    MemoryIntentAuthority,
+    MemoryIntentOperation,
+    MemoryIntentType,
+)
+from .kg import (
+    KG_PREDICATE_VALUES,
+    SENSITIVE_PREDICATES,
+    USER_CONFIRMED_ROOM_PREFIX,
+    ConsolidatorIngestThemeCommand,
+    DeviceSyncBatchPayload,
+    DeviceSyncEvent,
+    KgAddTripleCommand,
+    KgInvalidateCommand,
+    KgPredicate,
+    MemoryCommandPayload,
+    MemoryIntentCommand,
+    PrivacyMutationCommand,
+)
 from .payloads import (
     ConversationTurnPayload,
     MemoryActorContext,
     build_memory_actor_context,
+)
+from .read import MemoryReadContract
+from .results import (
+    ActiveCommitment,
+    CommitmentReadResult,
+    ForgetAction,
+    ForgetCandidate,
+    ForgetOutcome,
+    ForgetPreview,
+    MemorySnippet,
+    RecallPlan,
+    RecallResult,
+    SearchResult,
+    ServiceStatus,
+    SourceTurnLookup,
+    TurnPublishReceipt,
+    WriteOutcome,
+    WriteStatus,
 )
 from .runtime_route import (
     DEFAULT_MEMORY_MCP_BASE_PORT,
@@ -59,9 +95,11 @@ from .subjects import (
     memory_sync_subject,
     validate_memory_space_id,
 )
+from .write import MemoryWriteContract
 
 __all__ = [
     "KG_PREDICATE_VALUES",
+    "OWNER_AUDIENCE",
     "DEFAULT_MEMORY_MCP_BASE_PORT",
     "DEFAULT_MEMORY_MCP_HOST",
     "DEFAULT_MEMORY_MCP_PATH",
@@ -72,15 +110,24 @@ __all__ = [
     "MEMORY_SCHEMA_VERSION",
     "SENSITIVE_PREDICATES",
     "USER_CONFIRMED_ROOM_PREFIX",
+    "ActiveCommitment",
+    "CommitmentReadResult",
     "ConversationTurnPayload",
     "ConsolidatorIngestThemeCommand",
     "DeviceSyncBatchPayload",
     "DeviceSyncEvent",
+    "ForgetAction",
+    "ForgetCandidate",
+    "ForgetOutcome",
+    "ForgetPreview",
     "KgAddTripleCommand",
     "KgInvalidateCommand",
     "MemoryEnvelope",
     "MemoryActorContext",
+    "MemoryReadContract",
     "MemoryRuntimeRoute",
+    "MemorySnippet",
+    "MemoryWriteContract",
     "KgPredicate",
     "MemoryCommandPayload",
     "MemoryIntentCommand",
@@ -89,12 +136,23 @@ __all__ = [
     "MemoryIntentOperation",
     "MemoryIntentType",
     "PrivacyMutationCommand",
+    "RecallPlan",
+    "RecallResult",
+    "SearchResult",
+    "ServiceStatus",
+    "SourceTurnLookup",
+    "TurnPublishReceipt",
+    "WriteOutcome",
+    "WriteStatus",
     "all_memory_stream_patterns",
+    "audience_companion_id",
     "build_memory_actor_context",
+    "companion_audience",
     "conversation_turn_stream_pattern",
     "conversation_turn_subject",
     "derive_memory_space_id",
     "envelope_memory_payload",
+    "is_companion_audience",
     "memory_payload_kind",
     "memory_runtime_route_for_realm",
     "memory_command_stream_pattern",
@@ -105,7 +163,9 @@ __all__ = [
     "memory_sync_subject",
     "parse_conversation_turn",
     "parse_memory_command",
+    "readable_audiences",
     "stable_memory_realm_port",
     "unwrap_memory_payload",
+    "validate_audience",
     "validate_memory_space_id",
 ]

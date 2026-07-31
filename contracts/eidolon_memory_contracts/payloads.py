@@ -37,7 +37,7 @@ class MemoryActorContext(EidolonWireModel):
         return text or None
 
     @model_validator(mode="after")
-    def _fill_memory_space_id(self) -> "MemoryActorContext":
+    def _fill_memory_space_id(self) -> MemoryActorContext:
         expected = derive_memory_space_id(self.memory_realm_id)
         if self.memory_space_id:
             actual = validate_memory_space_id(self.memory_space_id)
