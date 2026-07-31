@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from typing import Any
@@ -96,7 +97,14 @@ def _effective_wing_parallel(settings: MemorySettings, *, for_voice: bool) -> in
     explicit = settings.runtime.read.max_wing_parallel
     if explicit > 0:
         return explicit
-    return max(1, min(4, __import__("os").cpu_count() or 4 // 2))
+    # Half the cores, capped at 4: a non-voice recall should not saturate a box
+    # that is also serving voice traffic.
+    #
+    # This read `min(4, os.cpu_count() or 4 // 2)` before, which parses as
+    # `os.cpu_count() or 2` — `//` binds tighter than `or`. On any machine
+    # reporting its cores that yielded the full count, capped at 4, so the
+    # halving never happened.
+    return max(1, min(4, (os.cpu_count() or 4) // 2))
 
 
 def _normalize_text(value: Any) -> str:
@@ -318,11 +326,21 @@ async def recall_with_kg_fusion(
 
     kg_task: asyncio.Task | None = None
     if kg is not None and settings.recall.kg_in_recall:
-        # voice path keeps the hard 50ms (LiveKit 300ms budget); non-voice gets
-        # a more generous window because admin/IDE callers don't share the
-        # LiveKit deadline and the vector path may saturate the to_thread
-        # executor with ONNX work for many seconds on a cold first call.
-        kg_timeout = settings.recall.kg_timeout_seconds if for_voice else 1.0
+        # Voice keeps the hard 50ms inside LiveKit's 300ms deadline; off that
+        # path there is more room, but not unlimited — a chat reply is still
+        # waiting. Both budgets are configurable; the non-voice one used to be a
+        # hardcoded second, which is longer than the entire budget a chat
+        # retrieval is supposed to fit in.
+        #
+        # A cold first call can still block the to_thread executor on ONNX work
+        # for longer than this. Dropping the graph contribution is the right
+        # outcome there: the vector result is already a usable answer, and the
+        # warm path is what the budget is for.
+        kg_timeout = (
+            settings.recall.kg_timeout_seconds
+            if for_voice
+            else settings.recall.kg_timeout_seconds_normal
+        )
         kg_task = asyncio.create_task(
             _kg_path_with_timeout(
                 kg,

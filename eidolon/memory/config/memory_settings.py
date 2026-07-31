@@ -39,7 +39,14 @@ class RecallPolicy(BaseModel):
     exclude_current_session: bool = True
     # KG plan §5.6
     kg_in_recall: bool = True
+    # Voice budget for the graph lookup. Tight because it runs alongside the
+    # vector search inside LiveKit's 300ms deadline, and the vector result alone
+    # is a usable answer — a slow graph is dropped, not waited for.
     kg_timeout_seconds: float = 0.05
+    # The same budget off the voice path. Chat has more room than voice but is
+    # still on the critical path of a reply, so this is far below the second that
+    # used to be hardcoded here.
+    kg_timeout_seconds_normal: float = 0.3
     kg_window_days: int = 30
     kg_max_entities: int = 3
     kg_max_triples_per_entity: int = 8
