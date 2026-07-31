@@ -1,0 +1,30 @@
+# Roster of memory spaces, for registry.source = "static".
+#
+# This is how a deployment declares what to serve without an admin service. Point
+# registry.static_path at this file (relative paths resolve next to settings.yaml).
+#
+# An entry needs only an id. Ports are derived from it deterministically, so a
+# space keeps the same port across restarts and an operator never tracks
+# allocations. Everything else is optional.
+
+memory_spaces:
+  - id: alice
+
+  - id: bob
+    # owner_id defaults to id; set it when the space id is not the owner's.
+    owner_id: bob
+    companion_id: default
+
+  - id: carol
+    # Declared but not served. Nothing stored for it is removed.
+    enabled: false
+
+  - id: dave
+    # Override the derived port only if something else must have it.
+    port: 10099
+    # The background theme worker costs LLM calls, so it stays off unless a
+    # space asks for it.
+    consolidator:
+      enabled: true
+      interval_hours: 6
+      window_days: 30

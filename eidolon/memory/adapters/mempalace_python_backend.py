@@ -21,7 +21,6 @@ from eidolon.memory.domain.errors import (
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.wire import MemoryWireRecord, parse_memory_datetime
-from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.mempalace_hnsw import probe_hnsw_safety
 from eidolon.memory.support.logging import get_logger
 
@@ -88,7 +87,10 @@ class MemPalacePythonBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
     ) -> list[MemoryWireRecord]:
-        if selected_mempalace_backend(self._settings) == "sqlite_exact":
+        if self._settings.mempalace.offline_embedding:
+            # Query the collection directly with a hash vector. MemPalace's
+            # searcher would invoke the real embedder, which is the thing this
+            # mode exists to avoid; ranking is not meaningful here anyway.
             try:
                 collection = _get_collection(self._palace, create=False)
                 where: dict[str, Any] = {"wing": wing}
@@ -300,7 +302,7 @@ class MemPalacePythonBackend(MemoryBackend):
                 "documents": [content],
                 "metadatas": [meta],
             }
-            if selected_mempalace_backend(self._settings) == "sqlite_exact":
+            if self._settings.mempalace.offline_embedding:
                 upsert_kwargs["embeddings"] = [_deterministic_embedding(content)]
             collection.upsert(**upsert_kwargs)
             inserted = collection.get(ids=[drawer_id], include=[])
@@ -612,7 +614,13 @@ _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
 def _deterministic_embedding(text: str, *, dim: int = 64) -> list[float]:
-    """Small offline embedding for sqlite_exact benchmark/dev storage."""
+    """Hash text into a small vector, for tests and benchmarks only.
+
+    Lets a test drive the real storage adapter without loading the embedder.
+    Semantically meaningless — two related sentences land nowhere near each
+    other — so it is only ever appropriate where ranking is not what is under
+    test. Enabled by ``mempalace.offline_embedding``.
+    """
     vector = [0.0] * dim
     tokens = _TOKEN_RE.findall((text or "").lower()) or [text or ""]
     for token in tokens:

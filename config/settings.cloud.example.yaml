@@ -1,0 +1,85 @@
+# Memory settings template for a deployment spanning hosts.
+#
+# Same structure as settings.example.yaml. Only values differ: vectors move to a
+# Milvus server, the knowledge graph moves to Postgres, and the HTTP surfaces
+# bind beyond loopback. No code path is conditional on this file — the service
+# reads the same settings model either way.
+#
+# Why the graph has to move: a palace directory is otherwise self-contained, and
+# vectors can already live on a server. The graph is the one part that must not
+# stay on local disk when more than one host serves the same space, because the
+# file cannot be shared safely.
+#
+# Secrets stay in config/.env, named by the _env fields below:
+#   EIDOLON_MEMORY_MILVUS_TOKEN
+#   EIDOLON_MEMORY_KG_PG_DSN
+#   EIDOLON_MEMORY_LLM_API_KEY
+#   EIDOLON_MEMORY_MCP_TOKEN
+
+runtime:
+  palaces_root: ""
+  process_tmp_root: ""
+  log_dir: ""
+  run_dir: ""
+
+mempalace:
+  backend: milvus
+  # A Milvus server or Zilliz Cloud endpoint.
+  milvus_uri: http://milvus.internal:19530
+  milvus_token_env: EIDOLON_MEMORY_MILVUS_TOKEN
+  # Required whenever milvus_uri is set. Confines every collection this
+  # deployment creates to a named database, so it cannot mix its data into
+  # whatever else lives on the instance. Config load fails without it.
+  milvus_db_name: eidolon
+  # Prefixes collection names, so several deployments can share one database.
+  milvus_namespace: eidolon
+  embedding_model: embeddinggemma
+  embedding_device: cpu
+  embedding_model_dir: ""
+  embedding_threads: 0
+
+kg:
+  backend: postgres
+  postgres_dsn_env: EIDOLON_MEMORY_KG_PG_DSN
+  min_confidence_to_write: 0.6
+
+registry:
+  source: eidolon-admin
+  static_path: ""
+
+nats:
+  url: nats://nats.internal:4222
+
+command_status:
+  retention_days: 30
+  max_records: 100000
+  prune_every_writes: 100
+
+llm:
+  model: openai/deepseek-v4-flash
+  base_url: https://api.deepseek.com/v1
+  api_key_env: EIDOLON_MEMORY_LLM_API_KEY
+  temperature: 0.0
+
+mcp_http:
+  host: 0.0.0.0
+  port: 10030
+  stateless_http: true
+  json_response: true
+  bearer_token_env: EIDOLON_MEMORY_MCP_TOKEN
+
+discovery_http:
+  host: 0.0.0.0
+  port: 8020
+
+steward:
+  mode: llm
+
+recall:
+  top_k: 5
+  livekit_timeout_seconds: 0.3
+  # A remote vector store adds a network round trip that a local file does not.
+  # Keep the voice budget but expect less headroom inside it.
+
+supervisor:
+  admin_api_url: http://admin.internal:9000

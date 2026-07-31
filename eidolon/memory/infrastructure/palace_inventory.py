@@ -12,7 +12,6 @@ from typing import Any
 
 _SQLITE_COUNT_TABLES = {
     "chroma.sqlite3": ("collections", "segments", "embeddings", "embeddings_queue"),
-    "sqlite_exact.sqlite3": ("collections", "embeddings"),
     "knowledge_graph.sqlite3": ("entities", "triples", "entity_mentions"),
 }
 
@@ -89,7 +88,7 @@ def build_palace_manifest(palace_path: Path, *, deep: bool = False) -> dict[str,
         "total_bytes": sum(path.stat().st_size for path in files),
         "artifacts": {},
     }
-    for name in ("chroma.sqlite3", "sqlite_exact.sqlite3", "knowledge_graph.sqlite3"):
+    for name in ("chroma.sqlite3", "milvus_backend.json", "knowledge_graph.sqlite3"):
         path = palace_path / name
         manifest["artifacts"][name] = {
             "exists": path.is_file(),

@@ -1,5 +1,12 @@
 # Memory settings template — copy to config/settings.yaml
-# Secrets: set llm.api_key_env / mcp_http.bearer_token_env names; values in config/.env
+#
+# This is the local shape: everything on one machine, vectors and graph in files
+# inside each palace directory. For the deployment that spans hosts, see
+# settings.cloud.example.yaml — the two files have the same structure and differ
+# only in values, so moving between them is a config change and nothing else.
+#
+# Secrets are never written here. A field ending in _env names the environment
+# variable holding the value; put those in config/.env.
 
 runtime:
   palaces_root: ""
@@ -10,8 +17,8 @@ runtime:
   run_dir: ""
 
 mempalace:
-  # chroma is the default embedded local backend. Use qdrant for A/B testing
-  # with a local Qdrant service listening on qdrant_url.
+  # chroma keeps vectors in a file in the palace directory. The alternative is
+  # milvus, for deployments serving spaces from more than one host.
   backend: chroma
   # Optional: minilm (legacy/English) or embeddinggemma (multilingual).
   # Existing palaces must be rebuilt before switching embedding_model.
@@ -23,10 +30,28 @@ mempalace:
   # MemPalace 3.5+: explicit ONNX Runtime intra-op cap. 0 keeps the native
   # auto default; set a positive value after cross-Realm CPU/latency testing.
   embedding_threads: 0
-  qdrant_url: http://127.0.0.1:6333
-  qdrant_namespace: eidolon-dev
-  qdrant_timeout_seconds: 10
-  qdrant_api_key_env: MEMPALACE_QDRANT_API_KEY
+  # Unused while backend is chroma. Listed so switching to milvus is a matter of
+  # filling these in rather than discovering they exist. milvus_db_name becomes
+  # mandatory as soon as milvus_uri is set.
+  milvus_uri: ""
+  milvus_token_env: EIDOLON_MEMORY_MILVUS_TOKEN
+  milvus_db_name: ""
+  milvus_namespace: eidolon
+
+kg:
+  # sqlite keeps the graph in the palace directory. Set "none" to run on vector
+  # recall alone — the service starts, graph tools are not offered, and nothing
+  # already stored is deleted. "postgres" is for the multi-host shape.
+  backend: sqlite
+  # Read only when backend is postgres.
+  postgres_dsn_env: EIDOLON_MEMORY_KG_PG_DSN
+  min_confidence_to_write: 0.6
+
+registry:
+  # Which memory spaces to serve. eidolon-admin asks an Eidolon OS admin service;
+  # static reads a roster file, which is what a standalone deployment uses.
+  source: eidolon-admin
+  static_path: ""
 
 nats:
   url: nats://127.0.0.1:4222

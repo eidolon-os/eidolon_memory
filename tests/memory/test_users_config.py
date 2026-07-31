@@ -13,8 +13,8 @@ from eidolon_memory_contracts import (
 )
 
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.config.users import UsersConfig
 from eidolon.memory.config.registry import load_users_config
+from eidolon.memory.config.users import UsersConfig
 
 
 class _Response(BytesIO):

@@ -149,13 +149,21 @@ class ChromadbConfig(BaseModel):
 
 
 class MempalaceBackendConfig(BaseModel):
-    """MemPalace storage backend selection.
+    """Vector storage selection.
 
-    Chroma remains the default. Qdrant can be enabled during development with:
-    ``mempalace.backend=qdrant`` plus the local Qdrant URL/namespace below.
-    ``embedding_model`` is intentionally blank by default so existing palaces
-    keep the embedder they were built with; set ``embeddinggemma`` only after
-    rebuilding indexes for existing palace data.
+    Two backends, one per deployment shape. ``chroma`` keeps vectors in a file
+    inside the palace directory and is the local default. ``milvus`` talks to a
+    Milvus server or Zilliz Cloud, which is what a deployment serving spaces from
+    more than one host needs. Switching is a config change and nothing else.
+
+    Backends MemPalace also offers are deliberately not exposed. ``sqlite_exact``
+    scans every row in Python on each query — correct, but its latency grows with
+    the collection, which the voice path cannot absorb. ``qdrant`` and
+    ``pgvector`` are simply not shapes we run.
+
+    ``embedding_model`` is blank by default so an existing palace keeps the
+    embedder it was built with; MemPalace refuses to open a palace with a
+    different one, and changing it means rebuilding the index.
     """
 
     backend: str = "chroma"
@@ -163,13 +171,43 @@ class MempalaceBackendConfig(BaseModel):
     embedding_device: str = ""
     embedding_model_dir: str = ""
     embedding_threads: int = Field(default=0, ge=0)
-    qdrant_url: str = "http://127.0.0.1:6333"
-    qdrant_namespace: str = "eidolon"
-    qdrant_timeout_seconds: float = 10.0
-    qdrant_api_key_env: str = "MEMPALACE_QDRANT_API_KEY"
 
-    def resolve_qdrant_api_key(self) -> str:
-        env = (self.qdrant_api_key_env or "").strip()
+    # Milvus. An empty uri means Milvus Lite against a file in the palace
+    # directory, which is useful for tests but is not the cloud shape — a server
+    # deployment must set this.
+    milvus_uri: str = ""
+    milvus_token_env: str = "EIDOLON_MEMORY_MILVUS_TOKEN"
+    # Milvus databases are hard tenancy boundaries; naming one keeps this
+    # deployment's collections out of every other database on the instance.
+    milvus_db_name: str = ""
+    # Prefixes collection names, so several deployments can share a database.
+    milvus_namespace: str = "eidolon"
+
+    # Tests and benchmarks only. Substitutes a tiny hash-based vector for the
+    # real embedder so a test can exercise the actual storage adapter without
+    # loading a 300MB model. Recall ranking is meaningless under it — never set
+    # this in a deployment.
+    offline_embedding: bool = False
+
+    @model_validator(mode="after")
+    def _server_deployment_names_its_database(self) -> MempalaceBackendConfig:
+        """A remote Milvus must say which database to use.
+
+        Without one, MemPalace creates collections in the instance's default
+        database — mixing this deployment's data into whatever else lives there.
+        Refusing at config load is much better than discovering it later.
+        """
+
+        if self.backend.strip().lower() == "milvus" and self.milvus_uri.strip():
+            if not self.milvus_db_name.strip():
+                raise ValueError(
+                    "mempalace.milvus_db_name is required when milvus_uri is set, so "
+                    "collections are confined to a named database"
+                )
+        return self
+
+    def resolve_milvus_token(self) -> str:
+        env = (self.milvus_token_env or "").strip()
         if not env:
             return ""
         return os.environ.get(env, "").strip()
@@ -190,10 +228,42 @@ class CommandStatusConfig(BaseModel):
 
 
 class KgConfig(BaseModel):
-    """Knowledge graph runtime tuning (T2/T3)."""
+    """Knowledge graph storage and tuning.
+
+    The graph is optional at runtime. With ``backend="none"`` the service runs
+    on vector recall alone: no graph is opened, graph tools are not offered, and
+    a command that would write to one is answered honestly rather than hanging.
+    Turning it back on is a config change; nothing is deleted when it is off.
+
+    ``sqlite`` keeps the graph in the palace directory. ``postgres`` puts it in a
+    shared database, which is what a deployment spanning hosts needs — the graph
+    is the one part of a palace that cannot live on local disk in that shape.
+    """
+
+    backend: Literal["none", "sqlite", "postgres"] = "sqlite"
+    postgres_dsn_env: str = "EIDOLON_MEMORY_KG_PG_DSN"
 
     min_confidence_to_write: float = 0.6
     """Steward-extracted triples below this confidence get dropped before write."""
+
+    @property
+    def enabled(self) -> bool:
+        return self.backend != "none"
+
+    def resolve_postgres_dsn(self) -> str:
+        env = (self.postgres_dsn_env or "").strip()
+        if not env:
+            return ""
+        return os.environ.get(env, "").strip()
+
+    @model_validator(mode="after")
+    def _postgres_needs_a_dsn_source(self) -> KgConfig:
+        if self.backend == "postgres" and not (self.postgres_dsn_env or "").strip():
+            raise ValueError(
+                "kg.postgres_dsn_env must name the environment variable holding "
+                "the connection string when kg.backend is 'postgres'"
+            )
+        return self
 
 
 class SupervisorConfig(BaseModel):

@@ -90,10 +90,13 @@ async def test_privacy_batch_archive_and_delete_are_verified(
 ) -> None:
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("MEMPALACE_BACKEND", "sqlite_exact")
+    monkeypatch.setenv("MEMPALACE_BACKEND", "chroma")
     memory_space_id = "default.alice.default"
     settings = load_memory_settings().model_copy(deep=True)
-    settings.mempalace.backend = "sqlite_exact"
+    settings.mempalace.backend = "chroma"
+    # What is under test is the privacy semantics of archive/delete, not recall
+    # ranking, so skip the real embedder.
+    settings.mempalace.offline_embedding = True
     backend = MemPalacePythonBackend(
         settings,
         str(tmp_path / "palace"),

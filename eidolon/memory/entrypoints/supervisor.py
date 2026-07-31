@@ -34,11 +34,11 @@ from eidolon.memory.config.memory_settings import (
     resolve_log_dir,
 )
 from eidolon.memory.config.palace_directory import resolve_palace_for_memory_space
+from eidolon.memory.config.registry import load_users_config
 from eidolon.memory.config.users import (
     UserEntry,
     UsersConfig,
 )
-from eidolon.memory.config.registry import load_users_config
 from eidolon.memory.entrypoints.admin_api import build_admin_api
 from eidolon.memory.infrastructure.mempalace_backend import (
     inspect_configured_backend,

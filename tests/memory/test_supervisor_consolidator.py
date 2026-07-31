@@ -31,7 +31,6 @@ from eidolon.memory.config.users import (
     UserEntry,
     UsersConfig,
 )
-from eidolon.memory.config.registry import load_users_config
 from eidolon.memory.entrypoints import supervisor as supervisor_mod
 from eidolon.memory.entrypoints.supervisor import (
     Supervisor,

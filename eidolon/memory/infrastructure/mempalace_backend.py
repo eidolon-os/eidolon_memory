@@ -21,10 +21,9 @@ from eidolon.memory.infrastructure.embedding_model_dir import (
     apply_local_embedding_model_dir_from_env,
 )
 
-SUPPORTED_MEMPALACE_BACKENDS = frozenset({"chroma", "qdrant", "pgvector", "sqlite_exact"})
+SUPPORTED_MEMPALACE_BACKENDS = frozenset({"chroma", "milvus"})
 _SQLITE_REQUIRED_TABLES = {
     "chroma": frozenset({"collections", "embeddings"}),
-    "sqlite_exact": frozenset({"collections", "documents"}),
 }
 
 
@@ -106,17 +105,39 @@ def mempalace_backend_env(
     if settings.mempalace.embedding_threads > 0:
         env["MEMPALACE_EMBEDDING_THREADS"] = str(settings.mempalace.embedding_threads)
 
-    if backend == "qdrant":
-        if settings.mempalace.qdrant_url:
-            env["MEMPALACE_QDRANT_URL"] = settings.mempalace.qdrant_url
-        if settings.mempalace.qdrant_namespace:
-            env["MEMPALACE_QDRANT_NAMESPACE"] = settings.mempalace.qdrant_namespace
-        if settings.mempalace.qdrant_timeout_seconds > 0:
-            env["MEMPALACE_QDRANT_TIMEOUT"] = str(settings.mempalace.qdrant_timeout_seconds)
-        api_key = settings.mempalace.resolve_qdrant_api_key()
-        if api_key:
-            env["MEMPALACE_QDRANT_API_KEY"] = api_key
+    if backend == "milvus":
+        env.update(_milvus_env(settings))
 
+    return env
+
+
+def _milvus_env(settings: MemorySettings) -> dict[str, str]:
+    """Milvus connection settings, as MemPalace's environment contract.
+
+    MemPalace reads these rather than taking arguments, so this is the one place
+    that translates our config into its vocabulary.
+
+    ``MEMPALACE_MILVUS_DB_NAME`` is the important one for a server: it confines
+    every collection this deployment creates to a named database, leaving the
+    rest of the instance alone. The settings model requires it whenever a uri is
+    set, so reaching here without one means Milvus Lite against a local file.
+    """
+
+    cfg = settings.mempalace
+    env: dict[str, str] = {}
+
+    uri = cfg.milvus_uri.strip()
+    if uri:
+        env["MEMPALACE_MILVUS_URI"] = uri
+    db_name = cfg.milvus_db_name.strip()
+    if db_name:
+        env["MEMPALACE_MILVUS_DB_NAME"] = db_name
+    namespace = cfg.milvus_namespace.strip()
+    if namespace:
+        env["MEMPALACE_MILVUS_NAMESPACE"] = namespace
+    token = cfg.resolve_milvus_token()
+    if token:
+        env["MEMPALACE_MILVUS_TOKEN"] = token
     return env
 
 
@@ -130,14 +151,18 @@ def apply_mempalace_backend_env(settings: MemorySettings) -> None:
 
 
 def backend_artifact_path(palace_path: Path, backend: str) -> Path:
+    """The file whose presence says this palace was built with ``backend``.
+
+    Chroma's is its database. Milvus stores vectors remotely, but MemPalace still
+    leaves a marker recording which uri and database the palace was bound to, so
+    a changed target is caught instead of silently creating a second, empty
+    collection set.
+    """
+
     if backend == "chroma":
         return palace_path / "chroma.sqlite3"
-    if backend == "qdrant":
-        return palace_path / "qdrant_backend.json"
-    if backend == "pgvector":
-        return palace_path / "pgvector_backend.json"
-    if backend == "sqlite_exact":
-        return palace_path / "sqlite_exact.sqlite3"
+    if backend == "milvus":
+        return palace_path / "milvus_backend.json"
     raise ValueError(f"unsupported mempalace backend {backend!r}")
 
 
@@ -299,9 +324,12 @@ def _inspect_json_artifact(path: Path) -> tuple[str, str]:
 
 
 def vector_sqlite_integrity_targets(palace_path: Path, backend: str) -> list[tuple[str, Path]]:
-    """Return local vector-store SQLite files that should pass integrity_check."""
+    """Local vector-store SQLite files that should pass integrity_check.
+
+    Empty for remote backends: their storage is the server's to verify, and there
+    is no local file whose corruption should stop this process from starting.
+    """
+
     if backend == "chroma":
         return [("chroma", palace_path / "chroma.sqlite3")]
-    if backend == "sqlite_exact":
-        return [("sqlite_exact", palace_path / "sqlite_exact.sqlite3")]
     return []
