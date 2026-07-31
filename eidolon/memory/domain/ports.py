@@ -160,6 +160,26 @@ class MemoryBackend(MemoryReader, MemoryWriter, MemoryAdmin, MemoryPrivacyAdmin,
     """Combined backend surface kept for compatibility with existing callers."""
 
 
+# What a vector store has to provide. Named separately from MemoryBackend
+# because that name says where an implementation sits, not what it does — and
+# what it does is the thing a replacement has to match.
+#
+# Recall's hot path reads only RECALL_HOT_PATH_FIELDS off a returned record.
+# Everything else in the record is either operational or specific to how one
+# backend stores things, and a backend that populated only these fields would
+# still serve conversation correctly.
+VectorStorePort = MemoryBackend
+
+RECALL_HOT_PATH_FIELDS = frozenset({"text", "wing", "room", "source_file", "similarity"})
+"""The fields a recall must not need more than.
+
+Enforced by tests/memory/test_backend_contract.py. The point is to keep the
+contract small enough that a different vector store is a plausible substitution —
+if recall starts depending on a sixth field, that has to be a deliberate widening
+of the contract rather than something a single call site quietly introduces.
+"""
+
+
 @runtime_checkable
 class ExtractionDecisionStore(Protocol):
     """Durable source for validated steward output, separate from projections."""

@@ -398,3 +398,71 @@ def test_chroma_search_reconstructs_json_drawer_id_from_exact_raw_text(
 
     assert hits[0].key == "theme"
     assert hits[0].value == {"topic": "长期偏好", "items": ["茶", "散步"]}
+
+
+def test_the_vector_port_is_the_same_surface_under_either_name() -> None:
+    """VectorStorePort names what a vector store must do; MemoryBackend names
+    where it sits. A replacement matches the former."""
+
+    from eidolon.memory.domain.ports import MemoryBackend, VectorStorePort
+
+    assert VectorStorePort is MemoryBackend
+
+
+def test_both_the_real_and_fake_backend_satisfy_the_port() -> None:
+    """Structural, not inherited — a substitute need not subclass anything."""
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.domain.ports import VectorStorePort
+
+    assert isinstance(FakeMemoryBackend(), VectorStorePort)
+    assert isinstance(
+        MemPalacePythonBackend(load_memory_settings(), "/tmp/palace"),
+        VectorStorePort,
+    )
+
+
+async def test_recall_needs_no_more_than_the_hot_path_fields() -> None:
+    """A backend populating only these fields must still serve conversation.
+
+    This is what keeps the vector store swappable: recall depending on a sixth
+    field should be a deliberate widening of the contract, not something a single
+    call site introduces quietly.
+    """
+
+    from eidolon_memory_contracts import MemoryActorContext
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.application.public_recall import recall_with_kg_fusion
+    from eidolon.memory.domain.ports import RECALL_HOT_PATH_FIELDS
+
+    space = "default.alice.default"
+    backend = FakeMemoryBackend()
+    # Metadata carries exactly the hot-path fields and the tenant key the
+    # visibility gate needs — nothing a particular store would add.
+    await backend.ingest_text(
+        wing="Wing_Life",
+        room="colour",
+        text="likes the colour green",
+        metadata={
+            "memory_space_id": space,
+            "wing": "Wing_Life",
+            "room": "colour",
+            "source_file": "eidolon",
+            "similarity": 0.9,
+        },
+    )
+
+    fused = await recall_with_kg_fusion(
+        backend,
+        load_memory_settings(),
+        query="colour",
+        context=MemoryActorContext(memory_realm_id=space, owner_id="alice"),
+        top_k=5,
+        kg=None,
+        for_voice=False,
+        palace_path=None,
+    )
+
+    assert [record.value for record in fused["vector"]] == ["likes the colour green"]
+    assert RECALL_HOT_PATH_FIELDS == {"text", "wing", "room", "source_file", "similarity"}
