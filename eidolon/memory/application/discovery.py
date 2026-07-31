@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     MEMORY_COMMAND_BASE,
     MEMORY_CONVERSATION_TURN_BASE,
     validate_memory_space_id,

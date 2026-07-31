@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from eidolon_sdk.memory import MemoryIntentCommand
+from eidolon_memory_contracts import MemoryIntentCommand
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.domain.commitment import ACTIVE_COMMITMENT_STATUSES

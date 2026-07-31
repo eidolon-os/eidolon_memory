@@ -12,7 +12,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     ConsolidatorIngestThemeCommand,
     ConversationTurnPayload,
     DeviceSyncBatchPayload,

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from eidolon_sdk.memory import MemoryActorContext, envelope_memory_payload
+from eidolon_memory_contracts import MemoryActorContext, envelope_memory_payload
 
 MEMORY_SPACE_ID = "default.alice.default"
 
@@ -181,7 +181,7 @@ async def test_admin_command_to_recall_closed_loop(stack) -> None:
     """The admin / IDE path publishes ``KgAddTripleCommand`` (no steward).
     Worker applies it; subsequent recall picks it up identically.
     """
-    from eidolon_sdk.memory import KgAddTripleCommand
+    from eidolon_memory_contracts import KgAddTripleCommand
 
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.application.turn_processor import process_command_message

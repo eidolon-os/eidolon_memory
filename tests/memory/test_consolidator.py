@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from eidolon_sdk.memory import ConsolidatorIngestThemeCommand, MemoryActorContext
+from eidolon_memory_contracts import ConsolidatorIngestThemeCommand, MemoryActorContext
 from nats.errors import NoRespondersError
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
@@ -434,7 +434,7 @@ def test_renderer_themes_section_label_and_position():
 
 def test_renderer_themes_after_working_memory_before_vector():
     """[最近对话] → [主题] → vector groups."""
-    from eidolon_sdk.memory import ConversationTurnPayload
+    from eidolon_memory_contracts import ConversationTurnPayload
     wm = [ConversationTurnPayload(
         turn_id="t1", user_text="u", assistant_text="a",
         timestamp="2026-05-26T00:00:00Z",

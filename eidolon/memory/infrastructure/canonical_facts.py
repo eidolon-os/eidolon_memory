@@ -7,7 +7,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from eidolon_sdk.memory import MemoryIntent
+from eidolon_memory_contracts import MemoryIntent
 
 from eidolon.memory.domain.canonical_fact import (
     CanonicalEvidenceConflict,

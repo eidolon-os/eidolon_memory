@@ -285,7 +285,7 @@ async def test_command_status_stats_tool_reads_projection_capacity(mcp_with_kg) 
 
 
 async def test_canonical_stats_read_does_not_wait_for_backend_lock(tmp_path: Path) -> None:
-    from eidolon_sdk.memory import MemoryIntent
+    from eidolon_memory_contracts import MemoryIntent
 
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
     from eidolon.memory.adapters.locked_backend import LockedBackend
@@ -335,7 +335,7 @@ async def test_canonical_stats_read_does_not_wait_for_backend_lock(tmp_path: Pat
 async def test_canonical_history_tool_is_realm_bound_and_redacts_sensitive(
     tmp_path: Path,
 ) -> None:
-    from eidolon_sdk.memory import MemoryIntent
+    from eidolon_memory_contracts import MemoryIntent
 
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
     from eidolon.memory.config.memory_settings import load_memory_settings

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from eidolon_sdk.memory import envelope_memory_payload
+from eidolon_memory_contracts import envelope_memory_payload
 
 # ─── Test fixtures ────────────────────────────────────────────────────────
 

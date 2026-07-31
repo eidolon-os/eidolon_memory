@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from eidolon_sdk.memory import ConversationTurnPayload, build_memory_actor_context
+from eidolon_memory_contracts import ConversationTurnPayload, build_memory_actor_context
 
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 

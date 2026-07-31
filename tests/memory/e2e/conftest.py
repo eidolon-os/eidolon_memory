@@ -28,7 +28,7 @@ import httpx
 import nats
 import pytest
 import pytest_asyncio
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     ConversationTurnPayload,
     build_memory_actor_context,
     conversation_turn_subject,

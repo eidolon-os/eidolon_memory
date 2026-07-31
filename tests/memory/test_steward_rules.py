@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from eidolon_sdk.memory import ConversationTurnPayload, build_memory_actor_context
+from eidolon_memory_contracts import ConversationTurnPayload, build_memory_actor_context
 
 from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.config.memory_settings import load_memory_settings

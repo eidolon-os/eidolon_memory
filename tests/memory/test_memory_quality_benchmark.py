@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     conversation_turn_subject,
     unwrap_memory_payload,
 )

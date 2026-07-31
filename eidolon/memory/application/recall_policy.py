@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from eidolon_sdk.memory import MemoryActorContext
+from eidolon_memory_contracts import MemoryActorContext
 
 from eidolon.memory.domain.wire import MemoryWireRecord
 

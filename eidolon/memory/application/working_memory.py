@@ -36,7 +36,7 @@ from copy import deepcopy
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from eidolon_sdk.memory import ConversationTurnPayload
+    from eidolon_memory_contracts import ConversationTurnPayload
 
 
 class WorkingMemoryRing:

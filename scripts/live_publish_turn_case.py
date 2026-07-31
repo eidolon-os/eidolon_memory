@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from eidolon.memory.config.memory_settings import get_memory_settings
-from eidolon_sdk.memory import ConversationTurnPayload, conversation_turn_subject
+from eidolon_memory_contracts import ConversationTurnPayload, conversation_turn_subject
 from eidolon.memory.infrastructure.nats.turns import JetStreamTurnPublisher
 
 

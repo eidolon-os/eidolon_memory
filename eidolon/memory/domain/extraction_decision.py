@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from eidolon_sdk.memory import ConversationTurnPayload, MemoryIntent
+from eidolon_memory_contracts import ConversationTurnPayload, MemoryIntent
 from pydantic import Field
 
 from eidolon.memory.domain.steward import StewardDecision

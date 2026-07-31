@@ -12,7 +12,7 @@ import json
 from typing import Any
 
 import nats
-from eidolon_sdk.memory.subjects import memory_space_subject_token
+from eidolon_memory_contracts.subjects import memory_space_subject_token
 from nats.errors import NoRespondersError
 from nats.errors import TimeoutError as NatsTimeoutError
 

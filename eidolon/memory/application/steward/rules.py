@@ -6,7 +6,7 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from eidolon_sdk.memory import ConversationTurnPayload
+from eidolon_memory_contracts import ConversationTurnPayload
 
 from eidolon.memory.application.claim_routing import PROFILE_RE, TEMPORAL_EVENT_RE
 from eidolon.memory.application.forget import extract_privacy_target

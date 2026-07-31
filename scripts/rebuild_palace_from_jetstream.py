@@ -35,7 +35,7 @@ from typing import Any
 import nats
 from nats.js.api import ConsumerConfig, DeliverPolicy
 from pydantic import ValidationError
-from eidolon_sdk.memory import ConversationTurnPayload, conversation_turn_subject
+from eidolon_memory_contracts import ConversationTurnPayload, conversation_turn_subject
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
@@ -84,7 +84,7 @@ async def _replay(
         process_command_message,
         process_turn_message,
     )
-    from eidolon_sdk.memory import memory_command_subject
+    from eidolon_memory_contracts import memory_command_subject
 
     backend = LockedBackend(MemPalacePythonBackend(settings, str(palace_path)))
     kg = LockedKnowledgeGraph(

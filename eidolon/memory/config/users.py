@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, urljoin
 
-from eidolon_sdk.memory import stable_memory_realm_port
+from eidolon_memory_contracts import stable_memory_realm_port
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings

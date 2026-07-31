@@ -126,7 +126,7 @@ def _error_rates(*, tp: int, fp: int, fn: int) -> tuple[float, float]:
 def _validate_samples(samples: list[dict]) -> None:
     """Keep live labels explicit, unique, and within the wire predicate set."""
 
-    from eidolon_sdk.memory import KG_PREDICATE_VALUES
+    from eidolon_memory_contracts import KG_PREDICATE_VALUES
 
     predicates = set(KG_PREDICATE_VALUES)
     seen: set[str] = set()
@@ -154,7 +154,7 @@ def _validate_samples(samples: list[dict]) -> None:
 
 
 async def _run_one(sample: dict, steward, user_id: str) -> dict:
-    from eidolon_sdk.memory import ConversationTurnPayload, build_memory_actor_context
+    from eidolon_memory_contracts import ConversationTurnPayload, build_memory_actor_context
 
     turn = ConversationTurnPayload(
         turn_id=uuid.uuid4().hex,

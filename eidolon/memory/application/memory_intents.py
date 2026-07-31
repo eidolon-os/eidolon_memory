@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any
 
-from eidolon_sdk.memory import MemoryIntent, MemoryIntentType
+from eidolon_memory_contracts import MemoryIntent, MemoryIntentType
 
 from eidolon.memory.domain.steward import StewardDecision
 

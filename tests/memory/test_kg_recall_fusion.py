@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from eidolon_sdk.memory import MemoryActorContext
+from eidolon_memory_contracts import MemoryActorContext
 
 
 def _ctx(memory_realm_id: str = "default.alice.default") -> MemoryActorContext:

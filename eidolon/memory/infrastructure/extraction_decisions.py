@@ -7,7 +7,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from eidolon_sdk.memory import MemoryIntent
+from eidolon_memory_contracts import MemoryIntent
 
 from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionConflict,

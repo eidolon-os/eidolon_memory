@@ -6,7 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from eidolon_sdk.memory import ConversationTurnPayload, build_memory_actor_context
+from eidolon_memory_contracts import ConversationTurnPayload, build_memory_actor_context
 
 from eidolon.memory.application.steward.llm import LiteLLMSteward
 from eidolon.memory.config.memory_settings import MemorySettings, load_memory_settings

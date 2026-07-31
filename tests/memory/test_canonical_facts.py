@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from eidolon_sdk.memory import MemoryIntent
+from eidolon_memory_contracts import MemoryIntent
 
 from eidolon.memory.domain.canonical_fact import (
     CanonicalEvidenceConflict,

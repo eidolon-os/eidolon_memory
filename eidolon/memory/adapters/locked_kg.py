@@ -30,7 +30,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from eidolon_sdk.memory import SENSITIVE_PREDICATES
+from eidolon_memory_contracts import SENSITIVE_PREDICATES
 
 from eidolon.memory.domain.kg import (
     KgEntityRecord,

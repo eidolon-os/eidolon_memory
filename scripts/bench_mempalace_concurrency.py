@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from eidolon_sdk.memory import MemoryActorContext
+from eidolon_memory_contracts import MemoryActorContext
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend

@@ -8,7 +8,7 @@ import re
 import time
 from typing import Any
 
-from eidolon_sdk.memory import USER_CONFIRMED_ROOM_PREFIX, MemoryActorContext
+from eidolon_memory_contracts import USER_CONFIRMED_ROOM_PREFIX, MemoryActorContext
 
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
 from eidolon.memory.application.kg_recall import query_kg_for_recall

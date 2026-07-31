@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from eidolon_sdk.memory import MemoryActorContext
+from eidolon_memory_contracts import MemoryActorContext
 
 from eidolon.memory.application.public_recall import (
     recall_with_kg_fusion,

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-    "eidolon-sdk",
+    "eidolon-memory-contracts",
     "eidolon-data",
     "pydantic>=2.0",
     "pyyaml>=6.0",
@@ -32,7 +32,9 @@ dependencies = [
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.4"]
 
 [tool.uv.sources]
-eidolon-sdk = { path = "../eidolon_sdk", editable = true }
+# The wire contracts ship as their own distribution so that a client which only
+# speaks the protocol does not have to install this service's storage stack.
+eidolon-memory-contracts = { path = "./contracts", editable = true }
 eidolon-data = { path = "../eidolon_data", editable = true }
 
 [project.scripts]

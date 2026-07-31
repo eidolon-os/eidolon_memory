@@ -16,7 +16,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     ConversationTurnPayload,
     MemoryActorContext,
     envelope_memory_payload,

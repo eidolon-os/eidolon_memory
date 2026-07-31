@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     KG_PREDICATE_VALUES,
     USER_CONFIRMED_ROOM_PREFIX,
     MemoryIntent,

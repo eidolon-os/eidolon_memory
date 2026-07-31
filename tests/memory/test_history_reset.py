@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from eidolon_sdk.memory import memory_space_storage_name
+from eidolon_memory_contracts import memory_space_storage_name
 
 from eidolon.memory.infrastructure.history_reset import (
     HistoryResetSafetyError,

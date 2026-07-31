@@ -14,7 +14,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from eidolon_sdk.memory import MemoryIntent
+    from eidolon_memory_contracts import MemoryIntent
 
     from eidolon.memory.application.working_memory import WorkingMemoryRing
     from eidolon.memory.domain.canonical_fact import (

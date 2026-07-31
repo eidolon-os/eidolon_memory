@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from eidolon_sdk.memory import MemoryIntent, MemoryIntentCommand
+from eidolon_memory_contracts import MemoryIntent, MemoryIntentCommand
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend

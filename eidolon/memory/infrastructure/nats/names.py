@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from eidolon_sdk.memory import memory_space_subject_token
+from eidolon_memory_contracts import memory_space_subject_token
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
 

@@ -28,7 +28,7 @@ if str(_ROOT) not in sys.path:
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-from eidolon_sdk.memory import MemoryActorContext
+from eidolon_memory_contracts import MemoryActorContext
 
 from scripts.benchmark.report import percentiles, sla_pass  # noqa: E402
 

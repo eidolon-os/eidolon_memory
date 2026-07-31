@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     conversation_turn_subject,
     memory_command_subject,
     memory_sync_subject,

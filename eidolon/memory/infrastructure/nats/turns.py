@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 import nats
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     ConversationTurnPayload,
     conversation_turn_subject,
     envelope_memory_payload,

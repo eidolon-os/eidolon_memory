@@ -17,7 +17,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     KG_PREDICATE_VALUES,
     SENSITIVE_PREDICATES,
     KgAddTripleCommand,

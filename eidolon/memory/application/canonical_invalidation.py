@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from eidolon_sdk.memory import MemoryIntent
+from eidolon_memory_contracts import MemoryIntent
 
 from eidolon.memory.domain.canonical_fact import canonical_assertion_id
 from eidolon.memory.domain.ports import CanonicalFactWriter, MemoryBackend

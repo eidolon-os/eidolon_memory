@@ -6,7 +6,7 @@ import json
 from io import BytesIO
 
 import pytest
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     DEFAULT_MEMORY_MCP_BASE_PORT,
     MEMORY_MCP_PORT_SPAN,
     stable_memory_realm_port,

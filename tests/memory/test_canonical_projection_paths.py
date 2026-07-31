@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     MemoryIntent,
     MemoryIntentCommand,
     envelope_memory_payload,

@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from eidolon.memory.application.kg_recall import transcribe_triples
 
 if TYPE_CHECKING:
-    from eidolon_sdk.memory import ConversationTurnPayload
+    from eidolon_memory_contracts import ConversationTurnPayload
     from eidolon.memory.domain.wire import MemoryWireRecord
 
 

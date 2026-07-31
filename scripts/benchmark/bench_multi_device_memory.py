@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from eidolon_sdk.memory import MemoryActorContext
+from eidolon_memory_contracts import MemoryActorContext
 
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.domain.wire import MemoryWireRecord

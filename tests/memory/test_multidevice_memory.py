@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     ConversationTurnPayload,
     DeviceSyncBatchPayload,
     DeviceSyncEvent,

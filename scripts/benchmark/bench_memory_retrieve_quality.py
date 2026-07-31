@@ -52,7 +52,7 @@ from typing import Any
 import httpx
 import nats
 import yaml
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     ConversationTurnPayload,
     build_memory_actor_context,
     conversation_turn_subject,

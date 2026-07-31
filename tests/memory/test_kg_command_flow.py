@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from eidolon_sdk.memory import envelope_memory_payload, memory_command_subject
+from eidolon_memory_contracts import envelope_memory_payload, memory_command_subject
 
 SPACE = "default.alice.default"
 OTHER_SPACE = "default.bob.default"
@@ -399,7 +399,7 @@ async def test_command_unknown_kind_acked(kg_setup) -> None:
 
 
 async def test_subject_helpers() -> None:
-    from eidolon_sdk.memory import (
+    from eidolon_memory_contracts import (
         all_memory_stream_patterns,
         memory_command_subject,
     )

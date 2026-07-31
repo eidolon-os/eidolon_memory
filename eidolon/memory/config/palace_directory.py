@@ -20,7 +20,7 @@ from pathlib import Path
 # Single source of truth for the memory_space_id grammar lives in the SDK; the
 # path-injection guarantee here relies on that same validation. Re-exported so
 # existing callers keep importing it from this module.
-from eidolon_sdk.memory import memory_space_storage_name, validate_memory_space_id
+from eidolon_memory_contracts import memory_space_storage_name, validate_memory_space_id
 
 from eidolon.memory.config.memory_settings import MemorySettings
 

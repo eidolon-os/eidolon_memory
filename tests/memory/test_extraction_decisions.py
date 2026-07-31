@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from eidolon_sdk.memory import ConversationTurnPayload, MemoryActorContext, envelope_memory_payload
+from eidolon_memory_contracts import ConversationTurnPayload, MemoryActorContext, envelope_memory_payload
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend

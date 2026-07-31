@@ -13,7 +13,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
-from eidolon_sdk.memory import memory_space_storage_name
+from eidolon_memory_contracts import memory_space_storage_name
 
 from eidolon.memory.infrastructure.nats.names import nats_safe_name
 

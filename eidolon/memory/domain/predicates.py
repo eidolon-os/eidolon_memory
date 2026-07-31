@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from eidolon_sdk.memory import KG_PREDICATE_VALUES
+from eidolon_memory_contracts import KG_PREDICATE_VALUES
 
 
 class PredicateCardinality(StrEnum):

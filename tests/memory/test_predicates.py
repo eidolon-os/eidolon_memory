@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from eidolon_sdk.memory import KG_PREDICATE_VALUES, SENSITIVE_PREDICATES
+from eidolon_memory_contracts import KG_PREDICATE_VALUES, SENSITIVE_PREDICATES
 
 from eidolon.memory.domain.predicates import (
     PredicateCardinality,

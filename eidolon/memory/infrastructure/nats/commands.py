@@ -12,7 +12,7 @@ import json
 from typing import Any
 
 import nats
-from eidolon_sdk.memory import (
+from eidolon_memory_contracts import (
     MemoryCommandPayload,
     envelope_memory_payload,
     memory_command_subject,

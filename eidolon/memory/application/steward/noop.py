@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from eidolon.memory.domain.steward import StewardDecision
 
 if TYPE_CHECKING:
-    from eidolon_sdk.memory import ConversationTurnPayload
+    from eidolon_memory_contracts import ConversationTurnPayload
 
 # Test-only seam: when set, each ``decide`` sleeps this many seconds before
 # returning. Lets e2e tests simulate a slow (LLM-like) turn steward without a

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from eidolon_sdk.memory import MemoryActorContext, build_memory_actor_context
+from eidolon_memory_contracts import MemoryActorContext, build_memory_actor_context
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import (

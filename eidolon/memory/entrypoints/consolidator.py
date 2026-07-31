@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from eidolon_sdk.memory import ConsolidatorIngestThemeCommand
+from eidolon_memory_contracts import ConsolidatorIngestThemeCommand
 
 from eidolon.memory.config.memory_settings import (
     MemorySettings,

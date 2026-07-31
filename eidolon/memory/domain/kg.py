@@ -8,7 +8,7 @@ project's defence against KG predicate sprawl from LLM hallucination.
 
 from __future__ import annotations
 
-from eidolon_sdk.memory import KgPredicate as _KgPredicate
+from eidolon_memory_contracts import KgPredicate as _KgPredicate
 from pydantic import Field
 
 from eidolon.memory.support.model_base import BaseEidolonModel

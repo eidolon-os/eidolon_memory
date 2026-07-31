@@ -7,7 +7,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
-from eidolon_sdk.memory import ConversationTurnPayload
+from eidolon_memory_contracts import ConversationTurnPayload
 from pydantic import ValidationError
 
 from eidolon.memory.application.ingest import ingest_memory_fragment

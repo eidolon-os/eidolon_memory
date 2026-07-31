@@ -7,7 +7,7 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
-from eidolon_sdk.memory import memory_space_storage_name, validate_memory_space_id
+from eidolon_memory_contracts import memory_space_storage_name, validate_memory_space_id
 
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.support.logging import get_logger
