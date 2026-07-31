@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -213,6 +213,24 @@ class SupervisorConfig(BaseModel):
     admin_http_port: int = 8019
 
 
+class RegistryConfig(BaseModel):
+    """Where the list of memory spaces to serve comes from.
+
+    ``eidolon-admin`` asks an Eidolon OS admin service over HTTP, which is right
+    when the service runs inside the OS and realms are created there.
+
+    ``static`` reads a roster from a YAML file. This is what makes a standalone
+    deployment possible: no admin service to stand up, and the operator declares
+    the spaces directly. The file is re-read on reload, so entries can be added
+    without a config change.
+    """
+
+    source: Literal["eidolon-admin", "static"] = "eidolon-admin"
+    # Path to the roster for source="static". Relative paths resolve against the
+    # settings file's directory.
+    static_path: str = ""
+
+
 class NatsConfig(BaseModel):
     url: str = "nats://localhost:4222"
     stream: str = "MEMORY_TURNS"
@@ -309,6 +327,7 @@ class MemorySettings(BaseModel):
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     command_status: CommandStatusConfig = Field(default_factory=CommandStatusConfig)
     kg: KgConfig = Field(default_factory=KgConfig)
+    registry: RegistryConfig = Field(default_factory=RegistryConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     nats: NatsConfig = Field(default_factory=NatsConfig)
     mcp_http: McpHttpConfig = Field(default_factory=McpHttpConfig)

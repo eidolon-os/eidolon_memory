@@ -20,7 +20,8 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.config.users import UserEntry, load_users_config
+from eidolon.memory.config.registry import load_users_config
+from eidolon.memory.config.users import UserEntry
 
 DISCOVERY_VERSION = 1
 

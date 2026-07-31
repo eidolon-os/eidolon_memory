@@ -30,10 +30,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from eidolon.memory.config.registry import load_users_config
 from eidolon.memory.config.users import (
     ConsolidatorUserConfig,
     UserEntry,
-    load_users_config,
 )
 from eidolon.memory.support.logging import get_logger
 

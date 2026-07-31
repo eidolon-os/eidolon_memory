@@ -1,8 +1,14 @@
-"""Load and validate admin-owned memory realm routing for memory runtime.
+"""The roster of memory spaces this deployment serves.
 
-Runtime source of truth is eidolon_admin's owner workspace data. Memory only
-consumes active owners, active companions, and active memory realms; it does
-not derive routes from tenant/user identifiers.
+Holds the shapes (:class:`UserEntry`, :class:`UsersConfig`) plus the Eidolon OS
+source for them: an admin service that owns owner and companion lifecycle. The
+service consumes only active owners, active companions and active realms — it
+never derives routes from identifiers itself.
+
+Deployments outside the OS get their roster from
+:mod:`eidolon.memory.config.registry_static` instead. Callers reach either one
+through :func:`eidolon.memory.config.registry.load_users_config`, which picks a
+source; this module stays a leaf so both sources can depend on it.
 """
 
 from __future__ import annotations
@@ -16,15 +22,21 @@ from urllib.parse import quote, urljoin
 from eidolon_memory_contracts import stable_memory_realm_port
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from eidolon.memory.config.memory_settings import MemorySettings, get_memory_settings
+from eidolon.memory.config.memory_settings import (
+    MemorySettings,
+    get_memory_settings,
+)
 from eidolon.memory.config.palace_directory import validate_memory_space_id
 
 
-class UsersSourceUnavailable(RuntimeError):
-    """Admin owner workspace data could not be read.
+class RegistrySourceUnavailable(RuntimeError):
+    """The roster could not be read.
 
-    Supervisor treats this as "do not change the current runtime set" instead
-    of an empty realm list, so an admin/API blip does not stop every worker.
+    Distinct from "the roster is empty", and the distinction matters: an empty
+    roster means stop serving everything, while an unreadable source means keep
+    serving what we already have. The supervisor treats this exception as the
+    latter, so an admin restart or a momentarily unreadable file does not tear
+    down every running worker.
     """
 
 
@@ -124,7 +136,13 @@ def _load_json(url: str, *, timeout: float) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _stable_realm_port(realm_id: str, *, base_port: int, used_ports: set[int]) -> int:
+def stable_realm_port(realm_id: str, *, base_port: int, used_ports: set[int]) -> int:
+    """Derive a stable MCP port for a space, avoiding ones already taken.
+
+    Deterministic in the space id, so a space keeps its port across restarts
+    without anyone recording the allocation.
+    """
+
     return stable_memory_realm_port(
         realm_id,
         base_port=base_port,
@@ -159,6 +177,22 @@ def _entry_from_memory_realm(
     )
 
 
+class EidolonAdminRegistry:
+    """Roster from an Eidolon OS admin service.
+
+    Walks three endpoints — owners, then each owner's companions and memory
+    realms — and keeps only entries active at every level. It speaks HTTP rather
+    than importing anything, so the service still builds without the OS
+    installed; what it does assume is the admin service's URL shape.
+    """
+
+    def __init__(self, settings: MemorySettings) -> None:
+        self._settings = settings
+
+    def load(self) -> UsersConfig:
+        return _load_memory_realms_from_admin_api(self._settings)
+
+
 def _load_memory_realms_from_admin_api(settings: MemorySettings | None = None) -> UsersConfig:
     cfg = settings or get_memory_settings()
     base_url = resolve_admin_api_url(cfg)
@@ -167,7 +201,7 @@ def _load_memory_realms_from_admin_api(settings: MemorySettings | None = None) -
     try:
         owners_payload = _load_json(owners_url, timeout=timeout)
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise UsersSourceUnavailable(
+        raise RegistrySourceUnavailable(
             f"admin owner registry unavailable at {owners_url}: {exc}"
         ) from exc
 
@@ -196,7 +230,7 @@ def _load_memory_realms_from_admin_api(settings: MemorySettings | None = None) -
             companions_payload = _load_json(companions_url, timeout=timeout)
             realms_payload = _load_json(realms_url, timeout=timeout)
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise UsersSourceUnavailable(
+            raise RegistrySourceUnavailable(
                 f"admin owner workspace unavailable for {owner_id!r}: {exc}"
             ) from exc
 
@@ -218,7 +252,7 @@ def _load_memory_realms_from_admin_api(settings: MemorySettings | None = None) -
             companion = companions.get(companion_id)
             if companion is None:
                 continue
-            port = _stable_realm_port(
+            port = stable_realm_port(
                 str(realm.get("realm_id") or ""),
                 base_port=cfg.mcp_http.port,
                 used_ports=used_ports,
@@ -235,6 +269,3 @@ def _load_memory_realms_from_admin_api(settings: MemorySettings | None = None) -
     return UsersConfig(users=entries)
 
 
-def load_users_config(settings: MemorySettings | None = None) -> UsersConfig:
-    """Read and validate memory realms from eidolon_admin's owner APIs."""
-    return _load_memory_realms_from_admin_api(settings)

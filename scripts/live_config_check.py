@@ -9,7 +9,8 @@ from eidolon.memory.config.memory_settings import (
     resolve_run_dir,
 )
 from eidolon.memory.config.palace_directory import resolve_palaces_root
-from eidolon.memory.config.users import load_users_config, resolve_admin_api_url
+from eidolon.memory.config.users import resolve_admin_api_url
+from eidolon.memory.config.registry import load_users_config
 from eidolon_memory_contracts import conversation_turn_stream_pattern
 
 
