@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -23,7 +23,7 @@ def parse_memory_datetime(value: Any) -> datetime | None:
         except (TypeError, ValueError):
             return None
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -66,7 +66,7 @@ class MemoryWireRecord(BaseModel):
     memory_time_source: str | None = None
 
     @model_validator(mode="after")
-    def _fill_memory_time(self) -> "MemoryWireRecord":
+    def _fill_memory_time(self) -> MemoryWireRecord:
         if self.memory_time is not None:
             if not self.memory_time_source:
                 self.memory_time_source = "memory_time"

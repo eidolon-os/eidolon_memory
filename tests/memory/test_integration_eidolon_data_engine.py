@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from eidolon_data.schema.types import MemoryItem, RecallOptions
 
-from eidolon.memory.adapters.eidolon_data_engine import EidolonDataMemoryEngine
 from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.integrations.eidolon_data import EidolonDataMemoryEngine
 
 
 class FakeBackend:

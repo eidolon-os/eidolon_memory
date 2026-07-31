@@ -419,11 +419,11 @@ async def test_turn_processor_emits_memory_fanout_absorbed(settings, backend, tm
     from eidolon_data import DataSettings, DataStore
     from eidolon_data.testing import assert_event
 
-    from eidolon.memory.application.eidolon_data_runtime import (
-        EidolonDataMemoryFanoutAuditSink,
-    )
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.steward import StewardDecision
+    from eidolon.memory.integrations.eidolon_data import (
+        EidolonDataMemoryFanoutAuditSink,
+    )
 
     store = DataStore.open(DataSettings(sqlite_path=str(tmp_path / "audit.sqlite3")))
     await store.init_schema()

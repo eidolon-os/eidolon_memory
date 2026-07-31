@@ -27,13 +27,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from eidolon_memory_contracts import SENSITIVE_PREDICATES
 
 from eidolon.memory.domain.kg import (
-    KgEntityRecord,
     KgTripleRecord,
 )
 from eidolon.memory.support.logging import get_logger
@@ -48,7 +47,7 @@ def _now_iso() -> str:
     rather than ``+00:00``). Be strict so every callsite produces the same
     canonical form — KG queries compare timestamps as strings.
     """
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -74,9 +73,9 @@ def _canonical_temporal(value: str | None) -> str | None:
     except ValueError:
         return text
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     else:
-        dt = dt.astimezone(timezone.utc)
+        dt = dt.astimezone(UTC)
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

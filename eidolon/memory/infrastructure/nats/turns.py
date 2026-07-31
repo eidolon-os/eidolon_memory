@@ -29,7 +29,7 @@ class JetStreamTurnPublisher:
         self._js: Any = None
 
     @classmethod
-    def from_memory_settings(cls, settings: MemorySettings) -> "JetStreamTurnPublisher":
+    def from_memory_settings(cls, settings: MemorySettings) -> JetStreamTurnPublisher:
         return cls(nats_url=settings.nats.url, stream_name=settings.nats.stream)
 
     async def connect(self) -> None:

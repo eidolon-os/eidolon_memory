@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.wire import MemoryWireRecord
@@ -15,7 +15,7 @@ def _parse_iso(value: str) -> datetime | None:
         text = value.replace("Z", "+00:00")
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except ValueError:
         return None
@@ -32,7 +32,7 @@ def filter_voice_recall_hits(
     cutoff: datetime | None = None
     minutes = settings.recall.exclude_recent_minutes
     if minutes > 0:
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        cutoff = datetime.now(UTC) - timedelta(minutes=minutes)
 
     utter_norm = user_utterance.strip().lower()
     out: list[MemoryWireRecord] = []

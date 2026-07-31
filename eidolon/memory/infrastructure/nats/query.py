@@ -42,7 +42,7 @@ class NatsMemoryQueryClient:
     @classmethod
     def from_memory_settings(
         cls, settings: MemorySettings, *, timeout_seconds: float = 5.0
-    ) -> "NatsMemoryQueryClient":
+    ) -> NatsMemoryQueryClient:
         return cls(nats_url=settings.nats.url, timeout_seconds=timeout_seconds)
 
     async def connect(self) -> None:

@@ -3,11 +3,11 @@ from __future__ import annotations
 from eidolon_data import DataSettings
 from eidolon_data.schema.types import RecallOptions
 
-from eidolon.memory.application.eidolon_data_runtime import (
+from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.integrations.eidolon_data import (
     build_eidolon_data_memory_engine,
     open_eidolon_data_store,
 )
-from eidolon.memory.domain.wire import MemoryWireRecord
 
 
 class FakeBackend:

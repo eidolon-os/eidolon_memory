@@ -11,7 +11,6 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "eidolon-memory-contracts",
-    "eidolon-data",
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "litellm>=1.0",
@@ -28,7 +27,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.4"]
+# Wiring for deployments embedded in Eidolon OS: the reverse memory-engine port
+# and the turn-absorption audit log. The service runs without it — see
+# eidolon/memory/integrations/.
+eidolon-os = ["eidolon-data"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.4", "eidolon-data"]
 
 [tool.uv.sources]
 # The wire contracts ship as their own distribution so that a client which only

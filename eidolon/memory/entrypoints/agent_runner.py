@@ -36,9 +36,6 @@ from eidolon_memory_contracts import (
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
-from eidolon.memory.application.eidolon_data_runtime import (
-    EidolonDataMemoryFanoutAuditSink,
-)
 from eidolon.memory.application.privacy_filter import row_visible_to_listing
 from eidolon.memory.application.public_recall import wire_record_to_public_dict
 from eidolon.memory.application.runtime_warm import warm_palace_read_path
@@ -58,6 +55,7 @@ from eidolon.memory.config.palace_directory import (
     resolve_palace_for_memory_space,
     validate_memory_space_id,
 )
+from eidolon.memory.domain.audit import AuditSinkPort
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
@@ -144,18 +142,20 @@ def _materialize_kg_file(kg_sqlite_path: Path) -> None:
     fsync_directory(kg_sqlite_path.parent)
 
 
-def _open_fanout_audit_sink() -> Any:
-    """Best-effort audit sink for agent→memory fanout closure.
+def _open_fanout_audit_sink() -> AuditSinkPort | None:
+    """Resolve an audit sink, or None when this deployment has no host to audit to.
 
-    Opens an events-only DataStore against the shared eidolon_data DB. Returns
-    None if unavailable — the turn path then behaves exactly as before.
+    Standalone deployments have nowhere to record turn absorption, and the
+    ``eidolon-os`` extra that provides the sink is not installed — so the import
+    failing is an ordinary outcome, not an error. Either way the turn path is
+    unaffected; it treats None as "no audit configured".
     """
     try:
-        from eidolon_data import DataSettings, DataStore
+        from eidolon.memory.integrations.eidolon_data import open_fanout_audit_sink
 
-        return EidolonDataMemoryFanoutAuditSink(DataStore.open(DataSettings()))
+        return open_fanout_audit_sink()
     except Exception as exc:  # noqa: BLE001 - audit is optional, never fatal
-        log.warning("fanout_audit_sink_unavailable", error=str(exc))
+        log.info("fanout_audit_sink_unavailable", error=str(exc))
         return None
 
 

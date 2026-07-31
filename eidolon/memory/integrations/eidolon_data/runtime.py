@@ -1,8 +1,10 @@
-"""Runtime composition between ``eidolon_data`` and eidolon_memory.
+"""Runtime composition between ``eidolon_data`` and this service.
 
 ``eidolon_data`` owns the sovereignty schema and defines ``MemoryEnginePort``.
-This module lives in ``eidolon_memory`` because only the memory project should
-know how to construct MemPalace-backed implementations of that port.
+Constructing an implementation of it needs knowledge of palaces and backends, so
+the wiring lives here rather than there — but it lives in ``integrations`` rather
+than the core, because it is only reachable when a deployment installs the
+``eidolon-os`` extra. A standalone memory service never loads this module.
 """
 
 from __future__ import annotations
@@ -12,7 +14,6 @@ from typing import Any
 
 from eidolon_data import DataSettings, DataStore
 
-from eidolon.memory.adapters.eidolon_data_engine import EidolonDataMemoryEngine
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.config import (
@@ -21,6 +22,7 @@ from eidolon.memory.config import (
     resolve_palace_for_memory_space,
 )
 from eidolon.memory.domain.ports import MemoryBackend
+from eidolon.memory.integrations.eidolon_data.engine import EidolonDataMemoryEngine
 from eidolon.memory.support.logging import get_logger
 
 _log = get_logger(__name__)
@@ -85,6 +87,18 @@ class EidolonDataMemoryFanoutAuditSink:
                 turn_id=getattr(turn, "turn_id", None),
                 error=str(exc),
             )
+
+
+def open_fanout_audit_sink() -> EidolonDataMemoryFanoutAuditSink:
+    """Open an events-only DataStore and wrap it as an audit sink.
+
+    Constructing the store belongs here rather than at the call site so the
+    service core never names an ``eidolon_data`` type. Raises if eidolon_data is
+    absent or the database cannot be opened — the caller decides whether that is
+    fatal, and for auditing it never is.
+    """
+
+    return EidolonDataMemoryFanoutAuditSink(DataStore.open(DataSettings()))
 
 
 def build_eidolon_data_memory_engine(
@@ -157,4 +171,5 @@ __all__ = [
     "EidolonDataMemoryFanoutAuditSink",
     "build_eidolon_data_memory_engine",
     "open_eidolon_data_store",
+    "open_fanout_audit_sink",
 ]

@@ -12,10 +12,10 @@ import os
 import uuid
 
 import pytest
+from eidolon_memory_contracts import ConversationTurnPayload
 
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.application.steward.rules import RuleBasedSteward
-from eidolon_memory_contracts import ConversationTurnPayload
 
 
 def _require_live() -> None:

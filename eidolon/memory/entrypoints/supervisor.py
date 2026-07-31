@@ -41,8 +41,8 @@ from eidolon.memory.config.users import (
 )
 from eidolon.memory.entrypoints.admin_api import build_admin_api
 from eidolon.memory.infrastructure.mempalace_backend import (
-    mempalace_backend_env,
     inspect_configured_backend,
+    mempalace_backend_env,
     reconcile_configured_backend,
     selected_mempalace_backend,
 )

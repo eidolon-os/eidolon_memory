@@ -14,13 +14,14 @@ input parameter to `group_recall_context` and a single guarded block.
 
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import UTC
 from typing import TYPE_CHECKING
 
 from eidolon.memory.application.kg_recall import transcribe_triples
 
 if TYPE_CHECKING:
     from eidolon_memory_contracts import ConversationTurnPayload
+
     from eidolon.memory.domain.wire import MemoryWireRecord
 
 
@@ -59,7 +60,7 @@ def _time_prefix(rec: MemoryWireRecord) -> str:
         return ""
     dt = rec.memory_time
     if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc)
+        dt = dt.astimezone(UTC)
     return f"[{dt.strftime('%Y-%m-%d')}] "
 
 

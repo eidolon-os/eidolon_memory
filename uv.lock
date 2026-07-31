@@ -643,7 +643,6 @@ name = "eidolon-memory"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "eidolon-data" },
     { name = "eidolon-memory-contracts" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -660,14 +659,19 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "eidolon-data" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
+eidolon-os = [
+    { name = "eidolon-data" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "eidolon-data", editable = "../eidolon_data" },
+    { name = "eidolon-data", marker = "extra == 'dev'", editable = "../eidolon_data" },
+    { name = "eidolon-data", marker = "extra == 'eidolon-os'", editable = "../eidolon_data" },
     { name = "eidolon-memory-contracts", editable = "contracts" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "httpx", specifier = ">=0.27" },
@@ -684,7 +688,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["eidolon-os", "dev"]
 
 [[package]]
 name = "eidolon-memory-contracts"
