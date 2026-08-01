@@ -174,3 +174,23 @@ RANKED_SUBJECT_COLUMNS = """
     ranked.valid_from, ranked.valid_to, ranked.confidence,
     ranked.source_turn_id, ranked.adapter_name
 """
+
+def name_appears_in(name: str, query: str) -> bool:
+    """Whether a canonical entity name is referred to by a piece of text.
+
+    Whole first, then the tail after a type prefix — the steward writes
+    ``pet:铁锤`` to keep a dog distinct from a person of the same name, while
+    someone asking about the dog just says 铁锤.
+
+    A name that is nothing but a prefix (``pet:``) matches nothing, rather than
+    matching every query that happens to contain a colon.
+    """
+
+    if not name:
+        return False
+    if name in query:
+        return True
+    if ":" in name:
+        tail = name.split(":", 1)[1]
+        return bool(tail) and tail in query
+    return False

@@ -32,6 +32,7 @@ from eidolon.memory.adapters.kg_sql import (
     SUBJECT_RANK,
     VALID_AT,
     audience_filter,
+    name_appears_in,
 )
 from eidolon.memory.domain.kg import KgTripleRecord
 from eidolon.memory.support.logging import get_logger
@@ -596,7 +597,7 @@ class SqliteKnowledgeGraph:
         for name in sorted(set(names), key=lambda value: -len(value)):
             if name in seen:
                 continue
-            if _name_appears_in(name, text):
+            if name_appears_in(name, text):
                 found.append(name)
                 seen.add(name)
                 if len(found) >= cap:
@@ -787,22 +788,3 @@ __all__ = [
 ]
 
 
-def _name_appears_in(name: str, query: str) -> bool:
-    """Whether a canonical entity name is referred to by a piece of text.
-
-    Whole first, then the tail after a type prefix — the steward writes
-    ``pet:铁锤`` to keep a dog distinct from a person of the same name, while
-    someone asking about the dog just says 铁锤.
-
-    A name that is nothing but a prefix (``pet:``) matches nothing, rather than
-    matching every query that happens to contain a colon.
-    """
-
-    if not name:
-        return False
-    if name in query:
-        return True
-    if ":" in name:
-        tail = name.split(":", 1)[1]
-        return bool(tail) and tail in query
-    return False

@@ -50,6 +50,9 @@ mempalace:
   embedding_threads: 0
 
 kg:
+  # The graph is the one part of a palace that cannot stay on local disk here: a
+  # replica keeping it in a file would be per-replica state, and replicas have to
+  # be interchangeable. Needs the 'postgres' extra installed.
   backend: postgres
   postgres_dsn_env: EIDOLON_MEMORY_KG_PG_DSN
   min_confidence_to_write: 0.6

@@ -28,10 +28,17 @@ mcp / litellm 这些第三方包,加上同仓库自持的 `eidolon-memory-contra
 | 部署形态 | 向量 | 知识图谱 | 名册来源 |
 |---|---|---|---|
 | 本地单机 | chroma(palace 目录内文件) | sqlite(**本服务自写**,非 mempalace) | admin HTTP 或 static YAML |
-| 跨主机 | milvus(server / Zilliz) | postgres(实现待补) | 同上 |
+| 跨主机 | milvus(server / Zilliz) | postgres(见下方验证状态) | 同上 |
 
 两者共用一套配置 schema,只换值 —— 见 `config/settings.example.yaml` 与
 `config/settings.cloud.example.yaml`(有测试断言两者字段集一致)。
+
+**知识图谱的验证状态**(诚实说明):两个实现共享同一套 SQL(`adapters/kg_sql.py`)。
+SQLite 那份由 41 个测试直接验证。PostgreSQL 那份有**方言一致性**结构测试把守
+(schema 只在 sensitive 列类型上不同、参数个数一致、投影顺序一致 —— 见
+`test_kg_dialects.py`),但**尚未对真实 PostgreSQL 运行过**:那需要一个服务器,
+`test_live_postgres_kg.py` 在配了 `EIDOLON_MEMORY_KG_PG_TEST_DSN` 时跑完整验证。
+向量层的 milvus 路径已对真实实例验证过(`test_live_milvus.py`)。
 
 ### 0.1 可观测性
 
