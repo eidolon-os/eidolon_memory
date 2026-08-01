@@ -247,11 +247,24 @@ subject, `write_confirmed_fact` to `eidolon_memory_user_confirm`,
 `confirm_forget` to `eidolon_memory_forget_confirm`.
 
 So the contract is not a competing design — it is the same surface with a typed
-signature and a name per operation. Unifying means the tool bodies delegate to a
-contract implementation instead of holding the logic themselves, which is work
-inside this repository. Only 2 of the 27 tools currently take a caller context,
-so changing where they *get* their space from is the separate, cross-repository
-half.
+signature and a name per operation.
+
+**But making it the surface in use is a cross-repository change, not a local
+one.** `RecallResult` deliberately has no `kg_triples` and no `working_memory`
+field: both would let a client infer whether the service keeps a graph, which is
+the knowledge the contract exists to withhold. The tool returns them today, and
+`eidolon_agent/infra/memory/port_adapter.py:201` reads `kg_triples` — 17
+references on the agent side.
+
+So implementing the contract inside this repository alone would produce exactly
+the thing to avoid: the contract returning one shape while the tool returns
+another. Unifying means narrowing the response, which memory and agent have to
+ship together.
+
+What *is* local, and is the right first step: `MemoryService` resolving a space
+from `ctx` through the router, which makes it multi-space by construction while
+MCP tools still hand it a single one. That is the same work as parameterising the
+tools by request — only 2 of 27 take a caller context today.
 
 ---
 
