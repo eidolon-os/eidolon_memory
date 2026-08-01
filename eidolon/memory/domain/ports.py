@@ -488,16 +488,17 @@ class SyncLedgerPort(Protocol):
     to serve one decision at one call site — has this batch already been applied
     — and a reader without its writer could not answer it correctly.
 
-    The methods are synchronous, unlike every other ledger here. That is the
-    embedded implementation's shape showing through, and a shared-storage one
-    will have to either block a worker thread or change this signature.
+    Async like every other ledger. It was synchronous while the only
+    implementation was a local file, where blocking is a few microseconds; over a
+    network it would stall the event loop for a round trip on every event in a
+    batch, so the signature had to be the one both storages can honour.
     """
 
-    def seen(self, *, event_id: str, idempotency_hash: str) -> bool:
+    async def seen(self, *, event_id: str, idempotency_hash: str) -> bool:
         """Whether this event or an identical payload was already applied."""
         ...
 
-    def mark_synced(
+    async def mark_synced(
         self,
         *,
         event_id: str,

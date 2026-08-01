@@ -964,7 +964,7 @@ async def process_sync_message(
     skipped = 0
     failed = 0
     for event in batch.events:
-        if ledger.seen(
+        if await ledger.seen(
             event_id=event.event_id,
             idempotency_hash=event.idempotency_hash,
         ):
@@ -998,7 +998,7 @@ async def process_sync_message(
                     else fragment.model_copy(update={"occurred_at": turn.timestamp})
                 )
                 await ingest_memory_fragment(backend, stamped)
-            ledger.mark_synced(
+            await ledger.mark_synced(
                 event_id=event.event_id,
                 device_id=batch.device_id,
                 instance_id=batch.instance_id,

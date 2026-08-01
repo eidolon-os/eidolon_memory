@@ -40,6 +40,10 @@ from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBack
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.space_runtime import MemorySpaceRuntime, SpaceLedgers
+from eidolon.memory.infrastructure.ledgers_postgres import (
+    PostgresExtractionDecisionLedger,
+    PostgresSyncLedger,
+)
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
 from eidolon.memory.support.logging import get_logger
@@ -81,11 +85,13 @@ class SharedStoreRouter:
                 return existing
 
             runtime = await asyncio.to_thread(self._build, space_id)
-            # The graph needs its own connection, which is async to open, so it
-            # is attached after the storage handles rather than inside _build.
+            # The graph and the ledgers need their own connections, which are
+            # async to open, so they are attached after the storage handles
+            # rather than inside _build.
             graph = await self._open_graph(space_id)
             if graph is not None:
                 runtime = replace(runtime, kg=graph)
+            runtime = replace(runtime, ledgers=await self._open_ledgers(space_id))
             self._views[space_id] = runtime
             log.info(
                 "space_view_opened",
@@ -127,6 +133,41 @@ class SharedStoreRouter:
             palace_path=str(palace_path),
             kg=None,
             ledgers=SpaceLedgers(),
+        )
+
+    async def _open_ledgers(self, space_id: str) -> SpaceLedgers:
+        """The space's records in the shared database, or none of them.
+
+        ``ledgers.backend='palace'`` on shared storage is not a usable
+        combination — the files would be per-replica, so a fact invalidated by
+        one replica would still be recalled by another. It is served without them
+        rather than refused, because vector recall alone is a working service and
+        a hard failure at startup would take down a deployment over a setting
+        that can be corrected while it runs.
+        """
+
+        if self._settings.ledgers.backend != "postgres":
+            log.warning(
+                "space_ledgers_backend_unsupported",
+                memory_space_id=space_id,
+                backend=self._settings.ledgers.backend,
+                detail="shared storage needs ledgers.backend=postgres; serving without them",
+            )
+            return SpaceLedgers()
+
+        dsn = self._settings.ledgers.resolve_postgres_dsn()
+        if not dsn:
+            log.warning(
+                "space_ledgers_dsn_missing",
+                memory_space_id=space_id,
+                env=self._settings.ledgers.postgres_dsn_env,
+                detail="serving without ledgers",
+            )
+            return SpaceLedgers()
+
+        return SpaceLedgers(
+            decisions=await PostgresExtractionDecisionLedger.connect(dsn),
+            sync=await PostgresSyncLedger.connect(dsn, space_id=space_id),
         )
 
     async def _open_graph(self, space_id: str):

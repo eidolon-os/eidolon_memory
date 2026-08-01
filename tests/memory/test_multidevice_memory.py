@@ -244,7 +244,9 @@ async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
     settings = load_memory_settings()
     steward = RuleBasedSteward(settings)
     backend = _Backend()
-    ledger = SyncLedger(tmp_path / "sync_ledger.sqlite3")
+    ledger = SyncLedger(
+        tmp_path / "sync_ledger.sqlite3", space_id=_ctx().memory_space_id
+    )
     turn = _turn("我喜欢乌龙茶").model_dump(mode="json")
     batch = DeviceSyncBatchPayload(
         request_id="sync-1",
@@ -284,4 +286,4 @@ async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
 
     assert msg1.acked and msg2.acked
     assert len(backend.fragments) == 1
-    assert ledger.seen(event_id="event-1", idempotency_hash="hash-1")
+    assert await ledger.seen(event_id="event-1", idempotency_hash="hash-1")

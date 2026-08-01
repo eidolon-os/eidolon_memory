@@ -196,7 +196,7 @@ class LocalPalaceRouter:
                 ),
                 canonical_facts=CanonicalFactLedger(palace_path / "canonical_facts.sqlite3"),
                 commitments=CommitmentLedger(palace_path / "commitments.sqlite3"),
-                sync=SyncLedger(palace_path / "sync_ledger.sqlite3"),
+                sync=SyncLedger(palace_path / "sync_ledger.sqlite3", space_id=space_id),
             ),
         )
 

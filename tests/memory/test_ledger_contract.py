@@ -20,9 +20,10 @@ from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionConflict,
     ExtractionDecisionRecord,
 )
-from eidolon.memory.domain.ports import ExtractionDecisionStore
+from eidolon.memory.domain.ports import ExtractionDecisionStore, SyncLedgerPort
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
+from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 
 SPACE = "default.alice.default"
 VERSION = "rules:v2"
@@ -148,6 +149,106 @@ async def test_two_spaces_cannot_see_each_others_decisions(decisions) -> None:
 
     assert alice.input_hash == "hash-1"
     assert bob.input_hash == "bob-hash"
+
+
+# ── where they differ on purpose ─────────────────────────────────────────────
+
+
+# ── device sync, both storages ───────────────────────────────────────────────
+
+
+@pytest.fixture(params=["embedded", "shared"])
+async def sync(request: pytest.FixtureRequest, tmp_path, postgres_pool):
+    """The sync ledger for space ``SPACE``, once per storage shape."""
+
+    if request.param == "embedded":
+        return SyncLedger(tmp_path / "sync.sqlite3", space_id=SPACE)
+
+    from eidolon.memory.infrastructure.ledgers_postgres import PostgresSyncLedger
+
+    ledger = PostgresSyncLedger(postgres_pool, space_id=SPACE)
+    await ledger.ensure_schema()
+    return ledger
+
+
+async def test_sync_satisfies_the_port(sync) -> None:
+    assert isinstance(sync, SyncLedgerPort)
+
+
+async def test_an_unseen_batch_is_not_seen(sync) -> None:
+    assert await sync.seen(event_id="e1", idempotency_hash="h1") is False
+
+
+async def test_a_marked_batch_is_seen(sync) -> None:
+    await sync.mark_synced(
+        event_id="e1",
+        device_id="d1",
+        instance_id="i1",
+        turn_id="t1",
+        idempotency_hash="h1",
+    )
+
+    assert await sync.seen(event_id="e1", idempotency_hash="h1") is True
+
+
+async def test_the_same_payload_under_a_new_event_id_is_still_seen(sync) -> None:
+    """A device that retries with a fresh event id must not replay the turn.
+
+    The hash is what identifies the work; the event id only identifies the
+    attempt.
+    """
+
+    await sync.mark_synced(
+        event_id="e1",
+        device_id="d1",
+        instance_id="i1",
+        turn_id="t1",
+        idempotency_hash="h1",
+    )
+
+    assert await sync.seen(event_id="e2", idempotency_hash="h1") is True
+
+
+async def test_marking_the_same_batch_twice_is_not_an_error(sync) -> None:
+    """Reached by a caller that raced ``seen``. The record it wanted exists,
+    which is the outcome rather than a failure."""
+
+    for _ in range(2):
+        await sync.mark_synced(
+            event_id="e1",
+            device_id="d1",
+            instance_id="i1",
+            turn_id="t1",
+            idempotency_hash="h1",
+        )
+
+    assert await sync.seen(event_id="e1", idempotency_hash="h1") is True
+
+
+async def test_another_spaces_batch_does_not_count_as_seen(postgres_pool) -> None:
+    """The failure the space column exists to prevent.
+
+    Two spaces on shared storage are in one table. Scoped by event id alone —
+    which a per-palace file gave for free — one owner's sync history would make
+    another owner's turns look already-applied and silently drop them.
+    """
+
+    from eidolon.memory.infrastructure.ledgers_postgres import PostgresSyncLedger
+
+    alice = PostgresSyncLedger(postgres_pool, space_id="default.alice.default")
+    bob = PostgresSyncLedger(postgres_pool, space_id="default.bob.default")
+    await alice.ensure_schema()
+
+    await alice.mark_synced(
+        event_id="shared-id",
+        device_id="d1",
+        instance_id="i1",
+        turn_id="t1",
+        idempotency_hash="shared-hash",
+    )
+
+    assert await alice.seen(event_id="shared-id", idempotency_hash="shared-hash") is True
+    assert await bob.seen(event_id="shared-id", idempotency_hash="shared-hash") is False
 
 
 # ── where they differ on purpose ─────────────────────────────────────────────

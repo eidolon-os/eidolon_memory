@@ -82,3 +82,62 @@ EXTRACTION_DECISION_INSERT = f"""
 INSERT INTO extraction_decisions ({", ".join(EXTRACTION_DECISION_COLUMNS)})
 VALUES ({", ".join(["{m}"] * len(EXTRACTION_DECISION_COLUMNS))})
 """
+
+
+# ── device sync events ───────────────────────────────────────────────────────
+#
+# Which offline batches have already been applied, so a device that retries does
+# not replay turns into memory a second time.
+#
+# ``memory_space_id`` is on the table even though a palace holds exactly one
+# space and could rely on the file path for isolation. On shared storage every
+# space is in this one table, so without the column one space's sync history
+# would answer another's questions — and a column present in only one dialect is
+# how the two stop being the same design. Costing a redundant column locally is
+# the cheaper side of that trade.
+
+SYNC_EVENTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sync_events (
+    memory_space_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    idempotency_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    synced_at TEXT NOT NULL,
+    PRIMARY KEY (memory_space_id, event_id)
+)
+"""
+
+SYNC_EVENTS_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_idempotency
+ON sync_events(memory_space_id, idempotency_hash)
+"""
+"""Scoped to the space, so two spaces may legitimately hash to the same batch.
+
+Unique on the hash alone — which is what a per-palace file gave for free — would
+make one space's batch look already-applied to another and silently drop its
+turns.
+"""
+
+SYNC_EVENT_COLUMNS = (
+    "memory_space_id",
+    "event_id",
+    "device_id",
+    "instance_id",
+    "turn_id",
+    "idempotency_hash",
+    "status",
+    "synced_at",
+)
+
+SYNC_EVENT_SEEN = """
+SELECT 1 FROM sync_events
+WHERE memory_space_id = {m} AND (event_id = {m} OR idempotency_hash = {m})
+"""
+
+SYNC_EVENT_INSERT = f"""
+INSERT INTO sync_events ({", ".join(SYNC_EVENT_COLUMNS)})
+VALUES ({", ".join(["{m}"] * len(SYNC_EVENT_COLUMNS))})
+"""

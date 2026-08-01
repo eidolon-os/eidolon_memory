@@ -38,16 +38,21 @@ from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 
 MEMORY_ROOT = Path(__file__).resolve().parents[2] / "eidolon" / "memory"
 
-# The field on SpaceLedgers, the port it is declared as, and the local
-# implementation handed over for it. Kept as one table so a seventh ledger
-# cannot be added without deciding both answers.
+# The field on SpaceLedgers, the port it is declared as, and how the local
+# implementation is built. Kept as one table so a seventh ledger cannot be added
+# without deciding both answers.
+#
+# Sync takes its space at construction while the others take it per call. That is
+# a real inconsistency between ledgers, not between a ledger's two
+# implementations — each port is honoured by both of its storages, which is what
+# these tests are about.
 LEDGERS = [
-    ("command_status", CommandStatusStore, CommandStatusLedger),
-    ("dlq", DlqStore, DlqLedger),
-    ("decisions", ExtractionDecisionStore, ExtractionDecisionLedger),
-    ("canonical_facts", CanonicalFactStore, CanonicalFactLedger),
-    ("commitments", CommitmentStore, CommitmentLedger),
-    ("sync", SyncLedgerPort, SyncLedger),
+    ("command_status", CommandStatusStore, lambda p: CommandStatusLedger(p)),
+    ("dlq", DlqStore, lambda p: DlqLedger(p)),
+    ("decisions", ExtractionDecisionStore, lambda p: ExtractionDecisionLedger(p)),
+    ("canonical_facts", CanonicalFactStore, lambda p: CanonicalFactLedger(p)),
+    ("commitments", CommitmentStore, lambda p: CommitmentLedger(p)),
+    ("sync", SyncLedgerPort, lambda p: SyncLedger(p, space_id="default.alice.default")),
 ]
 
 
@@ -55,20 +60,20 @@ LEDGERS = [
 
 
 @pytest.mark.parametrize(
-    ("field", "port", "implementation"),
+    ("field", "port", "build"),
     LEDGERS,
     ids=[field for field, _, _ in LEDGERS],
 )
 def test_the_local_implementation_satisfies_the_port(
-    field: str, port: type, implementation: type, tmp_path: Path
+    field: str, port: type, build, tmp_path: Path
 ) -> None:
     """Constructed, not just inspected — a protocol check on the class would
     pass for a class whose methods are declared but not reachable."""
 
-    instance = implementation(tmp_path / f"{field}.sqlite3")
+    instance = build(tmp_path / f"{field}.sqlite3")
 
     assert isinstance(instance, port), (
-        f"{implementation.__name__} is handed over as {port.__name__} but does "
+        f"{type(instance).__name__} is handed over as {port.__name__} but does "
         f"not satisfy it"
     )
 

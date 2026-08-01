@@ -155,7 +155,9 @@ async def _nats_subscriber_loop(
     cmd_subject = memory_command_subject(memory_space_id)
     sync_subject = memory_sync_subject(memory_space_id)
     query_subject = memory_list_drawers_query_subject(memory_space_id)
-    ledger = SyncLedger(Path(kg_sqlite).parent / "sync_ledger.sqlite3")
+    ledger = SyncLedger(
+        Path(kg_sqlite).parent / "sync_ledger.sqlite3", space_id=memory_space_id
+    )
 
     steward = create_steward(settings)
     audit_sink = _open_fanout_audit_sink()

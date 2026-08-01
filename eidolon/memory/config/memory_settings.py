@@ -234,6 +234,44 @@ class CommandStatusConfig(BaseModel):
     prune_every_writes: int = Field(default=100, ge=1)
 
 
+class LedgerStorageConfig(BaseModel):
+    """Where a space's append-only records live.
+
+    Six of them: extraction decisions, canonical facts, commitments, command
+    status, the dead-letter queue, and device sync. Two are product behaviour
+    rather than bookkeeping — canonical facts carry the invalidation chain that
+    makes a corrected fact stop being recalled, and commitments are what the
+    service answers commitment queries from.
+
+    ``palace`` keeps them as SQLite files beside the memories, which needs a
+    single owning process. ``postgres`` puts them in a shared database so any
+    replica can serve any space.
+
+    Configured separately from ``kg`` even though both would point at the same
+    database: the graph is optional at runtime, and reading the ledgers' location
+    out of an optional section would mean turning the graph off took the ledgers
+    with it.
+    """
+
+    backend: Literal["palace", "postgres"] = "palace"
+    postgres_dsn_env: str = "EIDOLON_MEMORY_LEDGER_PG_DSN"
+
+    def resolve_postgres_dsn(self) -> str:
+        env = (self.postgres_dsn_env or "").strip()
+        if not env:
+            return ""
+        return os.environ.get(env, "").strip()
+
+    @model_validator(mode="after")
+    def _postgres_needs_a_dsn_source(self) -> LedgerStorageConfig:
+        if self.backend == "postgres" and not (self.postgres_dsn_env or "").strip():
+            raise ValueError(
+                "ledgers.postgres_dsn_env must name the environment variable "
+                "holding the connection string when ledgers.backend is 'postgres'"
+            )
+        return self
+
+
 class KgConfig(BaseModel):
     """Knowledge graph storage and tuning.
 
@@ -404,6 +442,7 @@ class MemorySettings(BaseModel):
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     command_status: CommandStatusConfig = Field(default_factory=CommandStatusConfig)
     kg: KgConfig = Field(default_factory=KgConfig)
+    ledgers: LedgerStorageConfig = Field(default_factory=LedgerStorageConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     nats: NatsConfig = Field(default_factory=NatsConfig)

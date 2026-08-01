@@ -18,6 +18,7 @@ exists to run in parallel.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from eidolon_memory_contracts import MemoryIntent
@@ -33,6 +34,10 @@ from eidolon.memory.infrastructure.ledger_sql import (
     EXTRACTION_DECISION_SELECT,
     EXTRACTION_DECISIONS_SCHEMA,
     POSTGRES_MARKER,
+    SYNC_EVENT_INSERT,
+    SYNC_EVENT_SEEN,
+    SYNC_EVENTS_INDEX,
+    SYNC_EVENTS_SCHEMA,
     render,
 )
 from eidolon.memory.support.logging import get_logger
@@ -136,6 +141,66 @@ class PostgresExtractionDecisionLedger:
                 "extraction identity reused with different validated turn input"
             )
         return stored
+
+
+class PostgresSyncLedger:
+    """Sync idempotency for one space, in a table every replica shares.
+
+    Scoped by ``space_id`` on every statement. The embedded ledger gets isolation
+    from living inside one palace; here the column is the only thing separating
+    one owner's sync history from another's.
+    """
+
+    def __init__(self, pool: Any, *, space_id: str) -> None:
+        self._pool = pool
+        self._space_id = space_id
+
+    @classmethod
+    async def connect(cls, dsn: str, *, space_id: str, min_size: int = 1, max_size: int = 8):
+        pool_cls = require_pool_driver()
+        pool = pool_cls(dsn, min_size=min_size, max_size=max_size, open=False)
+        await pool.open()
+        ledger = cls(pool, space_id=space_id)
+        await ledger.ensure_schema()
+        return ledger
+
+    async def ensure_schema(self) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(SYNC_EVENTS_SCHEMA)
+            await conn.execute(SYNC_EVENTS_INDEX)
+
+    async def seen(self, *, event_id: str, idempotency_hash: str) -> bool:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                render(SYNC_EVENT_SEEN, POSTGRES_MARKER),
+                (self._space_id, event_id, idempotency_hash),
+            )
+            return await cursor.fetchone() is not None
+
+    async def mark_synced(
+        self,
+        *,
+        event_id: str,
+        device_id: str,
+        instance_id: str,
+        turn_id: str,
+        idempotency_hash: str,
+    ) -> None:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                render(SYNC_EVENT_INSERT, POSTGRES_MARKER) + " ON CONFLICT DO NOTHING",
+                (
+                    self._space_id,
+                    event_id,
+                    device_id,
+                    instance_id,
+                    turn_id,
+                    idempotency_hash,
+                    "synced",
+                    now,
+                ),
+            )
 
 
 def _decision_to_row(record: ExtractionDecisionRecord) -> tuple:
