@@ -11,12 +11,14 @@ D1 lock contract:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from eidolon_memory_contracts import MemoryIntent
 
     from eidolon.memory.application.working_memory import WorkingMemoryRing
+    from eidolon.memory.domain.room_graph import RoomGraphSnapshot
     from eidolon.memory.domain.canonical_fact import (
         CanonicalFactHistoryRecord,
         CanonicalFactInvalidation,
@@ -178,6 +180,51 @@ contract small enough that a different vector store is a plausible substitution 
 if recall starts depending on a sixth field, that has to be a deliberate widening
 of the contract rather than something a single call site quietly introduces.
 """
+
+
+@runtime_checkable
+class WarmableBackend(Protocol):
+    """A store whose first read is much slower than the rest.
+
+    Embedded storage pays for the first request of a process: an ONNX model is
+    loaded, the vector index is read off disk, collection handles are opened. A
+    remote store has already paid all of it on the server, so warming it is
+    pointless rather than merely cheap.
+
+    Declared as a capability the store offers, not a fact the caller looks up.
+    The alternative — asking which backend is configured and skipping warmup for
+    the remote ones — puts a list of backend names in the startup path, so every
+    new store means editing code that has nothing to do with storage, and the
+    check silently does the wrong thing for a store nobody thought to add.
+    """
+
+    async def warm_read_path(self, *, wings: Sequence[str]) -> None:
+        """Do the first-request work now, on the wings most likely to be read.
+
+        Best-effort by contract: a failure here means the first real request is
+        slow, not that the service is broken, so callers log and carry on.
+        """
+        ...
+
+
+@runtime_checkable
+class RoomGraphBackend(Protocol):
+    """A store that can enumerate its rooms and which wings they appear under.
+
+    Separate from the main port because it is an inspection feature, not part of
+    serving conversation: a store that cannot do it should still be a usable
+    memory backend. Callers check for the capability and report the graph as
+    unavailable rather than treating its absence as a failure.
+    """
+
+    async def room_graph(self) -> RoomGraphSnapshot | None:
+        """Every room this store knows about, or None if it has no palace yet.
+
+        Returns everything and leaves ranking and capping to the caller —
+        deciding what is worth showing is a presentation question, and a store
+        that answered it would make that decision unchangeable from outside.
+        """
+        ...
 
 
 @runtime_checkable
@@ -431,3 +478,33 @@ class DlqWriter(Protocol):
 @runtime_checkable
 class DlqStore(DlqReader, DlqWriter, Protocol):
     """Combined operational store used only at the composition boundary."""
+
+
+@runtime_checkable
+class SyncLedgerPort(Protocol):
+    """Idempotency record for device sync batches replayed after being offline.
+
+    Not split into reader and writer like the other ledgers: both methods exist
+    to serve one decision at one call site — has this batch already been applied
+    — and a reader without its writer could not answer it correctly.
+
+    The methods are synchronous, unlike every other ledger here. That is the
+    embedded implementation's shape showing through, and a shared-storage one
+    will have to either block a worker thread or change this signature.
+    """
+
+    def seen(self, *, event_id: str, idempotency_hash: str) -> bool:
+        """Whether this event or an identical payload was already applied."""
+        ...
+
+    def mark_synced(
+        self,
+        *,
+        event_id: str,
+        device_id: str,
+        instance_id: str,
+        turn_id: str,
+        idempotency_hash: str,
+    ) -> None:
+        """Record that this event was applied. Idempotent."""
+        ...

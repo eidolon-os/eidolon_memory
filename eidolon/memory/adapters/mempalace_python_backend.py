@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,7 +21,9 @@ from eidolon.memory.domain.errors import (
 )
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
+from eidolon.memory.domain.room_graph import RoomGraphSnapshot, RoomNode
 from eidolon.memory.domain.wire import MemoryWireRecord, parse_memory_datetime
+from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.mempalace_hnsw import probe_hnsw_safety
 from eidolon.memory.support.logging import get_logger
 
@@ -62,6 +65,77 @@ class MemPalacePythonBackend(MemoryBackend):
         # recall's visibility gate (which compares against the caller's space)
         # doesn't reject every vector hit. See parse_search_tool_payload.
         self._memory_space_id = memory_space_id
+
+    async def room_graph(self) -> RoomGraphSnapshot | None:
+        """Every room in this palace, with the wings each appears under.
+
+        Serialised through the same lock as reads and writes: Chroma's cursor is
+        SQLite-backed and must not run alongside the write path.
+        """
+
+        def _read() -> RoomGraphSnapshot | None:
+            from mempalace.palace import get_collection
+            from mempalace.palace_graph import build_graph, graph_stats
+
+            collection = get_collection(self._palace, create=False)
+            if collection is None:
+                return None
+            raw_nodes, _raw_edges = build_graph(col=collection)
+            return RoomGraphSnapshot(
+                rooms={
+                    room: RoomNode(
+                        wings=tuple(data.get("wings") or ()),
+                        halls=tuple(data.get("halls") or ()),
+                        count=int(data.get("count") or 0),
+                    )
+                    for room, data in raw_nodes.items()
+                },
+                stats=graph_stats(col=collection),
+            )
+
+        if self.lock is not None:
+            async with self.lock:
+                return await asyncio.to_thread(_read)
+        return await asyncio.to_thread(_read)
+
+    async def warm_read_path(self, *, wings: Sequence[str]) -> None:
+        """Pay the first-read cost now: ONNX session, closets handle, one search.
+
+        Only embedded storage benefits. With a vector server the index and its
+        caches live on the server, already warm, and the model load is the one
+        cost a dry-run search here would not avoid anyway — so this returns
+        without doing the work rather than warming something remote.
+
+        Deciding that here rather than in the caller is the point: which stores
+        are local is this adapter's own knowledge, and it changes when MemPalace
+        adds a backend, not when memory's startup sequence changes.
+        """
+
+        backend = selected_mempalace_backend(self._settings)
+        if backend != "chroma":
+            log.info("warm_read_path_skipped_remote_store", backend=backend, palace=self._palace)
+            return
+        await asyncio.to_thread(self._warm_read_path_sync, tuple(wings))
+
+    def _warm_read_path_sync(self, wings: tuple[str, ...]) -> None:
+        from mempalace.embedding import get_embedding_function
+        from mempalace.palace import get_closets_collection
+        from mempalace.searcher import search_memories
+
+        log.info("warm_embedding_start", palace=self._palace)
+        ef = get_embedding_function()
+        ef(["eidolon memory warmup"])
+
+        get_closets_collection(self._palace, create=True)
+
+        for wing_id in wings:
+            data = search_memories("warmup", palace_path=self._palace, wing=wing_id, n_results=1)
+            if isinstance(data, dict) and data.get("error"):
+                log.warning("warm_search_failed", wing=wing_id, error=data.get("error"))
+            else:
+                log.info("warm_search_ok", wing=wing_id)
+
+        log.info("warm_complete", palace=self._palace, wings=len(wings))
 
     async def search(
         self,

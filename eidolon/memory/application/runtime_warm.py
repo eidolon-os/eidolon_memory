@@ -1,60 +1,52 @@
-"""Shared runtime warmup for MCP and LiveKit processes."""
+"""Startup warmup for processes that serve reads.
+
+What warming means belongs to the store — see :class:`WarmableBackend`. What is
+worth warming belongs here, because it is a recall decision: the wings a voice
+turn reaches are the ones whose first read must not be the slow one.
+"""
 
 from __future__ import annotations
 
-import asyncio
-
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.ports import VectorStorePort, WarmableBackend
 from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
-from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
 
-async def warm_palace_read_path(
+async def warm_read_path(
+    backend: VectorStorePort,
     settings: MemorySettings,
-    palace_path: str,
     *,
     role: str = "default",
 ) -> None:
-    """Load ONNX, closets, and dry-run search on voice wings (blocking, call from startup)."""
+    """Make the first read cost what a later one does, where that is possible.
+
+    Blocking on purpose — called from startup, before the process accepts
+    traffic, so that the cost lands here instead of on someone's first turn.
+
+    A store that does not offer warming is not an error and not a fallback: with
+    a vector server there is nothing on this side to warm.
+    """
+
     apply_cpu_thread_env(settings, role=role)  # type: ignore[arg-type]
-    await asyncio.to_thread(_warm_sync, settings, palace_path)
 
-
-def _warm_sync(settings: MemorySettings, palace_path: str) -> None:
-    from mempalace.embedding import get_embedding_function
-    from mempalace.palace import get_closets_collection
-    from mempalace.searcher import search_memories
-
-    backend = selected_mempalace_backend(settings)
-    if backend != "chroma":
-        log.info("runtime_warm_skip_non_chroma", backend=backend, palace=palace_path)
+    if not isinstance(backend, WarmableBackend):
+        log.info("warm_read_path_not_supported", backend=type(backend).__name__)
         return
 
-    log.info("runtime_warm_embedding_start")
-    ef = get_embedding_function()
-    ef(["eidolon memory warmup"])
+    await backend.warm_read_path(wings=_wings_worth_warming(settings))
 
-    get_closets_collection(palace_path, create=True)
+
+def _wings_worth_warming(settings: MemorySettings) -> list[str]:
+    """The voice wings, since voice has the tightest budget of any read path.
+
+    Falls back to every wing but Privacy when voice wings are unset — warming a
+    private wing would load it into caches for a path that does not read it.
+    """
 
     wings = settings.recall.voice_wings or [
-        w.id for w in settings.wings if w.id != "Wing_Privacy"
+        wing.id for wing in settings.wings if wing.id != "Wing_Privacy"
     ]
-    if not wings:
-        wings = [settings.wings[0].id]
-
-    for wing_id in wings:
-        data = search_memories(
-            "warmup",
-            palace_path=palace_path,
-            wing=wing_id,
-            n_results=1,
-        )
-        if isinstance(data, dict) and data.get("error"):
-            log.warning("runtime_warm_search_failed", wing=wing_id, error=data.get("error"))
-        else:
-            log.info("runtime_warm_search_ok", wing=wing_id)
-
-    log.info("runtime_warm_complete", palace=palace_path, wings=len(wings))
+    return wings or [settings.wings[0].id]

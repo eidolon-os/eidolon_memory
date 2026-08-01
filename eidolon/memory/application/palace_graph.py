@@ -1,116 +1,135 @@
-"""Build the cross-wing tunnel-room graph for visualization.
+"""Pick the part of a palace's room graph that is worth looking at.
 
-Pure application-layer logic: takes a LockedBackend (for the shared lock) +
-palace path, returns a JSON-shaped dict consumed by MCP `palace_graph` tool
-and Admin / IDE clients.
+A palace can hold thousands of rooms, which no client can usefully render, so
+this ranks them and caps both nodes and edges. Rooms that appear under more than
+one wing rank first — they are the tunnels between wings, and the reason to draw
+this at all.
 
-Lives here rather than in the MCP tool body so the entrypoints layer stays
-a thin shell over the application layer.
+Reading the rooms is the store's job (:class:`RoomGraphBackend`); everything here
+is presentation, which is why it can be changed without touching storage.
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
+
+from eidolon.memory.domain.ports import RoomGraphBackend
+from eidolon.memory.domain.room_graph import RoomGraphSnapshot
 
 
 async def build_palace_graph(
     backend: Any,
     *,
-    palace_path: str,
     max_nodes: int,
     max_edges: int,
 ) -> dict[str, Any]:
-    """Run ``mempalace.palace_graph.build_graph`` against the agent_runner's
-    collection. Uses ``LockedBackend.lock`` to serialize with reads/writes —
-    chroma's sqlite-backed cursor must not race the write path. Non-locked
-    backends (tests) execute unlocked.
+    """The room graph as a client can consume it.
+
+    Never raises for an absent graph: a store that cannot enumerate rooms, and a
+    palace that has none yet, both come back as ``available`` with a reason. The
+    caller is a visualisation, and an error there would read as a broken service
+    rather than an empty one.
     """
-    def _run() -> dict[str, Any]:
-        from mempalace.palace import get_collection
-        from mempalace.palace_graph import build_graph, graph_stats
 
-        col = get_collection(palace_path, create=False)
-        if col is None:
-            return {
-                "available": False,
-                "reason": "palace collection missing",
-                "stats": None,
-                "nodes": [],
-                "edges": [],
-                "capped": False,
-                "total_rooms": 0,
-            }
-        raw_nodes, _raw_edges = build_graph(col=col)
-        stats = graph_stats(col=col)
+    if not isinstance(backend, RoomGraphBackend):
+        return _unavailable("this store cannot enumerate rooms")
 
-        if not raw_nodes:
-            return {
-                "available": True,
-                "reason": "palace graph is empty",
-                "stats": stats,
-                "nodes": [],
-                "edges": [],
-                "capped": False,
-                "total_rooms": 0,
-            }
+    snapshot = await backend.room_graph()
+    if snapshot is None:
+        return _unavailable("palace collection missing")
 
-        ranked = sorted(
-            raw_nodes.items(),
-            key=lambda item: (len(item[1]["wings"]) >= 2, item[1]["count"]),
-            reverse=True,
-        )
-        picked = ranked[:max_nodes]
-        node_ids = {room for room, _ in picked}
+    return _render(snapshot, max_nodes=max_nodes, max_edges=max_edges)
 
-        nodes = [
-            {
-                "id": room,
-                "label": room,
-                "kind": "room",
-                "wings": list(data["wings"]),
-                "halls": list(data.get("halls") or []),
-                "count": int(data.get("count") or 0),
-                "is_tunnel": len(data.get("wings") or []) >= 2,
-            }
-            for room, data in picked
-        ]
 
-        edges: list[dict[str, Any]] = []
-        rooms_list = list(node_ids)
-        for i, ra in enumerate(rooms_list):
-            wa = set(raw_nodes[ra]["wings"])
-            for rb in rooms_list[i + 1 :]:
-                wb = set(raw_nodes[rb]["wings"])
-                shared = sorted(wa & wb)
-                if not shared:
-                    continue
-                edges.append(
-                    {
-                        "id": f"{ra}--{rb}",
-                        "source": ra,
-                        "target": rb,
-                        "label": shared[0] if len(shared) == 1 else f"{len(shared)} wings",
-                        "shared_wings": shared,
-                    }
-                )
-                if len(edges) >= max_edges:
-                    break
-            if len(edges) >= max_edges:
-                break
+def _unavailable(reason: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "reason": reason,
+        "stats": None,
+        "nodes": [],
+        "edges": [],
+        "capped": False,
+        "total_rooms": 0,
+    }
 
+
+def _render(
+    snapshot: RoomGraphSnapshot,
+    *,
+    max_nodes: int,
+    max_edges: int,
+) -> dict[str, Any]:
+    rooms = snapshot.rooms
+    if not rooms:
         return {
             "available": True,
-            "reason": None,
-            "stats": stats,
-            "nodes": nodes,
-            "edges": edges,
-            "capped": len(ranked) > len(picked) or len(edges) >= max_edges,
-            "total_rooms": len(raw_nodes),
+            "reason": "palace graph is empty",
+            "stats": snapshot.stats,
+            "nodes": [],
+            "edges": [],
+            "capped": False,
+            "total_rooms": 0,
         }
 
-    lock = getattr(backend, "lock", None)
-    if lock is not None:
-        async with lock:
-            return await asyncio.to_thread(_run)
-    return await asyncio.to_thread(_run)
+    # Tunnels first, then the busiest rooms: a cap that dropped tunnels would
+    # remove the only edges the graph can draw.
+    ranked = sorted(
+        rooms.items(),
+        key=lambda item: (item[1].is_tunnel, item[1].count),
+        reverse=True,
+    )
+    picked = ranked[:max_nodes]
+
+    nodes = [
+        {
+            "id": room,
+            "label": room,
+            "kind": "room",
+            "wings": list(node.wings),
+            "halls": list(node.halls),
+            "count": node.count,
+            "is_tunnel": node.is_tunnel,
+        }
+        for room, node in picked
+    ]
+
+    edges = _edges_between([room for room, _ in picked], rooms, max_edges=max_edges)
+
+    return {
+        "available": True,
+        "reason": None,
+        "stats": snapshot.stats,
+        "nodes": nodes,
+        "edges": edges,
+        "capped": len(ranked) > len(picked) or len(edges) >= max_edges,
+        "total_rooms": len(rooms),
+    }
+
+
+def _edges_between(
+    room_ids: list[str],
+    rooms: dict[str, RoomNode],
+    *,
+    max_edges: int,
+) -> list[dict[str, Any]]:
+    """Join two rooms when they share a wing, up to the cap."""
+
+    edges: list[dict[str, Any]] = []
+    for index, left in enumerate(room_ids):
+        left_wings = set(rooms[left].wings)
+        for right in room_ids[index + 1 :]:
+            shared = sorted(left_wings & set(rooms[right].wings))
+            if not shared:
+                continue
+            edges.append(
+                {
+                    "id": f"{left}--{right}",
+                    "source": left,
+                    "target": right,
+                    "label": shared[0] if len(shared) == 1 else f"{len(shared)} wings",
+                    "shared_wings": shared,
+                }
+            )
+            if len(edges) >= max_edges:
+                return edges
+    return edges

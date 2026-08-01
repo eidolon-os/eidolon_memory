@@ -29,10 +29,19 @@ above this line:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from eidolon.memory.domain.ports import VectorStorePort
+    from eidolon.memory.domain.kg_port import KnowledgeGraphPort
+    from eidolon.memory.domain.ports import (
+        CanonicalFactStore,
+        CommandStatusStore,
+        CommitmentStore,
+        DlqStore,
+        ExtractionDecisionStore,
+        SyncLedgerPort,
+        VectorStorePort,
+    )
 
 
 @dataclass(frozen=True)
@@ -46,14 +55,25 @@ class SpaceLedgers:
     Every one of them is optional: each consumer already treats None as "this
     deployment does not keep that record", which is what lets a minimal
     deployment run without provisioning any of it.
+
+    Each field is typed as its port rather than ``Any``. This is the one boundary
+    where local and cloud hand over different objects, so it is the boundary
+    where a mismatched implementation must be caught — an untyped field here
+    means a cloud ledger missing a method fails at the call site instead, on
+    whichever request happens to reach it first.
+
+    Two of these are product behaviour, not bookkeeping: ``canonical_facts``
+    carries the invalidation chain that makes a corrected fact stop being
+    recalled, and ``commitments`` is what the service answers commitment queries
+    from. A deployment without them still runs, but answers differently.
     """
 
-    command_status: Any = None
-    dlq: Any = None
-    decisions: Any = None
-    canonical_facts: Any = None
-    commitments: Any = None
-    sync: Any = None
+    command_status: CommandStatusStore | None = None
+    dlq: DlqStore | None = None
+    decisions: ExtractionDecisionStore | None = None
+    canonical_facts: CanonicalFactStore | None = None
+    commitments: CommitmentStore | None = None
+    sync: SyncLedgerPort | None = None
 
 
 @dataclass(frozen=True)
@@ -70,7 +90,7 @@ class MemorySpaceRuntime:
     space_id: str
     backend: VectorStorePort
     palace_path: str
-    kg: Any = None
+    kg: KnowledgeGraphPort | None = None
     ledgers: SpaceLedgers = SpaceLedgers()
 
     @property

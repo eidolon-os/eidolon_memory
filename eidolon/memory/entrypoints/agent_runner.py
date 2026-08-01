@@ -39,7 +39,7 @@ from eidolon_memory_contracts import (
 from eidolon.memory.adapters.space_routing import build_space_router
 from eidolon.memory.application.privacy_filter import row_visible_to_listing
 from eidolon.memory.application.public_recall import wire_record_to_public_dict
-from eidolon.memory.application.runtime_warm import warm_palace_read_path
+from eidolon.memory.application.runtime_warm import warm_read_path
 from eidolon.memory.application.steward import create_steward
 from eidolon.memory.application.turn_processor import (
     process_command_message,
@@ -443,7 +443,7 @@ def _compose_starlette_lifespan(
         log.info("agent_runner_warm_start", memory_space_id=memory_space_id, palace=palace_path)
         warm_started = time.perf_counter()
         try:
-            await warm_palace_read_path(settings, palace_path, role="default")
+            await warm_read_path(backend, settings, role="default")
             log.info(
                 "agent_runner_warm_complete",
                 memory_space_id=memory_space_id,

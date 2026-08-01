@@ -403,12 +403,7 @@ def build_control_plane_mcp(
         """
         mn = max(10, min(max_nodes, 800))
         me = max(10, min(max_edges, 2000))
-        return await build_palace_graph(
-            backend,
-            palace_path=palace_path,
-            max_nodes=mn,
-            max_edges=me,
-        )
+        return await build_palace_graph(backend, max_nodes=mn, max_edges=me)
 
     if command_publisher is not None:
         _register_user_confirm_tool(
