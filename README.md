@@ -800,7 +800,7 @@ EIDOLON_MEMORY_MILVUS_TEST_DB=eidolon \
 | Domain | `eidolon/memory/domain/` | `MemoryFragment` / `ConversationTurnPayload` / `Kg*` schema, `EntityMention`, `ports.py`(`MemoryBackend` Protocol + `lock`/`working_memory`) |
 | Config | `eidolon/memory/config/` | `MemorySettings`(含 recall.rerank/theme 旋钮)、`UsersConfig`(含 `consolidator`)、palace 解析、steward prompts |
 | Infrastructure | `eidolon/memory/infrastructure/` | NATS / JetStream stream / WAL checkpoint / 完整性 / palace init |
-| Adapters | `eidolon/memory/adapters/` | `MemPalacePythonBackend`、`LockedBackend`、`LockedKnowledgeGraph`(+`entity_mentions`)、`search_payload`、`FakeMemoryBackend` |
+| Adapters | `eidolon/memory/adapters/` | `MemPalacePythonBackend`、`LockedBackend`、`SqliteKnowledgeGraph`、两个 space router、`search_payload`、`FakeMemoryBackend` |
 | Application | `eidolon/memory/application/` | `turn_processor`(写)、`public_recall`(读融合)、`recall_rerank`(P1)、`recall_renderer`、`working_memory`(P2)、`kg_recall`、`steward/*` |
 | Entrypoints | `eidolon/memory/entrypoints/` | `agent_runner`(主进程 + NATS 重连)、`supervisor`(fan-out)、`consolidator`(P4)、`mcp_server`(14 工具)、`discovery_server` |
 | Bench | `scripts/benchmark/` | `bench_read_livekit`(R-01 延时)、`bench_memory_retrieve_quality`(`--with-consolidator` A/B 质量) |
@@ -828,7 +828,7 @@ EIDOLON_MEMORY_MILVUS_TEST_DB=eidolon \
 
 ### 13.2 关键不变量(改代码前必读)
 
-- **D1 单写单读**:一份 palace 一个进程;`LockedBackend`/`LockedKnowledgeGraph` 共享同一把
+- **单持有者**:一份 palace 只被一个进程持有 —— 不是「一个进程只持有一份 palace」,那个读法正是让 embedding 模型变成 per-space 成本的原因;`LockedBackend`/`SqliteKnowledgeGraph` 共享同一把
   `asyncio.Lock`。consolidator 不持 chroma 句柄(它是 MCP 读 + NATS 写的"另一个客户端")。
 - **召回热路径只能依赖 mempalace search 保证返回的字段**:`{text, wing, room, source_file,
   similarity}`。任何依赖自定义 metadata 的召回逻辑都会失效(见 13.1#3)——用 `room` 前缀或
