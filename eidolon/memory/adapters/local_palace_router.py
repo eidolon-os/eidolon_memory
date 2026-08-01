@@ -252,7 +252,13 @@ class LocalPalaceRouter:
 
         run_dir = resolve_run_dir(self._settings)
         run_dir.mkdir(parents=True, exist_ok=True)
-        lock_path = run_dir / f"eidolon-memory-space-{nats_safe_name(space_id)}.lock"
+        # The filename must stay as it is. A running process holds this exact
+        # path, so renaming it — however much better "space" reads than "agent"
+        # now that a process is not one space — would make an upgraded process
+        # take no lock the old one recognises. Both would then open the same
+        # palace, which is the corruption this claim exists to prevent, and the
+        # window is any deployment that is not a clean full stop.
+        lock_path = run_dir / f"eidolon-memory-agent-{nats_safe_name(space_id)}.lock"
         handle = open(lock_path, "a+", encoding="utf-8")
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

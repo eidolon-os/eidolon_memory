@@ -289,3 +289,28 @@ def test_a_runtime_is_immutable() -> None:
 
     with pytest.raises(Exception):
         runtime.space_id = "bob"
+
+
+def test_the_lock_filename_is_pinned(settings: MemorySettings, tmp_path) -> None:
+    """Renaming it would let an upgraded process ignore a running one's claim.
+
+    A live process holds a path built from this exact name. If a new version
+    looked somewhere else, both would open the same palace — the corruption the
+    claim exists to prevent — and any deployment short of a clean full stop would
+    hit it. The better name is not worth that.
+    """
+
+    from eidolon.memory.config.memory_settings import resolve_run_dir
+    from eidolon.memory.infrastructure.nats.names import nats_safe_name
+
+    router = LocalPalaceRouter(settings)
+    try:
+        router._acquire_space_lock("alice")
+
+        name = nats_safe_name("alice")
+        expected = resolve_run_dir(settings) / f"eidolon-memory-agent-{name}.lock"
+        assert expected.is_file(), f"expected the claim at {expected}"
+    finally:
+        for handle in router._locks.values():
+            handle.close()
+        router._locks.clear()
