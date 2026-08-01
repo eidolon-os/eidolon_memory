@@ -221,3 +221,64 @@ async def test_shared_storage_shards_nothing(tmp_path) -> None:
     assert router.serves("alice")
     assert router.serves("anything-else")
     assert not router.serves("   ")
+
+
+# ── the deployment shape follows from storage, not from a mode flag ───────────
+
+
+def test_the_router_follows_the_storage_configuration(tmp_path, monkeypatch) -> None:
+    """No cloud switch: which router runs is implied by where data lives.
+
+    A separate mode flag could disagree with the storage config — claiming cloud
+    while keeping data in a file — so there is only one source of truth.
+    """
+
+    monkeypatch.delenv("EIDOLON_MEMORY_RUN_DIR", raising=False)
+
+    from eidolon.memory.adapters.local_palace_router import LocalPalaceRouter
+    from eidolon.memory.adapters.shared_store_router import SharedStoreRouter
+    from eidolon.memory.adapters.space_routing import build_space_router, storage_is_embedded
+
+    local = build_space_router(_local_settings(tmp_path))
+    shared = build_space_router(_shared_settings(), ephemeral_root=tmp_path / "e")
+
+    assert isinstance(local, LocalPalaceRouter)
+    assert isinstance(shared, SharedStoreRouter)
+    assert storage_is_embedded(_local_settings(tmp_path))
+    assert not storage_is_embedded(_shared_settings())
+
+
+def test_sharding_is_ignored_where_it_has_no_meaning(tmp_path) -> None:
+    """On shared storage every replica serves everything.
+
+    Half-honouring a shard here would describe an affinity the architecture does
+    not have, and a balancer would then have to know about it.
+    """
+
+    from eidolon.memory.adapters.space_routing import build_space_router
+
+    shared = build_space_router(
+        _shared_settings(), allowed_spaces=["alice"], ephemeral_root=tmp_path / "e"
+    )
+
+    assert shared.serves("bob")
+
+
+def test_the_deployment_profiles_choose_different_routers() -> None:
+    """The shipped examples must actually produce the two shapes."""
+
+    import pathlib
+
+    import yaml
+
+    from eidolon.memory.adapters.space_routing import storage_is_embedded
+
+    config = pathlib.Path(__file__).resolve().parents[2] / "config"
+
+    def _load(name: str) -> MemorySettings:
+        return MemorySettings.model_validate(
+            yaml.safe_load((config / name).read_text(encoding="utf-8"))
+        )
+
+    assert storage_is_embedded(_load("settings.example.yaml"))
+    assert not storage_is_embedded(_load("settings.cloud.example.yaml"))
