@@ -33,6 +33,31 @@ mcp / litellm 这些第三方包,加上同仓库自持的 `eidolon-memory-contra
 两者共用一套配置 schema,只换值 —— 见 `config/settings.example.yaml` 与
 `config/settings.cloud.example.yaml`(有测试断言两者字段集一致)。
 
+### 0.1 一个 space 的句柄从哪来
+
+进程不再"是"某个 space,而是**向 router 要**它:
+
+```python
+runtime = await router.resolve(space_id)   # backend / kg / ledgers
+```
+
+两个实现,由**存储配置**推导(没有 `mode: local|cloud` 开关 —— 否则可能与存储配置矛盾):
+
+| | `LocalPalaceRouter`(嵌入式) | `SharedStoreRouter`(远端) |
+|---|---|---|
+| 选中条件 | `mempalace.backend: chroma` | 其他(milvus) |
+| palace 目录 | **就是数据**,必须持久 | 只放 marker,容器本地、可丢弃重建 |
+| 同一 space 第二个持有者 | **拒绝**(flock;两个持有者会损坏 palace) | **允许**(副本可互换 = 水平扩展) |
+| ONNX 模型 | 进程内共享一份(实测 3 palace:291MB → +10MB → +5MB) | 同上 |
+| 分片 `allowed_spaces` | 有意义(限制一个进程崩溃的影响面) | 被忽略(每副本服务全部) |
+
+这个不对称由 `tests/memory/test_router_contract.py` 断言 —— 两个实现跑同一套契约测试,
+且显式验证"两副本并发服务同一 space"不报错。任何重新引入 host 绑定的改动会让它失败。
+
+> 现状:`agent_runner` 仍只服务一个 space(router 被限制到它)。让一个进程服务 K 个 space
+> 需要 MCP 工具从请求参数取 space —— 27 个工具里只有 2 个带 `context`,其余靠端口绑定,
+> 所以那是对外契约变更(契约 v2 已按此设计)。
+
 ---
 
 ## 1. 这是什么 / 给谁用

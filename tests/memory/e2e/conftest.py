@@ -245,6 +245,12 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
     safe_tmp_root = Path(os.environ.get("EIDOLON_MEMORY_E2E_TMPDIR", "/private/tmp")).expanduser()
     safe_tmp_root.mkdir(parents=True, exist_ok=True)
     palaces_root = Path(tempfile.mkdtemp(prefix="eidolon-memory-e2e-palaces-", dir=safe_tmp_root))
+    # Spawned runners claim each space with an advisory lock under run_dir. Left
+    # at its default that is the developer's real ~/eidolon/run, shared with any
+    # production runner on the machine — so a test space that happened to share a
+    # name with a live one would fight it for the claim. Give the run its own.
+    run_dir = palaces_root / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     def _spawn(
         *,
@@ -328,7 +334,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
             "mcp_http": {"host": "127.0.0.1", "port": port},
             "mempalace": {"embedding_threads": 1},
             "nats": {"url": live_nats},
-            "runtime": {"palaces_root": str(palace_root)},
+            "runtime": {"palaces_root": str(palace_root), "run_dir": str(run_dir)},
         }
         # If the test runs in LLM-steward mode, inherit the project's LLM
         # config from config/settings.yaml. Otherwise the LiteLLM steward
@@ -361,6 +367,11 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
 
         env = {**os.environ}
         env["EIDOLON_MEMORY_SETTINGS_YAML"] = str(settings_path)
+        # Set explicitly rather than relying on the settings file: run_dir
+        # resolution reads the environment first, so an exported value in the
+        # developer's shell would otherwise put test claims back in the shared
+        # directory.
+        env["EIDOLON_MEMORY_RUN_DIR"] = str(run_dir)
         # Activate isolation in the parent before the child imports Chroma's
         # native modules. Agent startup repeats this configuration as a guard.
         env["EIDOLON_MEMORY_PROCESS_TMP_ROOT"] = str(process_tmp_dir.parent)
