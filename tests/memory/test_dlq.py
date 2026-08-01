@@ -7,11 +7,13 @@ import pytest
 
 from eidolon.memory.infrastructure.dlq import DlqLedger
 
+DLQ_SPACE = "default.alice.default"
+
 
 async def test_dlq_persists_full_payload_but_exposes_only_bounded_preview(
     tmp_path: Path,
 ) -> None:
-    ledger = DlqLedger(tmp_path / "dlq.sqlite3")
+    ledger = DlqLedger(tmp_path / "dlq.sqlite3", space_id=DLQ_SPACE)
     payload = ("敏感内容" * 200).encode()
 
     record = await ledger.add(
@@ -24,13 +26,13 @@ async def test_dlq_persists_full_payload_but_exposes_only_bounded_preview(
     assert record.payload_size == len(payload)
     assert len(record.payload_preview.encode()) <= 502
     assert "payload" not in record.to_dict()
-    restarted = DlqLedger(tmp_path / "dlq.sqlite3")
+    restarted = DlqLedger(tmp_path / "dlq.sqlite3", space_id=DLQ_SPACE)
     stored = await restarted.get(record.entry_id)
     assert stored == record
 
 
 async def test_dlq_replay_claim_is_atomic_and_duplicate_safe(tmp_path: Path) -> None:
-    ledger = DlqLedger(tmp_path / "dlq.sqlite3")
+    ledger = DlqLedger(tmp_path / "dlq.sqlite3", space_id=DLQ_SPACE)
     record = await ledger.add(
         subject="eidolon.memory.cmd.test",
         payload=b'{"kind":"test"}',
@@ -53,7 +55,7 @@ async def test_dlq_replay_claim_is_atomic_and_duplicate_safe(tmp_path: Path) -> 
 
 
 async def test_dlq_failed_replay_can_retry_and_resolve(tmp_path: Path) -> None:
-    ledger = DlqLedger(tmp_path / "dlq.sqlite3")
+    ledger = DlqLedger(tmp_path / "dlq.sqlite3", space_id=DLQ_SPACE)
     record = await ledger.add(
         subject="eidolon.memory.turn.test",
         payload=b"payload",
@@ -79,7 +81,7 @@ async def test_dlq_failed_replay_can_retry_and_resolve(tmp_path: Path) -> None:
 
 async def test_dlq_replaying_claim_recovers_after_process_restart(tmp_path: Path) -> None:
     path = tmp_path / "dlq.sqlite3"
-    ledger = DlqLedger(path)
+    ledger = DlqLedger(path, space_id=DLQ_SPACE)
     record = await ledger.add(
         subject="eidolon.memory.cmd.test",
         payload=b"payload",
@@ -88,7 +90,7 @@ async def test_dlq_replaying_claim_recovers_after_process_restart(tmp_path: Path
     )
     assert await ledger.claim_replay(record.entry_id) is not None
 
-    restarted = DlqLedger(path)
+    restarted = DlqLedger(path, space_id=DLQ_SPACE)
     recovered = await restarted.get(record.entry_id)
     assert recovered is not None
     assert recovered.state == "unresolved"
@@ -96,7 +98,7 @@ async def test_dlq_replaying_claim_recovers_after_process_restart(tmp_path: Path
 
 
 async def test_dlq_rejects_invalid_operations(tmp_path: Path) -> None:
-    ledger = DlqLedger(tmp_path / "dlq.sqlite3")
+    ledger = DlqLedger(tmp_path / "dlq.sqlite3", space_id=DLQ_SPACE)
     with pytest.raises(ValueError, match="invalid DLQ state"):
         await ledger.list(state="anything")
     with pytest.raises(ValueError, match="note"):

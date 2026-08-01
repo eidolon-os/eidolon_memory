@@ -141,3 +141,107 @@ SYNC_EVENT_INSERT = f"""
 INSERT INTO sync_events ({", ".join(SYNC_EVENT_COLUMNS)})
 VALUES ({", ".join(["{m}"] * len(SYNC_EVENT_COLUMNS))})
 """
+
+
+# ── dead letters ─────────────────────────────────────────────────────────────
+#
+# Turns the service could not process, kept so they can be inspected and
+# replayed. Carries a space column for the same reason sync does: on shared
+# storage one owner must not see another's failed turns, and the payload here is
+# a whole conversation turn.
+
+DLQ_ENTRIES_SCHEMA_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS dlq_entries (
+    memory_space_id TEXT NOT NULL,
+    entry_id TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    payload {blob} NOT NULL,
+    error TEXT NOT NULL,
+    deliveries INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    replay_attempts INTEGER NOT NULL DEFAULT 0,
+    resolution_note TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (memory_space_id, entry_id)
+)
+"""
+"""``{blob}`` is the only type that differs: SQLite BLOB, PostgreSQL BYTEA."""
+
+DLQ_ENTRIES_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_dlq_state_updated
+ON dlq_entries(memory_space_id, state, updated_at)
+"""
+
+DLQ_STATES = frozenset({"unresolved", "replaying", "replayed", "resolved"})
+
+DLQ_COLUMNS = (
+    "entry_id",
+    "subject",
+    "payload",
+    "error",
+    "deliveries",
+    "state",
+    "replay_attempts",
+    "resolution_note",
+    "created_at",
+    "updated_at",
+)
+
+_DLQ_SELECT = f"SELECT {', '.join(DLQ_COLUMNS)} FROM dlq_entries"
+
+DLQ_SELECT_ONE = f"{_DLQ_SELECT} WHERE memory_space_id = {{m}} AND entry_id = {{m}}"
+
+DLQ_SELECT_PAGE = f"""
+{_DLQ_SELECT}
+WHERE memory_space_id = {{m}}
+ORDER BY created_at DESC LIMIT {{m}} OFFSET {{m}}
+"""
+
+DLQ_SELECT_PAGE_BY_STATE = f"""
+{_DLQ_SELECT}
+WHERE memory_space_id = {{m}} AND state = {{m}}
+ORDER BY created_at DESC LIMIT {{m}} OFFSET {{m}}
+"""
+
+DLQ_INSERT = """
+INSERT INTO dlq_entries (
+    memory_space_id, entry_id, subject, payload, error, deliveries, state,
+    replay_attempts, created_at, updated_at
+) VALUES ({m}, {m}, {m}, {m}, {m}, {m}, 'unresolved', 0, {m}, {m})
+"""
+
+DLQ_CLAIM = """
+UPDATE dlq_entries
+SET state = 'replaying', replay_attempts = replay_attempts + 1, updated_at = {m}
+WHERE memory_space_id = {m} AND entry_id = {m} AND state = 'unresolved'
+"""
+"""Claiming is one conditional UPDATE, not a read followed by a write.
+
+The state predicate is what makes it exclusive: whichever caller's update
+matches a row has the claim, and a second caller matches nothing. A read-then-
+write would need a lock to be correct, and holding one across a network round
+trip is what the shared deployment exists not to do.
+"""
+
+DLQ_FINISH_REPLAY = """
+UPDATE dlq_entries
+SET state = {m}, error = COALESCE({m}, error), updated_at = {m}
+WHERE memory_space_id = {m} AND entry_id = {m} AND state = 'replaying'
+"""
+
+DLQ_RESOLVE = """
+UPDATE dlq_entries
+SET state = 'resolved', resolution_note = {m}, updated_at = {m}
+WHERE memory_space_id = {m} AND entry_id = {m} AND state != 'replaying'
+"""
+
+DLQ_COUNT_BY_STATE = """
+SELECT state, COUNT(*) FROM dlq_entries
+WHERE memory_space_id = {m} GROUP BY state
+"""
+
+DLQ_OLDEST_UNRESOLVED = """
+SELECT MIN(created_at) FROM dlq_entries
+WHERE memory_space_id = {m} AND state = 'unresolved'
+"""

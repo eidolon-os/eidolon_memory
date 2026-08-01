@@ -48,7 +48,7 @@ MEMORY_ROOT = Path(__file__).resolve().parents[2] / "eidolon" / "memory"
 # these tests are about.
 LEDGERS = [
     ("command_status", CommandStatusStore, lambda p: CommandStatusLedger(p)),
-    ("dlq", DlqStore, lambda p: DlqLedger(p)),
+    ("dlq", DlqStore, lambda p: DlqLedger(p, space_id="default.alice.default")),
     ("decisions", ExtractionDecisionStore, lambda p: ExtractionDecisionLedger(p)),
     ("canonical_facts", CanonicalFactStore, lambda p: CanonicalFactLedger(p)),
     ("commitments", CommitmentStore, lambda p: CommitmentLedger(p)),

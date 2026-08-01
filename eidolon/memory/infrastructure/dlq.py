@@ -1,4 +1,9 @@
-"""SQLite dead-letter ledger with atomic replay claiming."""
+"""Turns the service could not process, kept so they can be replayed.
+
+Statements come from ledger_sql, shared with the shared-storage implementation
+so the two cannot diverge on what a claim means or which entries a state filter
+returns.
+"""
 
 from __future__ import annotations
 
@@ -9,15 +14,35 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
+from eidolon.memory.infrastructure.ledger_sql import (
+    DLQ_CLAIM,
+    DLQ_COLUMNS,
+    DLQ_COUNT_BY_STATE,
+    DLQ_ENTRIES_INDEX,
+    DLQ_ENTRIES_SCHEMA_TEMPLATE,
+    DLQ_FINISH_REPLAY,
+    DLQ_INSERT,
+    DLQ_OLDEST_UNRESOLVED,
+    DLQ_RESOLVE,
+    DLQ_SELECT_ONE,
+    DLQ_SELECT_PAGE,
+    DLQ_SELECT_PAGE_BY_STATE,
+    DLQ_STATES,
+    SQLITE_MARKER,
+    render,
+)
 
-_STATES = frozenset({"unresolved", "replaying", "replayed", "resolved"})
+
+def _sql(template: str) -> str:
+    return render(template, SQLITE_MARKER)
 
 
 class DlqLedger:
-    """Operational recovery data kept outside Chroma/KG and their lock."""
+    """Operational recovery data for one space, outside the palace lock."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, space_id: str) -> None:
         self.path = Path(path)
+        self._space_id = space_id
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -31,28 +56,16 @@ class DlqLedger:
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
+            conn.execute(DLQ_ENTRIES_SCHEMA_TEMPLATE.format(blob="BLOB"))
+            conn.execute(DLQ_ENTRIES_INDEX)
+            # A claim can only have been left behind by this process dying,
+            # because a palace has exactly one owning process. That reasoning does
+            # not hold on shared storage, where the same reset would take an entry
+            # away from a live replica — see PostgresDlqLedger.
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS dlq_entries (
-                    entry_id TEXT PRIMARY KEY,
-                    subject TEXT NOT NULL,
-                    payload BLOB NOT NULL,
-                    error TEXT NOT NULL,
-                    deliveries INTEGER NOT NULL,
-                    state TEXT NOT NULL,
-                    replay_attempts INTEGER NOT NULL DEFAULT 0,
-                    resolution_note TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_dlq_state_updated "
-                "ON dlq_entries(state, updated_at)"
-            )
-            conn.execute(
-                "UPDATE dlq_entries SET state = 'unresolved' WHERE state = 'replaying'"
+                "UPDATE dlq_entries SET state = 'unresolved' "
+                "WHERE memory_space_id = ? AND state = 'replaying'",
+                (self._space_id,),
             )
 
     async def add(
@@ -103,122 +116,117 @@ class DlqLedger:
         entry_id = uuid.uuid4().hex
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT INTO dlq_entries (
-                    entry_id, subject, payload, error, deliveries, state,
-                    replay_attempts, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'unresolved', 0, ?, ?)
-                """,
-                (entry_id, subject.strip(), payload, error, max(1, deliveries), now, now),
+                _sql(DLQ_INSERT),
+                (
+                    self._space_id,
+                    entry_id,
+                    subject.strip(),
+                    payload,
+                    error,
+                    max(1, deliveries),
+                    now,
+                    now,
+                ),
             )
             row = conn.execute(
-                "SELECT * FROM dlq_entries WHERE entry_id = ?", (entry_id,)
+                _sql(DLQ_SELECT_ONE), (self._space_id, entry_id)
             ).fetchone()
         assert row is not None
-        return self._from_row(row)
+        return _from_row(row)
 
     def _get_sync(self, entry_id: str) -> DlqRecord | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM dlq_entries WHERE entry_id = ?", (entry_id.strip(),)
+                _sql(DLQ_SELECT_ONE), (self._space_id, entry_id.strip())
             ).fetchone()
-        return self._from_row(row) if row is not None else None
+        return _from_row(row) if row is not None else None
 
     def _list_sync(self, state: str | None, limit: int, offset: int) -> list[DlqRecord]:
-        if state is not None and state not in _STATES:
+        if state is not None and state not in DLQ_STATES:
             raise ValueError("invalid DLQ state")
         lim = max(1, min(limit, 500))
         off = max(0, offset)
         with self._connect() as conn:
             if state is None:
                 rows = conn.execute(
-                    "SELECT * FROM dlq_entries ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                    (lim, off),
+                    _sql(DLQ_SELECT_PAGE), (self._space_id, lim, off)
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM dlq_entries WHERE state = ? "
-                    "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                    (state, lim, off),
+                    _sql(DLQ_SELECT_PAGE_BY_STATE), (self._space_id, state, lim, off)
                 ).fetchall()
-        return [self._from_row(row) for row in rows]
+        return [_from_row(row) for row in rows]
 
     def _claim_replay_sync(self, entry_id: str) -> DlqReplayItem | None:
         clean_id = entry_id.strip()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM dlq_entries WHERE entry_id = ?", (clean_id,)
-            ).fetchone()
-            if row is None or row["state"] != "unresolved":
+            cursor = conn.execute(_sql(DLQ_CLAIM), (now, self._space_id, clean_id))
+            if cursor.rowcount != 1:
                 conn.commit()
                 return None
-            now = datetime.now(UTC).isoformat()
-            conn.execute(
-                "UPDATE dlq_entries SET state = 'replaying', "
-                "replay_attempts = replay_attempts + 1, "
-                "updated_at = ? WHERE entry_id = ?",
-                (now, clean_id),
-            )
             claimed = conn.execute(
-                "SELECT * FROM dlq_entries WHERE entry_id = ?", (clean_id,)
+                _sql(DLQ_SELECT_ONE), (self._space_id, clean_id)
             ).fetchone()
             conn.commit()
         assert claimed is not None
-        return DlqReplayItem(record=self._from_row(claimed), payload=bytes(claimed["payload"]))
+        return DlqReplayItem(
+            record=_from_row(claimed), payload=bytes(claimed["payload"])
+        )
 
     def _finish_replay_sync(
         self, entry_id: str, succeeded: bool, error: str | None
     ) -> DlqRecord:
         state = "replayed" if succeeded else "unresolved"
         now = datetime.now(UTC).isoformat()
+        clean_id = entry_id.strip()
         with self._connect() as conn:
             cursor = conn.execute(
-                "UPDATE dlq_entries SET state = ?, error = COALESCE(?, error), updated_at = ? "
-                "WHERE entry_id = ? AND state = 'replaying'",
-                (state, error, now, entry_id.strip()),
+                _sql(DLQ_FINISH_REPLAY), (state, error, now, self._space_id, clean_id)
             )
             if cursor.rowcount != 1:
                 raise ValueError("DLQ entry is not claimed for replay")
             row = conn.execute(
-                "SELECT * FROM dlq_entries WHERE entry_id = ?", (entry_id.strip(),)
+                _sql(DLQ_SELECT_ONE), (self._space_id, clean_id)
             ).fetchone()
         assert row is not None
-        return self._from_row(row)
+        return _from_row(row)
 
     def _resolve_sync(self, entry_id: str, note: str) -> DlqRecord:
         clean_note = note.strip()
         if not clean_note:
             raise ValueError("resolution note is required")
         now = datetime.now(UTC).isoformat()
+        clean_id = entry_id.strip()
         with self._connect() as conn:
             cursor = conn.execute(
-                "UPDATE dlq_entries SET state = 'resolved', resolution_note = ?, updated_at = ? "
-                "WHERE entry_id = ? AND state != 'replaying'",
-                (clean_note, now, entry_id.strip()),
+                _sql(DLQ_RESOLVE), (clean_note, now, self._space_id, clean_id)
             )
             if cursor.rowcount != 1:
                 raise ValueError("DLQ entry was not found or is replaying")
             row = conn.execute(
-                "SELECT * FROM dlq_entries WHERE entry_id = ?", (entry_id.strip(),)
+                _sql(DLQ_SELECT_ONE), (self._space_id, clean_id)
             ).fetchone()
         assert row is not None
-        return self._from_row(row)
+        return _from_row(row)
 
     def _stats_sync(self) -> DlqStats:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT state, COUNT(*) AS count FROM dlq_entries GROUP BY state"
+                _sql(DLQ_COUNT_BY_STATE), (self._space_id,)
             ).fetchall()
             payload_bytes = int(
                 conn.execute(
-                    "SELECT COALESCE(SUM(length(payload)), 0) FROM dlq_entries"
+                    "SELECT COALESCE(SUM(length(payload)), 0) FROM dlq_entries "
+                    "WHERE memory_space_id = ?",
+                    (self._space_id,),
                 ).fetchone()[0]
             )
             oldest = conn.execute(
-                "SELECT MIN(created_at) FROM dlq_entries WHERE state = 'unresolved'"
+                _sql(DLQ_OLDEST_UNRESOLVED), (self._space_id,)
             ).fetchone()[0]
-        counts = {str(row["state"]): int(row["count"]) for row in rows}
+        counts = {str(row[0]): int(row[1]) for row in rows}
         return DlqStats(
             total=sum(counts.values()),
             unresolved=counts.get("unresolved", 0),
@@ -230,21 +238,24 @@ class DlqLedger:
             oldest_unresolved_at=str(oldest) if oldest is not None else None,
         )
 
-    @staticmethod
-    def _from_row(row: sqlite3.Row) -> DlqRecord:
-        payload = bytes(row["payload"])
-        return DlqRecord(
-            entry_id=str(row["entry_id"]),
-            subject=str(row["subject"]),
-            error=str(row["error"]),
-            deliveries=int(row["deliveries"]),
-            state=str(row["state"]),  # type: ignore[arg-type]
-            payload_size=len(payload),
-            payload_preview=payload[:500].decode("utf-8", errors="replace"),
-            replay_attempts=int(row["replay_attempts"]),
-            resolution_note=(
-                str(row["resolution_note"]) if row["resolution_note"] is not None else None
-            ),
-            created_at=str(row["created_at"]),
-            updated_at=str(row["updated_at"]),
-        )
+
+def _from_row(row: sqlite3.Row) -> DlqRecord:
+    values = dict(zip(DLQ_COLUMNS, row, strict=True))
+    payload = bytes(values["payload"])
+    return DlqRecord(
+        entry_id=str(values["entry_id"]),
+        subject=str(values["subject"]),
+        error=str(values["error"]),
+        deliveries=int(values["deliveries"]),
+        state=str(values["state"]),  # type: ignore[arg-type]
+        payload_size=len(payload),
+        payload_preview=payload[:500].decode("utf-8", errors="replace"),
+        replay_attempts=int(values["replay_attempts"]),
+        resolution_note=(
+            str(values["resolution_note"])
+            if values["resolution_note"] is not None
+            else None
+        ),
+        created_at=str(values["created_at"]),
+        updated_at=str(values["updated_at"]),
+    )

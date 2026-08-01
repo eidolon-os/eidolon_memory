@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+DLQ_SPACE = "default.alice.default"
+
 SPACE = "default.alice.default"
 SPACE_FOR_TESTS = SPACE
 
@@ -400,7 +402,7 @@ async def test_dlq_mcp_list_detail_replay_resolve(tmp_path: Path) -> None:
     from eidolon.memory.infrastructure.dlq import DlqLedger
 
     publisher = AsyncMock()
-    dlq = DlqLedger(tmp_path / "dlq.sqlite3")
+    dlq = DlqLedger(tmp_path / "dlq.sqlite3", space_id=DLQ_SPACE)
     mcp = build_control_plane_mcp(
         FakeMemoryBackend(),
         load_memory_settings(),

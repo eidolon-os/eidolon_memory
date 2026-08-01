@@ -190,7 +190,7 @@ class LocalPalaceRouter:
                     max_records=self._settings.command_status.max_records,
                     prune_every_writes=self._settings.command_status.prune_every_writes,
                 ),
-                dlq=DlqLedger(palace_path / "dlq.sqlite3"),
+                dlq=DlqLedger(palace_path / "dlq.sqlite3", space_id=space_id),
                 decisions=ExtractionDecisionLedger(
                     palace_path / "extraction_decisions.sqlite3"
                 ),

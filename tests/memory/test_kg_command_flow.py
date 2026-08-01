@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock
 import pytest
 from eidolon_memory_contracts import envelope_memory_payload, memory_command_subject
 
+DLQ_SPACE = "default.alice.default"
+
 SPACE = "default.alice.default"
 SPACE_FOR_TESTS = SPACE
 OTHER_SPACE = "default.bob.default"
@@ -198,7 +200,7 @@ async def test_command_terminal_failure_is_dlq_and_truthfully_failed(tmp_path: P
     settings.nats.worker_max_deliveries = 3
     settings.nats.dlq_log_path = str(tmp_path / "command_dlq.jsonl")
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
-    dlq = DlqLedger(tmp_path / "dlq.sqlite3")
+    dlq = DlqLedger(tmp_path / "dlq.sqlite3", space_id=DLQ_SPACE)
     msg = _stub_msg(
         {
             "kind": "kg_add_triple",
@@ -340,7 +342,7 @@ async def test_command_bad_payload_is_inspectable_in_production_dlq(
         ack=AsyncMock(),
         metadata=SimpleNamespace(num_delivered=1),
     )
-    dlq = DlqLedger(tmp_path / "dlq.sqlite3")
+    dlq = DlqLedger(tmp_path / "dlq.sqlite3", space_id=DLQ_SPACE)
 
     await process_command_message(
         msg,
