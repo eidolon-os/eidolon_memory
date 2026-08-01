@@ -41,6 +41,8 @@ from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.space_runtime import MemorySpaceRuntime, SpaceLedgers
 from eidolon.memory.infrastructure.ledgers_postgres import (
+    PostgresCommandStatusLedger,
+    PostgresDlqLedger,
     PostgresExtractionDecisionLedger,
     PostgresSyncLedger,
 )
@@ -168,6 +170,10 @@ class SharedStoreRouter:
         return SpaceLedgers(
             decisions=await PostgresExtractionDecisionLedger.connect(dsn),
             sync=await PostgresSyncLedger.connect(dsn, space_id=space_id),
+            dlq=await PostgresDlqLedger.connect(dsn, space_id=space_id),
+            command_status=await PostgresCommandStatusLedger.connect(
+                dsn, space_id=space_id
+            ),
         )
 
     async def _open_graph(self, space_id: str):

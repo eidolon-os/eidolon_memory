@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+CMD_SPACE = "default.alice.default"
+
 DLQ_SPACE = "default.alice.default"
 
 SPACE = "default.alice.default"
@@ -29,7 +31,7 @@ def mcp_with_kg(tmp_path: Path):
     kg_db = tmp_path / "kg.sqlite3"
     locked_kg = SqliteKnowledgeGraph(kg_db, space_id=SPACE_FOR_TESTS, lock=backend.lock)
     publisher = AsyncMock()
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
 
     mcp = build_control_plane_mcp(
         backend,
@@ -411,7 +413,7 @@ async def test_dlq_mcp_list_detail_replay_resolve(tmp_path: Path) -> None:
         host="127.0.0.1",
         port=9999,
         command_publisher=publisher,
-        command_status=CommandStatusLedger(tmp_path / "status.sqlite3"),
+        command_status=CommandStatusLedger(tmp_path / "status.sqlite3", space_id=CMD_SPACE),
         dlq_store=dlq,
         replay_publisher=publisher,
     )

@@ -7,9 +7,11 @@ from pathlib import Path
 
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
+CMD_SPACE = "default.alice.default"
+
 
 async def test_command_status_never_downgrades_terminal_state(tmp_path: Path) -> None:
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
 
     await ledger.record_applied("req-1", kind="memory_intent", resource_id="drawer-1")
     await ledger.record_accepted("req-1", kind="memory_intent")
@@ -28,6 +30,7 @@ async def test_command_status_stats_expose_capacity_and_active_work(tmp_path: Pa
 
     ledger = CommandStatusLedger(
         tmp_path / "command_status.sqlite3",
+        space_id=CMD_SPACE,
         retention_days=7,
         max_records=123,
     )
@@ -48,7 +51,7 @@ async def test_command_status_stats_expose_capacity_and_active_work(tmp_path: Pa
 
 
 async def test_retrying_can_recover_to_applied(tmp_path: Path) -> None:
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
 
     await ledger.record_accepted("req-2", kind="kg_add_triple")
     await ledger.record_retrying("req-2", kind="kg_add_triple", error="temporary")
@@ -67,7 +70,7 @@ async def test_retrying_can_recover_to_applied(tmp_path: Path) -> None:
 
 
 async def test_wait_terminal_reads_without_backend_lock(tmp_path: Path) -> None:
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     backend_lock = asyncio.Lock()
     await backend_lock.acquire()
     try:
@@ -89,14 +92,14 @@ async def test_wait_terminal_reads_without_backend_lock(tmp_path: Path) -> None:
 
 async def test_status_survives_process_restart(tmp_path: Path) -> None:
     path = tmp_path / "command_status.sqlite3"
-    first_process = CommandStatusLedger(path)
+    first_process = CommandStatusLedger(path, space_id=CMD_SPACE)
     await first_process.record_applied(
         "req-restart",
         kind="memory_forget",
         resource_id="deleted:2",
     )
 
-    restarted_process = CommandStatusLedger(path)
+    restarted_process = CommandStatusLedger(path, space_id=CMD_SPACE)
     record = await restarted_process.get("req-restart")
 
     assert record is not None
@@ -116,7 +119,7 @@ def test_status_ledger_implements_ports_without_application_infrastructure_impor
         CommandStatusWriter,
     )
 
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     assert isinstance(ledger, CommandStatusReader)
     assert isinstance(ledger, CommandStatusWriter)
     assert isinstance(ledger, CommandStatusStore)
@@ -125,7 +128,7 @@ def test_status_ledger_implements_ports_without_application_infrastructure_impor
 
 async def test_prune_expires_only_terminal_rows(tmp_path: Path) -> None:
     path = tmp_path / "command_status.sqlite3"
-    ledger = CommandStatusLedger(path, retention_days=1)
+    ledger = CommandStatusLedger(path, retention_days=1, space_id=CMD_SPACE)
     await ledger.record_applied("old-applied", kind="memory_intent")
     await ledger.record_failed("old-failed", kind="kg_add_triple", error="terminal")
     await ledger.record_accepted("old-active", kind="memory_intent")
@@ -142,6 +145,7 @@ async def test_prune_expires_only_terminal_rows(tmp_path: Path) -> None:
 async def test_prune_caps_terminal_history_but_preserves_active_rows(tmp_path: Path) -> None:
     ledger = CommandStatusLedger(
         tmp_path / "command_status.sqlite3",
+        space_id=CMD_SPACE,
         retention_days=365,
         max_records=2,
         prune_every_writes=100,
@@ -164,6 +168,7 @@ async def test_prune_caps_terminal_history_but_preserves_active_rows(tmp_path: P
 async def test_periodic_prune_keeps_projection_bounded(tmp_path: Path) -> None:
     ledger = CommandStatusLedger(
         tmp_path / "command_status.sqlite3",
+        space_id=CMD_SPACE,
         retention_days=365,
         max_records=2,
         prune_every_writes=1,

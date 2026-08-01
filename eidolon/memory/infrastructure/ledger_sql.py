@@ -245,3 +245,97 @@ DLQ_OLDEST_UNRESOLVED = """
 SELECT MIN(created_at) FROM dlq_entries
 WHERE memory_space_id = {m} AND state = 'unresolved'
 """
+
+
+# ── command status ───────────────────────────────────────────────────────────
+#
+# A read-optimised projection of where each asynchronous command got to. The
+# command stream stays the write path; losing a row here can leave a command
+# looking `accepted` after a restart, but can never make an unapplied one look
+# successful.
+#
+# Space column for the same reason as the others: on shared storage one owner
+# must not be able to ask about another owner's command.
+
+COMMAND_STATUS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS command_status (
+    memory_space_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    resource_id TEXT,
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (memory_space_id, request_id)
+)
+"""
+
+COMMAND_STATUS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_command_status_updated
+ON command_status(memory_space_id, updated_at)
+"""
+
+COMMAND_STATUS_COLUMNS = (
+    "request_id",
+    "kind",
+    "status",
+    "resource_id",
+    "error",
+    "attempts",
+    "created_at",
+    "updated_at",
+)
+
+COMMAND_STATUS_SELECT = f"""
+SELECT {", ".join(COMMAND_STATUS_COLUMNS)} FROM command_status
+WHERE memory_space_id = {{m}} AND request_id = {{m}}
+"""
+
+COMMAND_STATUS_INSERT = """
+INSERT INTO command_status (
+    memory_space_id, request_id, kind, status, resource_id, error,
+    attempts, created_at, updated_at
+) VALUES ({m}, {m}, {m}, {m}, {m}, {m}, {m}, {m}, {m})
+"""
+
+COMMAND_STATUS_UPDATE = """
+UPDATE command_status
+SET kind = {m}, status = {m}, resource_id = {m}, error = {m},
+    attempts = {m}, updated_at = {m}
+WHERE memory_space_id = {m} AND request_id = {m}
+"""
+
+COMMAND_STATUS_COUNT_BY_STATUS = """
+SELECT status, COUNT(*) FROM command_status
+WHERE memory_space_id = {m} GROUP BY status
+"""
+
+COMMAND_STATUS_OLDEST_ACTIVE = """
+SELECT MIN(created_at) FROM command_status
+WHERE memory_space_id = {m} AND status IN ('accepted', 'retrying')
+"""
+
+COMMAND_STATUS_PRUNE_EXPIRED = """
+DELETE FROM command_status
+WHERE memory_space_id = {m} AND status IN ('applied', 'failed') AND updated_at < {m}
+"""
+
+COMMAND_STATUS_COUNT_ALL = "SELECT COUNT(*) FROM command_status WHERE memory_space_id = {m}"
+
+COMMAND_STATUS_PRUNE_OVERFLOW = """
+DELETE FROM command_status
+WHERE memory_space_id = {m} AND request_id IN (
+    SELECT request_id FROM command_status
+    WHERE memory_space_id = {m} AND status IN ('applied', 'failed')
+    ORDER BY updated_at ASC, request_id ASC
+    LIMIT {m}
+)
+"""
+"""Oldest terminal rows first, so pruning never removes work still in flight.
+
+Ordered by request_id as well as time: two rows updated in the same instant
+would otherwise be dropped in whichever order the database happened to return,
+making the prune non-deterministic between the two dialects.
+"""

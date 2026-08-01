@@ -1,4 +1,9 @@
-"""Read-optimized status ledger for asynchronous Memory commands."""
+"""Where each asynchronous command got to, for one memory space.
+
+Statements come from ledger_sql, shared with the shared-storage implementation so
+the two cannot diverge on the precedence rules — which status may overwrite which
+is the whole correctness content of this ledger.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +19,25 @@ from eidolon.memory.domain.command_status import (
     CommandStatusRecord,
     CommandStatusStats,
 )
+from eidolon.memory.infrastructure.ledger_sql import (
+    COMMAND_STATUS_COLUMNS,
+    COMMAND_STATUS_COUNT_ALL,
+    COMMAND_STATUS_COUNT_BY_STATUS,
+    COMMAND_STATUS_INDEX,
+    COMMAND_STATUS_INSERT,
+    COMMAND_STATUS_OLDEST_ACTIVE,
+    COMMAND_STATUS_PRUNE_EXPIRED,
+    COMMAND_STATUS_PRUNE_OVERFLOW,
+    COMMAND_STATUS_SCHEMA,
+    COMMAND_STATUS_SELECT,
+    COMMAND_STATUS_UPDATE,
+    SQLITE_MARKER,
+    render,
+)
+
+
+def _sql(template: str) -> str:
+    return render(template, SQLITE_MARKER)
 
 
 class CommandStatusLedger:
@@ -28,6 +52,7 @@ class CommandStatusLedger:
         self,
         path: Path,
         *,
+        space_id: str,
         retention_days: int = 30,
         max_records: int = 100_000,
         prune_every_writes: int = 100,
@@ -35,6 +60,7 @@ class CommandStatusLedger:
         if retention_days < 1 or max_records < 1 or prune_every_writes < 1:
             raise ValueError("command status retention limits must be positive")
         self.path = Path(path)
+        self._space_id = space_id
         self.retention_days = retention_days
         self.max_records = max_records
         self.prune_every_writes = prune_every_writes
@@ -56,24 +82,8 @@ class CommandStatusLedger:
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS command_status (
-                    request_id TEXT PRIMARY KEY,
-                    kind TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    resource_id TEXT,
-                    error TEXT,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_command_status_updated "
-                "ON command_status(updated_at)"
-            )
+            conn.execute(COMMAND_STATUS_SCHEMA)
+            conn.execute(COMMAND_STATUS_INDEX)
 
     async def record_accepted(self, request_id: str, *, kind: str) -> CommandStatusRecord:
         return await asyncio.to_thread(
@@ -192,21 +202,19 @@ class CommandStatusLedger:
     def _get_sync(self, request_id: str) -> CommandStatusRecord | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM command_status WHERE request_id = ?",
-                (request_id,),
+                _sql(COMMAND_STATUS_SELECT), (self._space_id, request_id)
             ).fetchone()
-        return self._from_row(row) if row is not None else None
+        return _from_row(row) if row is not None else None
 
     def _stats_sync(self) -> CommandStatusStats:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT status, COUNT(*) AS count FROM command_status GROUP BY status"
+                _sql(COMMAND_STATUS_COUNT_BY_STATUS), (self._space_id,)
             ).fetchall()
             oldest = conn.execute(
-                "SELECT MIN(created_at) FROM command_status "
-                "WHERE status IN ('accepted', 'retrying')"
+                _sql(COMMAND_STATUS_OLDEST_ACTIVE), (self._space_id,)
             ).fetchone()[0]
-        counts = {str(row["status"]): int(row["count"]) for row in rows}
+        counts = {str(row[0]): int(row[1]) for row in rows}
         return CommandStatusStats(
             total=sum(counts.values()),
             accepted=counts.get("accepted", 0),
@@ -235,11 +243,11 @@ class CommandStatusLedger:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             current = conn.execute(
-                "SELECT * FROM command_status WHERE request_id = ?",
-                (request_id,),
+                _sql(COMMAND_STATUS_SELECT), (self._space_id, request_id)
             ).fetchone()
             if current is not None:
-                current_status = str(current["status"])
+                existing = _from_row(current)
+                current_status = existing.status
                 # Accepted/retry notifications and late failures never
                 # downgrade a terminal outcome. A later successful replay may
                 # upgrade failed → applied.
@@ -247,18 +255,13 @@ class CommandStatusLedger:
                     current_status == "failed" and status != "applied"
                 ):
                     conn.commit()
-                    return self._from_row(current)
+                    return existing
                 if status == "accepted" and current_status != "accepted":
                     conn.commit()
-                    return self._from_row(current)
-                attempts = int(current["attempts"]) + (1 if status != "accepted" else 0)
+                    return existing
+                attempts = existing.attempts + (1 if status != "accepted" else 0)
                 conn.execute(
-                    """
-                    UPDATE command_status
-                    SET kind = ?, status = ?, resource_id = ?, error = ?,
-                        attempts = ?, updated_at = ?
-                    WHERE request_id = ?
-                    """,
+                    _sql(COMMAND_STATUS_UPDATE),
                     (
                         kind,
                         status,
@@ -266,37 +269,32 @@ class CommandStatusLedger:
                         error,
                         attempts,
                         now,
+                        self._space_id,
                         request_id,
                     ),
                 )
             else:
-                attempts = 0 if status == "accepted" else 1
                 conn.execute(
-                    """
-                    INSERT INTO command_status (
-                        request_id, kind, status, resource_id, error,
-                        attempts, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                    _sql(COMMAND_STATUS_INSERT),
                     (
+                        self._space_id,
                         request_id,
                         kind,
                         status,
                         resource_id,
                         error,
-                        attempts,
+                        0 if status == "accepted" else 1,
                         now,
                         now,
                     ),
                 )
             row = conn.execute(
-                "SELECT * FROM command_status WHERE request_id = ?",
-                (request_id,),
+                _sql(COMMAND_STATUS_SELECT), (self._space_id, request_id)
             ).fetchone()
             conn.commit()
         assert row is not None
         self._maybe_prune()
-        return self._from_row(row)
+        return _from_row(row)
 
     def _maybe_prune(self) -> None:
         should_prune = False
@@ -313,40 +311,41 @@ class CommandStatusLedger:
         deleted = 0
         with self._connect() as conn:
             cursor = conn.execute(
-                """
-                DELETE FROM command_status
-                WHERE status IN ('applied', 'failed') AND updated_at < ?
-                """,
-                (cutoff,),
+                _sql(COMMAND_STATUS_PRUNE_EXPIRED), (self._space_id, cutoff)
             )
             deleted += max(0, cursor.rowcount)
-            total = int(conn.execute("SELECT COUNT(*) FROM command_status").fetchone()[0])
+            total = int(
+                conn.execute(
+                    _sql(COMMAND_STATUS_COUNT_ALL), (self._space_id,)
+                ).fetchone()[0]
+            )
             overflow = max(0, total - self.max_records)
             if overflow:
                 cursor = conn.execute(
-                    """
-                    DELETE FROM command_status
-                    WHERE request_id IN (
-                        SELECT request_id FROM command_status
-                        WHERE status IN ('applied', 'failed')
-                        ORDER BY updated_at ASC, request_id ASC
-                        LIMIT ?
-                    )
-                    """,
-                    (overflow,),
+                    _sql(COMMAND_STATUS_PRUNE_OVERFLOW),
+                    (self._space_id, self._space_id, overflow),
                 )
                 deleted += max(0, cursor.rowcount)
         return deleted
 
-    @staticmethod
-    def _from_row(row: sqlite3.Row) -> CommandStatusRecord:
-        return CommandStatusRecord(
-            request_id=str(row["request_id"]),
-            kind=str(row["kind"]),
-            status=str(row["status"]),  # type: ignore[arg-type]
-            resource_id=str(row["resource_id"]) if row["resource_id"] is not None else None,
-            error=str(row["error"]) if row["error"] is not None else None,
-            attempts=int(row["attempts"]),
-            created_at=str(row["created_at"]),
-            updated_at=str(row["updated_at"]),
-        )
+
+def _from_row(row: sqlite3.Row) -> CommandStatusRecord:
+    """Read positionally, in the order the shared statements select.
+
+    Not ``SELECT *``: the two dialects return rows differently, and a positional
+    read of every column would reorder silently if either changed.
+    """
+
+    values = dict(zip(COMMAND_STATUS_COLUMNS, row, strict=True))
+    return CommandStatusRecord(
+        request_id=str(values["request_id"]),
+        kind=str(values["kind"]),
+        status=str(values["status"]),  # type: ignore[arg-type]
+        resource_id=(
+            str(values["resource_id"]) if values["resource_id"] is not None else None
+        ),
+        error=str(values["error"]) if values["error"] is not None else None,
+        attempts=int(values["attempts"]),
+        created_at=str(values["created_at"]),
+        updated_at=str(values["updated_at"]),
+    )

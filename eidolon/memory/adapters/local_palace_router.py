@@ -186,6 +186,7 @@ class LocalPalaceRouter:
             ledgers=SpaceLedgers(
                 command_status=CommandStatusLedger(
                     palace_path / "command_status.sqlite3",
+                    space_id=space_id,
                     retention_days=self._settings.command_status.retention_days,
                     max_records=self._settings.command_status.max_records,
                     prune_every_writes=self._settings.command_status.prune_every_writes,

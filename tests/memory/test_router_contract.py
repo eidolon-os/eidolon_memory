@@ -315,6 +315,8 @@ async def test_the_shared_router_opens_ledgers_in_the_database(
 
         assert runtime.ledgers.decisions is not None
         assert runtime.ledgers.sync is not None
+        assert runtime.ledgers.dlq is not None
+        assert runtime.ledgers.command_status is not None
         # Reachable, not merely constructed.
         assert (
             await runtime.ledgers.sync.seen(event_id="e1", idempotency_hash="h1")

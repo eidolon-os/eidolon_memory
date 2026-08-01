@@ -17,13 +17,21 @@ exists to run in parallel.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from eidolon_memory_contracts import MemoryIntent
 
+from eidolon.memory.domain.command_status import (
+    TERMINAL_COMMAND_STATUSES,
+    CommandStatus,
+    CommandStatusRecord,
+    CommandStatusStats,
+)
 from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
 from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionConflict,
@@ -31,6 +39,17 @@ from eidolon.memory.domain.extraction_decision import (
 )
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.infrastructure.ledger_sql import (
+    COMMAND_STATUS_COUNT_ALL,
+    COMMAND_STATUS_COUNT_BY_STATUS,
+    COMMAND_STATUS_COLUMNS,
+    COMMAND_STATUS_INDEX,
+    COMMAND_STATUS_INSERT,
+    COMMAND_STATUS_OLDEST_ACTIVE,
+    COMMAND_STATUS_PRUNE_EXPIRED,
+    COMMAND_STATUS_PRUNE_OVERFLOW,
+    COMMAND_STATUS_SCHEMA,
+    COMMAND_STATUS_SELECT,
+    COMMAND_STATUS_UPDATE,
     DLQ_CLAIM,
     DLQ_COLUMNS,
     DLQ_COUNT_BY_STATE,
@@ -435,6 +454,247 @@ class PostgresDlqLedger:
             )
             row = await cursor.fetchone()
         return bytes(row[0]) if row is not None else b""
+
+
+class PostgresCommandStatusLedger:
+    """Where each asynchronous command got to, visible from every replica.
+
+    One behaviour had to change shape. The embedded ledger wakes a waiter with an
+    in-process ``asyncio.Event``, which is exact and free because MCP and the
+    command worker share one object. With replicas they do not: a request served
+    by one replica may be waiting on a command applied by another, and an event
+    set over there is never seen over here.
+
+    So ``wait_terminal`` polls. That is slower and it is the only thing that
+    works — the alternative, LISTEN/NOTIFY, needs a dedicated connection held
+    open per waiter, which is a worse trade at this size.
+    """
+
+    # Fast enough that a caller does not perceive it against command latency,
+    # slow enough that a handful of concurrent waiters is not a load source.
+    POLL_INTERVAL_SECONDS = 0.05
+
+    def __init__(
+        self,
+        pool: Any,
+        *,
+        space_id: str,
+        retention_days: int = 30,
+        max_records: int = 100_000,
+        prune_every_writes: int = 100,
+    ) -> None:
+        if retention_days < 1 or max_records < 1 or prune_every_writes < 1:
+            raise ValueError("command status retention limits must be positive")
+        self._pool = pool
+        self._space_id = space_id
+        self.retention_days = retention_days
+        self.max_records = max_records
+        self.prune_every_writes = prune_every_writes
+        self._writes_since_prune = 0
+
+    @classmethod
+    async def connect(cls, dsn: str, *, space_id: str, min_size: int = 1, max_size: int = 8):
+        pool_cls = require_pool_driver()
+        pool = pool_cls(dsn, min_size=min_size, max_size=max_size, open=False)
+        await pool.open()
+        ledger = cls(pool, space_id=space_id)
+        await ledger.ensure_schema()
+        return ledger
+
+    async def ensure_schema(self) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(COMMAND_STATUS_SCHEMA)
+            await conn.execute(COMMAND_STATUS_INDEX)
+
+    async def record_accepted(self, request_id: str, *, kind: str) -> CommandStatusRecord:
+        return await self._transition(request_id, kind, "accepted", None, None)
+
+    async def record_retrying(
+        self, request_id: str, *, kind: str, error: str
+    ) -> CommandStatusRecord:
+        return await self._transition(request_id, kind, "retrying", None, error)
+
+    async def record_applied(
+        self, request_id: str, *, kind: str, resource_id: str | None = None
+    ) -> CommandStatusRecord:
+        return await self._transition(request_id, kind, "applied", resource_id, None)
+
+    async def record_failed(
+        self, request_id: str, *, kind: str, error: str
+    ) -> CommandStatusRecord:
+        return await self._transition(request_id, kind, "failed", None, error)
+
+    async def get(self, request_id: str) -> CommandStatusRecord | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                render(COMMAND_STATUS_SELECT, POSTGRES_MARKER),
+                (self._space_id, request_id),
+            )
+            row = await cursor.fetchone()
+        return _command_status_from_row(row) if row is not None else None
+
+    async def wait_terminal(
+        self, request_id: str, *, timeout_seconds: float
+    ) -> CommandStatusRecord | None:
+        """Block until the command reaches a terminal status, or the budget runs out.
+
+        Returns whatever the latest known status is on timeout rather than
+        raising: the caller asked how far a command got, and "still running" is an
+        answer to that.
+        """
+
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while True:
+            latest = await self.get(request_id)
+            if latest is not None and latest.status in TERMINAL_COMMAND_STATUSES:
+                return latest
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return latest
+            await asyncio.sleep(min(self.POLL_INTERVAL_SECONDS, remaining))
+
+    async def stats(self) -> CommandStatusStats:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                render(COMMAND_STATUS_COUNT_BY_STATUS, POSTGRES_MARKER), (self._space_id,)
+            )
+            counts = {str(status): int(count) for status, count in await cursor.fetchall()}
+            cursor = await conn.execute(
+                render(COMMAND_STATUS_OLDEST_ACTIVE, POSTGRES_MARKER), (self._space_id,)
+            )
+            oldest = (await cursor.fetchone())[0]
+
+        return CommandStatusStats(
+            total=sum(counts.values()),
+            accepted=counts.get("accepted", 0),
+            retrying=counts.get("retrying", 0),
+            applied=counts.get("applied", 0),
+            failed=counts.get("failed", 0),
+            # No file here, and the table's size belongs to every space in it.
+            database_bytes=0,
+            retention_days=self.retention_days,
+            max_records=self.max_records,
+            oldest_active_at=str(oldest) if oldest is not None else None,
+        )
+
+    async def prune(self) -> int:
+        cutoff = (datetime.now(UTC) - timedelta(days=self.retention_days)).isoformat()
+        deleted = 0
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                render(COMMAND_STATUS_PRUNE_EXPIRED, POSTGRES_MARKER),
+                (self._space_id, cutoff),
+            )
+            deleted += max(0, cursor.rowcount)
+
+            cursor = await conn.execute(
+                render(COMMAND_STATUS_COUNT_ALL, POSTGRES_MARKER), (self._space_id,)
+            )
+            total = int((await cursor.fetchone())[0])
+            overflow = max(0, total - self.max_records)
+            if overflow:
+                cursor = await conn.execute(
+                    render(COMMAND_STATUS_PRUNE_OVERFLOW, POSTGRES_MARKER),
+                    (self._space_id, self._space_id, overflow),
+                )
+                deleted += max(0, cursor.rowcount)
+        return deleted
+
+    async def _transition(
+        self,
+        request_id: str,
+        kind: str,
+        status: CommandStatus,
+        resource_id: str | None,
+        error: str | None,
+    ) -> CommandStatusRecord:
+        """Apply a status change, refusing the ones that would lose information.
+
+        The precedence rules are the embedded ledger's, verbatim, because they are
+        what stops a late `accepted` or a retry notification from overwriting a
+        finished outcome. Held in one transaction so two replicas reporting on the
+        same command serialise instead of interleaving read and write.
+        """
+
+        request_id = request_id.strip()
+        kind = kind.strip()
+        if not request_id or not kind:
+            raise ValueError("request_id and kind are required")
+        now = datetime.now(UTC).isoformat()
+
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    render(COMMAND_STATUS_SELECT, POSTGRES_MARKER) + " FOR UPDATE",
+                    (self._space_id, request_id),
+                )
+                current = await cursor.fetchone()
+
+                if current is not None:
+                    existing = _command_status_from_row(current)
+                    if existing.status == "applied" or (
+                        existing.status == "failed" and status != "applied"
+                    ):
+                        return existing
+                    if status == "accepted" and existing.status != "accepted":
+                        return existing
+                    attempts = existing.attempts + (1 if status != "accepted" else 0)
+                    await conn.execute(
+                        render(COMMAND_STATUS_UPDATE, POSTGRES_MARKER),
+                        (
+                            kind,
+                            status,
+                            resource_id,
+                            error,
+                            attempts,
+                            now,
+                            self._space_id,
+                            request_id,
+                        ),
+                    )
+                else:
+                    await conn.execute(
+                        render(COMMAND_STATUS_INSERT, POSTGRES_MARKER),
+                        (
+                            self._space_id,
+                            request_id,
+                            kind,
+                            status,
+                            resource_id,
+                            error,
+                            0 if status == "accepted" else 1,
+                            now,
+                            now,
+                        ),
+                    )
+
+        record = await self.get(request_id)
+        assert record is not None
+        await self._maybe_prune()
+        return record
+
+    async def _maybe_prune(self) -> None:
+        self._writes_since_prune += 1
+        if self._writes_since_prune < self.prune_every_writes:
+            return
+        self._writes_since_prune = 0
+        await self.prune()
+
+
+def _command_status_from_row(row: Any) -> CommandStatusRecord:
+    values = dict(zip(COMMAND_STATUS_COLUMNS, row, strict=True))
+    return CommandStatusRecord(
+        request_id=str(values["request_id"]),
+        kind=str(values["kind"]),
+        status=str(values["status"]),  # type: ignore[arg-type]
+        resource_id=(
+            str(values["resource_id"]) if values["resource_id"] is not None else None
+        ),
+        error=str(values["error"]) if values["error"] is not None else None,
+        attempts=int(values["attempts"]),
+        created_at=str(values["created_at"]),
+        updated_at=str(values["updated_at"]),
+    )
 
 
 def _dlq_from_row(row: Any) -> DlqRecord:

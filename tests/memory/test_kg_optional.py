@@ -24,6 +24,8 @@ from eidolon.memory.application.turn_processor import process_command_message
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
+CMD_SPACE = "default.alice.default"
+
 SPACE = "default.alice.default"
 SPACE_FOR_TESTS = SPACE
 
@@ -107,7 +109,7 @@ async def test_recall_still_answers_with_the_graph_off() -> None:
 async def test_a_graph_command_fails_honestly_rather_than_hanging(tmp_path: Path) -> None:
     """Callers wait for a terminal status; silence would strand them."""
 
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     msg = _stub_msg(
         {
             "kind": "kg_add_triple",
@@ -137,7 +139,7 @@ async def test_a_graph_command_fails_honestly_rather_than_hanging(tmp_path: Path
 
 
 async def test_an_invalidation_command_is_answered_the_same_way(tmp_path: Path) -> None:
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     msg = _stub_msg(
         {
             "kind": "kg_invalidate",

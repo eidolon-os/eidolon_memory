@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock
 import pytest
 from eidolon_memory_contracts import envelope_memory_payload, memory_command_subject
 
+CMD_SPACE = "default.alice.default"
+
 DLQ_SPACE = "default.alice.default"
 
 SPACE = "default.alice.default"
@@ -69,7 +71,7 @@ async def test_command_add_triple_flow(kg_setup, tmp_path: Path) -> None:
     from eidolon.memory.config.memory_settings import get_memory_settings
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
 
     msg = _stub_msg(
         {
@@ -115,7 +117,7 @@ async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -
             value="绿茶",
             metadata={"memory_space_id": SPACE, "wing": "Wing_Profile"},
         )
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     msg = _stub_msg(
         {
             "kind": "privacy_mutation",
@@ -156,7 +158,7 @@ async def test_command_failure_naks_and_reports_retrying(tmp_path: Path) -> None
         async def add_triple(self, **_kwargs):
             raise RuntimeError("temporary KG outage")
 
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     msg = _stub_msg(
         {
             "kind": "kg_add_triple",
@@ -199,7 +201,7 @@ async def test_command_terminal_failure_is_dlq_and_truthfully_failed(tmp_path: P
     settings = load_memory_settings().model_copy(deep=True)
     settings.nats.worker_max_deliveries = 3
     settings.nats.dlq_log_path = str(tmp_path / "command_dlq.jsonl")
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     dlq = DlqLedger(tmp_path / "dlq.sqlite3", space_id=DLQ_SPACE)
     msg = _stub_msg(
         {
@@ -278,7 +280,7 @@ async def test_command_invalidate_missing_triple_retries(kg_setup, tmp_path: Pat
     from eidolon.memory.config.memory_settings import get_memory_settings
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
-    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     msg = _stub_msg(
         {
             "kind": "kg_invalidate",
