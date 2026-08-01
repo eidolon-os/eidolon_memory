@@ -57,6 +57,49 @@ class LockedBackend(MemoryBackend):
             and callable(getattr(self._inner, "search_scoped", None))
         )
 
+    # ── capabilities of the inner store ──────────────────────────────────────
+    #
+    # These have to be declared here, not forwarded through ``__getattr__``.
+    # Capabilities are discovered with ``isinstance`` against a runtime protocol,
+    # and from Python 3.12 that check uses ``inspect.getattr_static``, which does
+    # not run ``__getattr__`` — so a dynamically forwarded method exists when
+    # called but is invisible to the check that decides whether to call it.
+    #
+    # A wrapper that simply omitted them would answer "no" to every capability,
+    # which is worse than it sounds: warming is best-effort, so skipping it
+    # raises nothing. It shipped that way for a round of work and surfaced only
+    # as recall's graph lookup blowing its 300ms budget, because the embedding
+    # model was still loading on the first request.
+    #
+    # The cost of declaring them is that ``isinstance`` now answers yes for any
+    # wrapped store, including one whose inner store lacks the capability. Each
+    # method therefore degrades to the same no-op the logic layer would have
+    # chosen, so the answer stays truthful in effect if not in form.
+
+    async def warm_read_path(self, *, wings) -> None:
+        """Warm the inner store, if it can be warmed.
+
+        Unserialised: this runs at startup before the process accepts traffic,
+        so there is nothing to serialise against.
+        """
+
+        warm = getattr(self._inner, "warm_read_path", None)
+        if warm is None:
+            return
+        await warm(wings=wings)
+
+    async def room_graph(self):
+        """Enumerate rooms under the lock, if the inner store can do it at all.
+
+        Serialised, unlike warming: it reads Chroma's SQLite-backed cursor, which
+        must not run alongside the write path.
+        """
+
+        read = getattr(self._inner, "room_graph", None)
+        if read is None:
+            return None
+        return await self._serialized(read, name="room_graph")
+
     async def _serialized(
         self,
         operation: Callable[[], Awaitable[T]],

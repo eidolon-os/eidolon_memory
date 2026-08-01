@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.application.palace_graph import build_palace_graph
 from eidolon.memory.application.runtime_warm import _wings_worth_warming, warm_read_path
 from eidolon.memory.config.memory_settings import MemorySettings
@@ -85,6 +86,74 @@ def test_without_voice_wings_everything_but_privacy_is_warmed() -> None:
 
     assert wings
     assert "Wing_Privacy" not in wings
+
+
+# ── capabilities have to survive the wrapper ─────────────────────────────────
+#
+# Production never holds a bare adapter: the router wraps it in LockedBackend.
+# A wrapper that forwards each method by hand answers "no" to every capability
+# added after it was written, and because warming is best-effort that answer
+# raises nothing — it just silently stops happening.
+#
+# This is not hypothetical. It shipped: warmup was skipped for a whole round of
+# work, and surfaced as an e2e failure where recall's graph lookup exceeded its
+# 300ms budget because the embedding model was still being loaded on the first
+# request.
+
+
+def test_a_wrapped_store_still_reports_its_capabilities() -> None:
+    wrapped = LockedBackend(_WarmableStore())
+
+    assert isinstance(wrapped, WarmableBackend)
+
+
+async def test_wrapping_a_store_without_the_capability_is_still_safe() -> None:
+    """The wrapper declares the capability whether or not its inner store has it.
+
+    It has to: from Python 3.12 the isinstance check uses getattr_static, so a
+    dynamically forwarded method is invisible to the very check that decides
+    whether to call it. The wrapper therefore answers yes for any store, and each
+    method degrades to the no-op the logic layer would have chosen — so the
+    answer is truthful in effect if not in form.
+    """
+
+    wrapped = LockedBackend(_PlainStore())
+
+    assert isinstance(wrapped, WarmableBackend)
+    await warm_read_path(wrapped, _settings())  # no-op, not an error
+    assert await wrapped.room_graph() is None
+
+
+async def test_warming_reaches_the_inner_store_through_the_wrapper() -> None:
+    """isinstance passing is not enough — the call has to arrive."""
+
+    store = _WarmableStore()
+    wrapped = LockedBackend(store)
+
+    await warm_read_path(wrapped, _settings(voice_wings=["Wing_Life"]))
+
+    assert store.warmed_wings == ["Wing_Life"]
+
+
+async def test_the_wrapper_serialises_room_graph_under_its_lock() -> None:
+    """Unlike warming, this reads the store while requests may be in flight."""
+
+    snapshot = RoomGraphSnapshot(rooms={"tea": RoomNode(wings=("Wing_Life",))})
+    wrapped = LockedBackend(_RoomStore(snapshot))
+
+    result = await build_palace_graph(wrapped, max_nodes=10, max_edges=10)
+
+    assert result["available"] is True
+    assert [node["id"] for node in result["nodes"]] == ["tea"]
+
+
+async def test_the_wrapper_does_not_expose_arbitrary_inner_attributes() -> None:
+    """Capabilities are declared one by one, so nothing else leaks past the lock."""
+
+    wrapped = LockedBackend(_WarmableStore())
+
+    with pytest.raises(AttributeError):
+        _ = wrapped.some_internal_thing
 
 
 # ── the room graph ───────────────────────────────────────────────────────────

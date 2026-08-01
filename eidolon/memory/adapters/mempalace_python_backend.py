@@ -69,8 +69,9 @@ class MemPalacePythonBackend(MemoryBackend):
     async def room_graph(self) -> RoomGraphSnapshot | None:
         """Every room in this palace, with the wings each appears under.
 
-        Serialised through the same lock as reads and writes: Chroma's cursor is
-        SQLite-backed and must not run alongside the write path.
+        Unserialised, like every other method here: this adapter is meant to be
+        wrapped by ``LockedBackend``, which is what keeps Chroma's SQLite-backed
+        cursor off the write path.
         """
 
         def _read() -> RoomGraphSnapshot | None:
@@ -93,9 +94,6 @@ class MemPalacePythonBackend(MemoryBackend):
                 stats=graph_stats(col=collection),
             )
 
-        if self.lock is not None:
-            async with self.lock:
-                return await asyncio.to_thread(_read)
         return await asyncio.to_thread(_read)
 
     async def warm_read_path(self, *, wings: Sequence[str]) -> None:
