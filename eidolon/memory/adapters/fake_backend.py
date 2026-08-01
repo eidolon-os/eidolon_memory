@@ -87,6 +87,10 @@ class FakeMemoryBackend:
             "memory_realm_id": fragment.memory_realm_id or fragment.memory_space_id,
             "owner_id": fragment.owner_id or "",
             "companion_id": fragment.companion_id or "",
+            # Must mirror the real adapter: this backend stands in for it in
+            # tests, so a field it silently drops is a rule those tests cannot
+            # check. Audience is exactly such a field.
+            "audience": fragment.audience,
             "scope": fragment.scope,
             "visibility": fragment.visibility,
             "source_device_id": fragment.source_device_id or "",

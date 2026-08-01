@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
+from eidolon_memory_contracts import OWNER_AUDIENCE, validate_audience
 from pydantic import Field, field_validator
 
 from eidolon.memory.support.model_base import BaseEidolonModel
@@ -26,6 +27,16 @@ class MemoryFragment(BaseEidolonModel):
     memory_realm_id: str | None = None
     owner_id: str | None = None
     companion_id: str | None = None
+    # Who may recall this, which is not the same question as who produced it.
+    # ``companion_id`` records provenance; audience records visibility. A fact
+    # about the owner holds whichever companion is listening, while what happened
+    # between the owner and one companion belongs to that companion.
+    #
+    # Defaults to the owner layer: with one companion there is nothing to leak,
+    # and defaulting narrow would instead hide the owner's own facts from their
+    # other companions — the worse of the two failures. Deciding per statement
+    # needs the steward to judge it.
+    audience: str = OWNER_AUDIENCE
     scope: MemoryScope = "persona"
     visibility: MemoryVisibility = "all_devices"
     source_device_id: str | None = None
@@ -59,6 +70,18 @@ class MemoryFragment(BaseEidolonModel):
             msg = "memory fragment field cannot be blank"
             raise ValueError(msg)
         return value
+
+    @field_validator("audience")
+    @classmethod
+    def _known_audience(cls, value: str) -> str:
+        """Reject an audience we do not recognise rather than storing it.
+
+        The token lands in metadata keys and store filter expressions, and an
+        unknown one would silently match nothing — a memory written but never
+        recalled, which is worse than a rejected write.
+        """
+
+        return validate_audience(value)
 
     @field_validator(
         "memory_realm_id",

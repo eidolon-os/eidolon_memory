@@ -322,6 +322,11 @@ class MemPalacePythonBackend(MemoryBackend):
             "memory_realm_id": fragment.memory_realm_id or fragment.memory_space_id,
             "owner_id": fragment.owner_id or "",
             "companion_id": fragment.companion_id or "",
+            # Visibility, distinct from the provenance above it. Stored as a
+            # top-level key rather than nested so both stores can push the filter
+            # down: chroma takes it in a where clause, and milvus's dynamic
+            # fields make it a queryable column.
+            "audience": fragment.audience,
             "scope": fragment.scope,
             "visibility": fragment.visibility,
             "source_device_id": fragment.source_device_id or "",

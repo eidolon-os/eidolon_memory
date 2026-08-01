@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from eidolon_memory_contracts import MemoryActorContext
+from eidolon_memory_contracts import (
+    OWNER_AUDIENCE,
+    MemoryActorContext,
+    readable_audiences,
+)
 
 from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -91,6 +95,13 @@ class RecallPolicyRegistry:
         if privacy == "private" and not include_private:
             return False
         if str(meta.get("memory_space_id") or record.memory_space_id) != context.memory_space_id:
+            return False
+        # Which of the owner's companions may see this. A record written before
+        # the field existed has no audience, and is treated as the owner layer —
+        # the same default writes take, so an upgrade does not hide what was
+        # already recalled.
+        audience = str(meta.get("audience") or OWNER_AUDIENCE)
+        if audience not in readable_audiences(context.companion_id):
             return False
         visibility = str(meta.get("visibility") or "all_devices")
         source_device = str(meta.get("source_device_id") or "")
