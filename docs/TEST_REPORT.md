@@ -19,9 +19,9 @@ uv sync --all-extras
 
 | Category | Tests | Result | Notes |
 |---|---|---|---|
-| Unit | 799 | **799 passed, 6 skipped** | 79% line coverage |
+| Unit | 826 | **826 passed, 6 skipped** | 79% line coverage |
 | Functional (e2e) | 35 | **25 passed, 2 failed, 8 skipped** | 2 pre-existing LLM extraction failures |
-| Local↔cloud switch | 113 | **113 passed** | Same tests, both storages |
+| Local↔cloud switch | 140 | **140 passed** | Same tests, both storages |
 | Contract | 133 | **133 passed** | 46 standalone + 87 in-repo |
 
 The two e2e failures are a steward extraction shortfall that predates this work
@@ -35,7 +35,7 @@ and is unrelated to it — see [Functional](#functional-tests-e2e).
 uv run pytest tests/memory --ignore=tests/memory/e2e -q --cov=eidolon.memory
 ```
 
-**799 passed, 6 skipped, 92s. 8682 statements, 79% covered.**
+**826 passed, 6 skipped, 104s. 8682 statements, 79% covered.**
 
 The 6 skips are MemPalace-marked tests needing a real palace on disk.
 
@@ -113,7 +113,7 @@ uv run pytest tests/memory/test_deployment_profiles.py \
   tests/memory/test_kg_dialects.py tests/memory/test_live_postgres_kg.py -q
 ```
 
-**113 passed, 59s.**
+**140 passed, 62s.**
 
 This is the category where a passing test is easiest to fake, so what each suite
 actually proves is spelled out.
@@ -121,7 +121,7 @@ actually proves is spelled out.
 | Suite | Tests | What it proves |
 |---|---|---|
 | `test_router_contract` | 29 | Both routers satisfy one interface, and the **one asymmetry**: embedded storage refuses a second holder, shared storage serves the same space from two replicas concurrently |
-| `test_ledger_contract` | 47 | Every ledger behaviour asserted against **both** SQLite and PostgreSQL |
+| `test_ledger_contract` | 74 | Every behaviour of four ledgers asserted against **both** SQLite and PostgreSQL |
 | `test_live_postgres_kg` | 11 | The graph against a **real server**, not a mock |
 | `test_kg_dialects` | 14 | The two dialects build structurally identical statements |
 | `test_deployment_profiles` | 12 | Local and cloud config files carry the same field set |
@@ -134,7 +134,7 @@ Changing storage is a configuration edit, with **no code change**, for:
 |---|---|---|
 | Vector: chroma ↔ milvus | `mempalace.backend` | Live milvus (8.140.214.42, `eidolon` db) |
 | Graph: none ↔ sqlite ↔ postgres | `kg.backend` | 11 live PG tests + round-trip e2e |
-| Ledgers: palace ↔ postgres | `ledgers.backend` | 47 contract tests, both storages |
+| Ledgers: palace ↔ postgres | `ledgers.backend` | 74 contract tests, both storages (4 of 6 ledgers) |
 | Deployment shape | *derived from storage config* | `test_router_contract` |
 
 Deployment shape has no flag of its own: `build_space_router` derives it from
@@ -143,17 +143,25 @@ directory.
 
 ### What is not switchable yet
 
-**Three of six ledgers have no PostgreSQL implementation**: `commitments`,
-`canonical_facts`, `command_status`. On shared storage the router hands back
-`None` for them and each consumer's existing `None` handling keeps the service
-running — so it starts and serves recall, but:
+**Two of six ledgers have no PostgreSQL implementation**: `commitments` and
+`canonical_facts`. On shared storage the router hands back `None` for them and
+each consumer's existing `None` handling keeps the service running — so it starts
+and serves recall, but:
 
 - a corrected fact is not invalidated (`canonical_facts` holds that chain);
-- commitment queries return empty;
-- `command_status` cannot report on an async write.
+- commitment queries return empty.
 
-The first two are product behaviour, not bookkeeping. This is stated in the
-router's log line at startup and here, and it is the largest remaining gap.
+Both are product behaviour, not bookkeeping. Stated in the router's startup log
+and in `settings.cloud.example.yaml`, so an operator is not left to discover it.
+
+These two are deliberately not translated the way the first four were. Their
+`apply` paths interleave reading, deciding, and writing across ~170 and ~400
+lines — the state machine, the idempotency probe, and the conflict rules all sit
+between SQL statements. Copying that produces two implementations of the same
+decision logic, which is exactly the drift this design has been avoiding. Doing
+it properly means extracting the decisions as pure functions both storages call,
+and that is a refactor of live persistence code, so it wants the both-storage
+test suite in place first.
 
 ### PostgreSQL testing
 
