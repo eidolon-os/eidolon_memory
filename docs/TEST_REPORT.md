@@ -69,7 +69,7 @@ The 6 skips are MemPalace-marked tests needing a real palace on disk.
 uv run pytest tests/memory/e2e -q
 ```
 
-**25 passed, 2 failed, 8 skipped, ~15 min.** Each test starts a real
+**25 passed, 2 failed, 8 skipped, 16m 05s.** Each test starts a real
 `nats-server` and a real `eidolon-memory-agent` subprocess and drives the whole
 path: publish a turn → steward → projection → recall → forget → confirm.
 
@@ -90,6 +90,18 @@ which is what identifies it as model instability rather than a code regression.
 
 It is listed as an open defect rather than quarantined, because it blocks any
 graph-dependent quality benchmark from meaning anything.
+
+### What this run also confirmed
+
+An earlier run of this suite showed **three** failures, and the third was mine:
+warmup had stopped running because the capability check could not see through
+`LockedBackend`. Nothing in the unit suite noticed — warming is best-effort, so
+skipping it raises nothing. It appeared only here, as recall's graph lookup
+exceeding its 300ms budget while the embedding model loaded on the first request,
+in a test whose every *direct* graph assertion passed.
+
+That is the argument for keeping this suite: it runs the real process with the
+real wrappers, and it is the only category that would have caught this.
 
 ---
 
