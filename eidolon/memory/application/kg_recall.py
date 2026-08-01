@@ -7,7 +7,7 @@ One role:
   identically to drawer fragments.
 
 Entity routing(自然语言 query → canonical entity names)lives on the KG
-facade as :meth:`LockedKnowledgeGraph.match_entities_for_query`, because
+facade as :meth:`KnowledgeGraphPort.match_entities_for_query`, because
 the naming convention(``pet:`` / ``place:`` / ``mother:`` 前缀)is KG's
 internal knowledge — the recall router shouldn't need to know about it.
 """
@@ -26,6 +26,7 @@ def _now_iso() -> str:
 async def query_kg_for_recall(
     kg,
     *,
+    audiences: tuple[str, ...],
     entity_names: list[str],
     subject_names: list[str] | None = None,
     now_iso: str | None = None,
@@ -33,10 +34,18 @@ async def query_kg_for_recall(
     max_triples_per_entity: int,
     include_sensitive: bool = False,
 ) -> list[KgTripleRecord]:
-    """One SQL `IN (?,...)` over `entities` → triples; capped per entity."""
+    """Statements relevant to a turn, bounded per entity and scoped to audience.
+
+    ``audiences`` is required rather than defaulted. A default would be either
+    too narrow (the owner layer only, quietly losing what this companion was
+    told) or too wide (everything, showing one companion what another was told) —
+    and the wide mistake is invisible until there is a second companion.
+    """
+
     if subject_names:
         return await kg.query_subjects(
             subject_names,
+            audiences=audiences,
             as_of=now_iso,
             include_sensitive=include_sensitive,
             limit_per_subject=max_triples_per_entity,
@@ -45,6 +54,7 @@ async def query_kg_for_recall(
         return []
     return await kg.query_entity_combined(
         entity_names,
+        audiences=audiences,
         as_of=now_iso,
         include_sensitive=include_sensitive,
         limit_per_entity=max_triples_per_entity,

@@ -47,7 +47,7 @@ class KgInvalidationAction(BaseEidolonModel):
     reason: str = Field(default="", max_length=128)
 
 
-# ── Read-side records (returned by LockedKnowledgeGraph) ────────────────────
+# ── Read-side records (returned by the graph) ────────────────────
 
 
 class KgEntityRecord(BaseEidolonModel):

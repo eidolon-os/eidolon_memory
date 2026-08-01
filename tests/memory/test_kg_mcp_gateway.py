@@ -9,16 +9,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 SPACE = "default.alice.default"
+SPACE_FOR_TESTS = SPACE
 
 
 @pytest.fixture
 def mcp_with_kg(tmp_path: Path):
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
-
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
     from eidolon.memory.adapters.locked_backend import LockedBackend
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
     from eidolon.memory.config.memory_settings import load_memory_settings
     from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger
@@ -26,7 +25,7 @@ def mcp_with_kg(tmp_path: Path):
     settings = load_memory_settings()
     backend = LockedBackend(FakeMemoryBackend())
     kg_db = tmp_path / "kg.sqlite3"
-    locked_kg = LockedKnowledgeGraph(KnowledgeGraph(db_path=str(kg_db)), backend.lock)
+    locked_kg = SqliteKnowledgeGraph(kg_db, space_id=SPACE_FOR_TESTS, lock=backend.lock)
     publisher = AsyncMock()
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3")
 
@@ -176,6 +175,7 @@ async def test_kg_add_triple_publishes_then_reads_status(mcp_with_kg) -> None:
         # The publisher mock IS the worker stand-in here: it commits the triple
         # via locked_kg directly, then returns.
         triple_id = await locked_kg.add_triple(
+            audience="owner",
             subject=cmd.subject, predicate=cmd.predicate, object=cmd.object,
             valid_from=cmd.valid_from, valid_to=cmd.valid_to,
             confidence=cmd.confidence,
@@ -225,10 +225,12 @@ async def test_kg_add_triple_returns_accepted_when_worker_silent(mcp_with_kg) ->
 async def test_kg_query_entity_excludes_sensitive_by_default(mcp_with_kg) -> None:
     mcp, locked_kg, _, _, _ = mcp_with_kg
     await locked_kg.add_triple(
+        audience="owner",
         subject="self", predicate="has_health_condition", object="anxiety",
         source_turn_id="seed", adapter_name="test",
     )
     await locked_kg.add_triple(
+        audience="owner",
         subject="self", predicate="likes", object="tea",
         source_turn_id="seed2", adapter_name="test",
     )

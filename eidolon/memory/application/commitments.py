@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from eidolon_memory_contracts import MemoryIntentCommand
+from eidolon_memory_contracts import OWNER_AUDIENCE, MemoryIntentCommand
 
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.domain.commitment import ACTIVE_COMMITMENT_STATUSES
@@ -89,6 +89,7 @@ async def apply_explicit_commitment(
 
     triples = await kg.query_entity(
         record.promisor,
+        audiences=(OWNER_AUDIENCE,),
         direction="outgoing",
         include_sensitive=True,
     )
@@ -100,6 +101,7 @@ async def apply_explicit_commitment(
     )
     if active and not kg_visible:
         await kg.add_triple(
+            audience=OWNER_AUDIENCE,
             subject=record.promisor,
             predicate=record.predicate,
             object=record.action,

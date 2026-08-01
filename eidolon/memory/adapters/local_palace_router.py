@@ -33,8 +33,8 @@ import os
 from pathlib import Path
 from typing import IO
 
+from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 from eidolon.memory.adapters.locked_backend import LockedBackend
-from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_run_dir
@@ -53,7 +53,6 @@ from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisio
 from eidolon.memory.infrastructure.integrity import (
     IntegrityCheckFailed,
     assert_palace_location_safe,
-    fsync_directory,
     run_integrity_check,
 )
 from eidolon.memory.infrastructure.mempalace_backend import (
@@ -163,13 +162,12 @@ class LocalPalaceRouter:
 
         kg = None
         if self._settings.kg.enabled:
-            # MemPalace is a third-party import, deferred so a deployment with the
-            # graph off does not pay for loading it.
-            from mempalace.knowledge_graph import KnowledgeGraph
-
-            kg = LockedKnowledgeGraph(
-                KnowledgeGraph(db_path=str(palace_path / "knowledge_graph.sqlite3")),
-                backend.lock,
+            # Shares the vector store's lock: a turn writes to both, and one
+            # critical section over the pair beats an ordering between two.
+            kg = SqliteKnowledgeGraph(
+                palace_path / "knowledge_graph.sqlite3",
+                space_id=space_id,
+                lock=backend.lock,
             )
 
         return MemorySpaceRuntime(
@@ -227,8 +225,11 @@ class LocalPalaceRouter:
         targets = list(vector_sqlite_integrity_targets(palace_path, backend_name))
         if self._settings.kg.enabled:
             kg_path = palace_path / "knowledge_graph.sqlite3"
-            self._materialize_kg_file(kg_path)
-            targets.append(("kg", kg_path))
+            if kg_path.is_file():
+                # Only check what already exists. The graph creates its schema on
+                # open, so a first run has nothing here yet — and an absent file
+                # is not a corrupt one.
+                targets.append(("kg", kg_path))
 
         for label, db_path in targets:
             result = run_integrity_check(str(db_path), quick=False)
@@ -279,20 +280,6 @@ class LocalPalaceRouter:
         handle.write(str(os.getpid()))
         handle.flush()
         self._locks[space_id] = handle
-
-    @staticmethod
-    def _materialize_kg_file(kg_sqlite_path: Path) -> None:
-        """Create the graph database so the integrity check has a committed file."""
-
-        from mempalace.knowledge_graph import KnowledgeGraph
-
-        kg_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        graph = KnowledgeGraph(db_path=str(kg_sqlite_path))
-        try:
-            graph.close()
-        except Exception as exc:  # noqa: BLE001 - the file is what we needed
-            log.warning("space_kg_materialize_close_failed", error=str(exc))
-        fsync_directory(kg_sqlite_path.parent)
 
     def held_spaces(self) -> list[str]:
         """Spaces whose handles are currently open. For diagnostics."""

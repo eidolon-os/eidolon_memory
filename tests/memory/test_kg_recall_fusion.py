@@ -10,6 +10,8 @@ import pytest
 from eidolon_memory_contracts import MemoryActorContext
 
 
+SPACE_FOR_TESTS = "default.alice.default"
+
 def _ctx(memory_realm_id: str = "default.alice.default") -> MemoryActorContext:
     return MemoryActorContext(
         memory_realm_id=memory_realm_id,
@@ -24,30 +26,29 @@ def _ctx(memory_realm_id: str = "default.alice.default") -> MemoryActorContext:
 
 
 async def _seed_entities(kg, names_with_types: list[tuple[str, str]]) -> None:
-    """Helper: insert raw entities (no triples needed) into the KG fixture."""
-    import asyncio
+    """Register entities by asserting a statement about each.
 
-    def _insert() -> None:
-        conn = kg._inner._conn()
-        for name, etype in names_with_types:
-            conn.execute(
-                "INSERT OR IGNORE INTO entities(id, name, type, properties, created_at) "
-                "VALUES (?, ?, ?, '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-                (name, name, etype),
-            )
-        conn.commit()
-    async with kg._lock:
-        await asyncio.to_thread(_insert)
+    Entities exist because something was said about them, so seeding goes through
+    the write path rather than reaching into storage. The predicate and object are
+    incidental — these tests are about how a name is matched, not what is claimed —
+    and every entity shares one object so the seed adds a single extra name rather
+    than one per row.
+    """
+
+    for name, entity_type in names_with_types:
+        await kg.add_triple(
+            subject=name,
+            predicate="holds_role",
+            object=f"seed-{entity_type}",
+            audience="owner",
+        )
 
 
 async def test_match_entities_bare_name_substring(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-
-    kg = LockedKnowledgeGraph(
-        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
     )
     try:
         await _seed_entities(kg, [("self", "unknown"), ("mother", "unknown"), ("tea", "unknown")])
@@ -64,12 +65,9 @@ async def test_match_entities_prefix_stripped(tmp_path: Path) -> None:
     speak in bare names. KG facade bridges the gap.
     """
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-
-    kg = LockedKnowledgeGraph(
-        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
     )
     try:
         await _seed_entities(kg, [
@@ -90,16 +88,13 @@ async def test_match_entities_prefix_stripped(tmp_path: Path) -> None:
 
 async def test_match_entities_cap_respected(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-
-    kg = LockedKnowledgeGraph(
-        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
     )
     try:
         await _seed_entities(kg, [(c, "unknown") for c in "abcdef"])
-        hits = await kg.match_entities_for_query("a b c d e f g", cap=3)
+        hits = await kg.match_entities_for_query("a b c d e f", cap=3)
         assert len(hits) == 3
     finally:
         kg.close()
@@ -110,12 +105,9 @@ async def test_match_entities_prefers_longer(tmp_path: Path) -> None:
     longer canonical so prefixed entities beat their bare tails.
     """
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-
-    kg = LockedKnowledgeGraph(
-        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
     )
     try:
         await _seed_entities(kg, [("mother", "unknown"), ("mother:张丽", "person")])
@@ -129,12 +121,9 @@ async def test_match_entities_prefers_longer(tmp_path: Path) -> None:
 
 async def test_match_entities_empty_query(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-
-    kg = LockedKnowledgeGraph(
-        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
     )
     try:
         await _seed_entities(kg, [("self", "unknown")])
@@ -224,18 +213,18 @@ async def test_list_entity_names_reflects_write_immediately(tmp_path: Path) -> N
     写入后下一次读必须立刻看到新实体——不依赖任何 TTL / invalidate 调用。
     """
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-
-    inner = KnowledgeGraph(db_path=str(tmp_path / "freshness.sqlite3"))
     lock = asyncio.Lock()
-    kg = LockedKnowledgeGraph(inner, lock)
+    kg = SqliteKnowledgeGraph(
+        tmp_path / "freshness.sqlite3", space_id=SPACE_FOR_TESTS, lock=lock
+    )
     try:
         names0 = await kg.list_entity_names()
         assert "self" not in names0
 
         await kg.add_triple(
+            audience="owner",
             subject="self", predicate="likes", object="tea",
             confidence=0.95, source_turn_id="freshness", adapter_name="test",
         )
@@ -252,17 +241,13 @@ async def test_list_entity_names_reflects_write_immediately(tmp_path: Path) -> N
 @pytest.fixture
 def fusion_setup(tmp_path: Path):
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
-
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
     from eidolon.memory.adapters.locked_backend import LockedBackend
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
     from eidolon.memory.config.memory_settings import load_memory_settings
 
     backend = LockedBackend(FakeMemoryBackend())
-    kg = LockedKnowledgeGraph(
-        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")), backend.lock
-    )
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=backend.lock)
     settings = load_memory_settings()
     yield backend, kg, settings
     kg.close()
@@ -273,6 +258,7 @@ async def test_fusion_kg_path_fires_on_entity_hit(fusion_setup) -> None:
 
     backend, kg, settings = fusion_setup
     await kg.add_triple(
+        audience="owner",
         subject="self", predicate="likes", object="tea", confidence=0.95,
         source_turn_id="seed", adapter_name="test",
     )
@@ -292,6 +278,7 @@ async def test_fusion_kg_path_skipped_when_no_entity_match(fusion_setup) -> None
 
     backend, kg, settings = fusion_setup
     await kg.add_triple(
+        audience="owner",
         subject="alice", predicate="likes", object="tea", confidence=0.95,
         source_turn_id="seed", adapter_name="test",
     )
@@ -315,6 +302,7 @@ async def test_fusion_kg_disabled_via_settings(fusion_setup) -> None:
     settings.recall.kg_in_recall = False
 
     await kg.add_triple(
+        audience="owner",
         subject="self", predicate="likes", object="tea", confidence=0.95,
         source_turn_id="seed", adapter_name="test",
     )
@@ -397,6 +385,8 @@ async def test_explicit_subject_scope_bypasses_query_language_routing(
     kg.match_entities_for_query.assert_not_awaited()
     kg.query_subjects.assert_awaited_once_with(
         ["self"],
+        # Both layers: the owner's own facts, plus what this companion was told.
+        audiences=("owner", "companion:default"),
         as_of=None,
         include_sensitive=False,
         limit_per_subject=settings.recall.kg_max_triples_per_entity,
@@ -545,14 +535,17 @@ async def test_recall_kg_triples_ordered_by_confidence(fusion_setup) -> None:
 
     # Insert lowest-confidence first to prove ORDER BY (not insertion order) wins.
     await kg.add_triple(
+        audience="owner",
         subject="self", predicate="likes", object="bitter-tea",
         confidence=0.30, source_turn_id="low", adapter_name="test",
     )
     await kg.add_triple(
+        audience="owner",
         subject="self", predicate="likes", object="oolong",
         confidence=0.95, source_turn_id="high", adapter_name="test",
     )
     await kg.add_triple(
+        audience="owner",
         subject="self", predicate="likes", object="green-tea",
         confidence=0.70, source_turn_id="mid", adapter_name="test",
     )
@@ -589,6 +582,7 @@ async def test_recall_with_alias_query_hits_kg_via_mentions(fusion_setup) -> Non
 
     # Seed canonical entity with a triple, then attach the colloquial alias.
     await kg.add_triple(
+        audience="owner",
         subject="mother:张丽", predicate="has_state", object="insomnia",
         confidence=0.95, source_turn_id="seed-alias", adapter_name="test",
     )

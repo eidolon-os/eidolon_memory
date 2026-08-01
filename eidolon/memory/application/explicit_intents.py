@@ -7,6 +7,7 @@ from typing import Any
 
 from eidolon_memory_contracts import (
     KG_PREDICATE_VALUES,
+    OWNER_AUDIENCE,
     USER_CONFIRMED_ROOM_PREFIX,
     MemoryIntent,
     MemoryIntentCommand,
@@ -282,6 +283,7 @@ async def apply_explicit_intent(
 
     if all(structured) and "kg" in pending_targets:
         await kg.add_triple(
+            audience=OWNER_AUDIENCE,
             subject=intent.subject,
             predicate=intent.predicate,
             object=intent.object,
@@ -504,6 +506,7 @@ async def _visible_canonical_targets(
     if "kg" in targets:
         triples = await kg.query_entity(
             intent.subject,
+            audiences=(OWNER_AUDIENCE,),
             direction="outgoing",
             include_sensitive=True,
         )

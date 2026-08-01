@@ -12,6 +12,7 @@ import pytest
 from eidolon_memory_contracts import envelope_memory_payload, memory_command_subject
 
 SPACE = "default.alice.default"
+SPACE_FOR_TESTS = SPACE
 OTHER_SPACE = "default.bob.default"
 
 
@@ -19,12 +20,10 @@ OTHER_SPACE = "default.bob.default"
 def kg_setup(tmp_path: Path):
     """Real KG + LockedKnowledgeGraph; mocked NATS via in-memory queue."""
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
-
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
     db = tmp_path / "kg.sqlite3"
-    locked = LockedKnowledgeGraph(KnowledgeGraph(db_path=str(db)), asyncio.Lock())
+    locked = SqliteKnowledgeGraph(db, space_id=SPACE_FOR_TESTS, lock=asyncio.Lock())
     yield locked
     locked.close()
 
@@ -91,7 +90,7 @@ async def test_command_add_triple_flow(kg_setup, tmp_path: Path) -> None:
     )
     assert msg.ack_calls == ["ack"]
 
-    records = await kg_setup.query_entity("alice")
+    records = await kg_setup.query_entity("alice", audiences=("owner",))
     assert any(r.predicate == "likes" and r.object == "tea" for r in records)
     status = await ledger.get("r1")
     assert status is not None
@@ -241,6 +240,7 @@ async def test_command_invalidate_flow(kg_setup) -> None:
     from eidolon.memory.config.memory_settings import get_memory_settings
 
     await kg_setup.add_triple(
+        audience="owner",
         subject="alice", predicate="likes", object="coffee",
         source_turn_id="seed", adapter_name="test",
     )
@@ -382,7 +382,7 @@ async def test_command_user_id_mismatch_acked(kg_setup) -> None:
     )
     assert msg.ack_calls == ["ack"]
     # Did not apply to KG
-    records = await kg_setup.query_entity("self")
+    records = await kg_setup.query_entity("self", audiences=("owner",))
     assert not any(r.predicate == "likes" for r in records)
 
 

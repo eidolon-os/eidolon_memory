@@ -9,7 +9,11 @@ import re
 import time
 from typing import Any
 
-from eidolon_memory_contracts import USER_CONFIRMED_ROOM_PREFIX, MemoryActorContext
+from eidolon_memory_contracts import (
+    USER_CONFIRMED_ROOM_PREFIX,
+    MemoryActorContext,
+    readable_audiences,
+)
 
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
 from eidolon.memory.application.kg_recall import query_kg_for_recall
@@ -344,6 +348,9 @@ async def recall_with_kg_fusion(
         kg_task = asyncio.create_task(
             _kg_path_with_timeout(
                 kg,
+                # Scoped to what this caller may see. An unidentified caller gets
+                # the owner layer only — the companion layer is not theirs to read.
+                audiences=readable_audiences(context.companion_id),
                 query=query,
                 max_entities=settings.recall.kg_max_entities,
                 window_days=settings.recall.kg_window_days,
@@ -484,6 +491,7 @@ async def _fetch_themes(
 async def _kg_path_with_timeout(
     kg,
     *,
+    audiences: tuple[str, ...],
     query: str,
     max_entities: int,
     window_days: int,
@@ -517,6 +525,7 @@ async def _kg_path_with_timeout(
                 return []
             triples = await query_kg_for_recall(
                 kg,
+                audiences=audiences,
                 entity_names=candidates,
                 subject_names=candidates if subject_names else None,
                 window_days=window_days,

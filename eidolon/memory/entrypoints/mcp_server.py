@@ -28,7 +28,7 @@ from eidolon_memory_contracts import (
     PrivacyMutationCommand,
 )
 
-from eidolon.memory.adapters.locked_kg import _now_iso
+from eidolon.memory.adapters.kg_sqlite import now_iso as _now_iso
 from eidolon.memory.application.claim_routing import route_explicit_claim
 from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
@@ -62,6 +62,21 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 
+async def _all_audiences(kg: Any) -> tuple[str, ...]:
+    """Every audience a space's graph actually contains.
+
+    Operator tools inspect one space in full rather than through one companion's
+    view. Enumerating what is there beats a wildcard: a "match any audience"
+    token would be a way past the filter, and the filter is the only thing
+    keeping one companion's private statements out of another's recall.
+
+    Sensitivity is gated separately by ``include_sensitive`` — seeing every
+    audience is not the same as seeing every predicate.
+    """
+
+    return tuple(await kg.known_audiences())
+
+
 def build_control_plane_mcp(
     backend: MemoryBackend,
     settings: MemorySettings,
@@ -86,7 +101,7 @@ def build_control_plane_mcp(
     same instance is also called directly by ``LiveKitRecallService`` — both
     paths share the lock.
 
-    ``kg`` is a per-runner :class:`LockedKnowledgeGraph` (read-side: direct;
+    ``kg`` is a per-runner a :class:`KnowledgeGraphPort` (read-side: direct;
     write-side: via ``command_publisher`` → NATS, per KG plan §3.3). When
     ``kg``/``command_publisher`` are absent the KG tools are not registered —
     keeps the tool surface clean for backwards-compatible smoke tests.
@@ -784,7 +799,7 @@ def _register_kg_tools(
     """Register the 6 KG tools on the FastMCP instance (KG plan §3.3).
 
     Write tools publish to NATS and wait on the separate command-status
-    projection; read tools query the LockedKnowledgeGraph directly. A legacy
+    projection; read tools query the graph directly. A legacy
     storage-polling fallback remains only for embedders that omit the ledger.
     """
     @mcp.tool()
@@ -897,8 +912,13 @@ def _register_kg_tools(
         Sensitive predicates (health, medication) are excluded unless
         ``include_sensitive`` is True.
         """
+        # Every audience: these are operator tools for one space, and an
+        # operator inspecting a graph needs to see all of it, not the slice one
+        # companion would get. What still gates the health predicates is
+        # include_sensitive.
         records = await kg.query_entity(
             name,
+            audiences=await _all_audiences(kg),
             as_of=as_of,
             direction=direction,
             include_sensitive=include_sensitive,
@@ -921,6 +941,7 @@ def _register_kg_tools(
         """Chronological events; entity-scoped if name given, else global."""
         records = await kg.timeline(
             entity_name=entity_name,
+            audiences=await _all_audiences(kg),
             since=since,
             until=until,
             limit=limit,
@@ -948,7 +969,7 @@ def _register_kg_tools(
         """Bounded triple snapshot for graph visualization.
 
         One round-trip returning ``stats`` + a capped triple list — wraps
-        :meth:`LockedKnowledgeGraph.timeline` (which already runs under the
+        :meth:`KnowledgeGraphPort.timeline` (which already runs under the
         backend lock and filters sensitive predicates).
         """
         limit = max(10, min(max_triples, 5000))

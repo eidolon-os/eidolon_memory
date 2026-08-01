@@ -25,6 +25,7 @@ from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
 SPACE = "default.alice.default"
+SPACE_FOR_TESTS = SPACE
 
 
 def _settings(**kg) -> MemorySettings:
@@ -195,23 +196,21 @@ async def test_switching_the_graph_off_and_back_on_keeps_what_was_stored(
 ) -> None:
     """Off is a runtime choice, so it must not be destructive."""
 
-    from mempalace.knowledge_graph import KnowledgeGraph
-
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
     db = tmp_path / "knowledge_graph.sqlite3"
 
-    graph = LockedKnowledgeGraph(KnowledgeGraph(db_path=str(db)), asyncio.Lock())
-    await graph.add_triple(subject="alice", predicate="likes", object="tea")
+    graph = SqliteKnowledgeGraph(db, space_id=SPACE_FOR_TESTS, lock=asyncio.Lock())
+    await graph.add_triple(audience="owner", subject="alice", predicate="likes", object="tea")
     graph.close()
 
     # ... a period running with kg.backend=none, during which nothing touches
     # the file ...
     assert db.exists()
 
-    reopened = LockedKnowledgeGraph(KnowledgeGraph(db_path=str(db)), asyncio.Lock())
+    reopened = SqliteKnowledgeGraph(db, space_id=SPACE_FOR_TESTS, lock=asyncio.Lock())
     try:
-        records = await reopened.query_entity("alice")
+        records = await reopened.query_entity("alice", audiences=("owner",))
         assert any(r.predicate == "likes" and r.object == "tea" for r in records)
     finally:
         reopened.close()

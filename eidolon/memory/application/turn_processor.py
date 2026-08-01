@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from eidolon_memory_contracts import (
+    OWNER_AUDIENCE,
     ConsolidatorIngestThemeCommand,
     ConversationTurnPayload,
     DeviceSyncBatchPayload,
@@ -466,6 +467,7 @@ async def process_turn_message(
                                 targets={"kg"},
                             )
                 await kg.add_triple(
+                    audience=OWNER_AUDIENCE,
                     subject=t.subject,
                     predicate=t.predicate,
                     object=t.object,
@@ -562,6 +564,7 @@ async def _canonical_kg_visible(kg: Any, intent: MemoryIntent) -> bool:
     """Verify that an assertion marked projected still has an active KG row."""
     rows = await kg.query_entity(
         intent.subject,
+        audiences=(OWNER_AUDIENCE,),
         direction="outgoing",
         include_sensitive=True,
     )
@@ -709,6 +712,7 @@ async def process_command_message(
         resource_id: str | None = None
         if isinstance(cmd, KgAddTripleCommand):
             triple_id = await kg.add_triple(
+                audience=OWNER_AUDIENCE,
                 subject=cmd.subject,
                 predicate=cmd.predicate,
                 object=cmd.object,

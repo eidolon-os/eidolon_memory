@@ -15,6 +15,8 @@ from eidolon_memory_contracts import envelope_memory_payload
 # ─── Test fixtures ────────────────────────────────────────────────────────
 
 
+SPACE_FOR_TESTS = "default.alice.default"
+
 @pytest.fixture
 def settings():
     from eidolon.memory.config.memory_settings import load_memory_settings
@@ -31,12 +33,11 @@ def backend():
 @pytest.fixture
 def kg(backend, tmp_path: Path):
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-
-    inner = KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3"))
-    locked = LockedKnowledgeGraph(inner, backend.lock)
+    locked = SqliteKnowledgeGraph(
+        tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=backend.lock
+    )
     yield locked
     locked.close()
 
@@ -284,7 +285,7 @@ async def test_low_confidence_triples_skipped(settings, backend, kg):
     )
     stats = await kg.stats()
     assert stats["triples_total"] == 1
-    rows = await kg.query_entity("self")
+    rows = await kg.query_entity("self", audiences=("owner",))
     assert {r.object for r in rows} == {"tea"}
 
 
@@ -326,8 +327,8 @@ async def test_invalidation_applies_before_new_triple(settings, backend, kg):
         settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
 
-    coffee = [r for r in await kg.query_entity("self") if r.object == "coffee"]
-    tea = [r for r in await kg.query_entity("self") if r.object == "tea"]
+    coffee = [r for r in await kg.query_entity("self", audiences=("owner",)) if r.object == "coffee"]
+    tea = [r for r in await kg.query_entity("self", audiences=("owner",)) if r.object == "tea"]
     # Coffee invalidated → no current "likes coffee"
     assert not coffee
     # Tea is currently liked
@@ -407,10 +408,12 @@ async def test_steward_output_with_health_predicate_propagates(settings, backend
     )
 
     # default query (read-side) excludes sensitive predicates (KG plan §3.3 G2)
-    default = await kg.query_entity("self")
+    default = await kg.query_entity("self", audiences=("owner",))
     assert not any(r.predicate == "has_health_condition" for r in default)
     # opt-in returns them
-    opt_in = await kg.query_entity("self", include_sensitive=True)
+    opt_in = await kg.query_entity(
+        "self", audiences=("owner",), include_sensitive=True
+    )
     assert any(r.predicate == "has_health_condition" for r in opt_in)
 
 

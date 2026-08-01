@@ -221,6 +221,7 @@ async def test_structured_intent_projects_drawer_and_kg_with_same_source_event()
     assert resource_id == "memoryintent:intent:structured"
     assert len(backend._inner.docs) == 1
     kg.add_triple.assert_awaited_once_with(
+        audience="owner",
         subject="user",
         predicate="likes",
         object="oolong",

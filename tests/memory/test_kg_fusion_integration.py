@@ -1,6 +1,6 @@
 """Cross-tier KG integration: turn → steward → worker → KG → recall (closed loop).
 
-This file exercises T1 (LockedKnowledgeGraph + command path) + T2 (steward output
+This file exercises T1 (the graph + command path) + T2 (steward output
 applied by worker) + T3 (recall_with_kg_fusion) wired end-to-end. The steward
 is a stub returning a fixed ``StewardDecision`` so the test is deterministic
 and avoids hitting a real LLM, but every other layer is the real production
@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from eidolon_memory_contracts import MemoryActorContext, envelope_memory_payload
 
+SPACE_FOR_TESTS = "default.alice.default"
+
 MEMORY_SPACE_ID = "default.alice.default"
 
 
@@ -34,18 +36,13 @@ def _actor_context() -> MemoryActorContext:
 @pytest.fixture
 def stack(tmp_path: Path):
     pytest.importorskip("mempalace")
-    from mempalace.knowledge_graph import KnowledgeGraph
-
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
     from eidolon.memory.adapters.locked_backend import LockedBackend
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
     from eidolon.memory.config.memory_settings import load_memory_settings
 
     backend = LockedBackend(FakeMemoryBackend())
-    kg = LockedKnowledgeGraph(
-        KnowledgeGraph(db_path=str(tmp_path / "kg.sqlite3")),
-        backend.lock,
-    )
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=backend.lock,)
     settings = load_memory_settings()
     yield backend, kg, settings
     kg.close()
