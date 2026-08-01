@@ -209,7 +209,29 @@ payload, and `MemoryActorContext` — of which the agent uses five symbols, all 
 the write path.
 
 So this suite proves the contracts are *self-consistent*, not that they are *in
-use*. Closing that is the next piece of work.
+use*. Closing that is the next piece of work, and it is smaller than it looks:
+all seven read methods already have a matching MCP tool, under a different name.
+
+| Contract method | MCP tool |
+|---|---|
+| `recall_context` | `eidolon_memory_recall_context` |
+| `search` | `eidolon_memory_search` |
+| `read_active_commitments` | `eidolon_memory_commitments` |
+| `get_by_source_turn` | `eidolon_memory_get_by_source_turn` |
+| `preview_forget` | `eidolon_memory_forget_preview` |
+| `command_status` | `eidolon_memory_command_status` |
+| `health` | `eidolon_memory_status` |
+
+The three write methods map the same way: `publish_turn` to the NATS turn
+subject, `write_confirmed_fact` to `eidolon_memory_user_confirm`,
+`confirm_forget` to `eidolon_memory_forget_confirm`.
+
+So the contract is not a competing design — it is the same surface with a typed
+signature and a name per operation. Unifying means the tool bodies delegate to a
+contract implementation instead of holding the logic themselves, which is work
+inside this repository. Only 2 of the 27 tools currently take a caller context,
+so changing where they *get* their space from is the separate, cross-repository
+half.
 
 ---
 
