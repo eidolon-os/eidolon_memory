@@ -33,6 +33,62 @@ def render(template: str, marker: str) -> str:
     return template.replace("{m}", marker)
 
 
+class LedgerSchemaOutdated(RuntimeError):
+    """A ledger file predates a column the current statements require.
+
+    Raised instead of letting the query fail. ``CREATE TABLE IF NOT EXISTS`` does
+    not alter an existing table, so a file written before ``memory_space_id`` was
+    added still parses, still opens, and then fails on the first statement with
+    ``no such column`` — from inside a constructor, which takes the whole space
+    down rather than one request.
+
+    The message names the file so an operator can act on it. There is no automatic
+    migration: this project does not carry historical data forward, and silently
+    rewriting a ledger that still holds rows would decide on their behalf.
+    """
+
+
+def ensure_ledger_schema_current(
+    conn,
+    *,
+    table: str,
+    required_column: str,
+    path,
+    rebuildable: bool = False,
+) -> None:
+    """Rebuild an outdated table when its rows are expendable; refuse otherwise.
+
+    Empty is always safe: nothing is lost, and failing would block a deployment
+    over a file with no content.
+
+    ``rebuildable`` marks a table whose rows the design already treats as
+    losable. Command status is the case — it is a projection of the command
+    stream, and its documented failure mode is that a lost final status shows a
+    command as ``accepted`` again, never that an unapplied one looks successful.
+    Refusing to start over rows like that would be strictness with no safety
+    behind it.
+
+    Everything else is the operator's call. Dead letters are failed turns worth
+    inspecting and sync events are what stop a device replaying itself, so
+    dropping either silently would be destroying data to avoid an error message.
+    """
+
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if not existing or required_column in existing:
+        return
+
+    rows = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    if rows and not rebuildable:
+        raise LedgerSchemaOutdated(
+            f"{path} holds {rows} row(s) in {table!r} without the "
+            f"{required_column!r} column this version requires. This project does "
+            f"not migrate historical data — inspect the file and delete it to "
+            f"start clean, or keep it aside if the rows matter."
+        )
+
+    conn.execute(f"DROP TABLE {table}")
+
+
 def placeholders(count: int, marker: str) -> str:
     """``?, ?, ?`` or ``%s, %s, %s`` for an IN clause or a VALUES list."""
     return ", ".join([marker] * count)

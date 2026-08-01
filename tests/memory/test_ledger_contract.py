@@ -642,3 +642,114 @@ async def test_the_shared_ledger_holds_no_lock(postgres_pool) -> None:
     ledger = PostgresExtractionDecisionLedger(postgres_pool)
 
     assert getattr(ledger, "lock", None) is None
+
+
+# ── opening a file written by an older version ───────────────────────────────
+#
+# Three of these ledgers gained a memory_space_id column. CREATE TABLE IF NOT
+# EXISTS does not alter an existing table, so a file from before it still opens
+# and then fails on the first statement — from inside a constructor, which takes
+# down the whole space rather than one request. That is not hypothetical: the four
+# palaces on this development machine were all in exactly that state.
+
+
+def test_an_empty_outdated_ledger_is_rebuilt(tmp_path) -> None:
+    """Nothing is lost, and failing would block a deployment over an empty file."""
+
+    import sqlite3
+
+    path = tmp_path / "dlq.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE dlq_entries (entry_id TEXT PRIMARY KEY, subject TEXT, "
+            "payload BLOB, error TEXT, deliveries INTEGER, state TEXT, "
+            "replay_attempts INTEGER, resolution_note TEXT, created_at TEXT, "
+            "updated_at TEXT)"
+        )
+
+    DlqLedger(path, space_id=SPACE)
+
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(dlq_entries)")}
+    assert "memory_space_id" in columns
+
+
+def test_a_populated_outdated_ledger_refuses_to_open(tmp_path) -> None:
+    """The operator's call, not ours.
+
+    Dead letters are failed turns worth inspecting and sync events are what stop
+    a device replaying itself. Dropping either silently would be destroying data
+    to avoid an error message — so this raises, naming the file.
+    """
+
+    import sqlite3
+
+    from eidolon.memory.infrastructure.ledger_sql import LedgerSchemaOutdated
+
+    path = tmp_path / "dlq.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE dlq_entries (entry_id TEXT PRIMARY KEY, subject TEXT, "
+            "payload BLOB, error TEXT, deliveries INTEGER, state TEXT, "
+            "replay_attempts INTEGER, resolution_note TEXT, created_at TEXT, "
+            "updated_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO dlq_entries VALUES ('e1', 's', X'00', 'err', 1, "
+            "'unresolved', 0, NULL, 'now', 'now')"
+        )
+
+    with pytest.raises(LedgerSchemaOutdated) as raised:
+        DlqLedger(path, space_id=SPACE)
+
+    assert "dlq.sqlite3" in str(raised.value)
+    assert "1 row" in str(raised.value)
+
+
+async def test_a_current_ledger_keeps_its_rows_when_reopened(tmp_path) -> None:
+    """The guard must not disturb a file this version wrote.
+
+    A check that dropped a current table would look identical to one that
+    rebuilt an outdated one, so this asserts the row survives rather than just
+    that opening succeeds.
+    """
+
+    path = tmp_path / "dlq.sqlite3"
+    first = DlqLedger(path, space_id=SPACE)
+    entry = await first.add(subject="s", payload=b"p", error="e", deliveries=1)
+
+    reopened = DlqLedger(path, space_id=SPACE)
+
+    assert await reopened.get(entry.entry_id) is not None
+
+
+async def test_a_populated_command_status_is_rebuilt_rather_than_refused(
+    tmp_path,
+) -> None:
+    """The one table whose rows are expendable by design.
+
+    It is a projection of the command stream: a lost final status shows a command
+    as accepted again, never an unapplied one as successful. Refusing to start
+    over rows like that would be strictness with no safety behind it — and it
+    would have kept four live agents from starting.
+    """
+
+    import sqlite3
+
+    path = tmp_path / "cmd.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE command_status (request_id TEXT PRIMARY KEY, kind TEXT, "
+            "status TEXT, resource_id TEXT, error TEXT, attempts INTEGER, "
+            "created_at TEXT, updated_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO command_status VALUES ('r1', 'k', 'applied', NULL, NULL, "
+            "1, 'now', 'now')"
+        )
+
+    ledger = CommandStatusLedger(path, space_id=SPACE)
+
+    assert await ledger.get("r1") is None  # rebuilt, so the old row is gone
+    await ledger.record_accepted("r2", kind="k")
+    assert (await ledger.get("r2")).status == "accepted"

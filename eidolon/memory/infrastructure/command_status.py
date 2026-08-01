@@ -32,6 +32,7 @@ from eidolon.memory.infrastructure.ledger_sql import (
     COMMAND_STATUS_SELECT,
     COMMAND_STATUS_UPDATE,
     SQLITE_MARKER,
+    ensure_ledger_schema_current,
     render,
 )
 
@@ -82,6 +83,19 @@ class CommandStatusLedger:
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
+            # Before creating: a file from before memory_space_id existed would
+            # otherwise open fine and fail on the first statement.
+            ensure_ledger_schema_current(
+                conn,
+                table="command_status",
+                required_column="memory_space_id",
+                path=self.path,
+                # A projection of the command stream, not a record of record. Its
+                # documented failure mode is that a lost final status shows a
+                # command as accepted again — never that an unapplied one looks
+                # successful — so rebuilding costs a diagnostic, not correctness.
+                rebuildable=True,
+            )
             conn.execute(COMMAND_STATUS_SCHEMA)
             conn.execute(COMMAND_STATUS_INDEX)
 

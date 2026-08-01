@@ -29,6 +29,7 @@ from eidolon.memory.infrastructure.ledger_sql import (
     DLQ_SELECT_PAGE_BY_STATE,
     DLQ_STATES,
     SQLITE_MARKER,
+    ensure_ledger_schema_current,
     render,
 )
 
@@ -56,6 +57,14 @@ class DlqLedger:
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
+            # Before creating: a file from before memory_space_id existed would
+            # otherwise open fine and fail on the first statement.
+            ensure_ledger_schema_current(
+                conn,
+                table="dlq_entries",
+                required_column="memory_space_id",
+                path=self.path,
+            )
             conn.execute(DLQ_ENTRIES_SCHEMA_TEMPLATE.format(blob="BLOB"))
             conn.execute(DLQ_ENTRIES_INDEX)
             # A claim can only have been left behind by this process dying,

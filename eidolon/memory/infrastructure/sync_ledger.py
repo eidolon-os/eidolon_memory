@@ -21,6 +21,7 @@ from eidolon.memory.infrastructure.ledger_sql import (
     SYNC_EVENT_SEEN,
     SYNC_EVENTS_INDEX,
     SYNC_EVENTS_SCHEMA,
+    ensure_ledger_schema_current,
     render,
 )
 
@@ -39,6 +40,14 @@ class SyncLedger:
 
     def _init(self) -> None:
         with self._connect() as conn:
+            # Before creating: a file from before memory_space_id existed would
+            # otherwise open fine and fail on the first statement.
+            ensure_ledger_schema_current(
+                conn,
+                table="sync_events",
+                required_column="memory_space_id",
+                path=self._path,
+            )
             conn.execute(SYNC_EVENTS_SCHEMA)
             conn.execute(SYNC_EVENTS_INDEX)
 
