@@ -33,8 +33,19 @@ mempalace:
   milvus_db_name: eidolon
   # Prefixes collection names, so several deployments can share one database.
   milvus_namespace: eidolon
+  # Same embedder as the local profile, and deliberately so: a palace is bound to
+  # the embedder it was built with, so differing here would make a space
+  # unmovable between deployments.
+  #
+  # Note this cost lands on *this* process, not on Milvus. Milvus declares
+  # requires_explicit_embeddings — we compute vectors locally with ONNX and send
+  # them. It only runs the sparse/BM25 half server-side. So a heavier embedder
+  # buys nothing from having a vector server, and does pay in the resident model
+  # per worker, which is what limits how many spaces one host can serve.
   embedding_model: embeddinggemma
   embedding_device: cpu
+  # Point at a pre-staged copy so a worker does not pull ~300MB from HuggingFace
+  # on first use. On a fleet this matters more than locally.
   embedding_model_dir: ""
   embedding_threads: 0
 

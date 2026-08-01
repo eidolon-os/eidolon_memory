@@ -115,3 +115,29 @@ def test_the_example_roster_serves_what_it_declares() -> None:
     assert [entry.id for entry in roster.users] == ["alice", "bob", "carol", "dave"]
     assert [entry.id for entry in roster.enabled_users()] == ["alice", "bob", "dave"]
     assert {entry.id for entry in roster.users if entry.consolidator_enabled()} == {"dave"}
+
+
+def test_both_profiles_name_the_same_embedder() -> None:
+    """A palace is bound to the embedder it was built with.
+
+    MemPalace refuses to open a palace whose stored embedder identity differs, so
+    profiles disagreeing here would make a space unmovable between deployments —
+    and would only be discoverable at startup on the far side.
+    """
+
+    local = _load(_LOCAL).mempalace.embedding_model
+    cloud = _load(_CLOUD).mempalace.embedding_model
+
+    assert local == cloud, f"local uses {local!r}, cloud uses {cloud!r}"
+
+
+@pytest.mark.parametrize("path", [_LOCAL, _CLOUD])
+def test_the_embedder_is_named_rather_than_defaulted(path: pathlib.Path) -> None:
+    """Empty means we send no model and MemPalace picks minilm, its own default.
+
+    That is fine for an existing palace, which keeps its own embedder either way,
+    but a new one would silently get the English-only model. Naming it is the
+    difference between a deliberate choice and an accident.
+    """
+
+    assert _load(path).mempalace.embedding_model.strip()

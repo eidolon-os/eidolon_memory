@@ -20,9 +20,17 @@ mempalace:
   # chroma keeps vectors in a file in the palace directory. The alternative is
   # milvus, for deployments serving spaces from more than one host.
   backend: chroma
-  # Optional: minilm (legacy/English) or embeddinggemma (multilingual).
-  # Existing palaces must be rebuilt before switching embedding_model.
-  embedding_model: ""
+  # minilm (English only, cross-lingual cosine ~0.35) or embeddinggemma
+  # (100+ languages, ~0.88). Both produce 384-dim vectors — embeddinggemma
+  # reaches that by Matryoshka truncation — so this choice is about retrieval
+  # quality, not vector size or storage cost.
+  #
+  # Set it explicitly. Leaving it empty means we pass no model to MemPalace,
+  # which then applies its own default of minilm — so a NEW palace silently gets
+  # the English-only embedder. An existing palace keeps whatever it was built
+  # with regardless, and MemPalace refuses to open one whose embedder no longer
+  # matches; changing this means rebuilding the index.
+  embedding_model: embeddinggemma
   # Optional: auto, cpu, cuda, coreml, or dml.
   embedding_device: ""
   # Optional local copy of model files for operations/runbooks.
