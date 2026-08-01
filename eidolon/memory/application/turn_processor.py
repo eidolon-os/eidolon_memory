@@ -9,6 +9,7 @@ fail-mode for each (G7 KG failure does not block chat ack).
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -58,6 +59,7 @@ from eidolon.memory.domain.ports import (
     ExtractionDecisionStore,
 )
 from eidolon.memory.domain.steward import StewardDecision
+from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -293,13 +295,21 @@ async def process_turn_message(
             return
 
     # ── decide ─────────────────────────────────────────────────────────────
+    steward_started = time.perf_counter()
     try:
         decision, memory_intents = await _decide_once(
             steward,
             turn,
             decision_store,
         )
+        metrics.TURN_STAGE_SECONDS.labels(stage="steward").observe(
+            time.perf_counter() - steward_started
+        )
     except Exception as exc:
+        metrics.TURN_STAGE_SECONDS.labels(stage="steward").observe(
+            time.perf_counter() - steward_started
+        )
+        metrics.TURNS_TOTAL.labels(outcome="steward_failed").inc()
         log.error(
             "turn_processor_steward_failed",
             error=str(exc),
@@ -500,6 +510,14 @@ async def process_turn_message(
         mentions_written, mentions_rejected = await _write_mentions(
             kg, decision, kg_failures=kg_failures,
         )
+
+    # A turn that reached here was absorbed. "wrote" versus "skipped" is the
+    # distinction that matters: a steady stream of skipped turns is either a
+    # quiet conversation or a broken classifier, and the ratio is what tells
+    # them apart.
+    metrics.TURNS_TOTAL.labels(
+        outcome="wrote" if decision.should_write else "skipped"
+    ).inc()
 
     # G8: one structured line per turn — operators can grep this without
     # parsing the whole log stream.

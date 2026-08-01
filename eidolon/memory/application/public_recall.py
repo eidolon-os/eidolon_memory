@@ -25,6 +25,7 @@ from eidolon.memory.domain.errors import MemoryBackendUnavailable
 from eidolon.memory.domain.ports import MemoryReader, ScopedMemoryReader
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.cpu_env import recommend_max_wing_parallel
+from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -312,6 +313,8 @@ async def recall_with_kg_fusion(
     timeout silently degrades to vector-only — never raises into the caller so
     LiveKit's 300ms budget stays intact.
     """
+    recall_kind = "voice" if for_voice else "chat"
+    started = time.perf_counter()
     vector_task = asyncio.create_task(
         search_all_wings_mcp_style(
             backend,
@@ -438,12 +441,53 @@ async def recall_with_kg_fusion(
         except Exception as exc:  # noqa: BLE001 - never break recall
             log.warning("working_memory_snapshot_failed", error=str(exc))
 
+    _record_recall(
+        kind=recall_kind,
+        settings=settings,
+        graph_enabled=kg is not None,
+        degraded=vector_degraded,
+        elapsed=time.perf_counter() - started,
+        vector_count=len(vector_records),
+        kg_count=len(kg_records),
+    )
     return {
         "vector": vector_records,
         "kg": kg_records,
         "working_memory": working_memory,
         "degraded": vector_degraded,
     }
+
+
+def _record_recall(
+    *,
+    kind: str,
+    settings: MemorySettings,
+    graph_enabled: bool,
+    degraded: bool,
+    elapsed: float,
+    vector_count: int,
+    kg_count: int,
+) -> None:
+    """Report one recall.
+
+    ``outcome`` separates empty from degraded because they look identical to a
+    caller and mean opposite things here: empty is a correct answer about a space
+    with nothing relevant, degraded is us failing to look properly.
+    """
+
+    metrics.RECALL_SECONDS.labels(
+        kind=kind,
+        backend=settings.mempalace.backend,
+        graph="on" if graph_enabled else "off",
+        degraded="true" if degraded else "false",
+    ).observe(elapsed)
+    if degraded:
+        outcome = "degraded"
+    elif vector_count or kg_count:
+        outcome = "hit"
+    else:
+        outcome = "empty"
+    metrics.RECALL_TOTAL.labels(kind=kind, outcome=outcome).inc()
 
 
 async def _fetch_themes(
@@ -543,6 +587,7 @@ async def _kg_path_with_timeout(
 
         return await asyncio.wait_for(_inner(), timeout=timeout_s)
     except TimeoutError:
+        metrics.GRAPH_TIMEOUTS.labels(kind="voice" if timeout_s <= 0.1 else "chat").inc()
         log.warning(
             "kg_recall_timeout",
             timeout_s=timeout_s,
@@ -661,6 +706,7 @@ async def search_all_wings_mcp_style(
             scan_limit=_VOICE_EXACT_SCAN_LIMIT if for_voice else _EXACT_SCAN_LIMIT,
         )
         if exact_hits:
+            metrics.LEXICAL_FALLBACKS.inc()
             log.info(
                 "exact_lexical_fallback_hit",
                 memory_space_id=context.memory_space_id,

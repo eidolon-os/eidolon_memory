@@ -21,6 +21,10 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "httpx>=0.27",
     "rank-bm25>=0.2.2",
+    # Metrics exposition. In the base requirements rather than an extra because a
+    # service you cannot observe is not one you can operate — and the library is
+    # pure Python with no dependencies of its own.
+    "prometheus-client>=0.20",
     # FastAPI powers the supervisor's admin HTTP control surface. Light
     # transitive surface (starlette + pydantic, both already pulled in).
     "fastapi>=0.110",

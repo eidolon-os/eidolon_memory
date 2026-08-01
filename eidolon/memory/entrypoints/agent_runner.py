@@ -76,6 +76,7 @@ from eidolon.memory.infrastructure.nats.query import memory_list_drawers_query_s
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
 from eidolon.memory.infrastructure.process_temp import configure_process_temp_root
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
+from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -83,6 +84,33 @@ log = get_logger(__name__)
 
 def _elapsed_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000.0, 3)
+
+
+def _mount_metrics(app: Any) -> None:
+    """Expose metrics on the port this worker already serves.
+
+    Alongside MCP rather than on a port of its own: the supervisor knows this
+    address already, so scraping needs no new discovery, and one fewer listener
+    is one fewer thing bound to an interface.
+
+    Skipped when prometheus_client is absent — a deployment that did not install
+    it should not fail to start over a missing endpoint.
+    """
+
+    if not metrics.METRICS_AVAILABLE:
+        log.info("metrics_endpoint_unavailable", detail="prometheus_client not installed")
+        return
+
+    from starlette.responses import Response
+    from starlette.routing import Route
+
+    async def _serve_metrics(_request: Any) -> Response:
+        return Response(
+            metrics.render_metrics(),
+            media_type=metrics.metrics_content_type(),
+        )
+
+    app.router.routes.append(Route("/metrics", _serve_metrics, methods=["GET"]))
 
 
 def _open_fanout_audit_sink() -> AuditSinkPort | None:
@@ -646,6 +674,7 @@ def _run_service(
     import uvicorn
 
     starlette_app = mcp.streamable_http_app()
+    _mount_metrics(starlette_app)
     starlette_app.router.lifespan_context = _compose_starlette_lifespan(
         mcp,
         memory_space_id=memory_space_id,

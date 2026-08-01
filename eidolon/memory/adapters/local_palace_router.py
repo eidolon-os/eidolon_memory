@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import os
+import time
 from pathlib import Path
 from typing import IO
 
@@ -64,6 +65,7 @@ from eidolon.memory.infrastructure.mempalace_backend import (
 from eidolon.memory.infrastructure.nats.names import nats_safe_name
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
+from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -129,8 +131,14 @@ class LocalPalaceRouter:
                     f"holds {len(self._runtimes)} of at most {self._max_spaces}"
                 )
 
+            opening = time.perf_counter()
             runtime = await asyncio.to_thread(self._build, space_id)
             self._runtimes[space_id] = runtime
+            metrics.SPACE_OPEN_SECONDS.observe(time.perf_counter() - opening)
+            # How well the resident embedding model is amortised: one space per
+            # process means paying for a model per space, and this is the number
+            # that says whether that is still the case.
+            metrics.SPACES_HELD.set(len(self._runtimes))
             log.info(
                 "space_runtime_opened",
                 memory_space_id=space_id,
@@ -301,6 +309,7 @@ class LocalPalaceRouter:
 
         # Release the claims last, so nothing else can take a space while we are
         # still closing its databases.
+        metrics.SPACES_HELD.set(0)
         locks, self._locks = self._locks, {}
         for space_id, handle in locks.items():
             try:
