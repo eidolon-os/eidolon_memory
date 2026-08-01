@@ -41,6 +41,7 @@ from eidolon.memory.config.memory_settings import MemorySettings, resolve_run_di
 from eidolon.memory.config.palace_directory import resolve_palace_for_memory_space
 from eidolon.memory.domain.space_runtime import (
     MemorySpaceRuntime,
+    MemorySpaceUnavailable,
     SpaceLedgers,
     UnknownMemorySpace,
 )
@@ -124,7 +125,7 @@ class LocalPalaceRouter:
                 return existing
 
             if len(self._runtimes) >= self._max_spaces:
-                raise UnknownMemorySpace(
+                raise MemorySpaceUnavailable(
                     f"refusing to open memory space {space_id!r}: this process already "
                     f"holds {len(self._runtimes)} of at most {self._max_spaces}"
                 )
@@ -266,9 +267,12 @@ class LocalPalaceRouter:
             handle.seek(0)
             holder = handle.read().strip()
             handle.close()
-            raise UnknownMemorySpace(
-                f"memory space {space_id!r} is already held by another process; "
-                f"lock={lock_path} holder={holder!r}"
+            # The wording is load-bearing: operators grep for it, and so does
+            # tests/memory/e2e/test_concurrency_topology.py. Keep it stable even
+            # though "process" would now read better than "eidolon-memory-agent".
+            raise MemorySpaceUnavailable(
+                f"memory_space_id {space_id!r} is already owned by another "
+                f"eidolon-memory-agent; lock={lock_path} holder={holder!r}"
             ) from exc
         handle.seek(0)
         handle.truncate()

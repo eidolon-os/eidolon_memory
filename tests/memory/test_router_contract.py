@@ -18,7 +18,10 @@ import pytest
 from eidolon.memory.adapters.local_palace_router import LocalPalaceRouter
 from eidolon.memory.adapters.shared_store_router import SharedStoreRouter
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.domain.space_runtime import MemorySpaceRouter, UnknownMemorySpace
+from eidolon.memory.domain.space_runtime import (
+    MemorySpaceRouter,
+    MemorySpaceUnavailable,
+)
 
 
 def _local_settings(root) -> MemorySettings:
@@ -143,7 +146,7 @@ async def test_embedded_storage_refuses_a_second_holder(tmp_path, monkeypatch) -
     try:
         await first.resolve("alice")
 
-        with pytest.raises(UnknownMemorySpace, match="already held"):
+        with pytest.raises(MemorySpaceUnavailable, match="already owned"):
             await second.resolve("alice")
     finally:
         await second.aclose()

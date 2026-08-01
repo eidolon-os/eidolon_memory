@@ -16,6 +16,7 @@ from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.space_runtime import (
     MemorySpaceRouter,
     MemorySpaceRuntime,
+    MemorySpaceUnavailable,
     UnknownMemorySpace,
 )
 
@@ -195,7 +196,7 @@ async def test_the_pool_is_bounded(settings: MemorySettings) -> None:
         await router.resolve("alice")
         await router.resolve("bob")
 
-        with pytest.raises(UnknownMemorySpace, match="at most 2"):
+        with pytest.raises(MemorySpaceUnavailable, match="at most 2"):
             await router.resolve("carol")
     finally:
         await router.aclose()
@@ -240,7 +241,7 @@ async def test_a_space_already_held_is_refused(settings: MemorySettings) -> None
     try:
         await first.resolve("alice")
 
-        with pytest.raises(UnknownMemorySpace, match="already held"):
+        with pytest.raises(MemorySpaceUnavailable, match="already owned"):
             await second.resolve("alice")
     finally:
         await second.aclose()

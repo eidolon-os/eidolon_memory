@@ -116,4 +116,18 @@ class UnknownMemorySpace(LookupError):
     result, whereas this means the request reached the wrong place. Callers
     surface it rather than treating it as an empty recall, so a misrouted
     request is visible instead of looking like amnesia.
+
+    Permanent for this deployment — retrying reaches the same wrong place. For a
+    space we do serve but cannot open right now, see
+    :class:`MemorySpaceUnavailable`.
+    """
+
+
+class MemorySpaceUnavailable(RuntimeError):
+    """A space this deployment serves cannot be opened at the moment.
+
+    Either another process holds it, or this one is already at its limit. Both
+    are temporary and may resolve without any change to configuration, which is
+    what separates them from :class:`UnknownMemorySpace` — a caller can retry
+    this, and should not retry that.
     """
