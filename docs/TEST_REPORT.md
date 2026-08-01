@@ -19,10 +19,10 @@ uv sync --all-extras
 
 | Category | Tests | Result | Notes |
 |---|---|---|---|
-| Unit | 792 | **792 passed, 6 skipped** | 79% line coverage |
+| Unit | 799 | **799 passed, 6 skipped** | 79% line coverage |
 | Functional (e2e) | 35 | **25 passed, 2 failed, 8 skipped** | 2 pre-existing LLM extraction failures |
 | Local↔cloud switch | 113 | **113 passed** | Same tests, both storages |
-| Contract | 128 | **128 passed** | 46 standalone + 82 in-repo |
+| Contract | 133 | **133 passed** | 46 standalone + 87 in-repo |
 
 The two e2e failures are a steward extraction shortfall that predates this work
 and is unrelated to it — see [Functional](#functional-tests-e2e).
@@ -35,7 +35,7 @@ and is unrelated to it — see [Functional](#functional-tests-e2e).
 uv run pytest tests/memory --ignore=tests/memory/e2e -q --cov=eidolon.memory
 ```
 
-**792 passed, 6 skipped, 92s. 8682 statements, 79% covered.**
+**799 passed, 6 skipped, 92s. 8682 statements, 79% covered.**
 
 The 6 skips are MemPalace-marked tests needing a real palace on disk.
 
@@ -157,7 +157,7 @@ Each test gets its own schema, dropped afterwards.
 
 ## Contract tests
 
-**128 passed.** Two groups.
+**133 passed.** Two groups.
 
 ### The distributable contracts package (46)
 
@@ -169,19 +169,32 @@ Run with **only pydantic installed** — no MemPalace, no chromadb, no onnxrunti
 That is the point: a client speaking the protocol must not need the service's
 storage stack. The isolated run is the proof.
 
-### In-repo contract and boundary tests (82)
+### In-repo contract and boundary tests (87)
 
 | Suite | Tests | Enforces |
 |---|---|---|
 | `test_kg_sqlite` | 41 | The graph port's behaviour |
 | `test_backend_contract` | 14 | Vector port, and the 5-field hot-path minimum |
 | `test_layering` | 10 | Every ledger satisfies its port; the logic layer imports no storage library and compares no backend name |
-| `test_backend_capabilities` | 11 | Warming and room enumeration are optional and correct when absent |
+| `test_backend_capabilities` | 16 | Warming and room enumeration are optional, correct when absent, and **survive the LockedBackend wrapper** |
 | `test_os_import_boundary` | 4 | Core imports no `eidolon_*` package — static scan plus a subprocess load with OS packages blocked |
 | `test_lazy_import_guard` | 2 | No unjustified deferred imports |
 
 The two boundary suites were sabotage-verified: a violation was injected
 temporarily to confirm each actually fails.
+
+#### What this category missed, and now covers
+
+The capability tests originally exercised only bare adapters. Production never
+holds one — the router wraps every store in `LockedBackend`, which forwards each
+method by hand and so answered "no" to a capability added after it was written.
+Warmup silently stopped running, and because warming is best-effort by contract
+that raised nothing. It surfaced only in e2e, as recall's graph lookup exceeding
+its 300ms budget while the embedding model loaded on the first request.
+
+Five tests now cover the wrapped case. The general rule this produced: a new
+capability protocol must be tested **through the wrapper production actually
+uses**, because decorator plus capability discovery is a silent-failure surface.
 
 ### The gap in this category
 
