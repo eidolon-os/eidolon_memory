@@ -19,9 +19,9 @@ uv sync --all-extras
 
 | Category | Tests | Result | Notes |
 |---|---|---|---|
-| Unit | 826 | **826 passed, 6 skipped** | 79% line coverage |
+| Unit | 830 | **830 passed, 6 skipped** | 79% line coverage |
 | Functional (e2e) | 35 | **25 passed, 2 failed, 8 skipped** | 2 pre-existing LLM extraction failures |
-| Local↔cloud switch | 140 | **140 passed** | Same tests, both storages |
+| Local↔cloud switch | 144 | **144 passed** | Same tests, both storages |
 | Contract | 133 | **133 passed** | 46 standalone + 87 in-repo |
 
 The two e2e failures are a steward extraction shortfall that predates this work
@@ -35,7 +35,7 @@ and is unrelated to it — see [Functional](#functional-tests-e2e).
 uv run pytest tests/memory --ignore=tests/memory/e2e -q --cov=eidolon.memory
 ```
 
-**826 passed, 6 skipped, 104s. 8682 statements, 79% covered.**
+**830 passed, 6 skipped, 101s. 8682 statements, 79% covered.**
 
 The 6 skips are MemPalace-marked tests needing a real palace on disk.
 
@@ -113,7 +113,7 @@ uv run pytest tests/memory/test_deployment_profiles.py \
   tests/memory/test_kg_dialects.py tests/memory/test_live_postgres_kg.py -q
 ```
 
-**140 passed, 62s.**
+**144 passed, 62s.**
 
 This is the category where a passing test is easiest to fake, so what each suite
 actually proves is spelled out.
@@ -121,7 +121,7 @@ actually proves is spelled out.
 | Suite | Tests | What it proves |
 |---|---|---|
 | `test_router_contract` | 29 | Both routers satisfy one interface, and the **one asymmetry**: embedded storage refuses a second holder, shared storage serves the same space from two replicas concurrently |
-| `test_ledger_contract` | 74 | Every behaviour of four ledgers asserted against **both** SQLite and PostgreSQL |
+| `test_ledger_contract` | 78 | Every behaviour of four ledgers asserted against **both** SQLite and PostgreSQL, plus opening a file written before the space column existed |
 | `test_live_postgres_kg` | 11 | The graph against a **real server**, not a mock |
 | `test_kg_dialects` | 14 | The two dialects build structurally identical statements |
 | `test_deployment_profiles` | 12 | Local and cloud config files carry the same field set |
@@ -134,7 +134,7 @@ Changing storage is a configuration edit, with **no code change**, for:
 |---|---|---|
 | Vector: chroma ↔ milvus | `mempalace.backend` | Live milvus (8.140.214.42, `eidolon` db) |
 | Graph: none ↔ sqlite ↔ postgres | `kg.backend` | 11 live PG tests + round-trip e2e |
-| Ledgers: palace ↔ postgres | `ledgers.backend` | 74 contract tests, both storages (4 of 6 ledgers) |
+| Ledgers: palace ↔ postgres | `ledgers.backend` | 78 contract tests, both storages (4 of 6 ledgers) |
 | Deployment shape | *derived from storage config* | `test_router_contract` |
 
 Deployment shape has no flag of its own: `build_space_router` derives it from
@@ -162,6 +162,23 @@ decision logic, which is exactly the drift this design has been avoiding. Doing
 it properly means extracting the decisions as pure functions both storages call,
 and that is a refactor of live persistence code, so it wants the both-storage
 test suite in place first.
+
+### Opening data written by an older version
+
+Three ledgers gained a `memory_space_id` column, and a file from before it opens
+fine then fails on the first statement — inside a constructor, for
+`command_status`, so the space never resolves and the agent does not start.
+
+This was found by checking the four live palaces on this machine, not by a test:
+an e2e palace is always freshly created, so no suite can see it. Four tests now
+pin the behaviour, and it was verified against copies of the real files.
+
+The guard sorts by what the rows are worth. An empty table is rebuilt. A
+populated `command_status` is rebuilt, because it is a projection whose
+documented failure mode is a lost final status showing a command as `accepted`
+again — never an unapplied one as successful. A populated dead-letter or sync
+table refuses and names the file, because those are failed turns worth inspecting
+and the record that stops a device replaying itself.
 
 ### PostgreSQL testing
 
