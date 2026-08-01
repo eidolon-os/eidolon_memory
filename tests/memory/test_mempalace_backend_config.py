@@ -203,3 +203,39 @@ def test_empty_selected_artifact_is_reinitialized_candidate(tmp_path: Path) -> N
     assert report.state == "uninitialized"
     assert report.removed_artifacts == (str(selected),)
     assert not selected.exists()
+
+
+def test_the_offline_embedding_matches_the_real_embedder_dimension() -> None:
+    """A palace's collection is created with the real embedder's width.
+
+    Initialisation runs the actual model, so a hash vector of any other
+    dimension is rejected on the first write — which surfaces as a confusing
+    "expecting dimension 384, got N" rather than anything about test mode.
+    Both models MemPalace offers emit 384.
+    """
+
+    from eidolon.memory.adapters.mempalace_python_backend import (
+        _OFFLINE_EMBEDDING_DIM,
+        _deterministic_embedding,
+    )
+
+    assert _OFFLINE_EMBEDDING_DIM == 384
+    assert len(_deterministic_embedding("anything")) == 384
+
+
+def test_the_offline_embedding_is_stable_and_normalised() -> None:
+    """Stable so a rerun sees the same neighbours; normalised for cosine."""
+
+    first = _deterministic_embedding_of("owner likes green")
+    again = _deterministic_embedding_of("owner likes green")
+    other = _deterministic_embedding_of("something unrelated")
+
+    assert first == again
+    assert first != other
+    assert abs(sum(value * value for value in first) - 1.0) < 1e-6
+
+
+def _deterministic_embedding_of(text: str):
+    from eidolon.memory.adapters.mempalace_python_backend import _deterministic_embedding
+
+    return _deterministic_embedding(text)

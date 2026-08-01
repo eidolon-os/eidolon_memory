@@ -613,8 +613,15 @@ def _drawer_id(wing: str, room: str, content: str) -> str:
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
-def _deterministic_embedding(text: str, *, dim: int = 64) -> list[float]:
-    """Hash text into a small vector, for tests and benchmarks only.
+#: Must match the dimension MemPalace's embedders produce — both minilm and
+#: embeddinggemma emit 384. A palace's collection is created with the real
+#: embedder's dimension during initialisation, so a hash vector of any other
+#: width is rejected on the first write.
+_OFFLINE_EMBEDDING_DIM = 384
+
+
+def _deterministic_embedding(text: str, *, dim: int = _OFFLINE_EMBEDDING_DIM) -> list[float]:
+    """Hash text into a vector, for tests and benchmarks only.
 
     Lets a test drive the real storage adapter without loading the embedder.
     Semantically meaningless — two related sentences land nowhere near each
