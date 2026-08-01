@@ -77,26 +77,62 @@ def configure_process_temp(
     palace_path: Path,
     memory_space_id: str,
 ) -> Path:
-    """Create and activate a private temp directory for one Realm owner.
+    """Create and activate a private temp directory for one memory space.
 
-    This must run after the Realm process lock is acquired and before a
-    MemPalace/Chroma client is opened.  Both generic and SQLite-specific env
-    variables are set because the Python and Rust SQLite stacks do not always
-    consult the same variable on every platform.
+    Kept for callers that genuinely serve exactly one space and want its temp
+    files under their own name. Prefer :func:`configure_process_temp_root` in a
+    process that may serve several: ``TMPDIR`` is a process-wide setting, so
+    per-space directories cannot all be active, and whichever was configured last
+    would silently take the others' temp files.
     """
 
     memory_space_id = validate_memory_space_id(memory_space_id)
     temp_dir = process_temp_dir(settings, palace_path, memory_space_id)
+    _activate(temp_dir, memory_space_id=memory_space_id)
+    return temp_dir
 
+
+def configure_process_temp_root(settings: MemorySettings, palaces_root: Path) -> Path:
+    """Point this process's temp files at a directory we control.
+
+    What this is for is keeping SQLite's spill files and Chroma's scratch off the
+    host temp directory — which may be synced by iCloud or Dropbox, cleaned under
+    us mid-write, or on a filesystem that does not honour the locking these stores
+    assume.
+
+    It is process-scoped rather than space-scoped because ``TMPDIR`` is. Temp
+    files are short-lived and randomly named, so sharing one directory between
+    the spaces a process serves costs nothing; what mattered was never being in
+    the host's temp directory.
+
+    Must run before any MemPalace or Chroma client is opened. Those stacks read
+    these variables while their native extensions load, so setting them later has
+    no effect on the handles already built.
+    """
+
+    temp_dir = resolve_process_temp_root(settings, palaces_root / "_")
+    temp_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        temp_dir.chmod(0o700)
+    except OSError:
+        # Some mounted filesystems do not expose POSIX mode bits. Location
+        # safety is checked separately when a palace is opened.
+        pass
+    _activate(temp_dir)
+    return temp_dir
+
+
+def _activate(temp_dir: Path, *, memory_space_id: str | None = None) -> None:
     value = str(temp_dir)
+    # Both names are set because the Python and Rust SQLite stacks do not always
+    # consult the same one on every platform.
     os.environ["TMPDIR"] = value
     os.environ["SQLITE_TMPDIR"] = value
-    # ``tempfile`` caches its decision. Reset it in case an early import used
-    # the host TMPDIR before the agent configured Realm isolation.
+    # ``tempfile`` caches its decision on first use. Reset it in case an earlier
+    # import already read the host TMPDIR.
     tempfile.tempdir = None
     log.info(
-        "agent_runner_process_temp_configured",
+        "process_temp_configured",
         memory_space_id=memory_space_id,
         path=value,
     )
-    return temp_dir

@@ -72,3 +72,48 @@ def test_process_temp_subprocess_env_is_active_before_agent_import(
     assert Path(env["TMPDIR"]).is_dir()
     assert Path(env["TMPDIR"]).parent == tmp_path / "runtime"
     assert env["EIDOLON_MEMORY_PROCESS_TMP_ROOT"] == str(tmp_path / "runtime")
+
+
+def test_the_process_temp_root_is_shared_rather_than_per_space(tmp_path, monkeypatch):
+    """TMPDIR is process-wide, so per-space directories cannot all be active.
+
+    In a process serving several spaces, whichever was configured last would
+    silently take the others' temp files. One directory for the process is both
+    honest and sufficient: temp files are short-lived and randomly named, and what
+    mattered was never being in the host's temp directory — which may be synced,
+    cleaned mid-write, or on a filesystem that ignores SQLite's locking.
+    """
+
+    from eidolon.memory.infrastructure.process_temp import configure_process_temp_root
+
+    monkeypatch.delenv("EIDOLON_MEMORY_PROCESS_TMP_ROOT", raising=False)
+    settings = MemorySettings.model_validate(
+        {"runtime": {"palaces_root": str(tmp_path / "palaces")}}
+    )
+
+    first = configure_process_temp_root(settings, tmp_path / "palaces")
+    second = configure_process_temp_root(settings, tmp_path / "palaces")
+
+    assert first == second, "the same process must not keep moving its temp directory"
+    assert first.is_dir()
+    assert os.environ["TMPDIR"] == str(first)
+    assert os.environ["SQLITE_TMPDIR"] == str(first)
+    assert tmp_path in first.parents, "must not fall back to the host temp directory"
+
+
+def test_configuring_the_temp_root_resets_the_tempfile_cache(tmp_path, monkeypatch):
+    """An earlier import may already have read the host TMPDIR."""
+
+    import tempfile as tempfile_module
+
+    from eidolon.memory.infrastructure.process_temp import configure_process_temp_root
+
+    monkeypatch.delenv("EIDOLON_MEMORY_PROCESS_TMP_ROOT", raising=False)
+    tempfile_module.tempdir = "/somewhere/stale"
+    settings = MemorySettings.model_validate(
+        {"runtime": {"palaces_root": str(tmp_path / "palaces")}}
+    )
+
+    configure_process_temp_root(settings, tmp_path / "palaces")
+
+    assert tempfile_module.gettempdir() == os.environ["TMPDIR"]

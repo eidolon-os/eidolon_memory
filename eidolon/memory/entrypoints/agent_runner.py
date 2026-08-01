@@ -1,16 +1,20 @@
-"""Single-memory-space agent runner (D1).
+"""Serve one memory space: MCP control plane, JetStream subscriber, steward.
 
-One ``eidolon-memory-agent --memory-space-id=<id> --port=<P>`` process per memory space:
+The process still serves a single space, but it is no longer *defined* by one.
+Opening a space — claiming it, checking it, opening its storage — belongs to a
+:class:`~eidolon.memory.domain.space_runtime.MemorySpaceRouter`, which this
+entrypoint restricts to the one space it was asked for. That is what allows a
+future runner to serve several without any of the logic below changing, and it is
+why the embedding model stops being a per-space cost.
 
-* owns the only ``chromadb.PersistentClient`` pointing at the memory-space palace
-* wraps that backend in ``LockedBackend`` so reads + writes share one
-  ``asyncio.Lock``
-* hosts the FastMCP control-plane on the loopback port (Admin / Claude IDE)
-* runs the NATS JetStream subscriber for ``eidolon.memory.turn.<memory_space_token>``
-* runs the steward in-process (writes never leave this process)
+What this process does own:
 
-LiveKit pipelines that live in the same process call the recall path directly
-via ``LiveKitRecallService``; they share the same lock through the same backend.
+* the FastMCP control plane on its configured port (Admin / Claude IDE)
+* the JetStream subscriber for ``eidolon.memory.{turn,cmd,sync}.<token>``
+* the steward, in-process — writes never leave here
+
+LiveKit pipelines in the same process call the recall path directly via
+``LiveKitRecallService``, sharing the space's lock through the same backend.
 """
 
 from __future__ import annotations
@@ -18,7 +22,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import fcntl
 import json
 import os
 import signal
@@ -33,9 +36,7 @@ from eidolon_memory_contracts import (
     memory_sync_subject,
 )
 
-from eidolon.memory.adapters.locked_backend import LockedBackend
-from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
-from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
+from eidolon.memory.adapters.space_routing import build_space_router
 from eidolon.memory.application.privacy_filter import row_visible_to_listing
 from eidolon.memory.application.public_recall import wire_record_to_public_dict
 from eidolon.memory.application.runtime_warm import warm_palace_read_path
@@ -45,14 +46,12 @@ from eidolon.memory.application.turn_processor import (
     process_sync_message,
     process_turn_message,
 )
-from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import (
     MemorySettings,
     get_memory_settings,
-    resolve_run_dir,
 )
 from eidolon.memory.config.palace_directory import (
-    resolve_palace_for_memory_space,
+    resolve_palaces_root,
     validate_memory_space_id,
 )
 from eidolon.memory.domain.audit import AuditSinkPort
@@ -65,25 +64,17 @@ from eidolon.memory.infrastructure.cpu_env import apply_cpu_thread_env
 from eidolon.memory.infrastructure.dlq import DlqLedger
 from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 from eidolon.memory.infrastructure.integrity import (
-    IntegrityCheckFailed,
-    PalaceLocationError,
-    assert_palace_location_safe,
     fsync_directory,
-    run_integrity_check,
 )
 from eidolon.memory.infrastructure.mempalace_backend import (
     apply_mempalace_backend_env,
-    mempalace_backend_env,
-    reconcile_configured_backend,
     selected_mempalace_backend,
-    vector_sqlite_integrity_targets,
 )
 from eidolon.memory.infrastructure.nats.commands import JetStreamCommandPublisher
-from eidolon.memory.infrastructure.nats.names import memory_consumer_name, nats_safe_name
+from eidolon.memory.infrastructure.nats.names import memory_consumer_name
 from eidolon.memory.infrastructure.nats.query import memory_list_drawers_query_subject
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
-from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
-from eidolon.memory.infrastructure.process_temp import configure_process_temp
+from eidolon.memory.infrastructure.process_temp import configure_process_temp_root
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 from eidolon.memory.support.logging import get_logger
 
@@ -92,54 +83,6 @@ log = get_logger(__name__)
 
 def _elapsed_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000.0, 3)
-
-
-def _acquire_memory_space_process_lock(settings: MemorySettings, memory_space_id: str):
-    """Hold an exclusive process lock for one memory space.
-
-    This protects the JetStream durable-consumer ownership contract as well as
-    the palace single-owner rule. Starting two agent_runners for the same
-    memory_space_id can route writes to the wrong palace if one is a temporary
-    benchmark process, so fail fast instead.
-    """
-    run_dir = resolve_run_dir(settings)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = run_dir / f"eidolon-memory-agent-{nats_safe_name(memory_space_id)}.lock"
-    handle = open(lock_path, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        handle.seek(0)
-        holder = handle.read().strip()
-        handle.close()
-        msg = (
-            f"memory_space_id {memory_space_id!r} is already owned by another "
-            f"eidolon-memory-agent; lock={lock_path} holder={holder!r}"
-        )
-        raise RuntimeError(msg) from exc
-    handle.seek(0)
-    handle.truncate()
-    handle.write(str(os.getpid()))
-    handle.flush()
-    return handle
-
-
-def _materialize_kg_file(kg_sqlite_path: Path) -> None:
-    """Ensure ``knowledge_graph.sqlite3`` exists with the schema committed.
-
-    mempalace.KnowledgeGraph() creates the file + tables on first ``__init__``;
-    we explicitly open + close so the file is present *before* integrity_check
-    runs. fsync the parent directory so the new file survives a sudden poweroff.
-    """
-    from mempalace.knowledge_graph import KnowledgeGraph
-
-    kg_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-    kg = KnowledgeGraph(db_path=str(kg_sqlite_path))
-    try:
-        kg.close()
-    except Exception as exc:
-        log.warning("kg_materialize_close_failed", error=str(exc))
-    fsync_directory(kg_sqlite_path.parent)
 
 
 def _open_fanout_audit_sink() -> AuditSinkPort | None:
@@ -564,150 +507,89 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     memory_space_id = validate_memory_space_id(args.memory_space_id)
     settings = get_memory_settings()
-    process_lock = _acquire_memory_space_process_lock(settings, memory_space_id)
     apply_mempalace_backend_env(settings)
     backend_name = selected_mempalace_backend(settings)
     apply_cpu_thread_env(settings, role="livekit")
 
-    palace_path = resolve_palace_for_memory_space(
+    # Before any store is opened: those stacks read the temp-directory variables
+    # while their native extensions load, so this cannot wait until a space is
+    # resolved. Process-scoped, because TMPDIR is — see configure_process_temp_root.
+    configure_process_temp_root(settings, resolve_palaces_root(settings))
+
+    # Opening a space — its claim, its safety checks, its storage — belongs to the
+    # router, so that a process serving several spaces does it once per space
+    # rather than once at startup. This process still serves exactly one, which is
+    # why the router is restricted to it.
+    router = build_space_router(
         settings,
-        memory_space_id,
-        path_override=args.palace_path or None,
+        allowed_spaces=[memory_space_id],
+        palace_path_override=args.palace_path or None,
     )
-
-    # D4: deployment-location guard (iCloud / Dropbox / NFS / SMB)
-    try:
-        assert_palace_location_safe(palace_path)
-    except PalaceLocationError as exc:
-        log.error("agent_runner_unsafe_palace_location", error=str(exc))
-        raise
-
-    configure_process_temp(settings, palace_path, memory_space_id)
-
-    artifact_report = reconcile_configured_backend(palace_path, backend_name)
-    if artifact_report.removed_artifacts:
-        log.warning(
-            "agent_runner_removed_empty_backend_artifacts",
-            memory_space_id=memory_space_id,
-            configured_backend=backend_name,
-            removed=list(artifact_report.removed_artifacts),
-        )
-
+    # Resolving is async and uvicorn has not started yet, so this runs in a
+    # throwaway loop. Safe because nothing resolved here binds to it: asyncio
+    # locks attach to the loop that first awaits them, which will be uvicorn's.
     step_started = time.perf_counter()
-    ensure_palace_initialized(
-        memory_space_id,
-        palace_path,
-        backend=backend_name,
-        env=mempalace_backend_env(settings),
-    )
+    runtime = asyncio.run(router.resolve(memory_space_id))
+    palace_path = Path(runtime.palace_path)
     log.info(
-        "agent_runner_palace_init_done",
+        "agent_runner_space_opened",
         memory_space_id=memory_space_id,
         palace=str(palace_path),
+        backend=backend_name,
+        kg=runtime.has_kg,
         elapsed_ms=_elapsed_ms(step_started),
     )
 
-    # KG plan §3.2 G3: explicitly create the KG SQLite so integrity_check sees a
-    # committed file (mempalace KnowledgeGraph initializes tables on first open).
-    # Skipped entirely when the graph is switched off — there is then no file to
-    # create, and none to refuse startup over.
-    kg_sqlite_path = palace_path / "knowledge_graph.sqlite3"
-    kg_enabled = settings.kg.enabled
-    if kg_enabled:
-        step_started = time.perf_counter()
-        _materialize_kg_file(kg_sqlite_path)
-        log.info(
-            "agent_runner_kg_materialize_done",
-            memory_space_id=memory_space_id,
-            kg=str(kg_sqlite_path),
-            elapsed_ms=_elapsed_ms(step_started),
-        )
-    else:
-        log.info(
-            "agent_runner_kg_disabled",
-            memory_space_id=memory_space_id,
-            detail="kg.backend=none; serving vector recall only",
-        )
+    backend = runtime.backend
+    kg = runtime.kg
+    command_status = runtime.ledgers.command_status
+    dlq = runtime.ledgers.dlq
+    decision_store = runtime.ledgers.decisions
+    canonical_facts = runtime.ledgers.canonical_facts
+    commitments = runtime.ledgers.commitments
 
-    # D2 + KG G3: integrity check — refuse to come up on a malformed palace OR KG.
-    integrity_targets = [
-        *vector_sqlite_integrity_targets(palace_path, backend_name),
-        *([("kg", kg_sqlite_path)] if kg_enabled else []),
-    ]
-    step_started = time.perf_counter()
-    checked: list[str] = []
-    for label, db_path in integrity_targets:
-        report = run_integrity_check(str(db_path), quick=False)
-        if not report.ok:
-            msg = (
-                f"agent_runner refusing to start: {label} integrity_check failed "
-                f"({report.detail!r}); investigate and restore from snapshot"
-            )
-            log.error(
-                "agent_runner_integrity_failed",
-                memory_space_id=memory_space_id,
-                db=label,
-                palace=str(palace_path),
-                detail=report.detail,
-            )
-            raise IntegrityCheckFailed(msg)
-        checked.append(label)
-    log.info(
-        "agent_runner_integrity_check_done",
-        memory_space_id=memory_space_id,
-        targets=checked,
-        elapsed_ms=_elapsed_ms(step_started),
-    )
-
-    step_started = time.perf_counter()
-    inner = MemPalacePythonBackend(settings, str(palace_path), memory_space_id=memory_space_id)
-    backend = LockedBackend(inner)
-
-    # Phase 2: bolt the working-memory ring onto the backend so it shares
-    # ``backend.lock`` (no second lock to reason about, no deadlock risk).
-    # ``maxlen=0`` from settings disables it cleanly — rollback is config-only.
-    backend.working_memory = WorkingMemoryRing(
-        maxlen=settings.runtime.working_memory_maxlen,
-        lock=backend.lock,
-    )
-
-    # KG plan §3.0: LockedKnowledgeGraph shares backend.lock so chroma + KG
-    # reads/writes stay coherent inside one agent_runner process.
-    #
-    # None means the graph is off. Every consumer already handles that: recall
-    # falls back to vector-only, the MCP graph tools are not registered, and a
-    # graph command is answered with a failure rather than left hanging.
-    kg = None
-    if kg_enabled:
-        from mempalace.knowledge_graph import KnowledgeGraph
-
-        kg = LockedKnowledgeGraph(
-            KnowledgeGraph(db_path=str(kg_sqlite_path)),
-            backend.lock,
-        )
-
-    # KG plan §3.3: write tools publish through the same JetStream stream
-    # that handles chat turns; admin is just another "agent" client.
+    # KG plan §3.3: write tools publish through the same JetStream stream that
+    # handles chat turns; admin is just another client.
     command_publisher = JetStreamCommandPublisher.from_memory_settings(settings)
-    command_status = CommandStatusLedger(
-        palace_path / "command_status.sqlite3",
-        retention_days=settings.command_status.retention_days,
-        max_records=settings.command_status.max_records,
-        prune_every_writes=settings.command_status.prune_every_writes,
-    )
-    dlq = DlqLedger(palace_path / "dlq.sqlite3")
-    decision_store = ExtractionDecisionLedger(
-        palace_path / "extraction_decisions.sqlite3"
-    )
-    canonical_facts = CanonicalFactLedger(
-        palace_path / "canonical_facts.sqlite3"
-    )
-    commitments = CommitmentLedger(palace_path / "commitments.sqlite3")
-    log.info(
-        "agent_runner_backend_open_done",
+
+    _run_service(
+        args=args,
+        settings=settings,
         memory_space_id=memory_space_id,
-        elapsed_ms=_elapsed_ms(step_started),
+        backend_name=backend_name,
+        palace_path=palace_path,
+        router=router,
+        backend=backend,
+        kg=kg,
+        command_publisher=command_publisher,
+        command_status=command_status,
+        dlq=dlq,
+        decision_store=decision_store,
+        canonical_facts=canonical_facts,
+        commitments=commitments,
+        bootstrap_started=bootstrap_started,
     )
+
+
+def _run_service(
+    *,
+    args: Any,
+    settings: MemorySettings,
+    memory_space_id: str,
+    backend_name: str,
+    palace_path: Path,
+    router: Any,
+    backend: Any,
+    kg: Any,
+    command_publisher: Any,
+    command_status: Any,
+    dlq: Any,
+    decision_store: Any,
+    canonical_facts: Any,
+    commitments: Any,
+    bootstrap_started: float,
+) -> None:
+    """Bind the MCP surface and serve until shut down."""
 
     host = (args.host or settings.mcp_http.host).strip() or "127.0.0.1"
     port = args.port if args.port else settings.mcp_http.port
@@ -790,9 +672,10 @@ def main(argv: list[str] | None = None) -> None:
     try:
         asyncio.run(server.serve())
     finally:
+        # The router holds this process's claim on every space it opened, so
+        # releasing is its business now rather than a lone file handle's.
         with contextlib.suppress(Exception):
-            fcntl.flock(process_lock.fileno(), fcntl.LOCK_UN)
-        process_lock.close()
+            asyncio.run(router.aclose())
 
 
 if __name__ == "__main__":
