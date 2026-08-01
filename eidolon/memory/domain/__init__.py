@@ -1,4 +1,4 @@
-"""Domain layer: wire DTOs, message payloads, fragments, and backend ports."""
+"""Domain layer: wire DTOs, fragments, and the ports storage must satisfy."""
 
 from eidolon.memory.domain.command_status import (
     CommandStatus,
@@ -20,14 +20,6 @@ from eidolon.memory.domain.extraction_decision import (
     extraction_input_hash,
 )
 from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.payloads import (
-    MemoryDeletePayload,
-    MemoryGetAllPayload,
-    MemoryGetPayload,
-    MemoryQueryPayload,
-    MemoryResultPayload,
-    MemoryStorePayload,
-)
 from eidolon.memory.domain.ports import (
     CommandStatusReader,
     CommandStatusStore,
@@ -80,10 +72,4 @@ __all__ = [
     "StewardError",
     "StewardOutputError",
     "MemoryWireRecord",
-    "MemoryQueryPayload",
-    "MemoryStorePayload",
-    "MemoryResultPayload",
-    "MemoryGetPayload",
-    "MemoryGetAllPayload",
-    "MemoryDeletePayload",
 ]

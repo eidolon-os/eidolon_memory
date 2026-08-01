@@ -1,19 +1,7 @@
-"""Memory package — D1: in-process MCP control plane + NATS JetStream writes per user."""
+"""Memory package — in-process MCP control plane + NATS JetStream writes.
 
-from eidolon.memory.domain.payloads import (
-    MemoryDeletePayload,
-    MemoryGetAllPayload,
-    MemoryGetPayload,
-    MemoryQueryPayload,
-    MemoryResultPayload,
-    MemoryStorePayload,
-)
-
-__all__ = [
-    "MemoryDeletePayload",
-    "MemoryGetAllPayload",
-    "MemoryGetPayload",
-    "MemoryQueryPayload",
-    "MemoryResultPayload",
-    "MemoryStorePayload",
-]
+Exports nothing on purpose. The wire contract a client needs lives in
+``eidolon_memory_contracts``, which installs without this package's storage
+stack. Re-exporting shapes here would give them two import paths and no answer
+to which is authoritative.
+"""
