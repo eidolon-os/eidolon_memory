@@ -48,6 +48,15 @@ dev = [
     # Validates benchmark manifests against the published schema, so a
     # provenance field cannot be quietly dropped or misspelled.
     "jsonschema>=4.20",
+    # The shared-storage paths are tested, not just reviewed. The client is
+    # optional to *run* the service and mandatory to *test* it: without it the
+    # PostgreSQL suites skip, and a skipped suite reads as a passing one.
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    # Ships PostgreSQL binaries as a wheel, so a real server starts with no
+    # system package and no container. Point EIDOLON_MEMORY_PG_TEST_DSN at
+    # another server to check against a specific version instead.
+    "pgserver>=0.1.4",
 ]
 
 [tool.uv]

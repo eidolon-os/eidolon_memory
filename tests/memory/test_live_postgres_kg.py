@@ -1,79 +1,34 @@
-"""Live check of the shared-database graph.
+"""The shared-database graph, against a server that actually runs it.
 
-Skipped unless ``EIDOLON_MEMORY_KG_PG_TEST_DSN`` points at a PostgreSQL, so an
-ordinary run never needs a server.
+This closes the gap test_kg_dialects.py cannot: that one proves the two
+implementations build matching statements, this one proves PostgreSQL accepts
+them and answers as expected. Both are needed — structural agreement with a
+query the server rejects is worth nothing.
 
-This is the test that closes the gap test_kg_dialects.py cannot: that one proves
-the two implementations build matching statements, this one proves PostgreSQL
-accepts them and answers as expected. Both are needed — structural agreement with
-a query the server rejects is worth nothing.
-
-Everything is confined to one schema, dropped afterwards, so pointing this at a
-database with other content is safe.
-
-Run with::
-
-    EIDOLON_MEMORY_KG_PG_TEST_DSN=postgresql://user:pass@host/db \\
-      uv run --extra postgres pytest tests/memory/test_live_postgres_kg.py -v
+No longer gated behind an environment variable. The server comes from
+``pgserver`` (see postgres_fixture), so these run in an ordinary suite and the
+cloud graph is tested rather than merely reviewed. Point
+``EIDOLON_MEMORY_PG_TEST_DSN`` at another server to check a specific version.
 """
 
 from __future__ import annotations
 
-import os
-
 import pytest
-
-_DSN = os.environ.get("EIDOLON_MEMORY_KG_PG_TEST_DSN", "").strip()
-
-# Its own schema, so nothing here can touch tables the database already had.
-_SCHEMA = "eidolon_memory_kg_test"
 
 OWNER = "owner"
 COMPANION_A = "companion:comp_a"
 COMPANION_B = "companion:comp_b"
 
-pytestmark = [
-    pytest.mark.live_realm,
-    pytest.mark.skipif(
-        not _DSN, reason="set EIDOLON_MEMORY_KG_PG_TEST_DSN to run"
-    ),
-]
-
 
 @pytest.fixture
-async def graph():
-    """A graph in a throwaway schema, torn down whatever the test does."""
-
-    pytest.importorskip("psycopg_pool")
-    from psycopg_pool import AsyncConnectionPool
+async def graph(postgres_pool):
+    """A graph on a real server, in a schema this test owns."""
 
     from eidolon.memory.adapters.kg_postgres import PostgresKnowledgeGraph
 
-    pool = AsyncConnectionPool(_DSN, min_size=1, max_size=4, open=False)
-    await pool.open()
-    async with pool.connection() as conn:
-        await conn.execute(f"DROP SCHEMA IF EXISTS {_SCHEMA} CASCADE")
-        await conn.execute(f"CREATE SCHEMA {_SCHEMA}")
-        await conn.execute(f"SET search_path TO {_SCHEMA}")
-
-    # A dedicated pool whose connections all default to the test schema.
-    scoped = AsyncConnectionPool(
-        _DSN,
-        min_size=1,
-        max_size=4,
-        open=False,
-        configure=lambda conn: conn.execute(f"SET search_path TO {_SCHEMA}"),
-    )
-    await scoped.open()
-    made = PostgresKnowledgeGraph(scoped, space_id="alice")
+    made = PostgresKnowledgeGraph(postgres_pool, space_id="alice")
     await made.ensure_schema()
-    try:
-        yield made
-    finally:
-        await scoped.close()
-        async with pool.connection() as conn:
-            await conn.execute(f"DROP SCHEMA IF EXISTS {_SCHEMA} CASCADE")
-        await pool.close()
+    return made
 
 
 async def test_the_server_accepts_the_shared_schema(graph) -> None:

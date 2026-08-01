@@ -202,10 +202,28 @@ def test_id_derivation_is_shared_so_a_space_can_move_stores() -> None:
     assert kg_postgres.canonical_temporal is kg_sqlite.canonical_temporal
 
 
-def test_missing_the_postgres_extra_says_what_to_install() -> None:
-    """An operator who sets kg.backend=postgres without the driver needs telling."""
+def test_missing_the_postgres_extra_says_what_to_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator who sets kg.backend=postgres without the driver needs telling.
+
+    The absence is simulated rather than relied on. The driver is a dev
+    dependency now — the shared-storage suites need a real server — so a test
+    that only passed because the import happened to fail would silently start
+    testing a connection error to a bogus host instead.
+    """
 
     import asyncio
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_psycopg_pool(name: str, *args, **kwargs):
+        if name == "psycopg_pool":
+            raise ImportError("simulated: extra not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_psycopg_pool)
 
     with pytest.raises(RuntimeError, match="postgres.*extra"):
         asyncio.run(

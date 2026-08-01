@@ -61,3 +61,13 @@ def test_palace_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     _maybe_init_palace(p)
     return p
+
+
+# A real PostgreSQL for the shared-storage paths, started from a wheel so an
+# ordinary run needs no server installed. See postgres_fixture for why.
+from tests.memory.postgres_fixture import (  # noqa: E402
+    postgres_dsn,
+    postgres_pool,
+)
+
+__all__ = ["postgres_dsn", "postgres_pool"]
