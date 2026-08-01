@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Benchmark run manifest",
+  "description": "What produced a set of measurements. Every field is here because omitting it makes the numbers mean something other than they appear to.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["suite", "started_at", "code", "machine", "storage", "command"],
+  "properties": {
+    "suite": {
+      "type": "string",
+      "description": "Suite name, matching a file in benchmarks/suites/."
+    },
+    "started_at": {
+      "type": "string",
+      "description": "UTC, ISO-8601. Also the run directory's name."
+    },
+    "code": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_sha", "dirty"],
+      "properties": {
+        "git_sha": { "type": "string" },
+        "dirty": {
+          "type": "boolean",
+          "description": "Uncommitted changes present. A dirty run is not reproducible from the sha, so it must not be published as a baseline."
+        },
+        "branch": { "type": "string" },
+        "python": { "type": "string" },
+        "mempalace": { "type": "string" }
+      }
+    },
+    "machine": {
+      "type": "object",
+      "description": "Latency is largely a property of the host, so comparing across machines needs this stated.",
+      "additionalProperties": false,
+      "required": ["platform", "cpu_count"],
+      "properties": {
+        "platform": { "type": "string" },
+        "processor": { "type": "string" },
+        "cpu_count": { "type": "integer" },
+        "memory_gb": { "type": "number" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vector_backend", "kg_backend", "embedder"],
+      "properties": {
+        "vector_backend": { "enum": ["chroma", "milvus"] },
+        "kg_backend": { "enum": ["none", "sqlite", "postgres"] },
+        "embedder": {
+          "type": "string",
+          "description": "Read from the palace, not from configuration: what matters is the embedder the index was built with. Configuration can disagree with it, and did once — a quality benchmark measured minilm while production ran embeddinggemma."
+        },
+        "embedder_source": {
+          "enum": ["palace", "configured", "unknown"],
+          "description": "Where the embedder value came from. 'configured' is weaker evidence and should be treated as provisional."
+        },
+        "vector_uri": {
+          "type": "string",
+          "description": "Host only, never credentials."
+        }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "description": "Quality suites only.",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "split": {
+          "type": "string",
+          "description": "A number from the split used for tuning is not a number about generalisation. Held-out results are the publishable ones."
+        },
+        "item_count": { "type": "integer" },
+        "seed": { "type": "integer" },
+        "metric": {
+          "enum": ["retrieval_recall", "llm_judge"],
+          "description": "Retrieval recall and end-to-end accuracy are different measurements. Reporting them side by side without this label is how benchmark tables mislead."
+        }
+      }
+    },
+    "scale": {
+      "type": "object",
+      "description": "How much was stored. Recall latency grows with it, so a latency figure without it is incomparable.",
+      "additionalProperties": false,
+      "properties": {
+        "drawers": { "type": "integer" },
+        "triples": { "type": "integer" },
+        "spaces": { "type": "integer" }
+      }
+    },
+    "command": {
+      "type": "string",
+      "description": "The exact invocation, so the run can be repeated."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Anything that qualifies the numbers — a warm cache, a busy machine, a known-broken subsystem."
+    }
+  }
+}
