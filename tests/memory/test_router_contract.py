@@ -285,3 +285,62 @@ def test_the_deployment_profiles_choose_different_routers() -> None:
 
     assert storage_is_embedded(_load("settings.example.yaml"))
     assert not storage_is_embedded(_load("settings.cloud.example.yaml"))
+
+
+# ── the ledgers a router hands over ──────────────────────────────────────────
+
+
+async def test_the_shared_router_opens_ledgers_in_the_database(
+    tmp_path, postgres_dsn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configured for shared ledgers, a replica must actually get working ones.
+
+    The router previously returned an empty SpaceLedgers() and every consumer's
+    None handling kept the service running, so the absence looked like a working
+    deployment right up until a commitment query came back empty.
+    """
+
+    monkeypatch.setenv("EIDOLON_MEMORY_LEDGER_PG_DSN", postgres_dsn)
+    settings = MemorySettings.model_validate(
+        {
+            "mempalace": {"backend": "milvus", "offline_embedding": True},
+            "kg": {"backend": "none"},
+            "ledgers": {"backend": "postgres"},
+        }
+    )
+    router = SharedStoreRouter(settings, ephemeral_root=tmp_path / "ephemeral")
+
+    try:
+        runtime = await router.resolve("default.alice.default")
+
+        assert runtime.ledgers.decisions is not None
+        assert runtime.ledgers.sync is not None
+        # Reachable, not merely constructed.
+        assert (
+            await runtime.ledgers.sync.seen(event_id="e1", idempotency_hash="h1")
+        ) is False
+    finally:
+        await router.aclose()
+
+
+async def test_shared_storage_without_ledger_config_serves_without_them(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A misconfiguration degrades rather than refusing to start.
+
+    Palace-backed ledgers on a replica would be per-replica state, which is what
+    this router exists not to have. Vector recall alone is still a working
+    service, and failing startup would take a deployment down over a setting that
+    can be corrected while it runs.
+    """
+
+    monkeypatch.delenv("EIDOLON_MEMORY_LEDGER_PG_DSN", raising=False)
+    router = SharedStoreRouter(_shared_settings(), ephemeral_root=tmp_path / "ephemeral")
+
+    try:
+        runtime = await router.resolve("default.alice.default")
+
+        assert runtime.ledgers.decisions is None
+        assert runtime.backend is not None
+    finally:
+        await router.aclose()
