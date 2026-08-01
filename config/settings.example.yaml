@@ -55,6 +55,21 @@ kg:
   postgres_dsn_env: EIDOLON_MEMORY_KG_PG_DSN
   min_confidence_to_write: 0.6
 
+ledgers:
+  # The append-only records beside the memories: extraction decisions, canonical
+  # facts, commitments, command status, dead letters, device sync. Two of them are
+  # product behaviour rather than bookkeeping — canonical facts hold the chain
+  # that stops a corrected fact being recalled, and commitments are what
+  # commitment queries are answered from.
+  #
+  # "palace" keeps them as SQLite files next to the memories, which needs one
+  # owning process. Separate from the kg setting on purpose: the graph is optional
+  # at runtime, and reading these out of an optional section would mean turning
+  # the graph off took the ledgers with it.
+  backend: palace
+  # Read only when backend is postgres.
+  postgres_dsn_env: EIDOLON_MEMORY_LEDGER_PG_DSN
+
 registry:
   # Which memory spaces to serve. eidolon-admin asks an Eidolon OS admin service;
   # static reads a roster file, which is what a standalone deployment uses.

@@ -57,6 +57,19 @@ kg:
   postgres_dsn_env: EIDOLON_MEMORY_KG_PG_DSN
   min_confidence_to_write: 0.6
 
+ledgers:
+  # Must be postgres here. Left as "palace" the files would be per-replica, so a
+  # fact one replica invalidated would still be recalled by another. The router
+  # logs a warning and serves without them rather than refusing to start, which
+  # means a wrong value here degrades quietly — check the startup log.
+  #
+  # Three of the six are implemented on PostgreSQL so far: extraction decisions,
+  # device sync, dead letters. Until commitments, canonical facts and command
+  # status follow, a shared-storage deployment answers commitment queries empty
+  # and does not invalidate corrected facts.
+  backend: postgres
+  postgres_dsn_env: EIDOLON_MEMORY_LEDGER_PG_DSN
+
 registry:
   source: eidolon-admin
   static_path: ""
