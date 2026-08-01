@@ -691,6 +691,7 @@ supervisor:
 | `EIDOLON_MEMORY_LLM_API_KEY` | steward LLM 密钥 |
 | `EIDOLON_MEMORY_MILVUS_TOKEN` | Milvus / Zilliz token(`mempalace.backend=milvus` 时) |
 | `EIDOLON_MEMORY_KG_PG_DSN` | KG Postgres 连接串(`kg.backend=postgres` 时) |
+| `EIDOLON_MEMORY_LEDGER_PG_DSN` | ledger Postgres 连接串(`ledgers.backend=postgres` 时) |
 
 密钥一律不写进 YAML —— 配置里只出现 `*_env` 字段名,值放 `config/.env`。
 
@@ -790,13 +791,22 @@ EIDOLON_MEMORY_MILVUS_TEST_DB=eidolon \
 
 进行中(重构):
 
-- **两层可见性**:owner 层(关于 owner 本人的事实,所有 companion 可见)与 companion 层
-  (与特定 companion 的互动/情感/承诺,私有)。契约里的 `audience` 已定义
-  (`eidolon_memory_contracts.audience`),存储侧尚未落地。
-- **KG 自写 + Postgres 实现**:目前 sqlite 图仍由 mempalace 提供;`kg.backend=postgres`
-  已有配置与校验,实现待补。
-- **MCP 契约 v2**:`focus_subjects` 取代 `kg_subjects`,并从返回中移除 `kg_triples` /
-  `working_memory` —— 让调用方无法推断本服务是否有知识图谱。
+- **两层可见性**:已落地。owner 层(关于 owner 本人的事实,所有 companion 可见)与
+  companion 层(与特定 companion 的互动/情感/承诺,私有)。图在查询里过滤,向量在
+  `recall_policy.visible()` 这道既有可见性闸门里过滤,两侧都以 owner 层为默认。
+  **写入归层仍全是 owner 层** —— 按语句判断需要 steward 参与,而默认收窄会把 owner
+  自己的事实藏起来不给其他 companion 看,那是两种错误里更糟的一种。
+- **KG 自写 + Postgres**:已落地。`adapters/kg_sqlite.py` 与 `kg_postgres.py` 共享
+  `kg_sql.py` 的 schema 与查询形状;PG 版由 11 个真机测试验证(`pgserver` 以 wheel
+  分发 PostgreSQL 二进制,不需要 docker)。mempalace 的图已不再使用。
+- **ledger 的共享存储实现**:6 个中已完成 4 个(extraction decisions / device sync /
+  dlq / command status),每个都有双存储契约测试。**commitments 与 canonical_facts
+  未实现** —— 云端因此不会失效已纠正的事实,承诺查询返回空;见
+  `docs/TEST_REPORT.md`。
+- **MCP 契约统一**:`focus_subjects` 取代 `kg_subjects`,并从返回中移除 `kg_triples` /
+  `working_memory` —— 让调用方无法推断本服务是否有知识图谱。**这一步必须 memory 与
+  agent 同批**:agent 的 `port_adapter.py:201` 正在消费 `kg_triples`,只在 memory 侧
+  实现契约会造成"契约返回一种形状、工具返回另一种"。
 
 ---
 
