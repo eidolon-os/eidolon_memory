@@ -27,13 +27,36 @@ mcp / litellm 这些第三方包,加上同仓库自持的 `eidolon-memory-contra
 
 | 部署形态 | 向量 | 知识图谱 | 名册来源 |
 |---|---|---|---|
-| 本地单机 | chroma(palace 目录内文件) | sqlite(同上)或 `none` | admin HTTP 或 static YAML |
-| 跨主机 | milvus(server / Zilliz) | postgres | 同上 |
+| 本地单机 | chroma(palace 目录内文件) | sqlite(**本服务自写**,非 mempalace) | admin HTTP 或 static YAML |
+| 跨主机 | milvus(server / Zilliz) | postgres(实现待补) | 同上 |
 
 两者共用一套配置 schema,只换值 —— 见 `config/settings.example.yaml` 与
 `config/settings.cloud.example.yaml`(有测试断言两者字段集一致)。
 
-### 0.1 一个 space 的句柄从哪来
+### 0.1 可观测性
+
+每个 worker 在自己的 MCP 端口上暴露 `GET /metrics`(Prometheus 文本格式)。挂在已有端口上
+而非独立端口:supervisor 本来就知道这个地址,少一个监听器。
+
+关键指标:
+
+| 指标 | 回答什么 |
+|---|---|
+| `eidolon_memory_recall_seconds{kind,backend,graph,degraded}` | 召回延迟。`kind` 分 voice/chat(预算差 2 倍,混在一起两个都看不清) |
+| `eidolon_memory_recall_total{kind,outcome}` | `outcome` 区分 **empty / hit / degraded** —— empty 是"该 space 确实没有相关内容"的正确答案,degraded 是我们没查好。对调用方看起来一样,对运维意义相反 |
+| `eidolon_memory_graph_timeout_total` | 图查询超预算被丢弃的次数。非零是设计行为,**上升趋势**才是信号 |
+| `eidolon_memory_lexical_fallback_total` | 向量召回不足时回退到字面扫描的次数(有界但不便宜) |
+| `eidolon_memory_turn_stage_seconds{stage}` | 写路径分阶段耗时。steward 单独计量,因为它等 LLM、主导总时长 |
+| `eidolon_memory_spaces_held` | 本进程持有多少 space —— 也就是那份常驻 embedding 模型被摊薄的程度 |
+
+span 是结构化日志事件,字段用 OTel 命名(`trace_id`/`span_id`/`parent_span_id`/`duration_ms`),
+复用 channel→agent→memory 已有的 trace_id。没上 OTel SDK:本地部署没有 collector 接收,
+而三个硬依赖换不来任何本地可用的东西。voice 路径的 span 按 `EIDOLON_MEMORY_TRACE_SAMPLE`
+采样(默认 0.05),**但失败的 span 无论采样率都记录** —— 丢掉失败等于让事故隐形。
+
+metrics 运行时可选:`prometheus_client` 缺失时所有 helper 走 no-op,服务照常运行。
+
+### 0.2 一个 space 的句柄从哪来
 
 进程不再"是"某个 space,而是**向 router 要**它:
 
@@ -69,7 +92,8 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 | 写一条对话后异步落盘(steward 后台抽取) | **NATS JetStream**(发 `ConversationTurnPayload`) |
 | eidolon-agent 启动 / 周期刷新路由 | **Discovery HTTP**(`http://127.0.0.1:8020/api/discovery/agent-routing`) |
 
-读写都最终经同一个 `LockedBackend` + `LockedKnowledgeGraph`(单个 `asyncio.Lock` 串行 chromadb + KG SQLite 调用),保证 D1 single-owner-per-palace 不变量。
+读写都最终经同一个 `LockedBackend` + `SqliteKnowledgeGraph`(共享一把 `asyncio.Lock`
+串行 chromadb + KG SQLite 调用),保证 single-owner-per-palace 不变量。
 
 > 锁属于**嵌入式**存储。远端后端(milvus / postgres)自己管并发,其适配器的 `lock` 为
 > `None` —— 跨网络调用持锁会把并发召回串行化。
@@ -92,8 +116,8 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 │   │     ├─ MemPalacePythonBackend × 1 (LockedBackend)             │
 │   │     │   ├─ chroma.sqlite3            (单 PersistentClient)    │
 │   │     │   └─ WorkingMemoryRing         (in-memory,共享 lock)    │
-│   │     └─ LockedKnowledgeGraph                                    │
-│   │         └─ knowledge_graph.sqlite3   (triples + entity_mentions)│
+│   │     └─ SqliteKnowledgeGraph  (本服务自写,非 mempalace)         │
+│   │         └─ knowledge_graph.sqlite3   (statements + mentions)   │
 │   │                                                                │
 │   ├─ (opt-in) eidolon-memory-consolidator --user-id=alice ─────────┤  Phase 4
 │   │     主题摘要 worker:MCP 读 drawers → LLM → NATS cmd 写主题     │
@@ -124,7 +148,7 @@ entrypoints/   进程入口 · CLI · 进程经理
   supervisor.py        多用户 fan-out(agent + 可选 consolidator)+ 重连/重启
   agent_runner.py      单用户进程:MCP server + NATS subscriber(带重连韧性)
   consolidator.py      主题 worker(独立进程)
-  mcp_server.py        FastMCP 工具注册(14 个工具)
+  mcp_server.py        FastMCP 工具注册(27 个工具:9 个 public + 18 个 admin)
   discovery_server.py  agent-routing HTTP
         │ 调用
         ▼
@@ -141,13 +165,16 @@ application/   用例编排(无 IO 细节,只编排)
         │ 依赖抽象(Protocol)
         ▼
 domain/        纯数据 + 契约(pydantic,零 IO)
-  ports.py             MemoryReader/Writer/Backend Protocol(lock + working_memory)
+  ports.py             MemoryReader/Writer/Backend Protocol(= VectorStorePort)
+  kg_port.py           KnowledgeGraphPort(sqlite / postgres 两实现)
+  space_runtime.py     MemorySpaceRouter + 一个 space 的句柄集合
   wire.py / fragments.py / payloads.py / kg.py / steward.py / wings.py
         ▲ 被实现
         │
 adapters/      具体 IO 实现
   locked_backend.py    asyncio.Lock 包 chromadb(D1 单写单读)
-  locked_kg.py         asyncio.Lock 包 KG sqlite + entity_mentions(Phase 3)
+  kg_sqlite.py         自写知识图谱(双时序 + audience 列);kg_sql.py 存共享 SQL
+  local_palace_router.py / shared_store_router.py / space_routing.py  见 §0.2
   mempalace_python_backend.py  真 chromadb;search_payload 解析
   fake_backend.py      内存假实现(单测)
 infrastructure/  NATS / stream / checkpoint / palace init / CPU 调优
