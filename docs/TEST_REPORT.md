@@ -84,9 +84,14 @@ test_entity_mention_resolution.py::test_llm_extracts_mentions_and_alias_query_ro
 ```
 
 Both are the same defect: the LLM steward extracts 1–3 triples from a 12-turn
-conversation where the test expects ≥8. It predates this refactor, is present on
-the base commit, and the count varies run to run (5/3/2 one run, 2/1/1 the next),
-which is what identifies it as model instability rather than a code regression.
+conversation where the test expects ≥8. It predates this refactor and is present
+on the base commit.
+
+What identifies it as model instability rather than a code regression is that the
+count moves between runs of identical code. Two consecutive runs this session
+reported `entities=2, triples=1` and then `entities=5, triples=3,
+invalidated=1` — the second shows the invalidation chain working, which a code
+fault would not do intermittently.
 
 It is listed as an open defect rather than quarantined, because it blocks any
 graph-dependent quality benchmark from meaning anything.
