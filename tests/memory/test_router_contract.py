@@ -346,3 +346,73 @@ async def test_shared_storage_without_ledger_config_serves_without_them(
         assert runtime.backend is not None
     finally:
         await router.aclose()
+
+
+async def test_the_replica_opens_one_pool_however_many_spaces_it_serves(
+    tmp_path, postgres_dsn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Connections must scale with concurrency, not with tenants.
+
+    This started as five pools per space — graph plus four ledgers, eight
+    connections each. Three spaces would exhaust a default PostgreSQL, so the
+    shared-storage router could not have served the deployment it exists for.
+    A count is the only way to state the property, since the wrong version works
+    perfectly at the one-space scale every other test uses.
+    """
+
+    monkeypatch.setenv("EIDOLON_MEMORY_LEDGER_PG_DSN", postgres_dsn)
+    monkeypatch.setenv("EIDOLON_MEMORY_KG_PG_DSN", postgres_dsn)
+    settings = MemorySettings.model_validate(
+        {
+            "mempalace": {"backend": "milvus", "offline_embedding": True},
+            "kg": {"backend": "postgres"},
+            "ledgers": {"backend": "postgres"},
+        }
+    )
+    router = SharedStoreRouter(settings, ephemeral_root=tmp_path / "ephemeral")
+
+    try:
+        for owner in ("alice", "bob", "carol"):
+            await router.resolve(f"default.{owner}.default")
+
+        pools = {
+            id(handle._pool)
+            for runtime in router._views.values()
+            for handle in (
+                runtime.kg,
+                runtime.ledgers.decisions,
+                runtime.ledgers.sync,
+                runtime.ledgers.dlq,
+                runtime.ledgers.command_status,
+            )
+            if handle is not None
+        }
+
+        assert len(pools) == 1, f"expected one shared pool, found {len(pools)}"
+    finally:
+        await router.aclose()
+
+
+async def test_closing_the_router_releases_the_pool(
+    tmp_path, postgres_dsn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leaking it would hold connections open for the life of the process, and
+    the previous version closed only the graph's."""
+
+    monkeypatch.setenv("EIDOLON_MEMORY_LEDGER_PG_DSN", postgres_dsn)
+    settings = MemorySettings.model_validate(
+        {
+            "mempalace": {"backend": "milvus", "offline_embedding": True},
+            "kg": {"backend": "none"},
+            "ledgers": {"backend": "postgres"},
+        }
+    )
+    router = SharedStoreRouter(settings, ephemeral_root=tmp_path / "ephemeral")
+    await router.resolve("default.alice.default")
+    pool = router._pool
+    assert pool is not None
+
+    await router.aclose()
+
+    assert router._pool is None
+    assert pool.closed
