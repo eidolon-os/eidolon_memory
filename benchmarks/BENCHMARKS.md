@@ -69,6 +69,57 @@ beat, on the same datasets, at the same k, under the same definition of a hit.
 | Retrieval latency p50/p95 | **not published** | measured above |
 | End-to-end answer accuracy | not published | not yet run |
 
+### Aligning the measure — read before running any of these
+
+Read from MemPalace's published benchmark document rather than assumed, because
+running the same datasets under a different definition would produce numbers that
+look comparable and are not.
+
+**Their unit of retrieval is a whole session.** The baseline "stores every session
+verbatim as a single document", and recall asks: *"is the labelled session for this
+question inside the top-5 retrieved candidates?"* No LLM extraction runs at
+ingestion time.
+
+**Ours is a fragment.** A session becomes however many memory fragments the
+steward decides to write — possibly none. So a like-for-like comparison needs a
+mapping: a hit is *any* retrieved fragment whose source session is the labelled
+one. That requires fragments to carry their source session id through ingestion,
+which is a change to the harness, not to the service.
+
+**And that mapping exposes a ceiling we can measure before running anything.** A
+session the steward declines to write produces no fragment and is therefore
+unreachable at any k. **Extraction coverage is the hard upper bound on R@5.** The
+e2e suite currently shows the steward extracting 1–3 triples where a 12-turn
+conversation should yield ≥8, so this bound is not hypothetical.
+
+The cheap probe is therefore: ingest ~20 sessions, measure what fraction produced
+at least one fragment. If coverage is 60%, R@5 cannot exceed 60% and the honest
+next step is fixing extraction, not running 500 questions to publish a number that
+measures a known defect.
+
+### Practical constraints, confirmed
+
+| Item | Finding |
+|---|---|
+| Dataset | 3.04 GB. The original `longmemeval` is **deprecated** in favour of `longmemeval-cleaned`, which removes noisy history sessions |
+| Which file | MemPalace runs `longmemeval_s_cleaned.json` — the comparison must use the same one |
+| Split | They publish `benchmarks/lme_split_50_450.json` (50 dev, 450 held-out), so the split can be reproduced exactly rather than approximated |
+| Their harness | `benchmarks/longmemeval_bench.py`, with `--mode`, `--held-out`, `--split-file` flags |
+| Ingestion cost | Theirs is embedding-only. Ours runs an LLM steward per session, so ingesting 500 long sessions is the dominant cost and the reason a probe comes first |
+
+### Order of work, and why
+
+1. **Coverage probe** (~20 sessions). Establishes the R@5 ceiling. Cheap, and it
+   decides whether the rest is worth running.
+2. **Fix extraction** if coverage is the binding constraint.
+3. **Session-id mapping** in the ingestion harness, so a hit can be scored the way
+   they score it.
+4. Then LongMemEval dev (50), then held-out (450), then LoCoMo, ConvoMem,
+   MemBench.
+
+No date is given for the full report because the second step is an LLM quality
+problem with an unknown depth. The probe is what turns that into an estimate.
+
 Where we expect to differ, and why — stated in advance so the results can
 contradict it:
 
