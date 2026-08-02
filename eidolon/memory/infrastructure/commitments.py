@@ -24,15 +24,35 @@ from eidolon.memory.domain.commitment import (
     CommitmentStatus,
     commitment_identity,
 )
+from eidolon.memory.domain.commitment_decision import decide_commitment_apply
+from eidolon.memory.infrastructure.ledger_sql import (
+    COMMITMENT_COLUMNS,
+    COMMITMENT_COUNT,
+    COMMITMENT_INSERT,
+    COMMITMENT_REVISION_BY_ID,
+    COMMITMENT_REVISION_BY_INTENT,
+    COMMITMENT_REVISION_COLUMNS,
+    COMMITMENT_REVISION_HISTORY,
+    COMMITMENT_REVISION_INSERT,
+    COMMITMENT_REVISIONS_INDEX,
+    COMMITMENT_REVISIONS_SCHEMA,
+    COMMITMENT_SELECT_BY_ID,
+    COMMITMENT_SELECT_ONE,
+    COMMITMENT_SELECT_PAGE,
+    COMMITMENT_UPDATE,
+    COMMITMENTS_INDEX,
+    COMMITMENTS_SCHEMA,
+    SQLITE_MARKER,
+    commitment_count_active,
+    commitment_mark_projected,
+    commitment_select_active_page,
+    render,
+)
 from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
-_TRANSITIONS: dict[str, frozenset[str]] = {
-    "proposed": frozenset({"proposed", "confirmed", "cancelled", "superseded"}),
-    "confirmed": frozenset({"confirmed", "fulfilled", "cancelled", "superseded"}),
-    "fulfilled": frozenset({"fulfilled"}),
-    "cancelled": frozenset({"cancelled"}),
-    "superseded": frozenset({"superseded"}),
-}
+
+def _sql(template: str) -> str:
+    return render(template, SQLITE_MARKER)
 
 
 class CommitmentLedger(SerialisedSqliteWrites):
@@ -55,46 +75,10 @@ class CommitmentLedger(SerialisedSqliteWrites):
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS commitments (
-                    commitment_id TEXT PRIMARY KEY,
-                    memory_space_id TEXT NOT NULL,
-                    promisor TEXT NOT NULL,
-                    predicate TEXT NOT NULL,
-                    action_value TEXT NOT NULL,
-                    beneficiaries_json TEXT NOT NULL,
-                    participants_json TEXT NOT NULL,
-                    condition_value TEXT,
-                    due_at TEXT,
-                    status TEXT NOT NULL,
-                    revision INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                    , drawer_projection_state TEXT NOT NULL DEFAULT 'pending'
-                    , kg_projection_state TEXT NOT NULL DEFAULT 'pending'
-                );
-                CREATE INDEX IF NOT EXISTS idx_commitments_realm_status
-                    ON commitments(memory_space_id, status, updated_at);
-                CREATE TABLE IF NOT EXISTS commitment_revisions (
-                    revision_id TEXT PRIMARY KEY,
-                    commitment_id TEXT NOT NULL,
-                    intent_id TEXT UNIQUE NOT NULL,
-                    intent_hash TEXT NOT NULL,
-                    source_event_id TEXT NOT NULL,
-                    authority TEXT NOT NULL,
-                    operation TEXT NOT NULL,
-                    previous_status TEXT,
-                    status TEXT NOT NULL,
-                    raw_claim TEXT NOT NULL,
-                    snapshot_json TEXT NOT NULL,
-                    recorded_at TEXT NOT NULL,
-                    FOREIGN KEY(commitment_id) REFERENCES commitments(commitment_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_commitment_revisions_commitment
-                    ON commitment_revisions(commitment_id, recorded_at);
-                """
-            )
+            conn.execute(COMMITMENTS_SCHEMA)
+            conn.execute(COMMITMENTS_INDEX)
+            conn.execute(COMMITMENT_REVISIONS_SCHEMA)
+            conn.execute(COMMITMENT_REVISIONS_INDEX)
 
     async def apply(self, intent: MemoryIntent) -> CommitmentApplyResult:
         return await self._write(self._apply_sync, intent)
@@ -155,127 +139,69 @@ class CommitmentLedger(SerialisedSqliteWrites):
         )
 
     def _apply_sync(self, intent: MemoryIntent) -> CommitmentApplyResult:
+        """Read, decide, write — one transaction, decision in a pure function.
+
+        The state machine and merge rules live in
+        :func:`decide_commitment_apply`, which the PostgreSQL implementation calls
+        too. Keeping them out of here is what stops the two storages from holding
+        two copies of one state machine.
+        """
+
         fields = _intent_fields(intent)
         now = datetime.now(UTC).isoformat()
         intent_hash = _intent_hash(intent)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             replay = conn.execute(
-                "SELECT * FROM commitment_revisions WHERE intent_id = ?",
-                (intent.intent_id,),
+                _sql(COMMITMENT_REVISION_BY_INTENT), (intent.intent_id,)
             ).fetchone()
             if replay is not None:
-                if str(replay["intent_hash"]) != intent_hash:
+                stored = _revision_from_row(replay)
+                if stored.intent_hash != intent_hash:
                     raise CommitmentConflict(
                         "intent id reused with different commitment payload"
                     )
-                record = self._load_commitment(conn, str(replay["commitment_id"]))
+                row = conn.execute(
+                    _sql(COMMITMENT_SELECT_BY_ID), (stored.commitment_id,)
+                ).fetchone()
+                assert row is not None
                 return CommitmentApplyResult(
-                    commitment=record,
-                    revision=_revision_record(replay),
+                    commitment=_record(row),
+                    revision=stored.record,
                     commitment_created=False,
                     revision_created=False,
                 )
 
-            identity_id = commitment_identity(
+            fields["identity_id"] = commitment_identity(
                 intent.memory_space_id,
                 fields["promisor"],
                 fields["predicate"],
                 fields["action"],
                 fields["beneficiaries"],
             )
-            commitment_id = intent.target_id or identity_id
-            existing = conn.execute(
-                "SELECT * FROM commitments WHERE commitment_id = ?",
-                (commitment_id,),
+            commitment_id = intent.target_id or fields["identity_id"]
+            existing_row = conn.execute(
+                _sql(COMMITMENT_SELECT_BY_ID), (commitment_id,)
             ).fetchone()
-            if intent.target_id and existing is None:
-                raise CommitmentConflict("target commitment does not exist")
-            if existing is None and intent.operation_hint not in {"add", "confirm", None}:
-                raise CommitmentConflict("commitment update requires an existing target")
+            existing = _record(existing_row) if existing_row is not None else None
+            if existing is not None:
+                fields["requested_status"] = _requested_status(intent, existing.status)
 
-            created = existing is None
-            previous_status: CommitmentStatus | None = None
-            if existing is None:
-                status: CommitmentStatus = (
-                    "confirmed" if intent.operation_hint == "confirm" else "proposed"
-                )
-                beneficiaries = fields["beneficiaries"]
-                participants = fields["participants"]
-                condition = fields["condition"]
-                due_at = fields["due_at"]
-                revision_number = 1
-                created_at = now
-            else:
-                beneficiaries = (
-                    fields["beneficiaries"]
-                    if fields["beneficiaries_provided"]
-                    else _json_list(existing["beneficiaries_json"])
-                )
-                fields["beneficiaries"] = beneficiaries
-                _validate_identity(existing, intent, fields)
-                previous_status = str(existing["status"])
-                status = _requested_status(intent, previous_status)
-                if status not in _TRANSITIONS[previous_status]:
-                    raise CommitmentConflict(
-                        f"invalid commitment transition: {previous_status} -> {status}"
-                    )
-                participants = _merge_values(
-                    _json_list(existing["participants_json"]),
-                    fields["participants"],
-                )
-                condition = (
-                    fields["condition"]
-                    if "condition" in intent.attributes
-                    else existing["condition_value"]
-                )
-                due_at = (
-                    fields["due_at"]
-                    if "due_at" in intent.attributes
-                    else existing["due_at"]
-                )
-                revision_number = int(existing["revision"]) + 1
-                created_at = str(existing["created_at"])
-
-            record = CommitmentRecord(
-                commitment_id=commitment_id,
-                memory_space_id=intent.memory_space_id,
-                promisor=fields["promisor"],
-                predicate=fields["predicate"],
-                action=fields["action"],
-                beneficiaries=beneficiaries,
-                participants=participants,
-                condition=condition,
-                due_at=due_at,
-                status=status,
-                revision=revision_number,
-                created_at=created_at,
-                updated_at=now,
+            decision = decide_commitment_apply(
+                intent,
+                existing=existing,
+                fields=fields,
+                now=now,
+                merge_values=_merge_values,
+                validate_identity=_validate_identity,
             )
-            snapshot_json = record.model_dump_json()
-            if existing is None:
-                conn.execute(
-                    """
-                    INSERT INTO commitments (
-                        commitment_id, memory_space_id, promisor, predicate,
-                        action_value, beneficiaries_json, participants_json,
-                        condition_value, due_at, status, revision,
-                        created_at, updated_at, drawer_projection_state,
-                        kg_projection_state
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending')
-                    """,
-                    _record_values(record),
-                )
+            record = decision.record
+
+            if decision.created:
+                conn.execute(_sql(COMMITMENT_INSERT), _record_values(record))
             else:
                 conn.execute(
-                    """
-                    UPDATE commitments
-                    SET participants_json = ?, condition_value = ?, due_at = ?,
-                        status = ?, revision = ?, updated_at = ?,
-                        drawer_projection_state = 'pending',
-                        kg_projection_state = 'pending'
-                    WHERE commitment_id = ? AND memory_space_id = ?
-                    """,
+                    _sql(COMMITMENT_UPDATE),
                     (
                         json.dumps(record.participants, ensure_ascii=False),
                         record.condition,
@@ -287,40 +213,34 @@ class CommitmentLedger(SerialisedSqliteWrites):
                         record.memory_space_id,
                     ),
                 )
+
             revision_id = "commitment-revision:" + hashlib.sha256(
-                f"{commitment_id}\x1f{intent.intent_id}".encode()
+                f"{record.commitment_id}\x1f{intent.intent_id}".encode()
             ).hexdigest()[:32]
             conn.execute(
-                """
-                INSERT INTO commitment_revisions (
-                    revision_id, commitment_id, intent_id, intent_hash,
-                    source_event_id, authority, operation, previous_status,
-                    status, raw_claim, snapshot_json, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                _sql(COMMITMENT_REVISION_INSERT),
                 (
                     revision_id,
-                    commitment_id,
+                    record.commitment_id,
                     intent.intent_id,
                     intent_hash,
                     intent.source_event_id,
                     intent.authority,
                     intent.operation_hint or "add",
-                    previous_status,
-                    status,
+                    decision.previous_status,
+                    record.status,
                     intent.raw_claim,
-                    snapshot_json,
+                    record.model_dump_json(),
                     now,
                 ),
             )
             revision_row = conn.execute(
-                "SELECT * FROM commitment_revisions WHERE revision_id = ?",
-                (revision_id,),
+                _sql(COMMITMENT_REVISION_BY_ID), (revision_id,)
             ).fetchone()
         return CommitmentApplyResult(
             commitment=record,
             revision=_revision_record(revision_row),
-            commitment_created=created,
+            commitment_created=decision.created,
             revision_created=True,
         )
 
@@ -342,10 +262,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
         )
         with self._connect() as conn:
             result = conn.execute(
-                f"""
-                UPDATE commitments SET {assignments}
-                WHERE memory_space_id = ? AND commitment_id = ? AND revision = ?
-                """,
+                commitment_mark_projected(SQLITE_MARKER, [columns[t] for t in targets]),
                 (memory_space_id, commitment_id, revision),
             )
             if result.rowcount != 1:
@@ -368,11 +285,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
     ) -> CommitmentRecord | None:
         with self._connect() as conn:
             row = conn.execute(
-                """
-                SELECT * FROM commitments
-                WHERE memory_space_id = ? AND commitment_id = ?
-                """,
-                (memory_space_id, commitment_id),
+                _sql(COMMITMENT_SELECT_ONE), (memory_space_id, commitment_id)
             ).fetchone()
         return _record(row) if row is not None else None
 
@@ -495,15 +408,21 @@ def _requested_status(intent: MemoryIntent, current: CommitmentStatus) -> Commit
 
 
 def _validate_identity(
-    row: sqlite3.Row, intent: MemoryIntent, fields: dict[str, Any]
+    stored: CommitmentRecord, intent: MemoryIntent, fields: dict[str, Any]
 ) -> None:
-    if str(row["memory_space_id"]) != intent.memory_space_id:
+    """Refuse a revision that would change what the commitment *is*.
+
+    Takes a record rather than a row, so the PostgreSQL implementation can pass
+    its own — this is a rule about commitments, not about SQLite.
+    """
+
+    if stored.memory_space_id != intent.memory_space_id:
         raise CommitmentConflict("commitment belongs to another memory space")
     expected = (
-        str(row["promisor"]),
-        str(row["predicate"]),
-        str(row["action_value"]),
-        _json_list(row["beneficiaries_json"]),
+        stored.promisor,
+        stored.predicate,
+        stored.action,
+        stored.beneficiaries,
     )
     actual = (
         fields["promisor"],
@@ -525,7 +444,9 @@ def _intent_hash(intent: MemoryIntent) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _record(row: sqlite3.Row) -> CommitmentRecord:
+def _record(row) -> CommitmentRecord:
+    """Read positionally, in the order the shared statements select."""
+    row = dict(zip(COMMITMENT_COLUMNS, row, strict=True))
     return CommitmentRecord(
         commitment_id=str(row["commitment_id"]),
         memory_space_id=str(row["memory_space_id"]),
@@ -545,7 +466,28 @@ def _record(row: sqlite3.Row) -> CommitmentRecord:
     )
 
 
-def _revision_record(row: sqlite3.Row) -> CommitmentRevisionRecord:
+class _StoredRevision:
+    """A revision row plus the intent hash, which the record type does not carry."""
+
+    __slots__ = ("record", "intent_hash", "commitment_id")
+
+    def __init__(self, record, intent_hash: str, commitment_id: str) -> None:
+        self.record = record
+        self.intent_hash = intent_hash
+        self.commitment_id = commitment_id
+
+
+def _revision_from_row(row) -> _StoredRevision:
+    values = dict(zip(COMMITMENT_REVISION_COLUMNS, row, strict=True))
+    return _StoredRevision(
+        record=_revision_record(row),
+        intent_hash=str(values["intent_hash"]),
+        commitment_id=str(values["commitment_id"]),
+    )
+
+
+def _revision_record(row) -> CommitmentRevisionRecord:
+    row = dict(zip(COMMITMENT_REVISION_COLUMNS, row, strict=True))
     snapshot = CommitmentRecord.model_validate_json(str(row["snapshot_json"]))
     return CommitmentRevisionRecord(
         revision_id=str(row["revision_id"]),

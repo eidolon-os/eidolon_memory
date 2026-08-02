@@ -21,14 +21,17 @@ from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionConflict,
     ExtractionDecisionRecord,
 )
+from eidolon.memory.domain.commitment import CommitmentConflict
 from eidolon.memory.domain.ports import (
     CommandStatusStore,
+    CommitmentStore,
     DlqStore,
     ExtractionDecisionStore,
     SyncLedgerPort,
 )
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+from eidolon.memory.infrastructure.commitments import CommitmentLedger
 from eidolon.memory.infrastructure.dlq import DlqLedger
 from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
@@ -753,3 +756,275 @@ async def test_a_populated_command_status_is_rebuilt_rather_than_refused(
     assert await ledger.get("r1") is None  # rebuilt, so the old row is gone
     await ledger.record_accepted("r2", kind="k")
     assert (await ledger.get("r2")).status == "accepted"
+
+
+# ── commitments, both storages ───────────────────────────────────────────────
+
+
+def _commitment_intent(
+    intent_id: str,
+    *,
+    operation: str = "add",
+    status: str | None = None,
+    target_id: str | None = None,
+    participants: list[str] | None = None,
+    action: str = "take them to the dinosaur park",
+    due_at: str | None = None,
+    space: str = SPACE,
+):
+    from eidolon_memory_contracts import MemoryIntent
+
+    attributes = {
+        "beneficiaries": ["companion:default"],
+        "participants": participants or [],
+        "condition": "once there is a body",
+    }
+    if status is not None:
+        attributes["status"] = status
+    if due_at is not None:
+        attributes["due_at"] = due_at
+    return MemoryIntent(
+        intent_id=intent_id,
+        memory_space_id=space,
+        source_event_id=f"turn:{intent_id}",
+        authority="explicit_user",
+        intent_type="commitment",
+        raw_claim="I'll take you to the dinosaur park some day",
+        operation_hint=operation,
+        target_id=target_id,
+        subject="self",
+        predicate="promised",
+        object=action,
+        confidence=1.0,
+        attributes=attributes,
+    )
+
+
+@pytest.fixture(params=["embedded", "shared"])
+async def commitments(request: pytest.FixtureRequest, tmp_path, postgres_pool):
+    if request.param == "embedded":
+        return CommitmentLedger(tmp_path / "commitments.sqlite3")
+
+    from eidolon.memory.infrastructure.ledgers_postgres import PostgresCommitmentLedger
+
+    ledger = PostgresCommitmentLedger(postgres_pool)
+    await ledger.ensure_schema()
+    return ledger
+
+
+async def test_commitments_satisfies_the_port(commitments) -> None:
+    assert isinstance(commitments, CommitmentStore)
+
+
+async def test_a_promise_round_trips(commitments) -> None:
+    result = await commitments.apply(_commitment_intent("i1"))
+
+    assert result.commitment_created is True
+    assert result.commitment.status == "proposed"
+    stored = await commitments.get(SPACE, result.commitment.commitment_id)
+    assert stored.action == "take them to the dinosaur park"
+
+
+async def test_an_explicit_confirmation_skips_proposed(commitments) -> None:
+    """The user already said it; recording it as merely proposed understates that."""
+
+    result = await commitments.apply(_commitment_intent("i1", operation="confirm"))
+
+    assert result.commitment.status == "confirmed"
+
+
+async def test_replaying_an_intent_returns_the_stored_decision(commitments) -> None:
+    """The property the revision table exists for."""
+
+    first = await commitments.apply(_commitment_intent("i1"))
+    again = await commitments.apply(_commitment_intent("i1"))
+
+    assert again.revision_created is False
+    assert again.commitment_created is False
+    assert again.commitment.revision == first.commitment.revision
+
+
+async def test_the_same_intent_id_with_a_different_payload_is_a_conflict(
+    commitments,
+) -> None:
+    await commitments.apply(_commitment_intent("i1"))
+
+    with pytest.raises(CommitmentConflict):
+        await commitments.apply(_commitment_intent("i1", action="something else"))
+
+
+async def test_participants_accumulate_across_revisions(commitments) -> None:
+    """Someone named earlier is still involved when a later turn omits them."""
+
+    first = await commitments.apply(_commitment_intent("i1", participants=["mum"]))
+    await commitments.apply(
+        _commitment_intent(
+            "i2",
+            operation="update",
+            target_id=first.commitment.commitment_id,
+            participants=["dad"],
+        )
+    )
+
+    stored = await commitments.get(SPACE, first.commitment.commitment_id)
+    assert set(stored.participants) == {"mum", "dad"}
+    assert stored.revision == 2
+
+
+async def test_a_terminal_promise_cannot_reopen(commitments) -> None:
+    """A fulfilled promise does not become proposed because a turn mentioned it."""
+
+    first = await commitments.apply(_commitment_intent("i1", operation="confirm"))
+    await commitments.apply(
+        _commitment_intent(
+            "i2",
+            operation="update",
+            status="fulfilled",
+            target_id=first.commitment.commitment_id,
+        )
+    )
+
+    with pytest.raises(CommitmentConflict):
+        await commitments.apply(
+            _commitment_intent(
+                "i3",
+                operation="update",
+                status="proposed",
+                target_id=first.commitment.commitment_id,
+            )
+        )
+
+
+async def test_identity_fields_cannot_be_changed(commitments) -> None:
+    first = await commitments.apply(_commitment_intent("i1"))
+
+    with pytest.raises(CommitmentConflict):
+        await commitments.apply(
+            _commitment_intent(
+                "i2",
+                operation="update",
+                target_id=first.commitment.commitment_id,
+                action="a completely different promise",
+            )
+        )
+
+
+async def test_targeting_a_commitment_that_does_not_exist_is_a_conflict(
+    commitments,
+) -> None:
+    with pytest.raises(CommitmentConflict):
+        await commitments.apply(
+            _commitment_intent("i1", operation="update", target_id="commitment:nope")
+        )
+
+
+async def test_only_active_promises_are_listed(commitments) -> None:
+    active = await commitments.apply(_commitment_intent("i1"))
+    done = await commitments.apply(_commitment_intent("i2", action="water the plants"))
+    await commitments.apply(
+        _commitment_intent(
+            "i3",
+            operation="update",
+            status="cancelled",
+            target_id=done.commitment.commitment_id,
+            action="water the plants",
+        )
+    )
+
+    page = await commitments.list_current_page(SPACE, include_terminal=False)
+
+    assert [c.commitment_id for c in page.commitments] == [active.commitment.commitment_id]
+
+
+async def test_the_page_orders_by_due_date_soonest_first(commitments) -> None:
+    """Pins the ordering that replaced SQLite's julianday().
+
+    due_at is ISO 8601, whose lexicographic order is its chronological order, so
+    the shared statement can sort on the text. Undated promises come last —
+    otherwise NULL sorting would decide priority differently per database.
+    """
+
+    await commitments.apply(
+        _commitment_intent("late", action="later thing", due_at="2027-01-01T00:00:00Z")
+    )
+    await commitments.apply(
+        _commitment_intent("soon", action="sooner thing", due_at="2026-01-01T00:00:00Z")
+    )
+    await commitments.apply(_commitment_intent("undated", action="someday thing"))
+
+    page = await commitments.list_current_page(SPACE, include_terminal=False)
+
+    assert [c.action for c in page.commitments] == [
+        "sooner thing",
+        "later thing",
+        "someday thing",
+    ]
+
+
+async def test_history_is_returned_oldest_first(commitments) -> None:
+    first = await commitments.apply(_commitment_intent("i1"))
+    await commitments.apply(
+        _commitment_intent(
+            "i2",
+            operation="update",
+            status="confirmed",
+            target_id=first.commitment.commitment_id,
+        )
+    )
+
+    history = await commitments.history(SPACE, first.commitment.commitment_id)
+
+    assert [r.status for r in history] == ["proposed", "confirmed"]
+
+
+async def test_history_for_another_spaces_commitment_reads_as_absent(
+    commitments,
+) -> None:
+    """Not an error: a caller must not be able to probe which ids exist elsewhere."""
+
+    first = await commitments.apply(_commitment_intent("i1"))
+
+    assert await commitments.history("default.bob.default", first.commitment.commitment_id) == []
+
+
+async def test_projection_state_resets_when_a_revision_lands(commitments) -> None:
+    """A projection reflecting the previous revision would answer from a stale
+    rendering of a promise that has moved on."""
+
+    first = await commitments.apply(_commitment_intent("i1"))
+    await commitments.mark_projected(
+        SPACE, first.commitment.commitment_id, 1, targets={"drawer", "kg"}
+    )
+
+    await commitments.apply(
+        _commitment_intent(
+            "i2",
+            operation="update",
+            status="confirmed",
+            target_id=first.commitment.commitment_id,
+        )
+    )
+
+    stored = await commitments.get(SPACE, first.commitment.commitment_id)
+    assert stored.drawer_projection_state == "pending"
+    assert stored.kg_projection_state == "pending"
+
+
+async def test_marking_a_superseded_revision_is_refused(commitments) -> None:
+    """A projection that finished after the commitment changed must not mark
+    stale output as current."""
+
+    first = await commitments.apply(_commitment_intent("i1"))
+    await commitments.apply(
+        _commitment_intent(
+            "i2",
+            operation="update",
+            status="confirmed",
+            target_id=first.commitment.commitment_id,
+        )
+    )
+
+    with pytest.raises(CommitmentConflict):
+        await commitments.mark_projected(
+            SPACE, first.commitment.commitment_id, 1, targets={"drawer"}
+        )

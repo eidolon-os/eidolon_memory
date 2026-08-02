@@ -46,6 +46,7 @@ from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.space_runtime import MemorySpaceRuntime, SpaceLedgers
 from eidolon.memory.infrastructure.ledgers_postgres import (
     PostgresCommandStatusLedger,
+    PostgresCommitmentLedger,
     PostgresDlqLedger,
     PostgresExtractionDecisionLedger,
     PostgresSyncLedger,
@@ -213,10 +214,17 @@ class SharedStoreRouter:
             sync=PostgresSyncLedger(pool, space_id=space_id),
             dlq=PostgresDlqLedger(pool, space_id=space_id),
             command_status=PostgresCommandStatusLedger(pool, space_id=space_id),
+            commitments=PostgresCommitmentLedger(pool),
         )
         # Idempotent, and cheap after the first space: CREATE TABLE IF NOT EXISTS
         # on tables another replica may be creating at the same moment.
-        for ledger in (ledgers.decisions, ledgers.sync, ledgers.dlq, ledgers.command_status):
+        for ledger in (
+            ledgers.decisions,
+            ledgers.sync,
+            ledgers.dlq,
+            ledgers.command_status,
+            ledgers.commitments,
+        ):
             await ledger.ensure_schema()
         return ledgers
 

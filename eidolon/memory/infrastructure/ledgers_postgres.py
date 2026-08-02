@@ -18,6 +18,7 @@ exists to run in parallel.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -32,6 +33,16 @@ from eidolon.memory.domain.command_status import (
     CommandStatusRecord,
     CommandStatusStats,
 )
+from eidolon.memory.domain.commitment import (
+    ACTIVE_COMMITMENT_STATUSES,
+    CommitmentApplyResult,
+    CommitmentConflict,
+    CommitmentListPage,
+    CommitmentRecord,
+    CommitmentRevisionRecord,
+    commitment_identity,
+)
+from eidolon.memory.domain.commitment_decision import decide_commitment_apply
 from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
 from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionConflict,
@@ -50,6 +61,22 @@ from eidolon.memory.infrastructure.ledger_sql import (
     COMMAND_STATUS_SCHEMA,
     COMMAND_STATUS_SELECT,
     COMMAND_STATUS_UPDATE,
+    COMMITMENT_COLUMNS,
+    COMMITMENT_COUNT,
+    COMMITMENT_INSERT,
+    COMMITMENT_REVISION_BY_ID,
+    COMMITMENT_REVISION_BY_INTENT,
+    COMMITMENT_REVISION_COLUMNS,
+    COMMITMENT_REVISION_HISTORY,
+    COMMITMENT_REVISION_INSERT,
+    COMMITMENT_REVISIONS_INDEX,
+    COMMITMENT_REVISIONS_SCHEMA,
+    COMMITMENT_SELECT_BY_ID,
+    COMMITMENT_SELECT_ONE,
+    COMMITMENT_SELECT_PAGE,
+    COMMITMENT_UPDATE,
+    COMMITMENTS_INDEX,
+    COMMITMENTS_SCHEMA,
     DLQ_CLAIM,
     DLQ_COLUMNS,
     DLQ_COUNT_BY_STATE,
@@ -72,7 +99,21 @@ from eidolon.memory.infrastructure.ledger_sql import (
     SYNC_EVENT_SEEN,
     SYNC_EVENTS_INDEX,
     SYNC_EVENTS_SCHEMA,
+    commitment_count_active,
+    commitment_mark_projected,
+    commitment_select_active_page,
     render,
+)
+# The pure helpers the decision needs. Imported from the embedded ledger because
+# they are properties of commitments, not of SQLite — the alternative is a third
+# module holding four small functions.
+from eidolon.memory.infrastructure.commitments import (
+    _intent_fields,
+    _intent_hash,
+    _merge_values,
+    _record_values as _commitment_values,
+    _requested_status,
+    _validate_identity,
 )
 from eidolon.memory.support.logging import get_logger
 
@@ -679,6 +720,314 @@ class PostgresCommandStatusLedger:
             return
         self._writes_since_prune = 0
         await self.prune()
+
+
+class PostgresCommitmentLedger:
+    """Promises in play, shared across replicas.
+
+    The state machine and merge rules are not here: they are in
+    decide_commitment_apply, which the SQLite ledger calls too. This class does
+    the reads, the writes, and the transaction — nothing that decides anything.
+    That split is why there is one state machine rather than two.
+    """
+
+    def __init__(self, pool: Any, *, space_id: str | None = None) -> None:
+        self._pool = pool
+        # Unused: every method takes the space as an argument, matching the
+        # embedded ledger's signature. Accepted so the router can construct all
+        # ledgers the same way.
+        self._space_id = space_id
+
+    @classmethod
+    async def connect(cls, dsn: str, *, min_size: int = 1, max_size: int = 8):
+        pool_cls = require_pool_driver()
+        pool = pool_cls(dsn, min_size=min_size, max_size=max_size, open=False)
+        await pool.open()
+        ledger = cls(pool)
+        await ledger.ensure_schema()
+        return ledger
+
+    async def ensure_schema(self) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(COMMITMENTS_SCHEMA)
+            await conn.execute(COMMITMENTS_INDEX)
+            await conn.execute(COMMITMENT_REVISIONS_SCHEMA)
+            await conn.execute(COMMITMENT_REVISIONS_INDEX)
+
+    async def apply(self, intent: MemoryIntent) -> CommitmentApplyResult:
+        """Read, decide, write — one transaction.
+
+        FOR UPDATE on the existing row, so two replicas applying intents to the
+        same commitment serialise instead of both computing a next revision from
+        the same current one.
+        """
+
+        fields = _intent_fields(intent)
+        now = datetime.now(UTC).isoformat()
+        intent_hash = _intent_hash(intent)
+
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    render(COMMITMENT_REVISION_BY_INTENT, POSTGRES_MARKER),
+                    (intent.intent_id,),
+                )
+                replay = await cursor.fetchone()
+                if replay is not None:
+                    stored = _commitment_revision_from_row(replay)
+                    if stored.intent_hash != intent_hash:
+                        raise CommitmentConflict(
+                            "intent id reused with different commitment payload"
+                        )
+                    cursor = await conn.execute(
+                        render(COMMITMENT_SELECT_BY_ID, POSTGRES_MARKER),
+                        (stored.commitment_id,),
+                    )
+                    row = await cursor.fetchone()
+                    assert row is not None
+                    return CommitmentApplyResult(
+                        commitment=_commitment_from_row(row),
+                        revision=stored.record,
+                        commitment_created=False,
+                        revision_created=False,
+                    )
+
+                fields["identity_id"] = commitment_identity(
+                    intent.memory_space_id,
+                    fields["promisor"],
+                    fields["predicate"],
+                    fields["action"],
+                    fields["beneficiaries"],
+                )
+                commitment_id = intent.target_id or fields["identity_id"]
+                cursor = await conn.execute(
+                    render(COMMITMENT_SELECT_BY_ID, POSTGRES_MARKER) + " FOR UPDATE",
+                    (commitment_id,),
+                )
+                existing_row = await cursor.fetchone()
+                existing = (
+                    _commitment_from_row(existing_row) if existing_row is not None else None
+                )
+                if existing is not None:
+                    fields["requested_status"] = _requested_status(intent, existing.status)
+
+                decision = decide_commitment_apply(
+                    intent,
+                    existing=existing,
+                    fields=fields,
+                    now=now,
+                    merge_values=_merge_values,
+                    validate_identity=_validate_identity,
+                )
+                record = decision.record
+
+                if decision.created:
+                    await conn.execute(
+                        render(COMMITMENT_INSERT, POSTGRES_MARKER),
+                        _commitment_values(record),
+                    )
+                else:
+                    await conn.execute(
+                        render(COMMITMENT_UPDATE, POSTGRES_MARKER),
+                        (
+                            json.dumps(record.participants, ensure_ascii=False),
+                            record.condition,
+                            record.due_at,
+                            record.status,
+                            record.revision,
+                            record.updated_at,
+                            record.commitment_id,
+                            record.memory_space_id,
+                        ),
+                    )
+
+                revision_id = "commitment-revision:" + hashlib.sha256(
+                    f"{record.commitment_id}\x1f{intent.intent_id}".encode()
+                ).hexdigest()[:32]
+                await conn.execute(
+                    render(COMMITMENT_REVISION_INSERT, POSTGRES_MARKER),
+                    (
+                        revision_id,
+                        record.commitment_id,
+                        intent.intent_id,
+                        intent_hash,
+                        intent.source_event_id,
+                        intent.authority,
+                        intent.operation_hint or "add",
+                        decision.previous_status,
+                        record.status,
+                        intent.raw_claim,
+                        record.model_dump_json(),
+                        now,
+                    ),
+                )
+                cursor = await conn.execute(
+                    render(COMMITMENT_REVISION_BY_ID, POSTGRES_MARKER), (revision_id,)
+                )
+                revision_row = await cursor.fetchone()
+
+        return CommitmentApplyResult(
+            commitment=record,
+            revision=_commitment_revision_from_row(revision_row).record,
+            commitment_created=decision.created,
+            revision_created=True,
+        )
+
+    async def get(
+        self, memory_space_id: str, commitment_id: str
+    ) -> CommitmentRecord | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                render(COMMITMENT_SELECT_ONE, POSTGRES_MARKER),
+                (memory_space_id, commitment_id),
+            )
+            row = await cursor.fetchone()
+        return _commitment_from_row(row) if row is not None else None
+
+    async def mark_projected(
+        self,
+        memory_space_id: str,
+        commitment_id: str,
+        revision: int,
+        *,
+        targets: set[str],
+    ) -> None:
+        columns = {"drawer": "drawer_projection_state", "kg": "kg_projection_state"}
+        unknown = set(targets) - set(columns)
+        if unknown:
+            raise ValueError(f"unknown projection targets: {sorted(unknown)}")
+        if not targets:
+            return
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                commitment_mark_projected(
+                    POSTGRES_MARKER, [columns[t] for t in targets]
+                ),
+                (memory_space_id, commitment_id, revision),
+            )
+            if cursor.rowcount != 1:
+                raise CommitmentConflict(
+                    "commitment revision changed before projection completed"
+                )
+
+    async def list_current(
+        self, memory_space_id: str, *, include_terminal: bool = False, limit: int = 100
+    ) -> list[CommitmentRecord]:
+        page = await self.list_current_page(
+            memory_space_id, include_terminal=include_terminal, limit=limit
+        )
+        return page.commitments
+
+    async def list_current_page(
+        self, memory_space_id: str, *, include_terminal: bool = False, limit: int = 100
+    ) -> CommitmentListPage:
+        bounded = max(1, min(int(limit), 200))
+        async with self._pool.connection() as conn:
+            if include_terminal:
+                cursor = await conn.execute(
+                    render(COMMITMENT_COUNT, POSTGRES_MARKER), (memory_space_id,)
+                )
+                total = int((await cursor.fetchone())[0])
+                cursor = await conn.execute(
+                    render(COMMITMENT_SELECT_PAGE, POSTGRES_MARKER),
+                    (memory_space_id, bounded),
+                )
+            else:
+                statuses = sorted(ACTIVE_COMMITMENT_STATUSES)
+                cursor = await conn.execute(
+                    commitment_count_active(POSTGRES_MARKER, len(statuses)),
+                    (memory_space_id, *statuses),
+                )
+                total = int((await cursor.fetchone())[0])
+                cursor = await conn.execute(
+                    commitment_select_active_page(POSTGRES_MARKER, len(statuses)),
+                    (memory_space_id, *statuses, bounded),
+                )
+            rows = await cursor.fetchall()
+
+        found = [_commitment_from_row(row) for row in rows]
+        return CommitmentListPage(
+            commitments=found,
+            total=total,
+            limit=bounded,
+            truncated=total > len(found),
+        )
+
+    async def history(
+        self, memory_space_id: str, commitment_id: str, *, limit: int = 50
+    ) -> list[CommitmentRevisionRecord]:
+        bounded = max(1, min(int(limit), 200))
+        async with self._pool.connection() as conn:
+            # Ownership check first: history for a commitment in another space
+            # must read as absent, not as a permission error, so a caller cannot
+            # probe which ids exist elsewhere.
+            cursor = await conn.execute(
+                render(COMMITMENT_SELECT_ONE, POSTGRES_MARKER),
+                (memory_space_id, commitment_id),
+            )
+            if await cursor.fetchone() is None:
+                return []
+            cursor = await conn.execute(
+                render(COMMITMENT_REVISION_HISTORY, POSTGRES_MARKER),
+                (commitment_id, bounded),
+            )
+            rows = await cursor.fetchall()
+        return [_commitment_revision_from_row(row).record for row in reversed(rows)]
+
+
+class _StoredCommitmentRevision:
+    """A revision plus its intent hash, which the record type does not carry."""
+
+    __slots__ = ("record", "intent_hash", "commitment_id")
+
+    def __init__(self, record, intent_hash: str, commitment_id: str) -> None:
+        self.record = record
+        self.intent_hash = intent_hash
+        self.commitment_id = commitment_id
+
+
+def _commitment_from_row(row: Any) -> CommitmentRecord:
+    """Read positionally, in the order the shared statements select."""
+
+    values = dict(zip(COMMITMENT_COLUMNS, row, strict=True))
+    return CommitmentRecord(
+        commitment_id=str(values["commitment_id"]),
+        memory_space_id=str(values["memory_space_id"]),
+        promisor=str(values["promisor"]),
+        predicate=str(values["predicate"]),
+        action=str(values["action_value"]),
+        beneficiaries=json.loads(values["beneficiaries_json"] or "[]"),
+        participants=json.loads(values["participants_json"] or "[]"),
+        condition=values["condition_value"] or None,
+        due_at=values["due_at"] or None,
+        status=str(values["status"]),
+        revision=int(values["revision"]),
+        created_at=str(values["created_at"]),
+        updated_at=str(values["updated_at"]),
+        drawer_projection_state=str(values["drawer_projection_state"]),
+        kg_projection_state=str(values["kg_projection_state"]),
+    )
+
+
+def _commitment_revision_from_row(row: Any) -> _StoredCommitmentRevision:
+    values = dict(zip(COMMITMENT_REVISION_COLUMNS, row, strict=True))
+    return _StoredCommitmentRevision(
+        record=CommitmentRevisionRecord(
+            revision_id=str(values["revision_id"]),
+            commitment_id=str(values["commitment_id"]),
+            intent_id=str(values["intent_id"]),
+            source_event_id=str(values["source_event_id"]),
+            authority=str(values["authority"]),
+            operation=str(values["operation"]),
+            previous_status=values["previous_status"] or None,
+            status=str(values["status"]),
+            raw_claim=str(values["raw_claim"]),
+            snapshot=CommitmentRecord.model_validate_json(str(values["snapshot_json"])),
+            recorded_at=str(values["recorded_at"]),
+        ),
+        intent_hash=str(values["intent_hash"]),
+        commitment_id=str(values["commitment_id"]),
+    )
 
 
 def _command_status_from_row(row: Any) -> CommandStatusRecord:

@@ -170,3 +170,50 @@ def test_the_logic_layer_does_not_branch_on_backend_identity() -> None:
     assert not offenders, (
         "the logic layer compares against a backend name:\n  " + "\n  ".join(offenders)
     )
+
+
+# ── the commitment decision is shared, not duplicated ────────────────────────
+
+
+def test_both_commitment_storages_call_the_same_decision() -> None:
+    """The state machine exists once.
+
+    Two copies of it would drift in the way that is hardest to notice: both
+    plausible, disagreeing only on an input nobody tested. Asserted against the
+    source because the alternative — a second copy — would pass every behavioural
+    test until the day the two diverged.
+    """
+
+    import inspect
+
+    from eidolon.memory.infrastructure import commitments, ledgers_postgres
+
+    for module in (commitments, ledgers_postgres):
+        source = inspect.getsource(module)
+        assert "decide_commitment_apply" in source, (
+            f"{module.__name__} does not use the shared decision"
+        )
+        # A second table would pass every behavioural test until the two
+        # disagreed on an input nobody wrote a test for.
+        assert "_TRANSITIONS" not in source and "TRANSITIONS: dict" not in source, (
+            f"{module.__name__} holds its own transition table"
+        )
+
+
+def test_the_decision_is_pure() -> None:
+    """No clock and no I/O, so the same inputs give the same decision.
+
+    ``now`` is a parameter for this reason: a decision that read the clock could
+    not be asserted on without freezing time, and two storages calling it would
+    stamp different timestamps on the same logical revision.
+    """
+
+    import inspect
+
+    from eidolon.memory.domain import commitment_decision
+
+    source = inspect.getsource(commitment_decision)
+    for forbidden in ("datetime.now", "sqlite3", "psycopg", "await "):
+        assert forbidden not in source, (
+            f"commitment_decision references {forbidden!r}; it must stay pure"
+        )

@@ -395,3 +395,203 @@ Ordered by request_id as well as time: two rows updated in the same instant
 would otherwise be dropped in whichever order the database happened to return,
 making the prune non-deterministic between the two dialects.
 """
+
+
+# ── commitments ──────────────────────────────────────────────────────────────
+#
+# Promises still in play, plus an append-only revision history. This is product
+# behaviour, not bookkeeping: it is what commitment queries are answered from, so
+# a deployment without it tells the user there are no promises rather than
+# admitting it cannot see them.
+#
+# Two tables. The revision row is what makes an intent idempotent — replaying one
+# finds its revision and returns the stored decision instead of applying twice.
+
+COMMITMENTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS commitments (
+    commitment_id TEXT NOT NULL,
+    memory_space_id TEXT NOT NULL,
+    promisor TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    action_value TEXT NOT NULL,
+    beneficiaries_json TEXT NOT NULL,
+    participants_json TEXT NOT NULL,
+    condition_value TEXT,
+    due_at TEXT,
+    status TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    drawer_projection_state TEXT NOT NULL DEFAULT 'pending',
+    kg_projection_state TEXT NOT NULL DEFAULT 'pending',
+    PRIMARY KEY (memory_space_id, commitment_id)
+)
+"""
+
+COMMITMENTS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_commitments_realm_status
+ON commitments(memory_space_id, status, updated_at)
+"""
+
+COMMITMENT_REVISIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS commitment_revisions (
+    revision_id TEXT PRIMARY KEY,
+    commitment_id TEXT NOT NULL,
+    intent_id TEXT UNIQUE NOT NULL,
+    intent_hash TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    authority TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    previous_status TEXT,
+    status TEXT NOT NULL,
+    raw_claim TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+)
+"""
+"""No foreign key to ``commitments``.
+
+The SQLite version had one, but the parent key is now (space, commitment_id)
+while a revision only carries the commitment id — and adding the space to
+revisions to satisfy a constraint would be letting the constraint shape the data.
+The write path inserts the parent first inside one transaction, which is what
+actually guarantees the relationship.
+"""
+
+COMMITMENT_REVISIONS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_commitment_revisions_commitment
+ON commitment_revisions(commitment_id, recorded_at)
+"""
+
+COMMITMENT_COLUMNS = (
+    "commitment_id",
+    "memory_space_id",
+    "promisor",
+    "predicate",
+    "action_value",
+    "beneficiaries_json",
+    "participants_json",
+    "condition_value",
+    "due_at",
+    "status",
+    "revision",
+    "created_at",
+    "updated_at",
+    "drawer_projection_state",
+    "kg_projection_state",
+)
+
+COMMITMENT_REVISION_COLUMNS = (
+    "revision_id",
+    "commitment_id",
+    "intent_id",
+    "intent_hash",
+    "source_event_id",
+    "authority",
+    "operation",
+    "previous_status",
+    "status",
+    "raw_claim",
+    "snapshot_json",
+    "recorded_at",
+)
+
+_COMMITMENT_SELECT = f"SELECT {', '.join(COMMITMENT_COLUMNS)} FROM commitments"
+
+COMMITMENT_SELECT_ONE = f"""
+{_COMMITMENT_SELECT}
+WHERE memory_space_id = {{m}} AND commitment_id = {{m}}
+"""
+
+COMMITMENT_SELECT_BY_ID = f"{_COMMITMENT_SELECT} WHERE commitment_id = {{m}}"
+
+# The 13 written columns; the two projection states default to 'pending'.
+COMMITMENT_INSERT = f"""
+INSERT INTO commitments ({", ".join(COMMITMENT_COLUMNS[:13])})
+VALUES ({", ".join(["{m}"] * 13)})
+"""
+
+COMMITMENT_UPDATE = """
+UPDATE commitments
+SET participants_json = {m}, condition_value = {m}, due_at = {m},
+    status = {m}, revision = {m}, updated_at = {m},
+    drawer_projection_state = 'pending',
+    kg_projection_state = 'pending'
+WHERE commitment_id = {m} AND memory_space_id = {m}
+"""
+"""Any change resets both projections to pending.
+
+A revision whose drawer or graph projection still reflects the previous one would
+have the service answer from a stale rendering of a promise that has moved on.
+"""
+
+COMMITMENT_COUNT = "SELECT COUNT(*) FROM commitments WHERE memory_space_id = {m}"
+
+COMMITMENT_SELECT_PAGE = f"""
+{_COMMITMENT_SELECT}
+WHERE memory_space_id = {{m}}
+ORDER BY updated_at DESC LIMIT {{m}}
+"""
+
+# Soonest due first, undated last, then most recently touched. Ordering by the
+# text rather than a date function: due_at is ISO 8601, whose lexicographic order
+# is its chronological order, and SQLite's julianday() has no PostgreSQL
+# equivalent. Pinned by test_commitment_page_orders_by_due_date.
+_COMMITMENT_ACTIVE_ORDER = """
+ORDER BY
+    CASE WHEN due_at IS NULL THEN 1 ELSE 0 END,
+    due_at ASC,
+    updated_at DESC,
+    commitment_id ASC
+"""
+
+
+def commitment_count_active(marker: str, status_count: int) -> str:
+    return (
+        "SELECT COUNT(*) FROM commitments WHERE memory_space_id = "
+        f"{marker} AND status IN ({placeholders(status_count, marker)})"
+    )
+
+
+def commitment_select_active_page(marker: str, status_count: int) -> str:
+    return (
+        f"{_COMMITMENT_SELECT} WHERE memory_space_id = {marker} "
+        f"AND status IN ({placeholders(status_count, marker)})"
+        f"{_COMMITMENT_ACTIVE_ORDER} LIMIT {marker}"
+    )
+
+
+def commitment_mark_projected(marker: str, columns: list[str]) -> str:
+    """Mark named projections done, only if the revision has not moved on.
+
+    The revision predicate is the guard: a projection that finished after the
+    commitment changed would otherwise mark stale output as current.
+    """
+
+    assignments = ", ".join(f"{column} = 'projected'" for column in sorted(columns))
+    return (
+        f"UPDATE commitments SET {assignments} WHERE memory_space_id = {marker} "
+        f"AND commitment_id = {marker} AND revision = {marker}"
+    )
+
+
+COMMITMENT_REVISION_INSERT = f"""
+INSERT INTO commitment_revisions ({", ".join(COMMITMENT_REVISION_COLUMNS)})
+VALUES ({", ".join(["{m}"] * len(COMMITMENT_REVISION_COLUMNS))})
+"""
+
+COMMITMENT_REVISION_BY_INTENT = f"""
+SELECT {", ".join(COMMITMENT_REVISION_COLUMNS)} FROM commitment_revisions
+WHERE intent_id = {{m}}
+"""
+
+COMMITMENT_REVISION_BY_ID = f"""
+SELECT {", ".join(COMMITMENT_REVISION_COLUMNS)} FROM commitment_revisions
+WHERE revision_id = {{m}}
+"""
+
+COMMITMENT_REVISION_HISTORY = f"""
+SELECT {", ".join(COMMITMENT_REVISION_COLUMNS)} FROM commitment_revisions
+WHERE commitment_id = {{m}}
+ORDER BY recorded_at DESC, revision_id DESC LIMIT {{m}}
+"""
