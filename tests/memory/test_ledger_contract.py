@@ -1028,3 +1028,50 @@ async def test_marking_a_superseded_revision_is_refused(commitments) -> None:
         await commitments.mark_projected(
             SPACE, first.commitment.commitment_id, 1, targets={"drawer"}
         )
+
+
+async def test_an_abandoned_claim_is_recovered_by_the_next_claimer(
+    postgres_pool,
+) -> None:
+    """The recovery path now has a caller, which it did not before.
+
+    A replica that died mid-replay leaves an entry in `replaying`. Nothing else
+    looks for that, so if releasing stale claims only happened on a schedule the
+    entry would stay unreplayable until the schedule fired — and with no schedule
+    wired up, forever.
+
+    Claiming is the only moment anything cares, so that is where it happens.
+    """
+
+    from eidolon.memory.infrastructure.ledgers_postgres import PostgresDlqLedger
+
+    dead_replica = PostgresDlqLedger(postgres_pool, space_id=SPACE)
+    await dead_replica.ensure_schema()
+    entry = await dead_replica.add(subject="s", payload=b"p", error="e", deliveries=1)
+    await dead_replica.claim_replay(entry.entry_id)
+    assert (await dead_replica.get(entry.entry_id)).state == "replaying"
+
+    live_replica = PostgresDlqLedger(postgres_pool, space_id=SPACE)
+    live_replica.STALE_CLAIM_SECONDS = 0  # the entry is "old" immediately
+
+    claimed = await live_replica.claim_replay(entry.entry_id)
+
+    assert claimed is not None, "an abandoned claim was never recovered"
+    assert claimed.payload == b"p"
+
+
+async def test_a_live_claim_is_not_stolen(postgres_pool) -> None:
+    """The other half. With the default threshold an in-flight entry stays with
+    its worker, so recovery cannot hand live work to a second replica."""
+
+    from eidolon.memory.infrastructure.ledgers_postgres import PostgresDlqLedger
+
+    worker = PostgresDlqLedger(postgres_pool, space_id=SPACE)
+    await worker.ensure_schema()
+    entry = await worker.add(subject="s", payload=b"p", error="e", deliveries=1)
+    await worker.claim_replay(entry.entry_id)
+
+    other = PostgresDlqLedger(postgres_pool, space_id=SPACE)
+
+    assert await other.claim_replay(entry.entry_id) is None
+    assert (await other.get(entry.entry_id)).state == "replaying"

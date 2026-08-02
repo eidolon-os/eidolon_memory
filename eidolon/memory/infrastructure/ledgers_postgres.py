@@ -380,7 +380,17 @@ class PostgresDlqLedger:
         The conditional UPDATE is the claim. Two replicas racing produce one
         row updated and one row not — no lock, and no window where both believe
         they own it.
+
+        Stale claims are released first, here rather than on a schedule. This is
+        the only moment anything cares whether an abandoned claim exists, so a
+        periodic task would either run when nobody was asking or leave an entry
+        stuck until it happened to fire. Without this the recovery method had no
+        caller at all and an entry left by a dead replica stayed unreplayable.
         """
+
+        released = await self.release_stale_claims()
+        if released:
+            log.info("dlq_stale_claims_released", memory_space_id=self._space_id, count=released)
 
         clean_id = entry_id.strip()
         now = datetime.now(UTC).isoformat()
@@ -418,14 +428,25 @@ class PostgresDlqLedger:
         assert record is not None
         return record
 
-    async def release_stale_claims(self, *, older_than_seconds: int = 900) -> int:
+    # Must exceed the longest replay a healthy worker performs, because age is
+    # the only signal available: a replica cannot tell a dead peer from a busy
+    # one. Fifteen minutes is far above any observed replay and far below the
+    # point where a stuck entry matters operationally.
+    STALE_CLAIM_SECONDS = 900
+
+    async def release_stale_claims(self, *, older_than_seconds: int | None = None) -> int:
         """Hand back claims whose worker never finished, and say how many.
 
-        Replaces the embedded ledger's reset-on-open. Age is the only signal
-        available here: a replica cannot distinguish another replica that died
-        from one still working, so the threshold must exceed the longest replay a
-        healthy worker performs.
+        Replaces the embedded ledger's reset-on-open, which would be destructive
+        here — a starting replica cannot distinguish another replica's in-flight
+        entry from an abandoned one.
+
+        Called from :meth:`claim_replay`; the argument exists so an operator can
+        force a shorter threshold when they know a replica is gone.
         """
+
+        if older_than_seconds is None:
+            older_than_seconds = self.STALE_CLAIM_SECONDS
 
         cutoff = datetime.fromtimestamp(
             datetime.now(UTC).timestamp() - older_than_seconds, tz=UTC
