@@ -24,6 +24,7 @@ from eidolon.memory.domain.canonical_fact import (
     canonical_assertion_id,
 )
 from eidolon.memory.domain.predicates import PredicateCardinality, predicate_definition
+from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 _TARGET_COLUMNS: dict[ProjectionTarget, str] = {
     "drawer": "drawer_projection_state",
@@ -33,7 +34,7 @@ _HISTORY_FACT_LIMIT = 100
 _HISTORY_EVENT_LIMIT = 200
 
 
-class CanonicalFactLedger:
+class CanonicalFactLedger(SerialisedSqliteWrites):
     """Own exact structured fact identity and confirmation provenance.
 
     This is canonical decision state, not a Chroma/KG projection. Only the
@@ -43,6 +44,7 @@ class CanonicalFactLedger:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_write_lock()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -175,7 +177,7 @@ class CanonicalFactLedger:
         *,
         targets: set[ProjectionTarget],
     ) -> CanonicalFactRegistration:
-        return await asyncio.to_thread(self._register_sync, intent, targets)
+        return await self._write(self._register_sync, intent, targets)
 
     async def mark_projected(
         self,
@@ -184,7 +186,7 @@ class CanonicalFactLedger:
         *,
         targets: set[ProjectionTarget],
     ) -> None:
-        await asyncio.to_thread(
+        await self._read(
             self._set_projection_state_sync,
             memory_space_id,
             assertion_id,
@@ -199,7 +201,7 @@ class CanonicalFactLedger:
         *,
         targets: set[ProjectionTarget],
     ) -> None:
-        await asyncio.to_thread(
+        await self._read(
             self._set_projection_state_sync,
             memory_space_id,
             assertion_id,
@@ -208,7 +210,7 @@ class CanonicalFactLedger:
         )
 
     async def evidence_count(self, assertion_id: str) -> int:
-        return await asyncio.to_thread(self._evidence_count_sync, assertion_id)
+        return await self._read(self._evidence_count_sync, assertion_id)
 
     async def active_for_slot(
         self,
@@ -216,7 +218,7 @@ class CanonicalFactLedger:
         subject: str,
         predicate: str,
     ) -> list[CanonicalFactRecord]:
-        return await asyncio.to_thread(
+        return await self._read(
             self._active_for_slot_sync,
             memory_space_id,
             subject,
@@ -230,7 +232,7 @@ class CanonicalFactLedger:
         predicate: str,
         object_value: str,
     ) -> CanonicalFactRecord | None:
-        return await asyncio.to_thread(
+        return await self._read(
             self._get_fact_sync,
             memory_space_id,
             subject,
@@ -244,7 +246,7 @@ class CanonicalFactLedger:
         *,
         targets: set[ProjectionTarget],
     ) -> CanonicalFactRegistration:
-        return await asyncio.to_thread(
+        return await self._write(
             self._register_reactivation_sync,
             intent,
             targets,
@@ -255,7 +257,7 @@ class CanonicalFactLedger:
         memory_space_id: str,
         intent_id: str,
     ) -> None:
-        await asyncio.to_thread(
+        await self._write(
             self._mark_reactivated_sync,
             memory_space_id,
             intent_id,
@@ -265,21 +267,21 @@ class CanonicalFactLedger:
         self,
         intent: MemoryIntent,
     ) -> CanonicalFactInvalidation:
-        return await asyncio.to_thread(self._register_invalidation_sync, intent)
+        return await self._write(self._register_invalidation_sync, intent)
 
     async def mark_invalidated(
         self,
         memory_space_id: str,
         intent_id: str,
     ) -> None:
-        await asyncio.to_thread(
+        await self._write(
             self._mark_invalidated_sync,
             memory_space_id,
             intent_id,
         )
 
     async def stats(self) -> CanonicalFactStats:
-        return await asyncio.to_thread(self._stats_sync)
+        return await self._read(self._stats_sync)
 
     async def history(
         self,
@@ -290,7 +292,7 @@ class CanonicalFactLedger:
         object_value: str | None = None,
         limit: int = 100,
     ) -> list[CanonicalFactHistoryRecord]:
-        return await asyncio.to_thread(
+        return await self._read(
             self._history_sync,
             memory_space_id,
             subject,

@@ -14,9 +14,10 @@ from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionRecord,
 )
 from eidolon.memory.domain.steward import StewardDecision
+from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 
-class ExtractionDecisionLedger:
+class ExtractionDecisionLedger(SerialisedSqliteWrites):
     """Persist validated steward output before Chroma/KG projection.
 
     This ledger is a decision source, not a second memory projection. It never
@@ -26,6 +27,7 @@ class ExtractionDecisionLedger:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_write_lock()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -68,7 +70,7 @@ class ExtractionDecisionLedger:
         source_turn_id: str,
         extractor_version: str,
     ) -> ExtractionDecisionRecord | None:
-        return await asyncio.to_thread(
+        return await self._read(
             self._get_sync,
             memory_space_id,
             source_turn_id,
@@ -79,7 +81,7 @@ class ExtractionDecisionLedger:
         self,
         record: ExtractionDecisionRecord,
     ) -> ExtractionDecisionRecord:
-        return await asyncio.to_thread(self._put_if_absent_sync, record)
+        return await self._write(self._put_if_absent_sync, record)
 
     def _get_sync(
         self,

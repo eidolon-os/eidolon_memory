@@ -24,6 +24,7 @@ from eidolon.memory.domain.commitment import (
     CommitmentStatus,
     commitment_identity,
 )
+from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 _TRANSITIONS: dict[str, frozenset[str]] = {
     "proposed": frozenset({"proposed", "confirmed", "cancelled", "superseded"}),
@@ -34,12 +35,13 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
-class CommitmentLedger:
+class CommitmentLedger(SerialisedSqliteWrites):
     """Single-writer commitment aggregate; separate from canonical facts."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_write_lock()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -95,12 +97,12 @@ class CommitmentLedger:
             )
 
     async def apply(self, intent: MemoryIntent) -> CommitmentApplyResult:
-        return await asyncio.to_thread(self._apply_sync, intent)
+        return await self._write(self._apply_sync, intent)
 
     async def get(
         self, memory_space_id: str, commitment_id: str
     ) -> CommitmentRecord | None:
-        return await asyncio.to_thread(self._get_sync, memory_space_id, commitment_id)
+        return await self._read(self._get_sync, memory_space_id, commitment_id)
 
     async def mark_projected(
         self,
@@ -110,7 +112,7 @@ class CommitmentLedger:
         *,
         targets: set[str],
     ) -> None:
-        await asyncio.to_thread(
+        await self._write(
             self._mark_projected_sync,
             memory_space_id,
             commitment_id,
@@ -139,7 +141,7 @@ class CommitmentLedger:
         include_terminal: bool = False,
         limit: int = 100,
     ) -> CommitmentListPage:
-        return await asyncio.to_thread(
+        return await self._read(
             self._list_current_page_sync,
             memory_space_id,
             include_terminal,
@@ -149,8 +151,7 @@ class CommitmentLedger:
     async def history(
         self, memory_space_id: str, commitment_id: str, *, limit: int = 200
     ) -> list[CommitmentRevisionRecord]:
-        return await asyncio.to_thread(
-            self._history_sync, memory_space_id, commitment_id, limit
+        return await self._read(self._history_sync, memory_space_id, commitment_id, limit
         )
 
     def _apply_sync(self, intent: MemoryIntent) -> CommitmentApplyResult:

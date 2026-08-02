@@ -15,6 +15,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 from eidolon.memory.infrastructure.ledger_sql import (
     SQLITE_MARKER,
     SYNC_EVENT_INSERT,
@@ -26,17 +27,23 @@ from eidolon.memory.infrastructure.ledger_sql import (
 )
 
 
-class SyncLedger:
+class SyncLedger(SerialisedSqliteWrites):
     """Sync idempotency for one space, in a file inside its palace."""
 
     def __init__(self, path: str | Path, *, space_id: str) -> None:
         self._path = Path(path)
         self._space_id = space_id
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_write_lock()
         self._init()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(str(self._path))
+        conn = sqlite3.connect(str(self._path), timeout=5.0)
+        # Matches the other five ledgers. Reachable despite the write lock: a
+        # process that crashed mid-write can leave the file locked briefly, and
+        # without this the next connection fails instead of waiting.
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
 
     def _init(self) -> None:
         with self._connect() as conn:
@@ -53,7 +60,7 @@ class SyncLedger:
 
     async def seen(self, *, event_id: str, idempotency_hash: str) -> bool:
         """Whether this event or an identical payload was already applied."""
-        return await asyncio.to_thread(self._seen_sync, event_id, idempotency_hash)
+        return await self._read(self._seen_sync, event_id, idempotency_hash)
 
     async def mark_synced(
         self,
@@ -65,7 +72,7 @@ class SyncLedger:
         idempotency_hash: str,
     ) -> None:
         """Record that this event was applied. Idempotent."""
-        await asyncio.to_thread(
+        await self._write(
             self._mark_synced_sync,
             event_id,
             device_id,

@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
+from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 from eidolon.memory.infrastructure.ledger_sql import (
     DLQ_CLAIM,
     DLQ_COLUMNS,
@@ -38,13 +39,14 @@ def _sql(template: str) -> str:
     return render(template, SQLITE_MARKER)
 
 
-class DlqLedger:
+class DlqLedger(SerialisedSqliteWrites):
     """Operational recovery data for one space, outside the palace lock."""
 
     def __init__(self, path: Path, *, space_id: str) -> None:
         self.path = Path(path)
         self._space_id = space_id
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_write_lock()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -85,12 +87,11 @@ class DlqLedger:
         error: str,
         deliveries: int,
     ) -> DlqRecord:
-        return await asyncio.to_thread(
-            self._add_sync, subject, payload, error, deliveries
+        return await self._write(self._add_sync, subject, payload, error, deliveries
         )
 
     async def get(self, entry_id: str) -> DlqRecord | None:
-        return await asyncio.to_thread(self._get_sync, entry_id)
+        return await self._read(self._get_sync, entry_id)
 
     async def list(
         self,
@@ -99,22 +100,22 @@ class DlqLedger:
         limit: int = 100,
         offset: int = 0,
     ) -> list[DlqRecord]:
-        return await asyncio.to_thread(self._list_sync, state, limit, offset)
+        return await self._read(self._list_sync, state, limit, offset)
 
     async def claim_replay(self, entry_id: str) -> DlqReplayItem | None:
-        return await asyncio.to_thread(self._claim_replay_sync, entry_id)
+        return await self._write(self._claim_replay_sync, entry_id)
 
     async def mark_replayed(self, entry_id: str) -> DlqRecord:
-        return await asyncio.to_thread(self._finish_replay_sync, entry_id, True, None)
+        return await self._write(self._finish_replay_sync, entry_id, True, None)
 
     async def release_replay(self, entry_id: str, *, error: str) -> DlqRecord:
-        return await asyncio.to_thread(self._finish_replay_sync, entry_id, False, error)
+        return await self._write(self._finish_replay_sync, entry_id, False, error)
 
     async def resolve(self, entry_id: str, *, note: str) -> DlqRecord:
-        return await asyncio.to_thread(self._resolve_sync, entry_id, note)
+        return await self._write(self._resolve_sync, entry_id, note)
 
     async def stats(self) -> DlqStats:
-        return await asyncio.to_thread(self._stats_sync)
+        return await self._read(self._stats_sync)
 
     def _add_sync(
         self, subject: str, payload: bytes, error: str, deliveries: int

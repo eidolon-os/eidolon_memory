@@ -19,6 +19,7 @@ from eidolon.memory.domain.command_status import (
     CommandStatusRecord,
     CommandStatusStats,
 )
+from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 from eidolon.memory.infrastructure.ledger_sql import (
     COMMAND_STATUS_COLUMNS,
     COMMAND_STATUS_COUNT_ALL,
@@ -41,7 +42,7 @@ def _sql(template: str) -> str:
     return render(template, SQLITE_MARKER)
 
 
-class CommandStatusLedger:
+class CommandStatusLedger(SerialisedSqliteWrites):
     """Small SQLite projection queried independently of Chroma/KG locks.
 
     The command stream remains the write path. This database is only a status
@@ -70,6 +71,7 @@ class CommandStatusLedger:
         self._prune_counter_lock = threading.Lock()
         self._writes_since_prune = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_write_lock()
         self._initialize()
         self._prune_sync()
 
@@ -100,7 +102,7 @@ class CommandStatusLedger:
             conn.execute(COMMAND_STATUS_INDEX)
 
     async def record_accepted(self, request_id: str, *, kind: str) -> CommandStatusRecord:
-        return await asyncio.to_thread(
+        return await self._write(
             self._transition,
             request_id,
             kind,
@@ -116,7 +118,7 @@ class CommandStatusLedger:
         kind: str,
         error: str,
     ) -> CommandStatusRecord:
-        return await asyncio.to_thread(
+        return await self._write(
             self._transition,
             request_id,
             kind,
@@ -132,7 +134,7 @@ class CommandStatusLedger:
         kind: str,
         resource_id: str | None = None,
     ) -> CommandStatusRecord:
-        record = await asyncio.to_thread(
+        record = await self._write(
             self._transition,
             request_id,
             kind,
@@ -150,7 +152,7 @@ class CommandStatusLedger:
         kind: str,
         error: str,
     ) -> CommandStatusRecord:
-        record = await asyncio.to_thread(
+        record = await self._write(
             self._transition,
             request_id,
             kind,
@@ -162,14 +164,14 @@ class CommandStatusLedger:
         return record
 
     async def get(self, request_id: str) -> CommandStatusRecord | None:
-        return await asyncio.to_thread(self._get_sync, request_id)
+        return await self._read(self._get_sync, request_id)
 
     async def stats(self) -> CommandStatusStats:
-        return await asyncio.to_thread(self._stats_sync)
+        return await self._read(self._stats_sync)
 
     async def prune(self) -> int:
         """Remove expired/overflow terminal rows without touching active work."""
-        return await asyncio.to_thread(self._prune_sync)
+        return await self._write(self._prune_sync)
 
     async def wait_terminal(
         self,
