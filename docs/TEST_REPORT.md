@@ -238,6 +238,26 @@ Five tests now cover the wrapped case. The general rule this produced: a new
 capability protocol must be tested **through the wrapper production actually
 uses**, because decorator plus capability discovery is a silent-failure surface.
 
+### The abstraction layer, as measured
+
+25 protocols in `domain/`. Every one has a consumer, which is worth stating
+because an unused protocol is a layer that looks like a boundary and enforces
+nothing:
+
+| Group | Protocols | Where they are declared as parameters |
+|---|---|---|
+| Vector | 6 + `VectorStorePort` | `VectorStorePort` is a deliberate second name — `MemoryBackend` says where an implementation sits, this says what it does |
+| Capabilities | `WarmableBackend`, `RoomGraphBackend` | Startup and the graph tool, checked with `isinstance` |
+| Graph | `KnowledgeGraphPort` | Two implementations |
+| Ledgers | 6 × Reader/Writer/Store | **Read/write separation is used**: `mcp_server` takes `CanonicalFactReader`/`CommitmentReader`, `turn_processor` takes four `*Writer`. Each consumer declares the smallest surface it needs |
+| Routing | `MemorySpaceRouter` | Three implementations: embedded pool, shared stateless, fixed single-space |
+
+`DlqReader` has no direct consumer but composes `DlqStore`, so removing it would
+leave `DlqStore` undefinable — structural, not empty.
+
+The real gap in this dimension is the two ledgers without a PostgreSQL
+implementation, not the protocols.
+
 ### The gap in this category
 
 `MemoryReadContract` and `MemoryWriteContract` are defined and tested, but
