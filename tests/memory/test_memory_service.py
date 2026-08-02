@@ -264,3 +264,68 @@ async def test_held_spaces_reports_this_process_not_a_callers_memories(
     service,
 ) -> None:
     assert await service.held_spaces() == [ALICE, BOB]
+
+
+# ── the fixed-space router ───────────────────────────────────────────────────
+
+
+async def test_a_fixed_space_router_serves_its_one_space() -> None:
+    """For a caller that already resolved its space and needs no pool."""
+
+    from eidolon.memory.adapters.fixed_space_router import FixedSpaceRouter
+
+    runtime = MemorySpaceRuntime(
+        space_id=ALICE, backend=FakeMemoryBackend(), palace_path="/tmp/alice"
+    )
+    router = FixedSpaceRouter(runtime)
+
+    assert router.serves(ALICE)
+    assert await router.resolve(ALICE) is runtime
+    assert router.held_spaces() == [ALICE]
+
+
+async def test_a_fixed_space_router_refuses_any_other_space() -> None:
+    """The property that keeps a routing bug from becoming a cross-tenant read.
+
+    Answering every space id with the same handles would look like it was
+    working, and would serve one owner's memories to another.
+    """
+
+    from eidolon.memory.adapters.fixed_space_router import FixedSpaceRouter
+
+    router = FixedSpaceRouter(
+        MemorySpaceRuntime(
+            space_id=ALICE, backend=FakeMemoryBackend(), palace_path="/tmp/alice"
+        )
+    )
+
+    assert not router.serves(BOB)
+    with pytest.raises(UnknownMemorySpace):
+        await router.resolve(BOB)
+
+
+# ── the graph override ───────────────────────────────────────────────────────
+
+
+async def test_a_caller_may_turn_the_graph_off_for_one_request(service) -> None:
+    fused = await service.recall_fused(
+        _ctx(ALICE), "x", plan=RecallPlan(), include_kg=False
+    )
+
+    assert fused["kg_triples"] == []
+
+
+async def test_a_caller_cannot_turn_on_a_graph_this_deployment_lacks(service) -> None:
+    """``include_kg=True`` against a deployment with no graph must not fail.
+
+    The caller is asking for a graph to be consulted if there is one, not
+    asserting that one exists — and a caller able to tell the difference would be
+    able to discover whether this deployment keeps a graph.
+    """
+
+    fused = await service.recall_fused(
+        _ctx(ALICE), "x", plan=RecallPlan(), include_kg=True
+    )
+
+    assert fused["degraded"] is False
+    assert fused["kg_triples"] == []

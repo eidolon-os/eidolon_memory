@@ -37,6 +37,7 @@ from eidolon_memory_contracts import (
 )
 
 from eidolon.memory.adapters.space_routing import build_space_router
+from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.privacy_filter import row_visible_to_listing
 from eidolon.memory.application.public_recall import wire_record_to_public_dict
 from eidolon.memory.application.runtime_warm import warm_read_path
@@ -625,9 +626,14 @@ def _run_service(
     port = args.port if args.port else settings.mcp_http.port
 
     step_started = time.perf_counter()
+    # Read tools go through the service, which resolves a space from the caller's
+    # context rather than from this process. That is what lets one process serve
+    # several spaces; how many it actually holds is the router's decision.
+    service = MemoryService(router, settings, command_publisher=command_publisher)
     mcp = build_control_plane_mcp(
         backend,
         settings,
+        service=service,
         memory_space_id=memory_space_id,
         palace_path=str(palace_path),
         host=host,

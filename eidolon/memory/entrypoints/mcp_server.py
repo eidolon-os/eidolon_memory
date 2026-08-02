@@ -26,8 +26,10 @@ from eidolon_memory_contracts import (
     MemoryIntent,
     MemoryIntentCommand,
     PrivacyMutationCommand,
+    RecallPlan,
 )
 
+from eidolon.memory.adapters.fixed_space_router import FixedSpaceRouter
 from eidolon.memory.adapters.kg_sqlite import now_iso as _now_iso
 from eidolon.memory.application.claim_routing import route_explicit_claim
 from eidolon.memory.application.forget import (
@@ -38,6 +40,7 @@ from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hiera
 from eidolon.memory.application.palace_graph import build_palace_graph
 from eidolon.memory.application.privacy_confirmation import PrivacyConfirmationSigner
 from eidolon.memory.application.privacy_filter import row_visible_to_listing
+from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.public_recall import (
     recall_with_kg_fusion,
     search_all_wings_mcp_style,
@@ -53,6 +56,7 @@ from eidolon.memory.domain.ports import (
     MemoryBackend,
 )
 from eidolon.memory.domain.predicates import predicate_definition
+from eidolon.memory.domain.space_runtime import MemorySpaceRuntime, SpaceLedgers
 from eidolon.memory.infrastructure.mempalace_backend import (
     inspect_configured_backend,
     selected_mempalace_backend,
@@ -81,6 +85,7 @@ def build_control_plane_mcp(
     backend: MemoryBackend,
     settings: MemorySettings,
     *,
+    service: MemoryService | None = None,
     memory_space_id: str,
     palace_path: str,
     host: str,
@@ -121,6 +126,30 @@ def build_control_plane_mcp(
     if lifespan is not None:
         mcp_kwargs["lifespan"] = lifespan
 
+    if service is None:
+        # A caller that already resolved its one space can hand the handles over
+        # and skip building a router. The read tools still go through the service,
+        # so there is one code path rather than two — this router just answers
+        # with what it was given, and refuses any other space.
+        service = MemoryService(
+            FixedSpaceRouter(
+                MemorySpaceRuntime(
+                    space_id=memory_space_id,
+                    backend=backend,
+                    palace_path=palace_path,
+                    kg=kg,
+                    ledgers=SpaceLedgers(
+                        command_status=command_status,
+                        dlq=dlq_store,
+                        canonical_facts=canonical_facts,
+                        commitments=commitments,
+                    ),
+                )
+            ),
+            settings,
+            command_publisher=command_publisher,
+        )
+
     mcp = FastMCP(f"eidolon-memory-{memory_space_id}", **mcp_kwargs)
 
     @mcp.tool()
@@ -131,20 +160,32 @@ def build_control_plane_mcp(
         wing: str | None = None,
         room: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Search this memory space using the supplied actor context."""
+        """Search the caller's memory space.
+
+        Which space that is comes from ``context``, not from this process — see
+        MemoryService. A wing or room filter still goes the direct route, because
+        scoping to part of one space is a different question from recall.
+        """
         ctx = MemoryActorContext.model_validate(context)
-        records = await search_all_wings_mcp_style(
-            backend,
-            settings,
-            query=query,
-            context=ctx,
-            top_k=top_k,
-            wing=wing,
-            room=room,
-            for_voice=False,
-            palace_path=palace_path,
+        if wing or room:
+            runtime = await service.runtime_for(ctx)
+            records = await search_all_wings_mcp_style(
+                runtime.backend,
+                settings,
+                query=query,
+                context=ctx,
+                top_k=top_k,
+                wing=wing,
+                room=room,
+                for_voice=False,
+                palace_path=runtime.palace_path,
+            )
+            return [wire_record_to_public_dict(r) for r in records]
+
+        fused = await service.recall_fused(
+            ctx, query, plan=RecallPlan(semantic_k=top_k, voice=False)
         )
-        return [wire_record_to_public_dict(r) for r in records]
+        return list(fused["records"])
 
     @mcp.tool()
     async def eidolon_memory_recall_context(
@@ -165,34 +206,23 @@ def build_control_plane_mcp(
         ``include_sensitive_kg`` opt-in for health predicates.
         """
         ctx = MemoryActorContext.model_validate(context)
-        bounded_subjects = [
+        subjects = tuple(
             value.strip()
-            for value in (kg_subjects or [])[: settings.recall.kg_max_entities]
+            for value in (kg_subjects or [])
             if isinstance(value, str) and value.strip()
-        ]
-        want_kg = settings.recall.kg_in_recall if include_kg is None else include_kg
-        fused = await recall_with_kg_fusion(
-            backend,
-            settings,
-            query=query,
-            context=ctx,
-            top_k=top_k,
-            kg=kg if want_kg else None,
-            for_voice=voice,
-            palace_path=palace_path,
-            include_sensitive_kg=include_sensitive_kg,
-            kg_subjects=bounded_subjects,
         )
-        records = fused["vector"]
-        kg_records = fused["kg"]
-        wm_turns = fused.get("working_memory") or []
+        fused = await service.recall_fused(
+            ctx,
+            query,
+            plan=RecallPlan(semantic_k=top_k, voice=voice, focus_subjects=subjects),
+            include_sensitive_kg=include_sensitive_kg,
+            include_kg=include_kg,
+        )
         return {
-            "context": group_recall_context(
-                records, kg_triples=kg_records, working_memory=wm_turns,
-            ),
-            "kg_triples": [t.model_dump(mode="json") for t in kg_records],
-            "records": [wire_record_to_public_dict(r) for r in records],
-            "working_memory": [t.model_dump(mode="json") for t in wm_turns],
+            "context": fused["context"],
+            "kg_triples": fused["kg_triples"],
+            "records": fused["records"],
+            "working_memory": fused["working_memory"],
         }
 
     @mcp.tool()

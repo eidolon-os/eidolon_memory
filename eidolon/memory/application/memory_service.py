@@ -107,15 +107,23 @@ class MemoryService:
 
     # ── resolution ───────────────────────────────────────────────────────────
 
-    async def _runtime(self, ctx: MemoryActorContext) -> MemorySpaceRuntime:
+    async def runtime_for(self, ctx: MemoryActorContext) -> MemorySpaceRuntime:
         """This caller's handles.
 
         Raises rather than degrading: being asked about a space this deployment
         does not serve is a routing fault, and answering it with an empty recall
         would look to a user like their companion had forgotten them.
+
+        Public because a few operator paths need a raw handle for something the
+        contract does not cover — scoping a search to one wing, for instance.
+        Reaching for it is a sign the contract is missing something; it is not
+        the normal way to use this class.
         """
 
         return await self._router.resolve(ctx.memory_realm_id)
+
+    async def _runtime(self, ctx: MemoryActorContext) -> MemorySpaceRuntime:
+        return await self.runtime_for(ctx)
 
     # ── the read contract ────────────────────────────────────────────────────
 
@@ -182,6 +190,7 @@ class MemoryService:
         plan: RecallPlan | None = None,
         timeout_s: float = 0.2,
         include_sensitive_kg: bool = False,
+        include_kg: bool | None = None,
     ) -> FusedRecall:
         """Recall including the graph triples and recent turns, for the MCP surface.
 
@@ -202,7 +211,10 @@ class MemoryService:
             log.warning("recall_resolve_failed", memory_space_id=ctx.memory_realm_id, error=str(exc))
             return _degraded_recall(str(exc))
 
-        want_kg = self._settings.recall.kg_in_recall and runtime.has_kg
+        # A caller may turn the graph off for one request; it can never turn one
+        # on that this deployment does not have.
+        wanted = self._settings.recall.kg_in_recall if include_kg is None else include_kg
+        want_kg = bool(wanted) and runtime.has_kg
         subjects = [
             value.strip()
             for value in plan.focus_subjects[: self._settings.recall.kg_max_entities]
