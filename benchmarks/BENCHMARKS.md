@@ -117,8 +117,50 @@ measures a known defect.
 4. Then LongMemEval dev (50), then held-out (450), then LoCoMo, ConvoMem,
    MemBench.
 
-No date is given for the full report because the second step is an LLM quality
-problem with an unknown depth. The probe is what turns that into an estimate.
+### Probe result, 2026-08-02 — coverage is the binding constraint
+
+Ran the existing quality bench (40-turn companion corpus, real LLM steward, real
+agent subprocess). It reports palace state, which is the coverage number:
+
+```
+Corpus turns published: 40
+Palace state at query time: fragments=7, entities=7, triples_total=5
+Queries: 49, fully correct 12/49 = 24.5%, evidence recall 35.1%
+Latency: p50 89.2ms, p95 104.6ms
+```
+
+**40 turns produced 7 fragments.** Whatever the retrieval does, roughly four in
+five turns left nothing behind to retrieve. Against MemPalace's baseline — which
+stores every session verbatim and therefore has complete coverage by construction
+— this is not a tuning gap. Their 96.6% R@5 measures retrieval over everything;
+ours would measure retrieval over the sixth of the corpus the steward chose to
+keep.
+
+The per-category breakdown says the same thing more sharply:
+
+| Category | Correct | Reading |
+|---|---|---|
+| emotion | 3/3 (100%) | Works |
+| time | 3/5 (60%) | Works |
+| canonical_entity, kinship_alias, topic | ~25% | Partial |
+| **preference** | **0/4** | The core companion-memory case, failing completely |
+| **future_plans, event, pronoun** | **0/3 each** | |
+| **abstention** | **0/5** | Answers questions it should decline — the failure that misleads a user rather than disappointing them |
+
+Preference at 0/4 is the one to weigh: "what does this person like" is the
+central thing a companion memory exists to answer.
+
+Latency is fine and not the problem — p95 104ms end-to-end through MCP.
+
+**So the order stands, and step 2 is now specific.** Running LongMemEval today
+would publish a number governed by extraction coverage, not by retrieval quality,
+and improving the retriever would barely move it. Extraction has to be fixed
+first, and this probe is the cheap way to tell whether a fix worked: rerun it and
+watch `fragments`.
+
+No date for the full report yet, and now for a stated reason rather than an
+unknown one: it depends on raising extraction from 7/40, and that is an LLM
+prompt-and-evaluation problem whose depth this probe does not measure.
 
 Where we expect to differ, and why — stated in advance so the results can
 contradict it:
