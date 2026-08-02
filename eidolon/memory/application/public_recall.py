@@ -365,6 +365,11 @@ async def recall_with_kg_fusion(
         )
 
     vector_degraded = False
+    # Carried out with the result, not only logged. A caller that can only see
+    # *that* recall degraded has to grep logs to learn whether the store was
+    # unreachable, slow, or answered correctly with nothing — and those call for
+    # different responses.
+    degraded_reason: str | None = None
     try:
         vector_records = await vector_task
     except BaseException as exc:
@@ -377,6 +382,7 @@ async def recall_with_kg_fusion(
         )
         vector_records = []
         vector_degraded = True
+        degraded_reason = f"{type(exc).__name__}: {exc}"
     kg_records = await kg_task if kg_task is not None else []
 
     # Phase 1 — BM25 + cosine RRF rerank on vector hits. Pure in-memory,
@@ -455,6 +461,7 @@ async def recall_with_kg_fusion(
         "kg": kg_records,
         "working_memory": working_memory,
         "degraded": vector_degraded,
+        "degraded_reason": degraded_reason,
     }
 
 
