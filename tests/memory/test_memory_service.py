@@ -329,3 +329,41 @@ async def test_a_caller_cannot_turn_on_a_graph_this_deployment_lacks(service) ->
 
     assert fused["degraded"] is False
     assert fused["kg_triples"] == []
+
+
+# ── search is a lookup, recall is a recall ───────────────────────────────────
+
+
+async def test_search_does_not_bring_in_the_graph_or_recent_turns(service) -> None:
+    """Two different questions, and I collapsed them once already.
+
+    ``search`` answers "what do you remember about this" — what is stored.
+    ``recall_context`` answers "what is relevant to this turn", which is why it
+    fuses the graph, recent turns and a theme channel and applies session
+    filtering. Routing search through the recall path silently changed what an
+    explicit user lookup returns.
+    """
+
+    backend = service._router._runtimes[ALICE].backend
+    await backend.ingest_fragment(_fragment(ALICE, "likes the colour green"))
+
+    found = await service.search(_ctx(ALICE), "colour")
+
+    assert [s.text for s in found.snippets] == ["likes the colour green"]
+    # The lookup shape has no room for either, which is the point.
+    emitted = found.model_dump()
+    assert "kg_triples" not in emitted
+    assert "working_memory" not in emitted
+    assert "context" not in emitted
+
+
+async def test_search_and_recall_are_separate_result_types(service) -> None:
+    """A caller cannot accidentally treat one as the other."""
+
+    from eidolon_memory_contracts import RecallResult, SearchResult
+
+    found = await service.search(_ctx(ALICE), "x")
+    recalled = await service.recall_context(_ctx(ALICE), "x", plan=RecallPlan())
+
+    assert isinstance(found, SearchResult)
+    assert isinstance(recalled, RecallResult)

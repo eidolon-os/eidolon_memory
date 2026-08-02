@@ -54,6 +54,7 @@ from eidolon.memory.application.forget import (
 )
 from eidolon.memory.application.public_recall import (
     recall_with_kg_fusion,
+    search_all_wings_mcp_style,
     wire_record_to_public_dict,
 )
 from eidolon.memory.application.recall_renderer import group_recall_context
@@ -157,14 +158,41 @@ class MemoryService:
         top_k: int = 5,
         timeout_s: float = 0.2,
     ) -> SearchResult:
-        """Look up memories matching ``query``, without conversational ranking."""
+        """Look up memories matching ``query``, without conversational ranking.
+
+        A lookup, not a recall: the graph, recent turns and session filtering are
+        deliberately absent. A user asking "what do you remember about X" wants
+        what is stored, not what would be relevant to the current turn.
+
+        Still searches every wing — scoping to one is a separate, operator-facing
+        question and not part of this contract.
+        """
 
         try:
             runtime = await self._runtime(ctx)
-            records = await runtime.backend.search(query, n_results=max(1, top_k))
+            records = await search_all_wings_mcp_style(
+                runtime.backend,
+                self._settings,
+                query=query,
+                context=ctx,
+                top_k=max(1, top_k),
+                wing=None,
+                room=None,
+                for_voice=False,
+                palace_path=runtime.palace_path,
+                # Otherwise a failed wing search is swallowed and returns an empty
+                # list, so "nothing stored" and "could not look" arrive identically.
+                # Raises only when the store degraded *and* nothing was found:
+                # partial results are still an answer, and the caller gets them.
+                raise_on_degraded=True,
+            )
         except (UnknownMemorySpace, MemorySpaceUnavailable):
             raise
         except Exception as exc:  # noqa: BLE001 - contract: never raise on storage
+            # Note the cost of this invariant: a programming error in here comes
+            # back as a degraded result rather than a traceback. A caller sees
+            # "no memories" and carries on. That is right for the caller and
+            # dangerous for us, so the reason is always logged with the space id.
             log.warning("search_degraded", memory_space_id=ctx.memory_realm_id, error=str(exc))
             return SearchResult(degraded=True, degraded_reason=str(exc))
 

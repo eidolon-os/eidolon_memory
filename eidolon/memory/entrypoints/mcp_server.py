@@ -162,30 +162,26 @@ def build_control_plane_mcp(
     ) -> list[dict[str, Any]]:
         """Search the caller's memory space.
 
-        Which space that is comes from ``context``, not from this process — see
-        MemoryService. A wing or room filter still goes the direct route, because
-        scoping to part of one space is a different question from recall.
+        Which space that is comes from ``context``, not from this process — that
+        is the only thing this tool changed. Search stays a lookup: no graph
+        fusion, no recent turns, no conversational filtering. Those belong to
+        recall_context, which answers a different question — "what is relevant to
+        this turn" rather than "what do you remember about this".
         """
         ctx = MemoryActorContext.model_validate(context)
-        if wing or room:
-            runtime = await service.runtime_for(ctx)
-            records = await search_all_wings_mcp_style(
-                runtime.backend,
-                settings,
-                query=query,
-                context=ctx,
-                top_k=top_k,
-                wing=wing,
-                room=room,
-                for_voice=False,
-                palace_path=runtime.palace_path,
-            )
-            return [wire_record_to_public_dict(r) for r in records]
-
-        fused = await service.recall_fused(
-            ctx, query, plan=RecallPlan(semantic_k=top_k, voice=False)
+        runtime = await service.runtime_for(ctx)
+        records = await search_all_wings_mcp_style(
+            runtime.backend,
+            settings,
+            query=query,
+            context=ctx,
+            top_k=top_k,
+            wing=wing,
+            room=room,
+            for_voice=False,
+            palace_path=runtime.palace_path,
         )
-        return list(fused["records"])
+        return [wire_record_to_public_dict(r) for r in records]
 
     @mcp.tool()
     async def eidolon_memory_recall_context(
