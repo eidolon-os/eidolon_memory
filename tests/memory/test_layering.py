@@ -217,3 +217,42 @@ def test_the_decision_is_pure() -> None:
         assert forbidden not in source, (
             f"commitment_decision references {forbidden!r}; it must stay pure"
         )
+
+
+def test_no_ledger_is_built_outside_the_router() -> None:
+    """The router is the only source of a space's handles.
+
+    A second object on the same file means a second write lock, so the
+    serialisation that keeps writers out of each other's way does not apply
+    between them. The sync ledger was built twice for a while — once by the
+    router and once inside the subscriber loop — and it was harmless only
+    because the router's copy happened to have no consumer.
+
+    Checked in entrypoints, because that is where the temptation is: a process
+    that already knows its palace path can construct a ledger in one line.
+    """
+
+    ledger_classes = (
+        "CanonicalFactLedger(",
+        "CommitmentLedger(",
+        "CommandStatusLedger(",
+        "DlqLedger(",
+        "ExtractionDecisionLedger(",
+        "SyncLedger(",
+    )
+    offenders = []
+    for path in sorted((MEMORY_ROOT / "entrypoints").rglob("*.py")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or "import" in stripped:
+                continue
+            for name in ledger_classes:
+                if name in stripped:
+                    offenders.append(
+                        f"{path.relative_to(MEMORY_ROOT)}:{lineno} → {stripped}"
+                    )
+
+    assert not offenders, (
+        "a ledger is constructed in an entrypoint; take it from "
+        "runtime.ledgers instead:\n  " + "\n  ".join(offenders)
+    )

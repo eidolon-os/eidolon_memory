@@ -76,7 +76,6 @@ from eidolon.memory.infrastructure.nats.names import memory_consumer_name
 from eidolon.memory.infrastructure.nats.query import memory_list_drawers_query_subject
 from eidolon.memory.infrastructure.nats_stream import ensure_memory_stream
 from eidolon.memory.infrastructure.process_temp import configure_process_temp_root
-from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
@@ -138,6 +137,7 @@ async def _nats_subscriber_loop(
     backend: Any,
     kg: Any,
     kg_sqlite: str,
+    sync: Any,
     command_status: CommandStatusLedger,
     dlq: DlqLedger,
     decision_store: ExtractionDecisionLedger,
@@ -156,9 +156,7 @@ async def _nats_subscriber_loop(
     cmd_subject = memory_command_subject(memory_space_id)
     sync_subject = memory_sync_subject(memory_space_id)
     query_subject = memory_list_drawers_query_subject(memory_space_id)
-    ledger = SyncLedger(
-        Path(kg_sqlite).parent / "sync_ledger.sqlite3", space_id=memory_space_id
-    )
+    ledger = sync
 
     steward = create_steward(settings)
     audit_sink = _open_fanout_audit_sink()
@@ -475,6 +473,7 @@ def _compose_starlette_lifespan(
                     backend=backend,
                     kg=kg,
                     kg_sqlite=kg_sqlite,
+                    sync=sync,
                     command_status=command_status,
                     dlq=dlq,
                     decision_store=decision_store,
@@ -578,6 +577,11 @@ def main(argv: list[str] | None = None) -> None:
     decision_store = runtime.ledgers.decisions
     canonical_facts = runtime.ledgers.canonical_facts
     commitments = runtime.ledgers.commitments
+    # Like every other handle. It used to be built again inside the subscriber
+    # loop, which meant two objects on one file — two write locks, so the
+    # serialisation that keeps writers out of each other's way did not apply
+    # between them. Harmless only because the router's copy had no consumer.
+    sync = runtime.ledgers.sync
 
     # KG plan §3.3: write tools publish through the same JetStream stream that
     # handles chat turns; admin is just another client.
@@ -598,6 +602,7 @@ def main(argv: list[str] | None = None) -> None:
         decision_store=decision_store,
         canonical_facts=canonical_facts,
         commitments=commitments,
+        sync=sync,
         bootstrap_started=bootstrap_started,
     )
 
@@ -618,6 +623,7 @@ def _run_service(
     decision_store: Any,
     canonical_facts: Any,
     commitments: Any,
+    sync: Any,
     bootstrap_started: float,
 ) -> None:
     """Bind the MCP surface and serve until shut down."""

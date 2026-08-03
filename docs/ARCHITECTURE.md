@@ -68,6 +68,77 @@ chroma↔milvus 的切换在 mempalace **内部**发生。所以 milvus 路径�
 
 ---
 
+## ledger 是什么
+
+字面是**账本**。在这里它指**记忆本体之外的记录**——记忆本体是向量库和图（"她喜欢乌龙茶"
+这件事本身），ledger 记的是围绕它发生过什么：谁确认过、什么时候被推翻、哪条命令处理到
+哪一步、哪个 turn 处理失败了。
+
+6 个 ledger，共 **10 张表**：
+
+| ledger | 表 | 存什么 | 丢了会怎样 |
+|---|---|---|---|
+| `extraction_decisions` | 1 | steward 对每个 turn 的抽取结论 | 重放同一 turn 会**再问一次模型**，可能得到不同结论 |
+| `sync_events` | 1 | 哪些离线批次已应用 | 设备重连时**重放已写入的 turn** |
+| `dlq_entries` | 1 | 处理失败的 turn 原文 | 失败的 turn **无从查看、无从重放** |
+| `command_status` | 1 | 异步命令到了哪一步 | 查不到写入结果。**这一个是投影，可重建** |
+| **`commitments`** | 2 | 承诺 + 不可变修订史 | **承诺查询返回空** |
+| **`canonical_facts`** | 4 | 已确认事实 + 证据 + 失效 + 重新激活 | **纠正过的事实继续被召回** |
+
+### 为什么后两个是产品行为而不是记账
+
+失效链的实际机制（`application/canonical_invalidation.py`）：
+
+```
+用户说"我现在不喝乌龙茶了"
+  ↓
+register_invalidation()              ← ledger 记下失效请求
+  ↓ 若 state == "applied" 则早返回     ← 幂等守卫，防止重复归档
+  ↓
+用 registration.projection_id 定位向量库里那条 drawer
+  ↓
+archive_many()   ← 归档它，从此不再被召回
+kg.invalidate()  ← 图里的三元组同时失效
+  ↓
+mark_invalidated()                   ← ledger 标记完成
+```
+
+**`projection_id` 是"该归档哪一条"的唯一线索**，它只存在于这个 ledger 里。所以云端
+`canonical_facts is None` 时这条链根本不会启动——旧 drawer 不被归档，用户纠正过的事实
+继续被召回。用户会读作"它没在听"。
+
+`commitments` 同理：它是 `eidolon_memory_commitments` 这个对外工具的唯一数据源。没有它，
+"你答应过我什么"的回答是空的，而不是"我不知道"。
+
+### 为什么和向量/图分开
+
+三个理由，都不是审美：
+
+1. **锁**。向量库（chroma）与图共享一把 per-space 锁，因为一个 turn 要原子地写两者。
+   ledger 不参与那个临界区——命令状态的读不该排在 chroma 写的后面。
+2. **重建性不同**。`command_status` 是投影，丢了只影响诊断（它自己的文档写明：丢失终态
+   会让命令重新显示为 accepted，但**永不会**让未应用的显示为成功）。而 `dlq_entries` 和
+   `sync_events` 丢了就是丢数据。这个区别直接决定了 schema 守卫的行为——前者空表重建，
+   后者指名拒绝。
+3. **存储可以不同**。本地它们是 palace 里的 SQLite 文件，云端是共享库里的行。这是 6 个
+   ledger 各有两套实现的原因。
+
+### 写入的两道界
+
+ledger 的写不像 chroma 那样共享 palace 锁，所以它们有自己的两道界，各做不同的事：
+
+- **每个 ledger 一把 `asyncio.Lock`**：让同一个文件的写在 event loop 里排队，而不是在
+  SQLite 里撞上 `busy_timeout` 干等最多 5 秒——那期间会占住一个线程池 worker。
+- **一个进程级信号量**：上限设为 CPU 核心数，低于线程池规模。实测这台机器 12 核 → 线程池
+  16 worker，而 6 ledger × 3 space = 18，**三个 space 就会耗尽**，之后向量存储和 embedding
+  会排在记账后面。有界而非串行化：多个 space 仍能同时跑，只是拿不走整个池。
+
+router 是句柄的唯一来源，这一点由测试强制（`test_layering.py`）：entrypoint 里不得构造
+ledger。曾有一段时间 sync ledger 被构造两次——router 一个、订阅循环一个——同一文件两把写
+锁，串行化在两者之间不生效；当时无害仅因为 router 那个恰好没有消费者。
+
+---
+
 ## 读路径全程
 
 ```
@@ -146,7 +217,7 @@ audience = "companion:<id>"  与那一个 companion 之间发生的——对它�
 | 两层可见性 | 在图查询和向量可见性 gate 里强制 |
 | 可观测性 | prometheus `/metrics` 挂在既有端口；contextvar span，字段用 OTel 命名 |
 
-**900 个单元/契约测试通过，6 skipped。e2e 25 passed / 2 failed**（那 2 个是既有的
+**901 个单元/契约测试通过，6 skipped。e2e 25 passed / 2 failed**（那 2 个是既有的
 LLM 抽取缺陷——见 TEST_REPORT.md）。
 
 ### 未完成，附真实阻塞
