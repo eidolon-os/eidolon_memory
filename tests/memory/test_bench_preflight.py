@@ -12,6 +12,7 @@ because it is paid for in reruns.
 
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
 import sys
@@ -105,3 +106,88 @@ def test_the_bench_exits_before_spawning_anything() -> None:
     # matched its own error text.
     assert "spawning agent_runner" not in combined
     assert "RuntimeError" not in combined
+
+
+# ── the embedder the palace was actually built with ──────────────────────────
+#
+# Every quality figure before 2026-08-03 was measured on minilm — an English-only
+# model — against a Chinese corpus, because the bench did not copy the mempalace
+# section into its spawn settings and MemPalace applied its own default. Nothing
+# said so; the numbers just looked like poor retrieval.
+
+
+def test_an_empty_configured_embedder_is_refused(tmp_path: Path) -> None:
+    """Empty does not mean "use the default", it means "we do not know".
+
+    MemPalace fills the gap with minilm, so an empty setting silently selects a
+    retriever nobody deploys.
+    """
+
+    from scripts.benchmark.bench_memory_retrieve_quality import (
+        require_expected_embedder,
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        require_expected_embedder(tmp_path, configured="")
+
+    assert raised.value.code == 2
+
+
+def test_a_mismatched_palace_embedder_is_refused(tmp_path: Path) -> None:
+    """The palace's own record is the authority, not the config we passed it."""
+
+    import json
+
+    from scripts.benchmark.bench_memory_retrieve_quality import (
+        require_expected_embedder,
+    )
+
+    palace = tmp_path / "b64_space"
+    palace.mkdir()
+    (palace / "mempalace_embedder.json").write_text(
+        json.dumps(
+            {
+                "mempalace_drawers": {"model_name": "minilm"},
+                "mempalace_closets": {"model_name": "minilm"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        require_expected_embedder(tmp_path, configured="embeddinggemma")
+
+    assert raised.value.code == 2
+
+
+def test_a_matching_palace_embedder_passes(tmp_path: Path) -> None:
+    from scripts.benchmark.bench_memory_retrieve_quality import (
+        require_expected_embedder,
+    )
+
+    palace = tmp_path / "b64_space"
+    palace.mkdir()
+    (palace / "mempalace_embedder.json").write_text(
+        json.dumps(
+            {
+                "mempalace_drawers": {"model_name": "embeddinggemma"},
+                "mempalace_closets": {"model_name": "embeddinggemma"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    require_expected_embedder(tmp_path, configured="embeddinggemma")
+
+
+def test_a_missing_marker_is_refused(tmp_path: Path) -> None:
+    """Absent evidence is not evidence of a match."""
+
+    from scripts.benchmark.bench_memory_retrieve_quality import (
+        require_expected_embedder,
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        require_expected_embedder(tmp_path, configured="embeddinggemma")
+
+    assert raised.value.code == 2

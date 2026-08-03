@@ -62,6 +62,7 @@ from eidolon_memory_contracts import (
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+from eidolon.memory.config.memory_settings import get_memory_settings
 from eidolon.memory.infrastructure.nats.names import memory_consumer_name
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -107,6 +108,56 @@ def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
             pass
         time.sleep(0.5)
     return False
+
+
+def require_expected_embedder(palace_root: Path, *, configured: str) -> None:
+    """Refuse to report if the palace was not built with the configured embedder.
+
+    Copying the config into the spawn settings is not enough on its own: MemPalace
+    records what it actually used, and that record is the only authority. A
+    mismatch is not a warning — the whole run measures a different retriever than
+    the one in production, which is what silently happened to every quality figure
+    before 2026-08-03.
+
+    Checked after ingestion rather than before, because the file does not exist
+    until the palace is created.
+    """
+
+    if not configured:
+        print(
+            "[FAIL] mempalace.embedding_model is empty in the project settings.\n"
+            "       MemPalace then picks its own default (minilm, English-only),\n"
+            "       so the run would measure a retriever nobody deploys.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    markers = sorted(palace_root.glob("*/mempalace_embedder.json"))
+    if not markers:
+        print(
+            f"[FAIL] no mempalace_embedder.json under {palace_root}; cannot "
+            f"confirm which embedder built this palace.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    doc = json.loads(markers[0].read_text(encoding="utf-8"))
+    actual = {
+        str(section.get("model_name") or "")
+        for section in doc.values()
+        if isinstance(section, dict)
+    }
+    if actual != {configured}:
+        print(
+            f"[FAIL] palace was built with {sorted(actual)} but the settings say "
+            f"{configured!r}.\n"
+            f"       Every number from this run would describe the wrong "
+            f"retriever. Delete {palace_root} and rerun, or align the config.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    print(f"[check] palace embedder is {configured} (read from the palace, not the config)")
 
 
 async def _turns_pending(nats_url: str, user_id: str) -> int | None:
@@ -189,8 +240,17 @@ def _spawn_agent(
     }
     if project_settings.is_file():
         parent = yaml.safe_load(project_settings.read_text()) or {}
-        if isinstance(parent, dict) and "llm" in parent:
-            settings_doc["llm"] = parent["llm"]
+        if isinstance(parent, dict):
+            # The vector section matters as much as the LLM one. Omitting it left
+            # embedding_model empty, and MemPalace then applies its own default of
+            # minilm — an English-only model. Every quality figure before
+            # 2026-08-03 was therefore measured on minilm against a Chinese
+            # corpus, where cross-lingual cosine is about 0.35, while production
+            # runs embeddinggemma. settings.example.yaml warns about exactly this
+            # failure; the bench was an instance of it.
+            for section in ("llm", "mempalace", "kg", "recall"):
+                if section in parent:
+                    settings_doc[section] = parent[section]
     settings_path.write_text(yaml.safe_dump(settings_doc, allow_unicode=True), encoding="utf-8")
 
     env = {**os.environ, "EIDOLON_MEMORY_SETTINGS_YAML": str(settings_path)}
@@ -972,6 +1032,11 @@ async def amain(args: argparse.Namespace) -> int:
                 )
                 if not args.allow_partial_ingestion:
                     return 2
+            require_expected_embedder(
+                palace_root,
+                configured=(get_memory_settings().mempalace.embedding_model or "").strip(),
+            )
+
             print(
                 f"[wait] palace state after {ingest_s:.1f}s: "
                 f"entities={stats.get('entities')}, "
