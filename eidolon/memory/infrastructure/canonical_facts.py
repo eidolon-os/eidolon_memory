@@ -24,6 +24,10 @@ from eidolon.memory.domain.canonical_fact import (
     canonical_assertion_id,
 )
 from eidolon.memory.domain.predicates import PredicateCardinality, predicate_definition
+from eidolon.memory.infrastructure.ledger_sql import (
+    canonical_schema,
+    ensure_ledger_schema_current,
+)
 from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 _TARGET_COLUMNS: dict[ProjectionTarget, str] = {
@@ -58,118 +62,20 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS canonical_assertions (
-                    assertion_id TEXT PRIMARY KEY,
-                    memory_space_id TEXT NOT NULL,
-                    subject TEXT NOT NULL,
-                    predicate TEXT NOT NULL,
-                    object_value TEXT NOT NULL,
-                    state TEXT NOT NULL DEFAULT 'active',
-                    drawer_projection_state TEXT NOT NULL DEFAULT 'pending',
-                    kg_projection_state TEXT NOT NULL DEFAULT 'pending',
-                    evidence_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_confirmed_at TEXT NOT NULL,
-                    activation_count INTEGER NOT NULL DEFAULT 1,
-                    UNIQUE(memory_space_id, subject, predicate, object_value)
-                );
-                CREATE TABLE IF NOT EXISTS canonical_evidence (
-                    intent_id TEXT PRIMARY KEY,
-                    memory_space_id TEXT NOT NULL,
-                    assertion_id TEXT NOT NULL,
-                    source_event_id TEXT NOT NULL,
-                    tool_call_id TEXT,
-                    authority TEXT NOT NULL,
-                    raw_claim TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    occurred_at TEXT,
-                    recorded_at TEXT NOT NULL,
-                    FOREIGN KEY(assertion_id)
-                        REFERENCES canonical_assertions(assertion_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_canonical_evidence_assertion
-                    ON canonical_evidence(assertion_id, recorded_at);
-                CREATE TABLE IF NOT EXISTS canonical_invalidations (
-                    intent_id TEXT PRIMARY KEY,
-                    memory_space_id TEXT NOT NULL,
-                    assertion_id TEXT NOT NULL,
-                    source_event_id TEXT NOT NULL,
-                    raw_claim TEXT NOT NULL,
-                    ended_at TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    recorded_at TEXT NOT NULL,
-                    state TEXT NOT NULL DEFAULT 'pending',
-                    result_state TEXT NOT NULL DEFAULT 'invalidated',
-                    FOREIGN KEY(assertion_id)
-                        REFERENCES canonical_assertions(assertion_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_canonical_invalidations_assertion
-                    ON canonical_invalidations(assertion_id, recorded_at);
-                CREATE TABLE IF NOT EXISTS canonical_reactivations (
-                    intent_id TEXT PRIMARY KEY,
-                    memory_space_id TEXT NOT NULL,
-                    assertion_id TEXT NOT NULL,
-                    source_event_id TEXT NOT NULL,
-                    raw_claim TEXT NOT NULL,
-                    reactivated_at TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    prior_state TEXT NOT NULL,
-                    activation_number INTEGER NOT NULL,
-                    recorded_at TEXT NOT NULL,
-                    state TEXT NOT NULL DEFAULT 'pending',
-                    FOREIGN KEY(assertion_id)
-                        REFERENCES canonical_assertions(assertion_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_canonical_reactivations_assertion
-                    ON canonical_reactivations(assertion_id, recorded_at);
-                """
+            # Before creating, for the same reason as the other ledgers: a file
+            # from before a column existed opens fine and fails on the first
+            # statement. Checked on activation_count because it was the last
+            # column added, so its absence means the file predates the current
+            # shape. Verified against the four live palaces on this machine —
+            # all four already carry it.
+            ensure_ledger_schema_current(
+                conn,
+                table="canonical_assertions",
+                required_column="activation_count",
+                path=self.path,
             )
-            columns = {
-                str(row["name"])
-                for row in conn.execute("PRAGMA table_info(canonical_assertions)")
-            }
-            added_target_columns: list[str] = []
-            for column in _TARGET_COLUMNS.values():
-                if column not in columns:
-                    conn.execute(
-                        f"ALTER TABLE canonical_assertions ADD COLUMN {column} "
-                        "TEXT NOT NULL DEFAULT 'pending'"
-                    )
-                    added_target_columns.append(column)
-            if "projection_state" in columns:
-                for column in added_target_columns:
-                    conn.execute(
-                        f"UPDATE canonical_assertions SET {column} = 'projected' "
-                        "WHERE projection_state = 'projected'"
-                    )
-            if "activation_count" not in columns:
-                conn.execute(
-                    """
-                    ALTER TABLE canonical_assertions
-                    ADD COLUMN activation_count INTEGER NOT NULL DEFAULT 1
-                    """
-                )
-            invalidation_columns = {
-                str(row["name"])
-                for row in conn.execute("PRAGMA table_info(canonical_invalidations)")
-            }
-            if "state" not in invalidation_columns:
-                conn.execute(
-                    """
-                    ALTER TABLE canonical_invalidations
-                    ADD COLUMN state TEXT NOT NULL DEFAULT 'applied'
-                    """
-                )
-            if "result_state" not in invalidation_columns:
-                conn.execute(
-                    """
-                    ALTER TABLE canonical_invalidations
-                    ADD COLUMN result_state TEXT NOT NULL DEFAULT 'invalidated'
-                    """
-                )
+            for statement in canonical_schema():
+                conn.execute(statement)
 
     async def register(
         self,

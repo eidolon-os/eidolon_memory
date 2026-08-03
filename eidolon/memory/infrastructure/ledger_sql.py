@@ -595,3 +595,144 @@ SELECT {", ".join(COMMITMENT_REVISION_COLUMNS)} FROM commitment_revisions
 WHERE commitment_id = {{m}}
 ORDER BY recorded_at DESC, revision_id DESC LIMIT {{m}}
 """
+
+
+# ── canonical facts ──────────────────────────────────────────────────────────
+#
+# The chain that makes a corrected fact stop being recalled. An assertion is one
+# (subject, predicate, object) the owner has confirmed; evidence rows are the
+# turns that confirmed it; invalidations and reactivations are how it leaves and
+# returns to being current.
+#
+# This is product behaviour, not bookkeeping. Without it a fact the owner
+# corrected keeps being recalled, which is the failure a user reads as their
+# companion not listening.
+#
+# Every type here is TEXT or INTEGER except one REAL, which both databases
+# accept — so unlike the DLQ's blob there is nothing to template. Sharing the
+# schema is what stops the two from disagreeing on a column name or a
+# constraint, which would not look like a bug so much as cloud answering
+# differently from local.
+
+CANONICAL_ASSERTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS canonical_assertions (
+    assertion_id TEXT PRIMARY KEY,
+    memory_space_id TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object_value TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'active',
+    drawer_projection_state TEXT NOT NULL DEFAULT 'pending',
+    kg_projection_state TEXT NOT NULL DEFAULT 'pending',
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_confirmed_at TEXT NOT NULL,
+    activation_count INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(memory_space_id, subject, predicate, object_value)
+)
+"""
+"""The UNIQUE constraint is the identity claim: one assertion per fact per space.
+
+``assertion_id`` is derived from those same four values, so the constraint is
+what makes a second derivation collide rather than duplicate.
+"""
+
+CANONICAL_EVIDENCE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS canonical_evidence (
+    intent_id TEXT PRIMARY KEY,
+    memory_space_id TEXT NOT NULL,
+    assertion_id TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    tool_call_id TEXT,
+    authority TEXT NOT NULL,
+    raw_claim TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    occurred_at TEXT,
+    recorded_at TEXT NOT NULL
+)
+"""
+"""``intent_id`` as the primary key is the idempotency claim.
+
+No foreign key to the assertion, unlike the SQLite original: the write path
+inserts the assertion first inside one transaction, which is what actually
+guarantees the relationship, and a constraint here would only add a way for a
+replica's transaction to fail on ordering.
+"""
+
+CANONICAL_EVIDENCE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_canonical_evidence_assertion
+ON canonical_evidence(assertion_id, recorded_at)
+"""
+
+CANONICAL_INVALIDATIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS canonical_invalidations (
+    intent_id TEXT PRIMARY KEY,
+    memory_space_id TEXT NOT NULL,
+    assertion_id TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    raw_claim TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    result_state TEXT NOT NULL DEFAULT 'invalidated'
+)
+"""
+"""``state`` tracks the request, ``result_state`` what it decided.
+
+Separate because an invalidation is recorded before it is applied: a request
+still pending and one that concluded the fact was superseded are different
+things, and one column could not say both.
+"""
+
+CANONICAL_INVALIDATIONS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_canonical_invalidations_assertion
+ON canonical_invalidations(assertion_id, recorded_at)
+"""
+
+CANONICAL_REACTIVATIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS canonical_reactivations (
+    intent_id TEXT PRIMARY KEY,
+    memory_space_id TEXT NOT NULL,
+    assertion_id TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    raw_claim TEXT NOT NULL,
+    reactivated_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    prior_state TEXT NOT NULL,
+    activation_number INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending'
+)
+"""
+"""``activation_number`` is what makes a projection identifiable.
+
+A fact invalidated and later reconfirmed needs its second life projected
+separately from its first, or a stale drawer from the first would be treated as
+current.
+"""
+
+CANONICAL_REACTIVATIONS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_canonical_reactivations_assertion
+ON canonical_reactivations(assertion_id, recorded_at)
+"""
+
+
+def canonical_schema() -> tuple[str, ...]:
+    """Every statement needed to create the canonical-fact tables, in order.
+
+    Returned as a sequence rather than one script because PostgreSQL's driver
+    executes one statement per call, and SQLite's ``executescript`` would commit
+    an open transaction out from under a caller.
+    """
+
+    return (
+        CANONICAL_ASSERTIONS_SCHEMA,
+        CANONICAL_EVIDENCE_SCHEMA,
+        CANONICAL_EVIDENCE_INDEX,
+        CANONICAL_INVALIDATIONS_SCHEMA,
+        CANONICAL_INVALIDATIONS_INDEX,
+        CANONICAL_REACTIVATIONS_SCHEMA,
+        CANONICAL_REACTIVATIONS_INDEX,
+    )

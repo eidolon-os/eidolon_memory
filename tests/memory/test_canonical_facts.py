@@ -250,7 +250,20 @@ async def test_projection_state_is_independent_per_target(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_previous_combined_projection_state_is_upgraded(tmp_path: Path) -> None:
+async def test_a_file_from_before_the_split_projection_columns_is_refused(
+    tmp_path: Path,
+) -> None:
+    """It used to be migrated in place. It is now refused, and that is deliberate.
+
+    This project does not carry historical data forward, so silently rewriting a
+    ledger that still holds rows would be deciding on the operator's behalf. The
+    error names the file so they can look at it and choose.
+
+    The rows here are what make it a refusal rather than a rebuild — an empty
+    outdated table is recreated, because nothing is lost and failing would block
+    a deployment over a file with no content.
+    """
+
     path = tmp_path / "canonical_facts.sqlite3"
     intent = _intent("intent:1")
     assertion_id = canonical_assertion_id(
@@ -295,10 +308,13 @@ async def test_previous_combined_projection_state_is_upgraded(tmp_path: Path) ->
             ),
         )
 
-    ledger = CanonicalFactLedger(path)
-    registered = await ledger.register(intent, targets={"drawer", "kg"})
+    from eidolon.memory.infrastructure.ledger_sql import LedgerSchemaOutdated
 
-    assert registered.pending_targets == []
+    with pytest.raises(LedgerSchemaOutdated) as raised:
+        CanonicalFactLedger(path)
+
+    assert "canonical_facts.sqlite3" in str(raised.value)
+    assert "1 row" in str(raised.value)
 
 
 @pytest.mark.asyncio
