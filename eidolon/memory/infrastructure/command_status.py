@@ -19,7 +19,6 @@ from eidolon.memory.domain.command_status import (
     CommandStatusRecord,
     CommandStatusStats,
 )
-from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 from eidolon.memory.infrastructure.ledger_sql import (
     COMMAND_STATUS_COLUMNS,
     COMMAND_STATUS_COUNT_ALL,
@@ -36,6 +35,7 @@ from eidolon.memory.infrastructure.ledger_sql import (
     ensure_ledger_schema_current,
     render,
 )
+from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 
 def _sql(template: str) -> str:

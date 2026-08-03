@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import sqlite3
@@ -27,25 +26,20 @@ from eidolon.memory.domain.commitment import (
 from eidolon.memory.domain.commitment_decision import decide_commitment_apply
 from eidolon.memory.infrastructure.ledger_sql import (
     COMMITMENT_COLUMNS,
-    COMMITMENT_COUNT,
     COMMITMENT_INSERT,
     COMMITMENT_REVISION_BY_ID,
     COMMITMENT_REVISION_BY_INTENT,
     COMMITMENT_REVISION_COLUMNS,
-    COMMITMENT_REVISION_HISTORY,
     COMMITMENT_REVISION_INSERT,
     COMMITMENT_REVISIONS_INDEX,
     COMMITMENT_REVISIONS_SCHEMA,
     COMMITMENT_SELECT_BY_ID,
     COMMITMENT_SELECT_ONE,
-    COMMITMENT_SELECT_PAGE,
     COMMITMENT_UPDATE,
     COMMITMENTS_INDEX,
     COMMITMENTS_SCHEMA,
     SQLITE_MARKER,
-    commitment_count_active,
     commitment_mark_projected,
-    commitment_select_active_page,
     render,
 )
 from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
@@ -257,9 +251,6 @@ class CommitmentLedger(SerialisedSqliteWrites):
         }
         if not targets or not targets.issubset(columns):
             raise ValueError("commitment projection update requires known targets")
-        assignments = ", ".join(
-            f"{columns[target]} = 'projected'" for target in sorted(targets)
-        )
         with self._connect() as conn:
             result = conn.execute(
                 commitment_mark_projected(SQLITE_MARKER, [columns[t] for t in targets]),

@@ -10,12 +10,10 @@ the two cannot diverge on what counts as already-applied.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 from eidolon.memory.infrastructure.ledger_sql import (
     SQLITE_MARKER,
     SYNC_EVENT_INSERT,
@@ -25,6 +23,7 @@ from eidolon.memory.infrastructure.ledger_sql import (
     ensure_ledger_schema_current,
     render,
 )
+from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 
 class SyncLedger(SerialisedSqliteWrites):

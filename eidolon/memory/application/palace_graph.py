@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from eidolon.memory.domain.ports import RoomGraphBackend
-from eidolon.memory.domain.room_graph import RoomGraphSnapshot
+from eidolon.memory.domain.room_graph import RoomGraphSnapshot, RoomNode
 
 
 async def build_palace_graph(

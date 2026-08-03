@@ -20,8 +20,8 @@ SPACE_FOR_TESTS = SPACE
 def mcp_with_kg(tmp_path: Path):
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
-    from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
+    from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.config.memory_settings import load_memory_settings
     from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger

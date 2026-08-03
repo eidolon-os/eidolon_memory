@@ -430,6 +430,7 @@ def _compose_starlette_lifespan(
     decision_store: ExtractionDecisionLedger,
     canonical_facts: CanonicalFactLedger,
     commitments: CommitmentLedger,
+    sync: Any,
     palace_path: str,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
@@ -701,6 +702,7 @@ def _run_service(
         decision_store=decision_store,
         canonical_facts=canonical_facts,
         commitments=commitments,
+        sync=sync,
         palace_path=str(palace_path),
     )
 

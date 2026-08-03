@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from eidolon_memory_contracts import MemoryIntent
 
     from eidolon.memory.application.working_memory import WorkingMemoryRing
-    from eidolon.memory.domain.room_graph import RoomGraphSnapshot
     from eidolon.memory.domain.canonical_fact import (
         CanonicalFactHistoryRecord,
         CanonicalFactInvalidation,
@@ -37,6 +36,7 @@ if TYPE_CHECKING:
     from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
     from eidolon.memory.domain.extraction_decision import ExtractionDecisionRecord
     from eidolon.memory.domain.fragments import MemoryFragment
+    from eidolon.memory.domain.room_graph import RoomGraphSnapshot
     from eidolon.memory.domain.wire import MemoryWireRecord
 
 

@@ -7,14 +7,12 @@ returns.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
-from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 from eidolon.memory.infrastructure.ledger_sql import (
     DLQ_CLAIM,
     DLQ_COLUMNS,
@@ -33,6 +31,7 @@ from eidolon.memory.infrastructure.ledger_sql import (
     ensure_ledger_schema_current,
     render,
 )
+from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 
 def _sql(template: str) -> str:

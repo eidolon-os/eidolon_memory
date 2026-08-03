@@ -236,7 +236,11 @@ class MemoryService:
         except (UnknownMemorySpace, MemorySpaceUnavailable):
             raise
         except Exception as exc:  # noqa: BLE001
-            log.warning("recall_resolve_failed", memory_space_id=ctx.memory_realm_id, error=str(exc))
+            log.warning(
+                "recall_resolve_failed",
+                memory_space_id=ctx.memory_realm_id,
+                error=str(exc),
+            )
             return _degraded_recall(str(exc))
 
         # A caller may turn the graph off for one request; it can never turn one
@@ -390,7 +394,11 @@ class MemoryService:
                 runtime.backend, ctx.memory_realm_id, target
             )
         except Exception as exc:  # noqa: BLE001 - contract: never raise on storage
-            log.warning("forget_preview_degraded", memory_space_id=ctx.memory_realm_id, error=str(exc))
+            log.warning(
+                "forget_preview_degraded",
+                memory_space_id=ctx.memory_realm_id,
+                error=str(exc),
+            )
             return ForgetPreview(
                 status="failed", target=target, action=action, error=str(exc)
             )

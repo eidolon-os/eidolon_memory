@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-import shutil
 import sys
 import time
 from datetime import datetime
@@ -34,8 +32,7 @@ from typing import Any
 
 import nats
 from nats.js.api import ConsumerConfig, DeliverPolicy
-from pydantic import ValidationError
-from eidolon_memory_contracts import ConversationTurnPayload, conversation_turn_subject
+from eidolon_memory_contracts import conversation_turn_subject
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
@@ -75,7 +72,6 @@ async def _replay(
     chat-derived facts. Uses the same ``process_turn_message`` /
     ``process_command_message`` paths the live agent_runner uses.
     """
-    import asyncio
 
     from mempalace.knowledge_graph import KnowledgeGraph
 

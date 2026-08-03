@@ -36,17 +36,15 @@ from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     find_forget_candidates,
 )
+from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.mempalace_hierarchy import build_mempalace_hierarchy_snapshot
 from eidolon.memory.application.palace_graph import build_palace_graph
 from eidolon.memory.application.privacy_confirmation import PrivacyConfirmationSigner
 from eidolon.memory.application.privacy_filter import row_visible_to_listing
-from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.public_recall import (
-    recall_with_kg_fusion,
     search_all_wings_mcp_style,
     wire_record_to_public_dict,
 )
-from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.ports import (
     CanonicalFactReader,

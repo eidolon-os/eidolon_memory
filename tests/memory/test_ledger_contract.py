@@ -17,11 +17,11 @@ from datetime import UTC, datetime
 
 import pytest
 
+from eidolon.memory.domain.commitment import CommitmentConflict
 from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionConflict,
     ExtractionDecisionRecord,
 )
-from eidolon.memory.domain.commitment import CommitmentConflict
 from eidolon.memory.domain.ports import (
     CommandStatusStore,
     CommitmentStore,

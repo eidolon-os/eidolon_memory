@@ -37,8 +37,8 @@ def _actor_context() -> MemoryActorContext:
 def stack(tmp_path: Path):
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
-    from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
+    from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.config.memory_settings import load_memory_settings
 
     backend = LockedBackend(FakeMemoryBackend())

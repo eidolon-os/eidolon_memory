@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from eidolon_memory_contracts import MemoryActorContext
 
-
 SPACE_FOR_TESTS = "default.alice.default"
 
 def _ctx(memory_realm_id: str = "default.alice.default") -> MemoryActorContext:
@@ -242,8 +241,8 @@ async def test_list_entity_names_reflects_write_immediately(tmp_path: Path) -> N
 def fusion_setup(tmp_path: Path):
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
-    from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
+    from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.config.memory_settings import load_memory_settings
 
     backend = LockedBackend(FakeMemoryBackend())

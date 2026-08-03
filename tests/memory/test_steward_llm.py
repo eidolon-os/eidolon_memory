@@ -108,9 +108,9 @@ async def test_llm_steward_falls_back_on_invalid_json(monkeypatch: pytest.Monkey
 def _fragment_json(importance: int, content: str) -> str:
     return (
         '{"memory_space_id": "r:benchmark:default", "source_turn_id": "t1", '
-        '"wing": "Wing_Life", "room": "colour", "content": "%s", '
-        '"memory_type": "fact", "importance": %d, "confidence": 0.9}'
-        % (content, importance)
+        '"wing": "Wing_Life", "room": "colour", "content": "'
+        f'{content}", "memory_type": "fact", "importance": {importance}, '
+        '"confidence": 0.9}'
     )
 
 

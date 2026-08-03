@@ -36,6 +36,7 @@ from eidolon.memory.infrastructure.dlq import DlqLedger
 from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 
+SPACE = "default.alice.default"
 MEMORY_ROOT = Path(__file__).resolve().parents[2] / "eidolon" / "memory"
 
 # The field on SpaceLedgers, the port it is declared as, and how the local
@@ -47,12 +48,16 @@ MEMORY_ROOT = Path(__file__).resolve().parents[2] / "eidolon" / "memory"
 # implementations — each port is honoured by both of its storages, which is what
 # these tests are about.
 LEDGERS = [
-    ("command_status", CommandStatusStore, lambda p: CommandStatusLedger(p, space_id="default.alice.default")),
-    ("dlq", DlqStore, lambda p: DlqLedger(p, space_id="default.alice.default")),
+    (
+        "command_status",
+        CommandStatusStore,
+        lambda p: CommandStatusLedger(p, space_id=SPACE),
+    ),
+    ("dlq", DlqStore, lambda p: DlqLedger(p, space_id=SPACE)),
     ("decisions", ExtractionDecisionStore, lambda p: ExtractionDecisionLedger(p)),
     ("canonical_facts", CanonicalFactStore, lambda p: CanonicalFactLedger(p)),
     ("commitments", CommitmentStore, lambda p: CommitmentLedger(p)),
-    ("sync", SyncLedgerPort, lambda p: SyncLedger(p, space_id="default.alice.default")),
+    ("sync", SyncLedgerPort, lambda p: SyncLedger(p, space_id=SPACE)),
 ]
 
 

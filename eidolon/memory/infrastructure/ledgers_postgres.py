@@ -49,10 +49,24 @@ from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionRecord,
 )
 from eidolon.memory.domain.steward import StewardDecision
+
+# The pure helpers the decision needs. Imported from the embedded ledger because
+# they are properties of commitments, not of SQLite — the alternative is a third
+# module holding four small functions.
+from eidolon.memory.infrastructure.commitments import (
+    _intent_fields,
+    _intent_hash,
+    _merge_values,
+    _requested_status,
+    _validate_identity,
+)
+from eidolon.memory.infrastructure.commitments import (
+    _record_values as _commitment_values,
+)
 from eidolon.memory.infrastructure.ledger_sql import (
+    COMMAND_STATUS_COLUMNS,
     COMMAND_STATUS_COUNT_ALL,
     COMMAND_STATUS_COUNT_BY_STATUS,
-    COMMAND_STATUS_COLUMNS,
     COMMAND_STATUS_INDEX,
     COMMAND_STATUS_INSERT,
     COMMAND_STATUS_OLDEST_ACTIVE,
@@ -103,17 +117,6 @@ from eidolon.memory.infrastructure.ledger_sql import (
     commitment_mark_projected,
     commitment_select_active_page,
     render,
-)
-# The pure helpers the decision needs. Imported from the embedded ledger because
-# they are properties of commitments, not of SQLite — the alternative is a third
-# module holding four small functions.
-from eidolon.memory.infrastructure.commitments import (
-    _intent_fields,
-    _intent_hash,
-    _merge_values,
-    _record_values as _commitment_values,
-    _requested_status,
-    _validate_identity,
 )
 from eidolon.memory.support.logging import get_logger
 
