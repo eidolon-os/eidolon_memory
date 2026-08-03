@@ -120,105 +120,96 @@ measures a known defect.
 4. Then LongMemEval dev (50), then held-out (450), then LoCoMo, ConvoMem,
    MemBench.
 
-### Probe result — and a correction, 2026-08-03
+### First complete run, 2026-08-03 — and four corrections
 
-**The 2026-08-02 reading of this probe was wrong.** It is corrected here rather
-than edited away, because the mistake is the more useful half.
-
-What the probe reported:
-
-```
-Corpus turns published: 40
-Palace state at query time: fragments=7, entities=7, triples_total=5
-Ingestion wait time: 362.0s
-```
-
-I read that as extraction coverage of 17.5% and concluded that extraction quality
-capped R@5. That inference skipped a step: **it assumed all 40 turns had been
-processed.** They had not.
-
-Re-running with per-turn counters showed what actually happened:
+This is the first probe run whose input was complete, so it is the first figure
+worth citing. Getting here took fixing three measurement defects and abandoning a
+conclusion, all recorded below because each was plausible and wrong.
 
 ```
-turn_processor_decision_persisted: 7      ← of 40 turns published
-llm_steward_fallback_to_rules: 2
-  litellm.Timeout: timeout value=30.0, time taken=93.44s
+Corpus turns published:  40
+Turns fully processed:   40        ← the first run where this held
+Palace at query time:    fragments=39, entities=32, triples_total=31
+Ingestion wait:          1192.7s
+Threshold filtering:     0 fragments dropped
+Queries:                 11/49 correct (22.4%)
+Latency:                 p50 73.8ms, p95 92.4ms
 ```
 
-The steward's LLM takes **90+ seconds per turn** against the configured endpoint,
-with a 30s timeout. `--ingest-timeout` defaults to 360s, and the run used 362 —
-so it **timed out**. Forty turns at that rate need roughly an hour. The probe then
-proceeded to query a palace holding about a sixth of the corpus.
+**Extraction is not the constraint.** 40 turns produced 39 fragments — roughly
+97.5% coverage, and not one fragment was discarded by either threshold
+(`max_fragments_per_turn`, `min_importance_to_write`). The memories are being
+written.
 
-So the number measured **the wait budget, not the memory**. Nothing is yet known
-about extraction quality on this corpus.
+**Retrieval is.** With the corpus fully present, 11 of 49 queries are answered
+correctly:
 
-Two things were wrong, and both are fixed:
+| Category | Correct | Evidence recall | Omissions | Reading |
+|---|---|---|---|---|
+| canonical_entity | 3/7 | 64.3% | 5 | Finds most of the evidence, still answers wrong |
+| emotion | 2/3 | 66.7% | 1 | Works |
+| kinship_alias | 3/8 | 50.0% | 8 | Half the evidence, a third of the answers |
+| time | 2/5 | 40.0% | 3 | |
+| preference | 1/4 | 20.0% | 4 | The central companion-memory case |
+| **topic** | **0/8** | 21.4% | **11** | Most omissions of any category |
+| **future_plans** | **0/3** | **0.0%** | 6 | Retrieves nothing at all |
+| **event** | **0/3** | 20.0% | 4 | |
+| **pronoun** | **0/3** | 33.3% | 4 | |
+| **abstention** | **0/5** | — | 0 | **A separate failure — see below** |
 
-* The bench printed a warning to stderr and carried on. That warning never
-  reached the report, so the figures below it looked like measurements of a fully
-  ingested corpus. It now **exits non-zero** unless `--allow-partial-ingestion`
-  is passed explicitly.
-* I drew a conclusion from an aggregate without checking that its input was
-  complete. The per-stage counters (`FRAGMENTS_EXTRACTED`) exist now so the next
-  reading cannot make the same mistake: they distinguish "the model proposed
-  little" from "the thresholds discarded it" from "the turn was never processed".
+**Evidence recall exceeds the correct rate almost everywhere.** That shape matters:
+it means recall is finding *some* of the material a question needs and not the
+rest. This is a completeness and ranking problem inside recall, not a storage
+problem — which is the opposite of what the earlier readings suggested.
 
-### What the two runs do establish
+**Abstention is a different defect.** Those five questions are unanswerable from
+the corpus, and the correct behaviour is to decline. Zero clean abstentions with
+zero omissions means it answered all five. That misleads a user rather than
+disappointing them, so it is worse than a miss despite costing the same in the
+aggregate.
 
-| | Run 1 (08-02) | Run 2 (08-03) |
-|---|---|---|
-| Fully correct | 12/49 (24.5%) | 10/49 (20.4%) |
-| Latency p95 | 104.6ms | 110.0ms |
-| Turns actually ingested | unknown | **7 of 40** |
+**Latency is fine and always was**: p95 92ms end to end through MCP, across four
+runs (66–110ms).
 
-Latency is real and fine — those queries ran against a live service. The accuracy
-figures are not usable, and the variance between them is consistent with both runs
-having ingested a different arbitrary fraction.
+### The four things that were wrong before this run
 
-`preference 0/4` and `abstention 0/5` appeared in both runs, which is suggestive
-but not evidence: the relevant memories may simply never have been written.
+Recorded rather than edited away — each was believable, and the sequence is the
+useful part.
 
-### What has to happen before any benchmark number means anything
+1. **The steward timeout was tighter than the work.** Measured: a trivial call to
+   this endpoint returns in 2.4s, the real 8.3k-char steward prompt takes 22.9s,
+   and the limit was 30s (code default 20s). Ordinary variance tripped it and
+   litellm's retries turned one slow turn into ~93s. Now 90s.
+2. **The bench's ingest budget could not fit the corpus.** Turns are processed
+   strictly one at a time, so 40 of them need ~15 minutes; the default was 360s.
+   Now 1800s — the first complete run used 1192.7s, i.e. the 1200s I set after
+   the first measurement left seven seconds of margin.
+3. **The drain gate measured output, not arrival.** It waited for `triples >= 18
+   and fragments >= 25`, which saturated at 24 of 40 turns — so the bench decided
+   it was finished and queried a palace missing 40% of the corpus. It now waits
+   for the turn consumer's backlog to reach zero, which is what "ingested"
+   means. Thresholds remain as a floor beneath that, since a drained queue with
+   no output means extraction is broken.
+4. **And the conclusion I drew from all of it.** From "40 published, 7 fragments"
+   I wrote that extraction coverage was 17.5% and capped R@5. The real coverage
+   is 97.5%. I read an aggregate without checking its input was complete, three
+   times, and each measurement defect made the next inference look better
+   supported than it was.
 
-1. **An ingestion run that completes.** Either a faster steward endpoint or a
-   timeout sized to the real per-turn cost. At 90s/turn, LongMemEval's 500 long
-   sessions are not merely slow, they are impractical — so this is a
-   prerequisite, not a tuning step.
-2. **Then** re-read coverage from the counters, and only then judge extraction.
+`FRAGMENTS_EXTRACTED` now separates "the model proposed little" from "the
+thresholds discarded it" from "the turn was never processed" — the third being
+what fooled me — and the bench exits non-zero rather than reporting on a partial
+corpus.
 
-prompt-and-evaluation problem whose depth this probe does not measure.
+### What to do next, in this order
 
-Where we expect to differ, and why — stated in advance so the results can
-contradict it:
-
-- **Noisy and conditional-reasoning subsets** are MemPalace's weakest results.
-  Those are the categories an extraction step should help with: we store what a
-  steward judged worth keeping, rather than every turn verbatim, so distractors
-  are filtered before retrieval rather than competing during it.
-- **Knowledge update** should favour us for a similar reason — a superseded fact
-  has its validity interval closed, so it stops being retrievable as current
-  rather than ranking below its replacement.
-- **Raw retrieval on clean single-session questions** is where verbatim storage is
-  strongest and we should expect no advantage.
-
-Two things about method, because they are how such tables usually mislead:
-
-**Retrieval recall is not answer accuracy.** MemPalace's 96.6% is "was the
-labelled session in the top 5", not "did the assistant answer correctly".
-MemPalace says so explicitly and declines to compare against systems publishing
-end-to-end figures — the right call. We report both, labelled, never averaged.
-
-**Tuning splits are not results.** MemPalace's 100% figure is marked as reached by
-inspecting three failures, which is why they also publish a 450-question held-out
-number. We follow the same practice: tune on a small dev split, publish held-out.
-
-**Same embedder or it proves nothing.** MemPalace's baseline uses
-`all-MiniLM-L6-v2`. A comparison run on `embeddinggemma` would measure the
-embedder, not the system, so the comparable run uses minilm and the production
-configuration is reported separately.
-
----
+1. **Recall completeness**, starting with the four categories at 0%. `topic` has
+   the most omissions of any category and `future_plans` retrieves nothing, so
+   they are the two with the most to learn from.
+2. **Abstention**, separately: answering an unanswerable question is a different
+   bug from missing a memory.
+3. Only then the public suites. At ~30s per turn of ingestion, LongMemEval's 500
+   long sessions remain a scale problem regardless of quality.
 
 ## What is not measured yet
 
