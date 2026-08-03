@@ -85,7 +85,13 @@ class LlmConfig(BaseModel):
     base_url: str = ""
     api_key: str = ""
     api_key_env: str = "EIDOLON_MEMORY_LLM_API_KEY"
-    timeout_seconds: float = 20.0
+    # Sized from measurement, not taste. Against the configured endpoint a
+    # trivial call returns in 2.4s while the real steward prompt (8.3k chars)
+    # takes 22.9s — so 20 or 30 leaves almost no headroom, ordinary variance
+    # trips the timeout, and litellm's retries turn one slow turn into ~93s.
+    # Extraction runs on the bus, not in anyone's reply, so waiting longer for a
+    # real answer beats retrying three times for none.
+    timeout_seconds: float = 90.0
     # Extraction is a replayable decision, not creative generation.
     temperature: float = 0.0
 

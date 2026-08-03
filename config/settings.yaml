@@ -13,7 +13,11 @@ llm:
   model: openai/deepseek-v4-flash
   base_url: https://api.deepseek.com/v1
   api_key_env: EIDOLON_MEMORY_LLM_API_KEY
-  timeout_seconds: 30
+  # Measured 2026-08-03 against this endpoint: a trivial call returns in 2.4s,
+  # the real steward prompt (8.3k chars) takes 22.9s. At 30 the headroom was 7s,
+  # so ordinary variance tripped the timeout and litellm's retries turned one
+  # slow turn into ~93s of wall clock. The model is not slow; the prompt is large.
+  timeout_seconds: 90
   temperature: 0.0
 mcp_http:
   host: 127.0.0.1

@@ -90,6 +90,11 @@ llm:
   model: openai/deepseek-v4-flash
   base_url: http://127.0.0.1:8180/v1
   api_key_env: EIDOLON_MEMORY_LLM_API_KEY
+  # The steward prompt is large, so extraction is slow even on a fast model:
+  # measured 22.9s per turn against a hosted endpoint whose trivial calls take
+  # 2.4s. Too tight a value does not fail fast, it retries — turning one slow
+  # turn into three timeouts. Extraction is off the reply path, so err high.
+  timeout_seconds: 90
   temperature: 0.0
 
 mcp_http:

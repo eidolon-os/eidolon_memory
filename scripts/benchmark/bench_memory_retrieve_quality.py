@@ -1092,7 +1092,11 @@ def main() -> int:
             "such a number measures the wait budget, not the memory."
         ),
     )
-    parser.add_argument("--ingest-timeout", type=float, default=360.0,
+    # 40 turns are processed strictly one at a time (the subscriber awaits each
+    # handler), and one steward call measured 22.9s on 2026-08-03 — so a full
+    # corpus needs ~15 minutes. The old default of 360s could only ever ingest a
+    # quarter of it, which is what made the first two runs unusable.
+    parser.add_argument("--ingest-timeout", type=float, default=1200.0,
                         help="Max seconds to wait for ingestion (LLM steward is slow)")
     parser.add_argument("--with-consolidator", action="store_true",
                         help="Run eidolon-memory-consolidator after ingestion so the "
