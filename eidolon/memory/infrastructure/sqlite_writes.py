@@ -29,10 +29,44 @@ exists not to do.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+
+def _ledger_concurrency_limit() -> int:
+    """How many ledger statements may occupy thread pool workers at once.
+
+    asyncio's default pool holds ``min(32, cores + 4)`` workers, and every ledger
+    statement takes one for its duration. Six ledgers per space means three spaces
+    can ask for more workers than exist — and a process serving one owner's three
+    companions is the ordinary case, not a stress test. Past that point the vector
+    store and the embedding session queue behind bookkeeping.
+
+    So the ceiling is the core count, leaving the pool's spare workers for
+    everything that is not a ledger. Bounding rather than serialising: several
+    spaces still write at once, they just cannot take the whole pool.
+    """
+
+    return max(2, os.cpu_count() or 4)
+
+
+_LEDGER_SLOTS: asyncio.Semaphore | None = None
+
+
+def _slots() -> asyncio.Semaphore:
+    """The process-wide bound, created on first use.
+
+    Process-wide on purpose: the resource being protected is the one thread pool
+    every space shares, so a per-space bound would not bound anything.
+    """
+
+    global _LEDGER_SLOTS
+    if _LEDGER_SLOTS is None:
+        _LEDGER_SLOTS = asyncio.Semaphore(_ledger_concurrency_limit())
+    return _LEDGER_SLOTS
 
 
 class SerialisedSqliteWrites:
@@ -49,15 +83,28 @@ class SerialisedSqliteWrites:
         self._write_lock = asyncio.Lock()
 
     async def _write(self, fn: Callable[..., T], *args: Any) -> T:
-        """Run a mutating statement, one at a time for this ledger."""
+        """Run a mutating statement, one at a time for this ledger.
+
+        Two bounds, doing different jobs: the lock serialises *this* ledger so its
+        writers do not meet inside SQLite, and the semaphore caps how many ledger
+        statements across *all* spaces hold thread pool workers at once.
+        """
 
         if self._write_lock is None:  # pragma: no cover - constructor contract
             self._write_lock = asyncio.Lock()
         async with self._write_lock:
-            return await asyncio.to_thread(fn, *args)
+            async with _slots():
+                return await asyncio.to_thread(fn, *args)
 
     @staticmethod
     async def _read(fn: Callable[..., T], *args: Any) -> T:
-        """Run a read. Unserialised on purpose — see the module docstring."""
+        """Run a read, unserialised but still bounded.
 
-        return await asyncio.to_thread(fn, *args)
+        WAL allows one writer alongside many readers, so reads are not queued
+        against each other. They do occupy a worker while they run, though, so
+        they pass through the same ceiling — a burst of reads across many spaces
+        would otherwise starve the vector store just as writes would.
+        """
+
+        async with _slots():
+            return await asyncio.to_thread(fn, *args)

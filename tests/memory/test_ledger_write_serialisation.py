@@ -155,3 +155,116 @@ async def test_two_spaces_do_not_wait_on_each_other(tmp_path: Path) -> None:
 
     assert len(await alice.list()) == 1
     assert len(await bob.list()) == 1
+
+
+# ── the process-wide ceiling ──────────────────────────────────────────────────
+#
+# The lock above serialises one ledger. This bounds all of them together, because
+# the resource they share is the one thread pool. Six ledgers per space means
+# three spaces can ask for more workers than asyncio's default pool has — and a
+# process serving one owner's three companions is the ordinary case.
+
+
+def test_the_ceiling_leaves_workers_for_everything_else() -> None:
+    """Sized below the pool on purpose.
+
+    A ceiling equal to the pool would let bookkeeping take every worker, leaving
+    the vector store and the embedding session queued behind it.
+    """
+
+    import os
+
+    from eidolon.memory.infrastructure.sqlite_writes import _ledger_concurrency_limit
+
+    pool_size = min(32, (os.cpu_count() or 1) + 4)
+
+    assert _ledger_concurrency_limit() < pool_size
+    assert _ledger_concurrency_limit() >= 2
+
+
+async def test_ledger_work_across_spaces_stays_under_the_ceiling(tmp_path) -> None:
+    """Ten spaces writing at once must not exceed the bound.
+
+    Without it each space's six ledgers queue independently and the total is
+    unbounded — the pool fills, and every space waits on whichever one got there
+    first.
+    """
+
+    from eidolon.memory.infrastructure.sqlite_writes import _ledger_concurrency_limit
+
+    ledgers = [
+        DlqLedger(tmp_path / f"space{i}" / "dlq.sqlite3", space_id=f"space{i}")
+        for i in range(10)
+    ]
+    peak = 0
+    inside = 0
+
+    def _tracked(original):
+        def _run(*args):
+            nonlocal peak, inside
+            inside += 1
+            peak = max(peak, inside)
+            try:
+                return original(*args)
+            finally:
+                inside -= 1
+
+        return _run
+
+    for ledger in ledgers:
+        ledger._add_sync = _tracked(ledger._add_sync)
+
+    await asyncio.gather(
+        *[
+            ledger.add(subject="s", payload=b"p", error="e", deliveries=1)
+            for ledger in ledgers
+        ]
+    )
+
+    assert peak <= _ledger_concurrency_limit(), (
+        f"{peak} ledger statements ran at once, above the "
+        f"{_ledger_concurrency_limit()} ceiling"
+    )
+    assert peak > 1, "spaces were serialised against each other, not merely bounded"
+
+
+async def test_reads_pass_through_the_same_ceiling(tmp_path) -> None:
+    """A burst of reads occupies workers too, and would starve the vector store."""
+
+    from eidolon.memory.infrastructure.sqlite_writes import _ledger_concurrency_limit
+
+    ledgers = [
+        DlqLedger(tmp_path / f"r{i}" / "dlq.sqlite3", space_id=f"r{i}")
+        for i in range(10)
+    ]
+    entries = [
+        await ledger.add(subject="s", payload=b"p", error="e", deliveries=1)
+        for ledger in ledgers
+    ]
+
+    peak = 0
+    inside = 0
+
+    def _tracked(original):
+        def _run(*args):
+            nonlocal peak, inside
+            inside += 1
+            peak = max(peak, inside)
+            try:
+                return original(*args)
+            finally:
+                inside -= 1
+
+        return _run
+
+    for ledger in ledgers:
+        ledger._get_sync = _tracked(ledger._get_sync)
+
+    await asyncio.gather(
+        *[
+            ledger.get(entry.entry_id)
+            for ledger, entry in zip(ledgers, entries, strict=True)
+        ]
+    )
+
+    assert peak <= _ledger_concurrency_limit()
