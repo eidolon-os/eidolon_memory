@@ -109,6 +109,38 @@ def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
     return False
 
 
+async def _turns_pending(nats_url: str, user_id: str) -> int | None:
+    """Turns published but not yet acknowledged by the agent's consumer.
+
+    This is what "the corpus is ingested" actually means. The threshold check
+    below asks whether *enough* was produced, which is a different question and
+    the reason two earlier runs measured an incomplete palace: with 24 of 40 turns
+    processed the thresholds were already satisfied, so the bench stopped waiting
+    and queried anyway. Queries written against the full corpus then failed for
+    turns that had never arrived.
+
+    Returns None when the consumer cannot be inspected — a missing consumer is not
+    the same as an empty backlog, and treating it as zero would restore exactly the
+    false "done" this replaces.
+    """
+
+    try:
+        nc = await nats.connect(nats_url)
+    except Exception:
+        return None
+    try:
+        js = nc.jetstream()
+        info = await js.consumer_info(
+            "MEMORY_TURNS",
+            memory_consumer_name("eidolon-memory-agent", user_id, role="turn"),
+        )
+        return int(info.num_pending) + int(info.num_ack_pending)
+    except Exception:
+        return None
+    finally:
+        await nc.close()
+
+
 async def _reset_jetstream(nats_url: str, user_id: str) -> None:
     """Drop durables + purge subjects for ``user_id`` — same logic as the
     e2e fixture, so a re-run starts clean."""
@@ -741,17 +773,25 @@ async def _run_consolidator_inline(
 async def _wait_for_ingestion(
     session: ClientSession,
     *,
+    nats_url: str,
+    user_id: str,
     target_triples: int,
     target_fragments: int,
     timeout_s: float,
 ) -> tuple[bool, dict[str, Any], int, float]:
-    """Block until KG triples AND drawer fragments BOTH cross their thresholds.
+    """Block until every published turn has been consumed.
 
-    Steward output is non-uniform: relationship/event turns produce triples,
-    preference / lifestyle turns produce fragments without triples. Gating
-    on just one signal lets the bench start while half the corpus is still
-    being processed. Requiring both gives a far more accurate "the palace
-    is fully populated" signal.
+    The gate is the consumer backlog, not the amount of output. This used to
+    wait for triple and fragment counts to cross thresholds, and its docstring
+    claimed that gave a "fully populated" signal — it cannot. Output volume is a
+    proxy for progress, and it saturated at 24 of 40 turns, at which point the
+    bench stopped waiting and queried a palace missing 40% of the corpus. Every
+    query written against a turn that never arrived then failed, and the result
+    looked like a retrieval problem.
+
+    Thresholds are still checked, but as a floor beneath the real condition
+    rather than instead of it: a drained queue that produced almost nothing means
+    extraction is broken, and that should not read as success either.
     """
     start = time.monotonic()
     deadline = start + timeout_s
@@ -762,7 +802,10 @@ async def _wait_for_ingestion(
         stats = stats_raw if isinstance(stats_raw, dict) else {}
         last_stats = stats
         last_fragments = await _list_fragment_count(session)
-        if (
+        pending = await _turns_pending(nats_url, user_id)
+        # None means the consumer could not be read; waiting is the safe reading,
+        # since an unreadable backlog is not an empty one.
+        if pending == 0 and (
             int(stats.get("triples_total") or 0) >= target_triples
             and last_fragments >= target_fragments
         ):
@@ -896,11 +939,14 @@ async def amain(args: argparse.Namespace) -> int:
         mcp_url = f"http://127.0.0.1:{args.port}/mcp"
         async with _mcp_session(mcp_url) as session:
             print(
-                f"[wait] waiting for kg_stats.triples_total >= {args.min_triples} "
-                f"AND fragments >= {args.min_fragments} ..."
+                f"[wait] waiting for the turn consumer to drain, then for "
+                f"triples >= {args.min_triples} and fragments >= "
+                f"{args.min_fragments} ..."
             )
             ok, stats, fragments, ingest_s = await _wait_for_ingestion(
                 session,
+                nats_url=args.nats_url,
+                user_id=args.user_id,
                 target_triples=args.min_triples,
                 target_fragments=args.min_fragments,
                 timeout_s=args.ingest_timeout,
@@ -912,9 +958,11 @@ async def amain(args: argparse.Namespace) -> int:
                 # processed a fraction of the turns, and the resulting accuracy
                 # then measures the wait budget rather than the memory.
                 print(
-                    f"[FAIL] ingestion did not drain within {args.ingest_timeout:.0f}s. "
-                    f"Reached kg_stats={stats}, fragments={fragments} — below the "
-                    f"thresholds (triples >= {args.min_triples}, "
+                    f"[FAIL] ingestion did not finish within "
+                    f"{args.ingest_timeout:.0f}s. Reached kg_stats={stats}, "
+                    f"fragments={fragments}; the turn consumer still had a "
+                    f"backlog, or output stayed below the floor "
+                    f"(triples >= {args.min_triples}, "
                     f"fragments >= {args.min_fragments}).\n"
                     f"        Any quality number from this run would describe an "
                     f"incompletely ingested corpus.\n"
