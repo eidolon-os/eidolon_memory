@@ -38,6 +38,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from eidolon_memory_contracts import MemoryActorContext
 
+from scripts.benchmark.preflight import require_nats  # noqa: E402
 from scripts.benchmark.report import percentiles, sla_pass  # noqa: E402
 
 
@@ -194,6 +195,9 @@ def main() -> int:
     from eidolon.memory.config.memory_settings import get_memory_settings
 
     s = get_memory_settings()
+    # Before the event loop opens a connection, so a missing broker reads as a
+    # missing broker rather than as a client error inside _run.
+    require_nats(s.nats.url)
     context = MemoryActorContext(
         tenant_id=args.tenant_id,
         owner_user_id=args.owner_user_id,

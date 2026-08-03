@@ -65,6 +65,10 @@ from mcp.client.streamable_http import streamablehttp_client
 from eidolon.memory.infrastructure.nats.names import memory_consumer_name
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.benchmark.preflight import require_nats  # noqa: E402
 _FIXTURES = _REPO_ROOT / "tests" / "memory" / "e2e" / "fixtures"
 _DEFAULT_CORPUS = _FIXTURES / "companion_corpus.jsonl"
 _DEFAULT_QUERIES = _FIXTURES / "quality_queries.jsonl"
@@ -854,6 +858,11 @@ async def amain(args: argparse.Namespace) -> int:
     settings_path = out_dir / "spawn_settings.yaml"
     palace_root = out_dir / "palaces"
     palace_root.mkdir(parents=True, exist_ok=True)
+
+    # Checked before the reset, which is itself the first thing needing a broker.
+    # Without this the failure surfaces 45s later as "the agent never bound its
+    # port", which is true and useless.
+    require_nats(args.nats_url)
 
     # 0) Reset JetStream state for this user_id so re-runs are clean.
     print(f"[setup] reset JetStream durables for user_id={args.user_id}")
