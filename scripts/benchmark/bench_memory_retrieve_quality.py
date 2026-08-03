@@ -897,11 +897,24 @@ async def amain(args: argparse.Namespace) -> int:
                 timeout_s=args.ingest_timeout,
             )
             if not ok:
+                # A warning on stderr does not reach the report, so every number
+                # after it looked like a measurement of a fully ingested corpus.
+                # It is not: with a slow model this timeout can fire having
+                # processed a fraction of the turns, and the resulting accuracy
+                # then measures the wait budget rather than the memory.
                 print(
-                    f"[warn] timed out waiting for ingestion thresholds; proceeding "
-                    f"with kg_stats={stats}, fragments={fragments}",
+                    f"[FAIL] ingestion did not drain within {args.ingest_timeout:.0f}s. "
+                    f"Reached kg_stats={stats}, fragments={fragments} — below the "
+                    f"thresholds (triples >= {args.min_triples}, "
+                    f"fragments >= {args.min_fragments}).\n"
+                    f"        Any quality number from this run would describe an "
+                    f"incompletely ingested corpus.\n"
+                    f"        Raise --ingest-timeout, or check how long the steward's "
+                    f"LLM is taking per turn.",
                     file=sys.stderr,
                 )
+                if not args.allow_partial_ingestion:
+                    return 2
             print(
                 f"[wait] palace state after {ingest_s:.1f}s: "
                 f"entities={stats.get('entities')}, "
@@ -1071,6 +1084,14 @@ def main() -> int:
                         help="Wait until kg_stats.triples_total reaches this")
     parser.add_argument("--min-fragments", type=int, default=25,
                         help="Wait until eidolon_memory_list returns at least this many fragments")
+    parser.add_argument(
+        "--allow-partial-ingestion",
+        action="store_true",
+        help=(
+            "Report quality even when ingestion did not drain. Off by default: "
+            "such a number measures the wait budget, not the memory."
+        ),
+    )
     parser.add_argument("--ingest-timeout", type=float, default=360.0,
                         help="Max seconds to wait for ingestion (LLM steward is slow)")
     parser.add_argument("--with-consolidator", action="store_true",

@@ -109,57 +109,84 @@ measures a known defect.
 
 ### Order of work, and why
 
-1. **Coverage probe** (~20 sessions). Establishes the R@5 ceiling. Cheap, and it
-   decides whether the rest is worth running.
-2. **Fix extraction** if coverage is the binding constraint.
+1. **An ingestion run that completes at all.** Measured at 90+ seconds per turn
+   against the configured steward endpoint, so this is the first constraint, not
+   a tuning step — see the correction below.
+2. **Coverage probe** (~20 sessions), read from the per-stage counters. Only then
+   is the R@5 ceiling knowable, and only then does fixing extraction have a
+   target.
 3. **Session-id mapping** in the ingestion harness, so a hit can be scored the way
    they score it.
 4. Then LongMemEval dev (50), then held-out (450), then LoCoMo, ConvoMem,
    MemBench.
 
-### Probe result, 2026-08-02 — coverage is the binding constraint
+### Probe result — and a correction, 2026-08-03
 
-Ran the existing quality bench (40-turn companion corpus, real LLM steward, real
-agent subprocess). It reports palace state, which is the coverage number:
+**The 2026-08-02 reading of this probe was wrong.** It is corrected here rather
+than edited away, because the mistake is the more useful half.
+
+What the probe reported:
 
 ```
 Corpus turns published: 40
 Palace state at query time: fragments=7, entities=7, triples_total=5
-Queries: 49, fully correct 12/49 = 24.5%, evidence recall 35.1%
-Latency: p50 89.2ms, p95 104.6ms
+Ingestion wait time: 362.0s
 ```
 
-**40 turns produced 7 fragments.** Whatever the retrieval does, roughly four in
-five turns left nothing behind to retrieve. Against MemPalace's baseline — which
-stores every session verbatim and therefore has complete coverage by construction
-— this is not a tuning gap. Their 96.6% R@5 measures retrieval over everything;
-ours would measure retrieval over the sixth of the corpus the steward chose to
-keep.
+I read that as extraction coverage of 17.5% and concluded that extraction quality
+capped R@5. That inference skipped a step: **it assumed all 40 turns had been
+processed.** They had not.
 
-The per-category breakdown says the same thing more sharply:
+Re-running with per-turn counters showed what actually happened:
 
-| Category | Correct | Reading |
+```
+turn_processor_decision_persisted: 7      ← of 40 turns published
+llm_steward_fallback_to_rules: 2
+  litellm.Timeout: timeout value=30.0, time taken=93.44s
+```
+
+The steward's LLM takes **90+ seconds per turn** against the configured endpoint,
+with a 30s timeout. `--ingest-timeout` defaults to 360s, and the run used 362 —
+so it **timed out**. Forty turns at that rate need roughly an hour. The probe then
+proceeded to query a palace holding about a sixth of the corpus.
+
+So the number measured **the wait budget, not the memory**. Nothing is yet known
+about extraction quality on this corpus.
+
+Two things were wrong, and both are fixed:
+
+* The bench printed a warning to stderr and carried on. That warning never
+  reached the report, so the figures below it looked like measurements of a fully
+  ingested corpus. It now **exits non-zero** unless `--allow-partial-ingestion`
+  is passed explicitly.
+* I drew a conclusion from an aggregate without checking that its input was
+  complete. The per-stage counters (`FRAGMENTS_EXTRACTED`) exist now so the next
+  reading cannot make the same mistake: they distinguish "the model proposed
+  little" from "the thresholds discarded it" from "the turn was never processed".
+
+### What the two runs do establish
+
+| | Run 1 (08-02) | Run 2 (08-03) |
 |---|---|---|
-| emotion | 3/3 (100%) | Works |
-| time | 3/5 (60%) | Works |
-| canonical_entity, kinship_alias, topic | ~25% | Partial |
-| **preference** | **0/4** | The core companion-memory case, failing completely |
-| **future_plans, event, pronoun** | **0/3 each** | |
-| **abstention** | **0/5** | Answers questions it should decline — the failure that misleads a user rather than disappointing them |
+| Fully correct | 12/49 (24.5%) | 10/49 (20.4%) |
+| Latency p95 | 104.6ms | 110.0ms |
+| Turns actually ingested | unknown | **7 of 40** |
 
-Preference at 0/4 is the one to weigh: "what does this person like" is the
-central thing a companion memory exists to answer.
+Latency is real and fine — those queries ran against a live service. The accuracy
+figures are not usable, and the variance between them is consistent with both runs
+having ingested a different arbitrary fraction.
 
-Latency is fine and not the problem — p95 104ms end-to-end through MCP.
+`preference 0/4` and `abstention 0/5` appeared in both runs, which is suggestive
+but not evidence: the relevant memories may simply never have been written.
 
-**So the order stands, and step 2 is now specific.** Running LongMemEval today
-would publish a number governed by extraction coverage, not by retrieval quality,
-and improving the retriever would barely move it. Extraction has to be fixed
-first, and this probe is the cheap way to tell whether a fix worked: rerun it and
-watch `fragments`.
+### What has to happen before any benchmark number means anything
 
-No date for the full report yet, and now for a stated reason rather than an
-unknown one: it depends on raising extraction from 7/40, and that is an LLM
+1. **An ingestion run that completes.** Either a faster steward endpoint or a
+   timeout sized to the real per-turn cost. At 90s/turn, LongMemEval's 500 long
+   sessions are not merely slow, they are impractical — so this is a
+   prerequisite, not a tuning step.
+2. **Then** re-read coverage from the counters, and only then judge extraction.
+
 prompt-and-evaluation problem whose depth this probe does not measure.
 
 Where we expect to differ, and why — stated in advance so the results can
