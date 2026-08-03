@@ -16,6 +16,7 @@ from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import StewardOutputError
 from eidolon.memory.domain.steward import StewardDecision
+from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 if TYPE_CHECKING:
@@ -59,11 +60,36 @@ class LiteLLMSteward:
                 raise StewardOutputError(msg)
             raw = await self._call_llm(turn)
             decision = self._parse_decision(raw)
-            decision.fragments = [
+            proposed = decision.fragments
+            capped = proposed[: self._settings.steward.max_fragments_per_turn]
+            kept = [
                 f
-                for f in decision.fragments[: self._settings.steward.max_fragments_per_turn]
+                for f in capped
                 if f.importance >= self._settings.steward.min_importance_to_write
             ]
+            # Count where material is lost. Without this a corpus that yields few
+            # memories looks the same whether the model proposed little or these
+            # two thresholds discarded most of what it proposed — and the fix
+            # differs completely.
+            metrics.FRAGMENTS_EXTRACTED.labels(stage="proposed").inc(len(proposed))
+            metrics.FRAGMENTS_EXTRACTED.labels(stage="dropped_cap").inc(
+                len(proposed) - len(capped)
+            )
+            metrics.FRAGMENTS_EXTRACTED.labels(stage="dropped_importance").inc(
+                len(capped) - len(kept)
+            )
+            metrics.FRAGMENTS_EXTRACTED.labels(stage="written").inc(len(kept))
+            if len(kept) < len(proposed):
+                log.info(
+                    "steward_fragments_filtered",
+                    turn_id=turn.turn_id,
+                    proposed=len(proposed),
+                    written=len(kept),
+                    dropped_by_cap=len(proposed) - len(capped),
+                    dropped_by_importance=len(capped) - len(kept),
+                    min_importance=self._settings.steward.min_importance_to_write,
+                )
+            decision.fragments = kept
             decision.fragments = finalize_fragments(
                 decision.fragments,
                 steward="llm",

@@ -95,3 +95,111 @@ async def test_llm_steward_falls_back_on_invalid_json(monkeypatch: pytest.Monkey
     decision = await LiteLLMSteward(_settings_local_llm()).decide(_turn())
     assert decision.should_write
     assert decision.fragments[0].metadata["steward"] == "rules"
+
+
+# ── where extraction loses material ──────────────────────────────────────────
+#
+# Only the surviving count was observable before. So a corpus yielding few
+# memories looked identical whether the model proposed little or the thresholds
+# discarded most of what it proposed — and those need completely different fixes.
+# The probe measured 7 fragments from 40 turns without being able to say which.
+
+
+def _fragment_json(importance: int, content: str) -> str:
+    return (
+        '{"memory_space_id": "r:benchmark:default", "source_turn_id": "t1", '
+        '"wing": "Wing_Life", "room": "colour", "content": "%s", '
+        '"memory_type": "fact", "importance": %d, "confidence": 0.9}'
+        % (content, importance)
+    )
+
+
+async def _decide_with(monkeypatch, settings, fragments_json: list[str]):
+    async def fake_acompletion(**_kwargs):
+        body = (
+            '{"should_write": true, "reason": "test", "fragments": ['
+            + ", ".join(fragments_json)
+            + "]}"
+        )
+        return {"choices": [{"message": {"content": body}}]}
+
+    monkeypatch.setitem(
+        sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion)
+    )
+    return await LiteLLMSteward(settings).decide(_turn())
+
+
+@pytest.mark.asyncio
+async def test_low_importance_fragments_are_dropped_and_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The threshold is a real filter, not a hint.
+
+    With min_importance 3, everything the model rated 1 or 2 is discarded. That
+    is the most likely explanation for a low fragment count, and it was
+    previously indistinguishable from the model proposing nothing.
+    """
+
+    settings = _settings_local_llm()
+    assert settings.steward.min_importance_to_write == 3
+
+    decision = await _decide_with(
+        monkeypatch,
+        settings,
+        [
+            _fragment_json(1, "barely worth keeping"),
+            _fragment_json(2, "also below the line"),
+            _fragment_json(4, "worth keeping"),
+        ],
+    )
+
+    assert [f.content for f in decision.fragments] == ["worth keeping"]
+
+
+@pytest.mark.asyncio
+async def test_fragments_beyond_the_cap_are_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A separate loss path from the importance filter, and it applies first."""
+
+    settings = _settings_local_llm()
+    cap = settings.steward.max_fragments_per_turn
+
+    decision = await _decide_with(
+        monkeypatch,
+        settings,
+        [_fragment_json(5, f"fragment {i}") for i in range(cap + 3)],
+    )
+
+    assert len(decision.fragments) == cap
+
+
+@pytest.mark.asyncio
+async def test_every_loss_path_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The counter is what makes a low yield diagnosable.
+
+    Asserted against the metric rather than the log, because the metric is what
+    an operator reads and what a benchmark run can be judged by.
+    """
+
+    from eidolon.memory.support import metrics
+
+    if not metrics.METRICS_AVAILABLE:
+        pytest.skip("prometheus_client not installed")
+
+    def _count(stage: str) -> float:
+        return (
+            metrics.FRAGMENTS_EXTRACTED.labels(stage=stage)._value.get()  # noqa: SLF001
+        )
+
+    before = {s: _count(s) for s in ("proposed", "dropped_importance", "written")}
+
+    await _decide_with(
+        monkeypatch,
+        _settings_local_llm(),
+        [_fragment_json(1, "dropped"), _fragment_json(4, "kept")],
+    )
+
+    assert _count("proposed") - before["proposed"] == 2
+    assert _count("dropped_importance") - before["dropped_importance"] == 1
+    assert _count("written") - before["written"] == 1

@@ -116,6 +116,26 @@ TURNS_TOTAL = Counter(
     ("outcome",),
 )
 
+FRAGMENTS_EXTRACTED = Counter(
+    "eidolon_memory_fragments_extracted_total",
+    "Fragments the steward produced, and what happened to each.",
+    ("stage",),
+)
+"""Where extraction loses material, which was previously unobservable.
+
+``stage`` is one of:
+
+* ``proposed`` — the model returned it
+* ``dropped_importance`` — below ``steward.min_importance_to_write``
+* ``dropped_cap`` — beyond ``steward.max_fragments_per_turn``
+* ``written`` — reached storage
+
+Only the last was visible before, so a corpus that yields few memories looked
+identical whether the model proposed little or the thresholds discarded most of
+it — and those call for completely different fixes. The probe measured 7
+fragments from 40 turns without being able to say which.
+"""
+
 SPACES_HELD = Gauge(
     "eidolon_memory_spaces_held",
     "Memory spaces this process currently has open.",
