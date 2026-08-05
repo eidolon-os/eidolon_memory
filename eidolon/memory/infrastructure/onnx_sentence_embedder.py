@@ -53,12 +53,8 @@ distinguish, take the cheapest. That is bge-small-zh — 130 MB and under a
 millisecond, against a target of a Raspberry Pi sharing 4 GB with the rest of
 Eidolon. embeddinggemma is excluded by its 3 GB, not by its quality.
 
-**Qwen3-Embedding-0.6B is a candidate where 1 GB of memory is available.** It is a
-decoder embedder — last-token pooling, instruction-aware queries, and an export
-that declares ``position_ids`` and a 56-tensor key-value cache — so the feed here
-is driven by the session's declared inputs rather than by the model family.
-
-Measured on this machine, 20 single-query calls plus the 40-turn corpus:
+**Every model this module runs is an encoder, and that is now an invariant rather
+than a coincidence.** Qwen3-Embedding-0.6B was measured here and rejected on cost:
 
 | | bge-small-zh | qwen3-0.6b | ratio |
 |---|---|---|---|
@@ -67,20 +63,25 @@ Measured on this machine, 20 single-query calls plus the 40-turn corpus:
 | query p95 | 1.3 ms | **51.6 ms** | 40× |
 | 40 documents | 38.3 ms | 860 ms | 22× |
 
-The query figure is the one that decides deployment: it lands inside the recall
-path, whose end-to-end p95 is 20 ms on bge-small. Ingest throughput barely matters
-by comparison — 860 ms of embedding sits behind an LLM steward taking ~30 s per
-turn.
+The query figure is the one that decided it: it lands inside the recall path, whose
+end-to-end p95 is 20 ms on bge-small. Its retrieval on 43 queries was 35–40 top-5,
+the same band as everything else — and four models run end to end showed the
+probe's top-5 does not predict the pipeline's answer rate anyway, so there was no
+quality case to weigh against the 1 GB.
 
-Its retrieval on 43 queries is 35–40 top-5, the same band as everything else. That
-tells us less than it seems to: four models run end to end showed the probe's top-5
-does not predict the pipeline's answer rate — the highest-scoring probe model
-(multilingual-e5-large, 41/40) finished level with the lowest. Only an end-to-end
-run ranks an embedder here, and that metric was measured at **zero** variance across
-two identical runs.
+**The decoder handling it needed has been removed with it**: last-token pooling, a
+``position_ids`` feed, and an empty 56-tensor key-value cache. Checked rather than
+assumed before deleting — the declared inputs of all nine models were read, and
+Qwen3 was the only one declaring either ``position_ids`` or a past-key-value input.
+So those branches were unreachable, and a pooling mode no model uses reads like a
+capability while being dead code. The measurement is preserved in
+``benchmarks/suites/probe_qwen3_embedding.py`` and
+``benchmarks/suites/bench_longmemeval.py``, each of which carries its own decoder
+feed, so re-measuring it costs nothing and does not require this module to keep a
+branch for a model it does not run.
 
-Separating any of these would need several hundred queries rather than 43, which
-is one concrete reason to run the public suites.
+Separating the encoders that remain would need several hundred queries rather than
+43, which is one concrete reason to run the public suites.
 
 Two queries — "我跟客户吵架了" and "我最近工作压力大吗" — are missed by all five,
 including the 3 GB one. Four more ("我以后想做什么", "我计划去哪里",
@@ -260,19 +261,6 @@ class OnnxSentenceEmbedder:
             self._tokenizer = tokenizer
             self._np = np
             self._input_names = frozenset(i.name for i in session.get_inputs())
-            # A decoder export declares a past-key-value input per layer per side
-            # (28 × 2 for Qwen3). They are fed empty on a no-cache forward pass;
-            # the shape comes from the graph's own declaration so a different
-            # layer count or head dimension needs no change here.
-            self._past_inputs = tuple(
-                i.name for i in session.get_inputs() if "past" in i.name
-            )
-            self._past_shape: tuple[int, int] | None = None
-            if self._past_inputs:
-                declared = next(
-                    i.shape for i in session.get_inputs() if i.name == self._past_inputs[0]
-                )
-                self._past_shape = (int(declared[1]), int(declared[3]))
             # Assigned last: the unlocked fast path above reads a non-None
             # session as "fully loaded", so everything else must be in place
             # before it becomes visible.
@@ -290,31 +278,16 @@ class OnnxSentenceEmbedder:
             mask = np.asarray([e.attention_mask for e in encodings], dtype=np.int64)
 
             feed = {"input_ids": ids, "attention_mask": mask}
-            # Every optional input below is decided by asking the session what it
-            # declares, not by branching on the model family: BGE takes
-            # token_type_ids and E5 does not, a decoder export takes position_ids
-            # and a key-value cache and the encoders do not. Reading the graph
-            # keeps a wrong feed from becoming a runtime error on a machine we did
-            # not test on.
+            # The one optional input, decided by asking the session what it
+            # declares rather than by branching on the model family. Measured
+            # across all eight catalogued models: bge-small/base/large-zh and
+            # multilingual-e5-small declare it, bge-m3, gte-multilingual-base and
+            # multilingual-e5-base/large do not — so it does not even split by
+            # family, and reading the graph is the only way to be right.
             if "token_type_ids" in self._input_names:
                 feed["token_type_ids"] = np.zeros_like(ids)
-            if "position_ids" in self._input_names:
-                # Counted over real tokens so a padded row still starts at 0 on
-                # its first one; a plain arange would offset every left-padded row.
-                feed["position_ids"] = np.maximum(np.cumsum(mask, axis=1) - 1, 0).astype(
-                    np.int64
-                )
-            if self._past_inputs and self._past_shape is not None:
-                heads, head_dim = self._past_shape
-                empty = np.zeros((ids.shape[0], heads, 0, head_dim), dtype=np.float32)
-                for name in self._past_inputs:
-                    feed[name] = empty
 
-            # By name, because a decoder export returns the cache alongside the
-            # hidden states and positional indexing would pick up whichever the
-            # exporter happened to emit first.
-            output = "last_hidden_state" if self._past_inputs else None
-            hidden = self._session.run([output] if output else None, feed)[0]
+            hidden = self._session.run(None, feed)[0]
 
             pooled = _pool(hidden, mask, self._spec, np)
 
@@ -336,22 +309,17 @@ class OnnxSentenceEmbedder:
 def _pool(hidden: Any, mask: Any, spec: ModelSpec, np: Any) -> Any:
     """Reduce per-token hidden states to one vector, the way the model was trained.
 
-    Kept as a function so the three branches read side by side. Getting this
-    wrong is silent: BGE pooled by mean, or E5 pooled by CLS, still returns
-    vectors of the right width that simply rank badly.
+    Kept as a function so both branches read side by side. Getting this wrong is
+    silent: BGE pooled by mean, or E5 pooled by CLS, still returns vectors of the
+    right width that simply rank badly.
+
+    ``mean`` is the fallback rather than an explicit branch because a pooling
+    string nothing handles has to land somewhere, and mean is the one that at least
+    produces a usable vector for an unknown encoder. The catalogue is checked
+    against the two names by a test, so the fallback is a floor and not a route.
     """
 
     if spec.pooling == "cls":
         return hidden[:, 0]
-    if spec.pooling == "last":
-        # A causal model only accumulates the whole sequence at its final token —
-        # a CLS position holds nothing and mean pooling dilutes it.
-        #
-        # Indexed off the mask rather than as ``hidden[:, -1]`` or
-        # ``mask.sum() - 1``: the first is right only when the tokenizer pads
-        # left, the second only when it pads right, and the wrong one reads a pad
-        # position, which returns a vector instead of raising.
-        last = mask.shape[1] - 1 - np.argmax(mask[:, ::-1], axis=1)
-        return hidden[np.arange(hidden.shape[0]), last]
     weights = mask[..., None].astype(np.float32)
     return (hidden * weights).sum(axis=1) / np.maximum(weights.sum(axis=1), 1e-9)

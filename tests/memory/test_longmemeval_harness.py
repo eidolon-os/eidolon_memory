@@ -59,15 +59,38 @@ def test_the_harness_knows_every_model_production_does() -> None:
 
 def test_the_harness_invents_no_models() -> None:
     """A model here but not in production would be a figure for something we do
-    not ship."""
+    not ship — unless the harness says so out loud.
 
-    from bench_longmemeval import MEMPALACE_MODELS
+    Two declared exceptions, and both have to be declared rather than inferred:
 
-    # MemPalace's own two are reachable through the harness but are not ours to
-    # implement, so they live in their own tuple rather than in MODELS.
-    extra = set(_harness_models()) - set(_production_models()) - set(MEMPALACE_MODELS)
+    ``MEMPALACE_MODELS`` are reachable through their factory but are not ours to
+    implement. ``REJECTED_MODELS`` are candidates production measured and turned
+    down; they stay runnable here because a rejection resting on a number nobody can
+    re-measure is a rejection nobody can check. Naming them in a tuple is what keeps
+    "measured and rejected" distinguishable from "quietly drifted out of sync",
+    which is the case this test exists to catch.
+    """
+
+    from bench_longmemeval import MEMPALACE_MODELS, REJECTED_MODELS
+
+    declared = set(MEMPALACE_MODELS) | set(REJECTED_MODELS)
+    extra = set(_harness_models()) - set(_production_models()) - declared
 
     assert not extra, f"bench_longmemeval.MODELS has entries production lacks: {sorted(extra)}"
+
+
+def test_a_rejected_model_is_really_gone_from_production() -> None:
+    """Otherwise the tuple drifts the other way: a name listed as rejected that
+    production still ships, which reads as "we decided against this" about a model
+    running in the service."""
+
+    from bench_longmemeval import REJECTED_MODELS
+
+    still_shipped = set(REJECTED_MODELS) & set(_production_models())
+
+    assert not still_shipped, (
+        f"listed as rejected but still in LOCAL_EMBEDDING_MODELS: {sorted(still_shipped)}"
+    )
 
 
 @pytest.mark.parametrize("field", ["repo", "pooling", "query_prefix", "document_prefix"])
@@ -75,10 +98,13 @@ def test_the_copies_agree_on(field: str) -> None:
     """The four fields that decide what a vector means.
 
     ``repo`` picks the weights. ``pooling`` picks which position of the hidden
-    state is the sentence — CLS for BGE, mean for E5, the last real token for a
-    decoder. The prefixes are mandatory for E5 and an instruction for Qwen3. Get any
-    of them wrong and the model still returns a vector, of the right width, that
-    ranks badly.
+    state is the sentence — CLS for BGE and GTE, mean for E5. The prefixes are
+    mandatory for E5. Get any of them wrong and the model still returns a vector,
+    of the right width, that ranks badly.
+
+    Only names present in both tables are compared, so a rejected model the harness
+    keeps for reproducibility is out of scope here; membership is the other two
+    tests' job.
     """
 
     harness = _harness_models()

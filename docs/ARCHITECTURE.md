@@ -287,14 +287,23 @@ minilm 是拿错了工具，embeddinggemma 确实检索最好——它是被 3 G
 （B 上 +5、A 上 −2）。而成本不在噪声里：**+1088 MB、12–33 ms**，是 bge-small 的 8 倍内存、
 12–30 倍延迟。1.1 GB 单凭这一条就排除了树莓派。
 
-为它加的支持（`last` pooling + 56 个 KV 张量的 feed）**打算撤回**——没有模型用的 pooling
-模式读起来像能力，其实是死代码。测量本身保留在
-`benchmarks/suites/probe_qwen3_embedding.py`，它自带 decoder 的 feed。
+为它加的支持**已撤回**（2026-08-05 真的做了）：`qwen3-embedding-0.6b` 从
+`LOCAL_EMBEDDING_MODELS` 里删掉，`last` pooling、`position_ids` 的 feed、56 个 KV 张量的
+空 cache 一起删掉——没有模型用的 pooling 模式读起来像能力，其实是死代码。
 
-**更正（2026-08-04）：这句之前写的是"已撤回"，但工作区里没撤。** `qwen3-embedding-0.6b`
-仍在 `LOCAL_EMBEDDING_MODELS` 里，`last` pooling 和按图声明喂 KV 张量的代码仍在
-`onnx_sentence_embedder.py` 里，还有测试钉着。撤回是被写下来了，没被执行——所以这里改成记录
-这个差，而不是把话说圆。做不做是一个模型可用性的决定，不是这次 embedder 隔离的一部分。
+**删之前先量了，不是推的**：把九个模型的 ONNX 声明输入全读了一遍，只有 qwen3 声明
+`position_ids` 或任何 past-key-value 输入。所以那三条分支是**不可达**而不只是"没人用"。
+顺带量出来的一件事：`token_type_ids` 连按家族分都分不开——bge 三个尺寸和
+multilingual-e5-small 声明它，bge-m3、gte-multilingual-base、e5-base/large 不声明——所以
+"读图而不是按模型家族分支"这条留着，它是唯一能对的做法。
+
+测量本身保留在 `benchmarks/suites/probe_qwen3_embedding.py` 和
+`benchmarks/suites/bench_longmemeval.py`，两个都自带 decoder 的 feed；后者把它列进
+`REJECTED_MODELS`，因为"量过然后拒了"和"悄悄跟生产走散了"必须能分开。一个立在没人能重测的
+数字上的拒绝，是没人能检查的拒绝。
+
+**记一笔前一版的错**：这段之前写着"已撤回"，但工作区里根本没撤——代码和测试都还在。撤回被
+写下来了，没被执行。
 
 要分出三个 BGE 尺寸的高低需要几百个查询而不是 43 个。这是"跑公开 benchmark"的一个具体
 理由，与对标 mempalace 无关。

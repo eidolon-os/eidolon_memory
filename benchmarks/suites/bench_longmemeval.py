@@ -133,6 +133,19 @@ MODELS: dict[str, dict] = {
     },
 }
 
+#: Entries above that production deliberately does not ship.
+#:
+#: qwen3 was removed from ``LOCAL_EMBEDDING_MODELS`` on cost — 1 GB resident and
+#: 45 ms per query against a recall path whose end-to-end p95 is 20 ms — and the
+#: decoder handling it needed went with it: last-token pooling, a ``position_ids``
+#: feed and an empty key-value cache, none of which any remaining model declares.
+#:
+#: It stays runnable *here* because this file has its own encoder with its own
+#: decoder feed, and because a rejection resting on a number nobody can re-measure
+#: is a rejection nobody can check. 22.5 s per LongMemEval question is the figure
+#: the results report cites; this is where it comes from.
+REJECTED_MODELS = ("qwen3-embedding-0.6b",)
+
 #: MemPalace's own two, reachable through their factory rather than the table
 #: above. Measured here because their published 96.6% is minilm's, and
 #: embeddinggemma is the only model that scored above the pack on our Chinese

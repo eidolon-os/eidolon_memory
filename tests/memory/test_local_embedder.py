@@ -43,62 +43,58 @@ from eidolon.memory.infrastructure.onnx_sentence_embedder import OnnxSentenceEmb
 
 
 def test_every_model_declares_a_pooling_we_implement() -> None:
-    """A pooling string nothing handles falls through to mean pooling, which for a
-    BGE or a decoder model is wrong in a way that only shows up as worse ranking.
+    """Two names, because ``_pool`` handles two and falls through to mean.
 
-    ``last`` is here because a causal model accumulates the sequence at its final
-    token; ``cls`` reads a position that holds nothing for one, and ``mean``
-    dilutes it.
+    A pooling string nothing handles therefore does not raise — it mean-pools,
+    which for a BGE is wrong in a way that only shows up as worse ranking. This
+    test is what makes that fallback a floor rather than a route.
     """
 
     for name, spec in LOCAL_EMBEDDING_MODELS.items():
-        assert spec.pooling in {"cls", "mean", "last"}, (
-            f"{name} declares pooling {spec.pooling!r}"
-        )
+        assert spec.pooling in {"cls", "mean"}, f"{name} declares pooling {spec.pooling!r}"
 
 
-def test_last_token_pooling_reads_the_last_real_token() -> None:
-    """Not ``hidden[:, -1]`` and not ``mask.sum() - 1``.
+def test_the_catalogue_holds_no_decoder() -> None:
+    """The invariant that let the decoder handling be deleted.
 
-    The first is right only when the tokenizer pads left, the second only when it
-    pads right. The wrong one reads a pad position, which returns a vector rather
-    than raising — so it looks like a weak model.
+    Qwen3-Embedding-0.6B was the only decoder here and was rejected on cost — 1 GB
+    resident and 45 ms per query against a recall path whose end-to-end p95 is
+    20 ms. With it gone, last-token pooling, the ``position_ids`` feed and the
+    56-tensor key-value cache were unreachable, and a pooling mode no model uses
+    reads like a capability while being dead code.
+
+    Verified before deleting rather than assumed: the declared ONNX inputs of all
+    nine models were read, and Qwen3 was the only one declaring ``position_ids`` or
+    any past-key-value input. So re-adding a decoder means restoring that feed, and
+    this test is where it fails until someone does.
+    """
+
+    assert "qwen3-embedding-0.6b" not in LOCAL_EMBEDDING_MODELS
+    assert not [name for name, s in LOCAL_EMBEDDING_MODELS.items() if s.pooling == "last"]
+
+
+def test_cls_pooling_reads_the_first_position_and_mean_ignores_padding() -> None:
+    """The two branches that remain, on rows the wrong one would get wrong.
+
+    Mean pooling over the pad positions would drag every vector toward whatever the
+    padded tail holds — no error, just a vector that ranks badly, which is the
+    failure mode this whole file is about.
     """
 
     import numpy as np
 
     from eidolon.memory.infrastructure.onnx_sentence_embedder import _pool
 
-    spec = local_model_spec("qwen3-embedding-0.6b")
-    assert spec is not None and spec.pooling == "last"
+    mask = np.array([[1, 1, 0]])
+    hidden = np.array([[[1.0], [3.0], [99.0]]])
 
-    # Two rows padded on opposite sides, with a distinct value at each position so
-    # the pooled row says which position was read.
-    mask = np.array([[1, 1, 1, 0], [0, 1, 1, 1]])
-    hidden = np.array(
-        [
-            [[10.0], [11.0], [12.0], [99.0]],  # right-padded: last real token is 12
-            [[99.0], [20.0], [21.0], [22.0]],  # left-padded: last real token is 22
-        ]
-    )
+    cls_spec = local_model_spec("bge-small-zh")
+    mean_spec = local_model_spec("multilingual-e5-small")
+    assert cls_spec is not None and mean_spec is not None
 
-    assert _pool(hidden, mask, spec, np).ravel().tolist() == [12.0, 22.0]
-
-
-def test_a_decoder_model_declares_the_extra_feed_it_needs() -> None:
-    """Its ONNX export takes ``position_ids`` and a key-value cache per layer.
-
-    Asserted on the spec rather than by loading 600 MB: what this guards is that
-    the model stays marked as a decoder, since the feed is decided by reading the
-    session's declared inputs.
-    """
-
-    spec = local_model_spec("qwen3-embedding-0.6b")
-
-    assert spec is not None
-    assert spec.pooling == "last"
-    assert spec.dimension == 1024
-    assert spec.query_prefix.startswith("Instruct:")
+    assert _pool(hidden, mask, cls_spec, np).ravel().tolist() == [1.0]
+    # (1 + 3) / 2, not (1 + 3 + 99) / 3.
+    assert _pool(hidden, mask, mean_spec, np).ravel().tolist() == [2.0]
 
 
 def test_collection_names_are_distinct_across_every_implementation() -> None:

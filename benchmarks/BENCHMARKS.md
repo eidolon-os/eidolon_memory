@@ -442,11 +442,21 @@ memory and 12–30× the latency of bge-small. 1.1 GB alone excludes it from a 4
 Raspberry Pi running other services.
 
 Rejected on the same principle as bge-large: among models that cannot be
-distinguished, take the cheapest. The support added for it — a "last" pooling mode
-and a 56-tensor KV feed — was reverted rather than left in the shipped adapter,
-because a pooling mode no model uses reads as a capability and is dead code. The
-measurement stays reproducible in
-`benchmarks/suites/probe_qwen3_embedding.py`, which carries its own decoder feed.
+distinguished, take the cheapest. The support added for it — a "last" pooling mode,
+a `position_ids` feed and a 56-tensor KV feed — was removed from the shipped
+adapter rather than left in, because a pooling mode no model uses reads as a
+capability and is dead code. Checked before deleting rather than assumed: the
+declared ONNX inputs of all nine models were read, and Qwen3 was the only one
+declaring `position_ids` or any past-key-value input, so those branches were
+unreachable and not merely unused.
+
+The measurement stays reproducible in
+`benchmarks/suites/probe_qwen3_embedding.py` and in
+`benchmarks/suites/bench_longmemeval.py`, each of which carries its own decoder
+feed. The latter lists it in `REJECTED_MODELS` — declared rather than inferred, so
+"measured and turned down" stays distinguishable from "quietly drifted out of sync
+with production", and a test asserts both directions. A rejection resting on a
+number nobody can re-measure is a rejection nobody can check.
 
 Telling the three BGE sizes apart needs several hundred queries rather than 43.
 That is a concrete reason to run the public suites, separate from comparing

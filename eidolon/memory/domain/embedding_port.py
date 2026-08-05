@@ -129,7 +129,7 @@ class ModelSpec:
 
     repo: str
     dimension: int
-    pooling: str  # "cls" for BGE, "mean" for E5, "last" for a decoder
+    pooling: str  # "cls" for BGE and GTE, "mean" for E5
     query_prefix: str = ""
     document_prefix: str = ""
     collection_name: str = ""  # persisted by Chroma; defaults to the settings key
@@ -144,6 +144,12 @@ class ModelSpec:
 # Only models measured on the real corpus are listed. The comparison, the
 # reasoning, and what none of them fix are in
 # ``infrastructure/onnx_sentence_embedder.py``.
+#
+# Every entry here is an encoder. Qwen3-Embedding-0.6B was measured and rejected on
+# cost, and removing it from this table is what let the decoder handling go with it
+# — last-token pooling, a position_ids feed and a 56-tensor key-value cache, all
+# three now provably unreachable rather than merely unused. The measurement is kept
+# in ``benchmarks/suites/probe_qwen3_embedding.py``, which carries its own feed.
 LOCAL_EMBEDDING_MODELS: dict[str, ModelSpec] = {
     # The default, chosen on cost: ~130 MB resident and ~1 ms per call. Its
     # retrieval is indistinguishable from the larger two at our sample size — see
@@ -175,23 +181,6 @@ LOCAL_EMBEDDING_MODELS: dict[str, ModelSpec] = {
         dimension=1024,
         pooling="cls",
         collection_name="bge_large_zh_v15",
-    ),
-    # A decoder embedder — last-token pooling, instruction-aware queries, and an
-    # ONNX export that declares position_ids and a 56-tensor key-value cache. Not
-    # a bigger BGE. ~1.1 GB resident and an order of magnitude slower per call, so
-    # it is only a candidate where that memory is available.
-    "qwen3-embedding-0.6b": ModelSpec(
-        repo="onnx-community/Qwen3-Embedding-0.6B-ONNX",
-        dimension=1024,
-        pooling="last",
-        # The documented format. Measured on two corpora it gained 5 top-5 on one
-        # and lost 2 on the other, so it is applied because the model was trained
-        # that way, not because the gain is established.
-        query_prefix=(
-            "Instruct: Given a question about the user's life, retrieve the "
-            "memories that answer it\nQuery: "
-        ),
-        collection_name="qwen3_embedding_0_6b",
     ),
     # BAAI's successor line: newer than the zh-v1.5 models by four months and what
     # they point people at now. Multilingual rather than Chinese-specific, 8192
