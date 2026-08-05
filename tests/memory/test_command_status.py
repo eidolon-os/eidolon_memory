@@ -5,6 +5,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from eidolon.memory.domain.space_lock import SpaceLock
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
 CMD_SPACE = "default.alice.default"
@@ -71,8 +72,11 @@ async def test_retrying_can_recover_to_applied(tmp_path: Path) -> None:
 
 async def test_wait_terminal_reads_without_backend_lock(tmp_path: Path) -> None:
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
-    backend_lock = asyncio.Lock()
-    await backend_lock.acquire()
+    # Held on the writer side, which is the state this test is about: a turn is
+    # mid-write and a command-status read must not be behind it. Ledger reads do
+    # not take the space lock at all, and that is the property asserted here.
+    backend_lock = SpaceLock()
+    await backend_lock.acquire_write()
     try:
         await ledger.record_accepted("req-3", kind="memory_intent")
 
@@ -84,7 +88,7 @@ async def test_wait_terminal_reads_without_backend_lock(tmp_path: Path) -> None:
         record = await ledger.wait_terminal("req-3", timeout_seconds=0.2)
         await task
     finally:
-        backend_lock.release()
+        await backend_lock.release_write()
 
     assert record is not None
     assert record.status == "applied"

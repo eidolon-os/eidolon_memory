@@ -19,6 +19,7 @@ from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.application.turn_processor import process_turn_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
+from eidolon.memory.domain.space_lock import SpaceLock
 
 
 def _ctx(device_id: str, session_id: str = "s") -> MemoryActorContext:
@@ -59,9 +60,8 @@ class _Msg:
 async def test_persona_shared_but_device_memory_stays_current_device_only() -> None:
     settings = load_memory_settings()
     backend = FakeMemoryBackend()
-    import asyncio
 
-    backend.working_memory = WorkingMemoryRing(maxlen=5, lock=asyncio.Lock())
+    backend.working_memory = WorkingMemoryRing(maxlen=5, lock=SpaceLock())
     steward = RuleBasedSteward(settings)
     memory_space_id = _ctx("device-a").memory_space_id
 

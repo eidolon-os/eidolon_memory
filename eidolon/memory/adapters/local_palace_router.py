@@ -114,6 +114,11 @@ class LocalPalaceRouter:
         # what lets a process serve several spaces while each palace still has
         # exactly one owner.
         self._locks: dict[str, IO] = {}
+        # Resolved palace directory → the space that holds it. The flock above
+        # answers "is another process serving this space"; this answers "is another
+        # space in this process already using this directory", which is a different
+        # question with the same consequence. See ``_claim_palace_directory``.
+        self._palace_dirs: dict[str, str] = {}
         # Guards the pool itself, not the spaces in it. Held only while building
         # an entry, so resolving different spaces does not serialise, and a space
         # under construction is built once rather than twice.
@@ -216,17 +221,53 @@ class LocalPalaceRouter:
             ),
         )
 
+    def _claim_palace_directory(self, space_id: str, palace_path: Path) -> None:
+        """Refuse a second space that resolves to a directory this one already holds.
+
+        The on-disk flock is keyed on the *space id*, which is the right key for
+        the cross-process question — two processes must not serve one space. It is
+        the wrong key for this one: the resource Chroma cannot share is the
+        **directory**, and two different space ids can name the same directory.
+
+        ``palace_path_override`` does exactly that. It is applied to every space
+        this router resolves, so a process holding two spaces with an override in
+        effect would compute one path twice, take two differently-named flocks
+        because the names come from the space ids, and open the same
+        ``chroma.sqlite3`` twice — the corruption the claim exists to prevent,
+        arriving through the mechanism meant to prevent it.
+
+        Unreachable while a process serves a single space, which is why it has not
+        bitten. It becomes reachable the moment one process holds several, so it is
+        closed here rather than left as a note. In-process only, because the
+        cross-process case is already covered and because renaming the on-disk lock
+        would leave an upgraded process holding a path the running one does not
+        recognise.
+        """
+
+        resolved = str(palace_path.expanduser().resolve())
+        holder = self._palace_dirs.get(resolved)
+        if holder is not None and holder != space_id:
+            raise MemorySpaceUnavailable(
+                f"refusing to open memory space {space_id!r}: this process already "
+                f"serves {holder!r} from {resolved}. A palace directory has exactly "
+                f"one owner, and two spaces resolving to one directory is normally "
+                f"a palace_path_override applied to more than one space."
+            )
+        self._palace_dirs[resolved] = space_id
+
     def _prepare_palace(self, space_id: str, palace_path: Path) -> None:
         """Make a palace directory safe to open, or refuse to open it.
 
         Ordering matters. The lock comes first so nothing below races another
-        process. The location guard comes before any write, because a palace on
-        a synced or networked filesystem corrupts rather than failing cleanly.
-        Integrity runs last, once the databases exist, and a failure here stops
-        this space — not the whole process, which may be serving others fine.
+        process, and the directory claim comes with it so nothing races another
+        space in *this* process. The location guard comes before any write, because
+        a palace on a synced or networked filesystem corrupts rather than failing
+        cleanly. Integrity runs last, once the databases exist, and a failure here
+        stops this space — not the whole process, which may be serving others fine.
         """
 
         self._acquire_space_lock(space_id)
+        self._claim_palace_directory(space_id, palace_path)
         assert_palace_location_safe(palace_path)
 
         backend_name = selected_mempalace_backend(self._settings)
@@ -326,6 +367,7 @@ class LocalPalaceRouter:
         # Release the claims last, so nothing else can take a space while we are
         # still closing its databases.
         metrics.SPACES_HELD.set(0)
+        self._palace_dirs.clear()
         locks, self._locks = self._locks, {}
         for space_id, handle in locks.items():
             try:

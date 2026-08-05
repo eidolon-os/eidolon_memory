@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from eidolon_memory_contracts import MemoryActorContext
 
+from eidolon.memory.domain.space_lock import SpaceLock
+
 SPACE_FOR_TESTS = "default.alice.default"
 
 def _ctx(memory_realm_id: str = "default.alice.default") -> MemoryActorContext:
@@ -47,7 +49,7 @@ async def test_match_entities_bare_name_substring(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=SpaceLock()
     )
     try:
         await _seed_entities(kg, [("self", "unknown"), ("mother", "unknown"), ("tea", "unknown")])
@@ -66,7 +68,7 @@ async def test_match_entities_prefix_stripped(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=SpaceLock()
     )
     try:
         await _seed_entities(kg, [
@@ -89,7 +91,7 @@ async def test_match_entities_cap_respected(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=SpaceLock()
     )
     try:
         await _seed_entities(kg, [(c, "unknown") for c in "abcdef"])
@@ -106,7 +108,7 @@ async def test_match_entities_prefers_longer(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=SpaceLock()
     )
     try:
         await _seed_entities(kg, [("mother", "unknown"), ("mother:张丽", "person")])
@@ -122,7 +124,7 @@ async def test_match_entities_empty_query(tmp_path: Path) -> None:
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=asyncio.Lock()
+    kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=SpaceLock()
     )
     try:
         await _seed_entities(kg, [("self", "unknown")])
@@ -297,7 +299,7 @@ async def test_list_entity_names_reflects_write_immediately(tmp_path: Path) -> N
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
-    lock = asyncio.Lock()
+    lock = SpaceLock()
     kg = SqliteKnowledgeGraph(
         tmp_path / "freshness.sqlite3", space_id=SPACE_FOR_TESTS, lock=lock
     )

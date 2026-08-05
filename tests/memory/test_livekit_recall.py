@@ -86,9 +86,19 @@ async def test_livekit_recall_fail_fast_on_timeout() -> None:
 
 @pytest.mark.asyncio
 async def test_livekit_timeout_keeps_realm_serialized_until_worker_finishes() -> None:
+    """A voice deadline abandons the caller, not the operation.
+
+    The follow-up here is a **write**, not another read. Reads may now overlap by
+    design — that is what lets the graph lookup run alongside the vector search
+    inside LiveKit's 300ms budget — so asserting a read waits would be asserting the
+    behaviour this lock exists to remove. What must still wait is a write, because
+    chroma needs SQLite ``EXCLUSIVE`` for one and the abandoned reader's worker
+    thread is still inside the store.
+    """
+
     worker_started = threading.Event()
     release_worker = threading.Event()
-    next_read_entered = asyncio.Event()
+    write_entered = asyncio.Event()
 
     class SlowScopedFake(FakeMemoryBackend):
         supports_scoped_search = True
@@ -101,9 +111,9 @@ async def test_livekit_timeout_keeps_realm_serialized_until_worker_finishes() ->
 
             return await asyncio.to_thread(_blocking_search)
 
-        async def get_all(self, *args, **kwargs):
-            next_read_entered.set()
-            return await super().get_all(*args, **kwargs)
+        async def ingest_text(self, **kwargs):
+            write_entered.set()
+            return await super().ingest_text(**kwargs)
 
     backend = LockedBackend(SlowScopedFake())
     settings = _settings()
@@ -115,12 +125,14 @@ async def test_livekit_timeout_keeps_realm_serialized_until_worker_finishes() ->
     outcome = await recall
     assert outcome["degraded"] is True
 
-    next_read = asyncio.create_task(backend.get_all("default.alice.default"))
+    write = asyncio.create_task(
+        backend.ingest_text(wing="Wing_Life", room="R1", text="after", metadata=None)
+    )
     await asyncio.sleep(0.05)
-    assert not next_read_entered.is_set()
+    assert not write_entered.is_set()
 
     release_worker.set()
-    assert await next_read == []
+    await write
 
 
 def test_filter_excludes_same_session() -> None:

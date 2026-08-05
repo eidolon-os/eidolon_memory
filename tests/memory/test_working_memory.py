@@ -12,6 +12,7 @@ import pytest
 from eidolon_memory_contracts import ConversationTurnPayload, build_memory_actor_context
 
 from eidolon.memory.application.working_memory import WorkingMemoryRing
+from eidolon.memory.domain.space_lock import SpaceLock
 
 
 def _turn(i: int) -> ConversationTurnPayload:
@@ -35,17 +36,17 @@ def _turn(i: int) -> ConversationTurnPayload:
 
 def test_maxlen_negative_rejected():
     with pytest.raises(ValueError, match="must be >= 0"):
-        WorkingMemoryRing(maxlen=-1, lock=asyncio.Lock())
+        WorkingMemoryRing(maxlen=-1, lock=SpaceLock())
 
 
 def test_maxlen_zero_disables_ring():
-    ring = WorkingMemoryRing(maxlen=0, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=0, lock=SpaceLock())
     assert ring.enabled is False
     assert ring.maxlen == 0
 
 
 def test_maxlen_positive_enables_ring():
-    ring = WorkingMemoryRing(maxlen=5, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=5, lock=SpaceLock())
     assert ring.enabled is True
     assert ring.maxlen == 5
 
@@ -54,7 +55,7 @@ def test_maxlen_positive_enables_ring():
 
 
 async def test_append_under_maxlen_preserves_all():
-    ring = WorkingMemoryRing(maxlen=10, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=10, lock=SpaceLock())
     for i in range(3):
         await ring.append(_turn(i))
     snap = await ring.snapshot()
@@ -62,7 +63,7 @@ async def test_append_under_maxlen_preserves_all():
 
 
 async def test_append_over_maxlen_evicts_oldest():
-    ring = WorkingMemoryRing(maxlen=3, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=3, lock=SpaceLock())
     for i in range(7):
         await ring.append(_turn(i))
     snap = await ring.snapshot()
@@ -71,14 +72,14 @@ async def test_append_over_maxlen_evicts_oldest():
 
 
 async def test_append_when_disabled_is_noop():
-    ring = WorkingMemoryRing(maxlen=0, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=0, lock=SpaceLock())
     for i in range(5):
         await ring.append(_turn(i))
     assert await ring.snapshot() == []
 
 
 async def test_snapshot_empty_on_fresh_ring():
-    ring = WorkingMemoryRing(maxlen=10, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=10, lock=SpaceLock())
     assert await ring.snapshot() == []
 
 
@@ -86,7 +87,7 @@ async def test_snapshot_empty_on_fresh_ring():
 
 
 async def test_snapshot_returns_copy_not_alias():
-    ring = WorkingMemoryRing(maxlen=10, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=10, lock=SpaceLock())
     await ring.append(_turn(0))
     snap1 = await ring.snapshot()
     # Mutate the snapshot — ring must not see the change.
@@ -98,7 +99,7 @@ async def test_snapshot_returns_copy_not_alias():
 
 
 async def test_snapshot_list_modification_does_not_affect_ring():
-    ring = WorkingMemoryRing(maxlen=10, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=10, lock=SpaceLock())
     await ring.append(_turn(0))
     await ring.append(_turn(1))
     snap = await ring.snapshot()
@@ -110,7 +111,7 @@ async def test_snapshot_list_modification_does_not_affect_ring():
 
 
 async def test_concurrent_appends_serialised_no_loss():
-    ring = WorkingMemoryRing(maxlen=200, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=200, lock=SpaceLock())
     await asyncio.gather(*[ring.append(_turn(i)) for i in range(100)])
     snap = await ring.snapshot()
     # All 100 appends land — under maxlen=200 nothing is evicted.
@@ -122,11 +123,14 @@ async def test_concurrent_appends_serialised_no_loss():
 
 async def test_shared_lock_does_not_deadlock_with_outer_critical_section():
     """Caller holding the lock for backend writes does NOT cause ring ops to
-    block forever — the ring uses ``async with self._lock``, which is the
-    same lock. ``asyncio.Lock`` does NOT recurse; the caller must release
-    before invoking ring methods. Verify the documented usage works.
+    block forever — the ring takes the same space lock.
+
+    ``SpaceLock`` does not recurse, exactly as the ``asyncio.Lock`` it replaced did
+    not; the caller must release before invoking ring methods. Entering it bare
+    takes the writer side, which is what a caller wrapping backend writes wants and
+    why that is the default. Verify the documented usage works.
     """
-    lock = asyncio.Lock()
+    lock = SpaceLock()
     ring = WorkingMemoryRing(maxlen=5, lock=lock)
     async with lock:
         # Caller may NOT call ring.append here — would deadlock by contract.
@@ -141,7 +145,7 @@ async def test_shared_lock_does_not_deadlock_with_outer_critical_section():
 
 
 async def test_clear_drops_all_turns():
-    ring = WorkingMemoryRing(maxlen=10, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=10, lock=SpaceLock())
     for i in range(5):
         await ring.append(_turn(i))
     await ring.clear()
@@ -149,6 +153,6 @@ async def test_clear_drops_all_turns():
 
 
 async def test_clear_on_disabled_ring_is_safe():
-    ring = WorkingMemoryRing(maxlen=0, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=0, lock=SpaceLock())
     await ring.clear()
     assert await ring.snapshot() == []

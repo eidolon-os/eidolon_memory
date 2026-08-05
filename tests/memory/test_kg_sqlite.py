@@ -17,6 +17,7 @@ from eidolon.memory.adapters.kg_sqlite import (
     entity_id_for,
 )
 from eidolon.memory.domain.kg_port import KnowledgeGraphPort
+from eidolon.memory.domain.space_lock import SpaceLock
 
 OWNER = "owner"
 COMPANION_A = "companion:comp_a"
@@ -27,7 +28,7 @@ BOTH_FOR_A = (OWNER, COMPANION_A)
 @pytest.fixture
 def graph(tmp_path):
     made = SqliteKnowledgeGraph(
-        tmp_path / "kg.sqlite3", space_id="alice", lock=asyncio.Lock()
+        tmp_path / "kg.sqlite3", space_id="alice", lock=SpaceLock()
     )
     yield made
     made.close()
@@ -448,7 +449,7 @@ async def test_stats_separates_active_from_ended(graph) -> None:
 
 async def test_closing_twice_is_harmless(tmp_path) -> None:
     graph = SqliteKnowledgeGraph(
-        tmp_path / "kg.sqlite3", space_id="alice", lock=asyncio.Lock()
+        tmp_path / "kg.sqlite3", space_id="alice", lock=SpaceLock()
     )
 
     graph.close()
@@ -459,13 +460,13 @@ async def test_a_graph_reopens_with_its_statements(tmp_path) -> None:
     """Switching the graph off and on again must not lose anything."""
 
     path = tmp_path / "kg.sqlite3"
-    first = SqliteKnowledgeGraph(path, space_id="alice", lock=asyncio.Lock())
+    first = SqliteKnowledgeGraph(path, space_id="alice", lock=SpaceLock())
     await first.add_triple(
         subject="alice", predicate="likes", object="green", audience=OWNER
     )
     first.close()
 
-    second = SqliteKnowledgeGraph(path, space_id="alice", lock=asyncio.Lock())
+    second = SqliteKnowledgeGraph(path, space_id="alice", lock=SpaceLock())
     try:
         assert [r.object for r in await second.query_entity("alice", audiences=(OWNER,))] == [
             "green"
@@ -483,7 +484,7 @@ async def test_two_spaces_in_one_file_cannot_see_each_other(tmp_path) -> None:
     """
 
     path = tmp_path / "shared.sqlite3"
-    lock = asyncio.Lock()
+    lock = SpaceLock()
     alice = SqliteKnowledgeGraph(path, space_id="alice", lock=lock)
     bob = SqliteKnowledgeGraph(path, space_id="bob", lock=lock)
     try:

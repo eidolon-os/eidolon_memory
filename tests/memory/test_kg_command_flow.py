@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from eidolon_memory_contracts import envelope_memory_payload, memory_command_subject
+
+from eidolon.memory.domain.space_lock import SpaceLock
 
 CMD_SPACE = "default.alice.default"
 
@@ -27,7 +28,7 @@ def kg_setup(tmp_path: Path):
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
     db = tmp_path / "kg.sqlite3"
-    locked = SqliteKnowledgeGraph(db, space_id=SPACE_FOR_TESTS, lock=asyncio.Lock())
+    locked = SqliteKnowledgeGraph(db, space_id=SPACE_FOR_TESTS, lock=SpaceLock())
     yield locked
     locked.close()
 

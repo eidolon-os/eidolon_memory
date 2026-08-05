@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from pathlib import Path
@@ -11,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from eidolon_memory_contracts import envelope_memory_payload
+
+from eidolon.memory.domain.space_lock import SpaceLock
 
 # ─── Test fixtures ────────────────────────────────────────────────────────
 
@@ -208,7 +209,7 @@ async def test_chroma_failure_naks_below_max_deliveries(settings, kg):
     from eidolon.memory.domain.steward import StewardDecision
 
     bad_backend = MagicMock()
-    bad_backend.lock = asyncio.Lock()
+    bad_backend.lock = SpaceLock()
     bad_backend.ingest_fragment = AsyncMock(side_effect=RuntimeError("chroma corrupt"))
     bad_backend.delete = AsyncMock()
     fragment = MemoryFragment(

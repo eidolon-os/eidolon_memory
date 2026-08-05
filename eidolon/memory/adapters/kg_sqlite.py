@@ -9,6 +9,12 @@ date-only values at comparison time.
 Serialisation is the caller's lock, shared with the vector store. A turn writes
 to both, and one critical section covering the pair is easier to reason about
 than an ordering between two.
+
+That lock is a readers-writer lock, not a mutex, and the distinction is
+load-bearing here: ``recall_with_kg_fusion`` starts a graph lookup alongside the
+vector search on a 50ms voice budget, and under a mutex the lookup spent that
+budget waiting for the search rather than querying the graph. Reads below take the
+reader side; the four methods that mutate take the writer side.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from eidolon.memory.adapters.kg_sql import (
     name_appears_in,
 )
 from eidolon.memory.domain.kg import KgTripleRecord
+from eidolon.memory.domain.space_lock import SpaceLock
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -118,7 +125,7 @@ class SqliteKnowledgeGraph:
         db_path: str | Path,
         *,
         space_id: str,
-        lock: asyncio.Lock,
+        lock: SpaceLock,
     ) -> None:
         self._path = Path(db_path)
         self._space_id = space_id
@@ -129,12 +136,17 @@ class SqliteKnowledgeGraph:
         self._initialise()
 
     @property
-    def lock(self) -> asyncio.Lock:
+    def lock(self) -> SpaceLock:
         return self._lock
 
     def _initialise(self) -> None:
         with self._conn:
             # WAL so a reader is never blocked by the turn currently writing.
+            #
+            # That was true of the file and false of the code until 2026-08-05: the
+            # shared lock was an exclusive mutex, so every read here waited for the
+            # turn anyway and WAL bought nothing. Reads now take the reader side,
+            # which is what makes this pragma mean what it says.
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             for statement in SCHEMA_STATEMENTS:
@@ -156,7 +168,7 @@ class SqliteKnowledgeGraph:
         adapter_name: str | None = None,
         sensitive: bool | None = None,
     ) -> str:
-        async with self._lock:
+        async with self._lock.writer():
             return await asyncio.to_thread(
                 self._add_triple_sync,
                 subject,
@@ -268,7 +280,7 @@ class SqliteKnowledgeGraph:
         object: str,
         ended: str | None = None,
     ) -> int:
-        async with self._lock:
+        async with self._lock.writer():
             return await asyncio.to_thread(
                 self._invalidate_sync, subject, predicate, object, ended
             )
@@ -308,7 +320,7 @@ class SqliteKnowledgeGraph:
         """
 
         boundary = canonical_temporal(changed_at) or now_iso()
-        async with self._lock:
+        async with self._lock.writer():
             return await asyncio.to_thread(
                 self._supersede_sync,
                 subject,
@@ -354,7 +366,7 @@ class SqliteKnowledgeGraph:
         source: str,
         confidence: float = 0.85,
     ) -> None:
-        async with self._lock:
+        async with self._lock.writer():
             await asyncio.to_thread(
                 self._record_mention_sync, entity_id, alias, source, confidence
             )
@@ -393,7 +405,7 @@ class SqliteKnowledgeGraph:
                 f"direction must be outgoing|incoming|both, got {direction!r}"
             )
         moment = canonical_temporal(as_of) or now_iso()
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(
                 self._query_entity_sync, name, audiences, moment, direction,
                 include_sensitive,
@@ -438,7 +450,7 @@ class SqliteKnowledgeGraph:
         limit_per_subject: int = 8,
     ) -> list[KgTripleRecord]:
         moment = canonical_temporal(as_of) or now_iso()
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(
                 self._query_subjects_sync, names, audiences, moment,
                 include_sensitive, limit_per_subject,
@@ -516,7 +528,7 @@ class SqliteKnowledgeGraph:
         limit: int = 100,
         include_sensitive: bool = False,
     ) -> list[KgTripleRecord]:
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(
                 self._timeline_sync, entity_name, audiences, since, until, limit,
                 include_sensitive,
@@ -561,7 +573,7 @@ class SqliteKnowledgeGraph:
     async def match_entities_for_query(self, query: str, *, cap: int) -> list[str]:
         if cap <= 0:
             return []
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(self._match_entities_sync, query, cap)
 
     def _match_entities_sync(self, query: str, cap: int) -> list[str]:
@@ -634,7 +646,7 @@ class SqliteKnowledgeGraph:
         filter that keeps one companion's statements out of another's recall.
         """
 
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(self._known_audiences_sync)
 
     def _known_audiences_sync(self) -> list[str]:
@@ -647,7 +659,7 @@ class SqliteKnowledgeGraph:
         ]
 
     async def list_entity_names(self) -> list[str]:
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(self._list_entity_names_sync)
 
     def _list_entity_names_sync(self) -> list[str]:
@@ -660,7 +672,7 @@ class SqliteKnowledgeGraph:
         ]
 
     async def stats(self) -> dict[str, Any]:
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(self._stats_sync)
 
     def _stats_sync(self) -> dict[str, Any]:
@@ -686,7 +698,7 @@ class SqliteKnowledgeGraph:
     # ── idempotency probes ──────────────────────────────────────────────────
 
     async def has_triple(self, triple_id: str) -> bool:
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(self._has_triple_sync, triple_id)
 
     def _has_triple_sync(self, triple_id: str) -> bool:
@@ -701,7 +713,7 @@ class SqliteKnowledgeGraph:
     async def find_pending_triple_id(
         self, source_turn_id: str, subject: str, predicate: str, object: str
     ) -> str | None:
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(
                 self._find_pending_sync, source_turn_id, subject, predicate, object
             )
@@ -724,7 +736,7 @@ class SqliteKnowledgeGraph:
     async def find_invalidation_applied(
         self, subject: str, predicate: str, object: str, ended_at_or_before: str
     ) -> bool:
-        async with self._lock:
+        async with self._lock.reader():
             return await asyncio.to_thread(
                 self._find_invalidation_sync, subject, predicate, object,
                 ended_at_or_before,

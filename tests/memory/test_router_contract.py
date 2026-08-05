@@ -156,6 +156,40 @@ async def test_a_palace_refuses_a_second_holder(tmp_path, monkeypatch) -> None:
         await first.aclose()
 
 
+async def test_one_process_refuses_two_spaces_in_one_palace_directory(
+    tmp_path, monkeypatch
+) -> None:
+    """The same rule, for the case the on-disk lock cannot see.
+
+    That lock is keyed on the space id, which is right for "is another *process*
+    serving this space" and wrong for this: the resource Chroma cannot share is the
+    directory, and two space ids can name one directory.
+
+    ``palace_path_override`` does exactly that — it applies to every space this
+    router resolves. Without this guard a process holding two spaces under an
+    override would compute one path twice, take two differently-named flocks
+    because the names come from the space ids, and open one ``chroma.sqlite3``
+    twice: the corruption the claim exists to prevent, arriving through the
+    mechanism meant to prevent it. Unreachable while a process serves one space,
+    reachable the moment it serves several.
+    """
+
+    monkeypatch.delenv("EIDOLON_MEMORY_RUN_DIR", raising=False)
+    shared = tmp_path / "one-palace"
+    router = LocalPalaceRouter(
+        _local_settings(tmp_path), palace_path_override=str(shared)
+    )
+    try:
+        await router.resolve("alice")
+
+        with pytest.raises(MemorySpaceUnavailable, match="already serves"):
+            await router.resolve("bob")
+
+        assert router.held_spaces() == ["alice"]
+    finally:
+        await router.aclose()
+
+
 async def test_a_shard_refuses_the_spaces_it_was_not_given(tmp_path, monkeypatch) -> None:
     """How a supervisor bounds what one crashing process takes down."""
 

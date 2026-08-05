@@ -11,9 +11,9 @@ of conversation together.
 Design
 ------
 - A bounded ``deque`` of verbatim ``ConversationTurnPayload`` objects.
-- Lives **on** ``LockedBackend`` (same ``asyncio.Lock``) so we get
-  serialised access for free — no separate lock to reason about, no
-  deadlock risk across the backend write path.
+- Lives **on** ``LockedBackend`` (same ``SpaceLock``) so we get serialised
+  access for free — no separate lock to reason about, no deadlock risk
+  across the backend write path.
 - In-process only. ``agent_runner`` restart wipes it; long-term memory
   lives in chromadb + KG, which **do** persist. Trying to persist this
   ring would conflate "the conversation thread I'm currently in" with
@@ -30,10 +30,11 @@ costs 200 KB total. Forget any growth concern.
 
 from __future__ import annotations
 
-import asyncio
 from collections import defaultdict, deque
 from copy import deepcopy
 from typing import TYPE_CHECKING
+
+from eidolon.memory.domain.space_lock import SpaceLock
 
 if TYPE_CHECKING:
     from eidolon_memory_contracts import ConversationTurnPayload
@@ -45,11 +46,17 @@ class WorkingMemoryRing:
     Thread-safety / D1 contract: shares ``LockedBackend.lock`` so the
     ring's mutations are interleaved with backend writes — the same
     invariant the rest of the read/write path relies on.
+
+    That lock is a readers-writer lock. ``snapshot`` takes the reader side, so
+    reading the ring during a recall does not queue behind another recall; the two
+    mutators take the writer side. Sharing the vector store's lock still buys what
+    it always did — one lock per space to reason about — and now it also means a
+    recall reading the ring runs alongside the vector search rather than after it.
     """
 
     __slots__ = ("_bufs", "_lock", "_maxlen")
 
-    def __init__(self, *, maxlen: int, lock: asyncio.Lock) -> None:
+    def __init__(self, *, maxlen: int, lock: SpaceLock) -> None:
         if maxlen < 0:
             msg = f"working_memory_maxlen must be >= 0, got {maxlen}"
             raise ValueError(msg)
@@ -81,7 +88,7 @@ class WorkingMemoryRing:
         if not turn.context.device_id or not turn.context.session_id:
             return
         key = (turn.context.device_id, turn.context.session_id)
-        async with self._lock:
+        async with self._lock.writer():
             self._bufs[key].append(turn)
 
     async def snapshot(
@@ -99,7 +106,7 @@ class WorkingMemoryRing:
         """
         if not self.enabled:
             return []
-        async with self._lock:
+        async with self._lock.reader():
             if device_id is not None and session_id is not None:
                 return [deepcopy(t) for t in self._bufs.get((device_id, session_id), [])]
             turns: list[ConversationTurnPayload] = []
@@ -110,5 +117,5 @@ class WorkingMemoryRing:
 
     async def clear(self) -> None:
         """Drop all turns. Used on session boundaries (TBD) and in tests."""
-        async with self._lock:
+        async with self._lock.writer():
             self._bufs.clear()

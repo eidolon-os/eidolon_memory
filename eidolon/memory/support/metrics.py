@@ -150,6 +150,21 @@ SPACE_OPEN_SECONDS = Histogram(
     buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
 )
 
+SPACE_LOCK_WAIT_SECONDS = Histogram(
+    "eidolon_memory_space_lock_wait_seconds",
+    "Time an operation waited for a space's readers-writer lock, by side.",
+    ("mode",),
+    buckets=(0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+)
+"""Where recall latency goes when it is not the store's fault.
+
+The graph lookup in ``recall_with_kg_fusion`` runs on a 50ms budget on the voice
+path and shares this lock with the vector search it runs alongside. Under the
+exclusive mutex this replaced, that budget could be spent entirely waiting — and
+the result was reported as a graph timeout, which reads as "the graph is slow"
+rather than "the graph never started". The ``read`` series is what distinguishes
+those two, and it is the number to look at before tuning any recall timeout."""
+
 
 def render_metrics() -> bytes:
     """The exposition payload, or empty when metrics are unavailable."""

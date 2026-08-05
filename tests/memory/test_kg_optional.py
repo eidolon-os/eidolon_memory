@@ -21,6 +21,7 @@ from eidolon_memory_contracts import envelope_memory_payload, memory_command_sub
 from eidolon.memory.application.public_recall import recall_with_kg_fusion
 from eidolon.memory.application.turn_processor import process_command_message
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.space_lock import SpaceLock
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
 CMD_SPACE = "default.alice.default"
@@ -188,7 +189,7 @@ async def test_switching_the_graph_off_and_back_on_keeps_what_was_stored(
 
     db = tmp_path / "knowledge_graph.sqlite3"
 
-    graph = SqliteKnowledgeGraph(db, space_id=SPACE_FOR_TESTS, lock=asyncio.Lock())
+    graph = SqliteKnowledgeGraph(db, space_id=SPACE_FOR_TESTS, lock=SpaceLock())
     await graph.add_triple(audience="owner", subject="alice", predicate="likes", object="tea")
     graph.close()
 
@@ -196,7 +197,7 @@ async def test_switching_the_graph_off_and_back_on_keeps_what_was_stored(
     # the file ...
     assert db.exists()
 
-    reopened = SqliteKnowledgeGraph(db, space_id=SPACE_FOR_TESTS, lock=asyncio.Lock())
+    reopened = SqliteKnowledgeGraph(db, space_id=SPACE_FOR_TESTS, lock=SpaceLock())
     try:
         records = await reopened.query_entity("alice", audiences=("owner",))
         assert any(r.predicate == "likes" and r.object == "tea" for r in records)

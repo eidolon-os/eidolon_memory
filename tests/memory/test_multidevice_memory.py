@@ -23,6 +23,7 @@ from eidolon.memory.application.turn_processor import process_sync_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.fragments import MemoryFragment
+from eidolon.memory.domain.space_lock import SpaceLock
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.nats.names import memory_consumer_name, nats_safe_name
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
@@ -183,9 +184,8 @@ def test_recall_policy_keeps_other_device_out_of_rendered_context() -> None:
 
 @pytest.mark.asyncio
 async def test_working_memory_partitions_by_device_and_session() -> None:
-    import asyncio
 
-    ring = WorkingMemoryRing(maxlen=5, lock=asyncio.Lock())
+    ring = WorkingMemoryRing(maxlen=5, lock=SpaceLock())
     await ring.append(_turn("A1", device_id="device-a", session_id="s1"))
     await ring.append(_turn("A2", device_id="device-a", session_id="s2"))
     await ring.append(_turn("B1", device_id="device-b", session_id="s1"))

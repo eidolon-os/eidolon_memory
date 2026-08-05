@@ -35,7 +35,7 @@ async def test_locked_backend_passes_through_all_methods() -> None:
 
 @pytest.mark.asyncio
 async def test_locked_backend_serializes_concurrent_writes() -> None:
-    """All chromadb calls (including reads) share one ``asyncio.Lock``."""
+    """A write excludes readers: they share one space lock, on opposite sides."""
     holding = asyncio.Event()
     release = asyncio.Event()
 
@@ -67,15 +67,21 @@ async def test_locked_backend_serializes_concurrent_writes() -> None:
 
 @pytest.mark.asyncio
 async def test_timeout_does_not_release_lock_before_worker_thread_finishes() -> None:
-    """Cancelling a caller must not let a still-running sync backend overlap.
+    """Cancelling a caller must not let a *conflicting* operation overlap.
 
-    ``asyncio.to_thread`` cannot stop its worker thread when the awaiting task
-    is cancelled.  The Realm lock therefore belongs to the backend operation,
-    not to the caller's lifetime.
+    ``asyncio.to_thread`` cannot stop its worker thread when the awaiting task is
+    cancelled. The space lock therefore belongs to the backend operation, not to
+    the caller's lifetime.
+
+    The pair here is a read whose caller times out and a **write** that follows.
+    It used to be read-then-read, which stopped expressing the invariant once the
+    lock learned to admit concurrent readers: two reads overlapping is now correct,
+    so that version would have failed for the right reason and told us nothing
+    about cancellation. A write is what must still wait.
     """
     worker_started = threading.Event()
     release_worker = threading.Event()
-    second_operation_entered = asyncio.Event()
+    write_entered = asyncio.Event()
 
     class ThreadedFake(FakeMemoryBackend):
         async def search(self, *args, **kwargs):
@@ -86,9 +92,9 @@ async def test_timeout_does_not_release_lock_before_worker_thread_finishes() -> 
 
             return await asyncio.to_thread(_blocking_search)
 
-        async def get_all(self, *args, **kwargs):
-            second_operation_entered.set()
-            return await super().get_all(*args, **kwargs)
+        async def ingest_text(self, **kwargs):
+            write_entered.set()
+            return await super().ingest_text(**kwargs)
 
     backend = LockedBackend(ThreadedFake())
     first = asyncio.create_task(backend.search("slow", wing="W1"))
@@ -97,14 +103,70 @@ async def test_timeout_does_not_release_lock_before_worker_thread_finishes() -> 
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(first, timeout=0.02)
 
-    second = asyncio.create_task(backend.get_all("W1"))
+    second = asyncio.create_task(
+        backend.ingest_text(wing="W1", room="R1", text="after", metadata=None)
+    )
     await asyncio.sleep(0.05)
-    assert not second_operation_entered.is_set(), (
-        "caller timeout released the Realm lock while its worker thread was still active"
+    assert not write_entered.is_set(), (
+        "caller timeout released the space lock while its reader thread was still active"
     )
 
     release_worker.set()
-    assert await second == []
+    await second
+
+
+@pytest.mark.asyncio
+async def test_reads_overlap_and_a_write_still_excludes_them() -> None:
+    """The point of the readers-writer lock, both halves.
+
+    Two reads overlapping is what makes the graph lookup in
+    ``recall_with_kg_fusion`` able to run alongside the vector search it is started
+    with rather than after it — under the mutex this replaced, that lookup spent its
+    50ms voice budget waiting for the lock and was then reported as a graph timeout.
+
+    A write excluding readers is the half that must not regress, because chroma
+    needs SQLite ``EXCLUSIVE`` for a write and the palace's journal is a rollback
+    journal, so an overlapping reader would block for ``busy_timeout`` or fail.
+    """
+    inside_reads = 0
+    peak_concurrent_reads = 0
+    reads_during_write = 0
+    writing = False
+
+    class CountingFake(FakeMemoryBackend):
+        async def search(self, *args, **kwargs):
+            nonlocal inside_reads, peak_concurrent_reads, reads_during_write
+            inside_reads += 1
+            peak_concurrent_reads = max(peak_concurrent_reads, inside_reads)
+            if writing:
+                reads_during_write += 1
+            try:
+                await asyncio.sleep(0.02)
+                return []
+            finally:
+                inside_reads -= 1
+
+        async def ingest_text(self, **kwargs):
+            nonlocal writing
+            writing = True
+            try:
+                await asyncio.sleep(0.02)
+            finally:
+                writing = False
+
+    backend = LockedBackend(CountingFake())
+    await asyncio.gather(*[backend.search(f"q{i}", wing="W1") for i in range(6)])
+    assert peak_concurrent_reads == 6, (
+        f"reads did not overlap: peak was {peak_concurrent_reads} of 6"
+    )
+
+    await asyncio.gather(
+        backend.ingest_text(wing="W1", room="R1", text="t", metadata=None),
+        *[backend.search(f"during{i}", wing="W1") for i in range(4)],
+    )
+    assert reads_during_write == 0, (
+        f"{reads_during_write} read(s) ran while a write held the lock"
+    )
 
 
 @pytest.mark.asyncio
