@@ -1,9 +1,7 @@
 # Memory settings template — copy to config/settings.yaml
 #
-# This is the local shape: everything on one machine, vectors and graph in files
-# inside each palace directory. For the deployment that spans hosts, see
-# settings.cloud.example.yaml — the two files have the same structure and differ
-# only in values, so moving between them is a config change and nothing else.
+# Everything on one machine: vectors, graph and ledgers in files inside each
+# palace directory, one owning process per palace.
 #
 # Secrets are never written here. A field ending in _env names the environment
 # variable holding the value; put those in config/.env.
@@ -17,42 +15,114 @@ runtime:
   run_dir: ""
 
 mempalace:
-  # chroma keeps vectors in a file in the palace directory. The alternative is
-  # milvus, for deployments serving spaces from more than one host.
+  # chroma keeps vectors in a file in the palace directory.
   backend: chroma
-  # minilm (English only, cross-lingual cosine ~0.35) or embeddinggemma
-  # (100+ languages, ~0.88). Both produce 384-dim vectors — embeddinggemma
-  # reaches that by Matryoshka truncation — so this choice is about retrieval
-  # quality, not vector size or storage cost.
+  # The embedder used to be configured here. It moved to the `embedding` section
+  # below, because the encoder is ours rather than MemPalace's — we choose it, we
+  # implement it, and we inject it into MemPalace. The four old keys
+  # (embedding_model, embedding_device, embedding_model_dir, embedding_threads)
+  # are still accepted for compatibility and folded into that section at load;
+  # setting the same thing in both places is refused when the two disagree.
+
+embedding:
+  # Which implementation runs. This one line is the whole switch:
   #
-  # Set it explicitly. Leaving it empty means we pass no model to MemPalace,
-  # which then applies its own default of minilm — so a NEW palace silently gets
-  # the English-only embedder. An existing palace keeps whatever it was built
-  # with regardless, and MemPalace refuses to open one whose embedder no longer
-  # matches; changing this means rebuilding the index.
-  embedding_model: embeddinggemma
-  # Optional: auto, cpu, cuda, coreml, or dml.
-  embedding_device: ""
-  # Optional local copy of model files for operations/runbooks.
-  embedding_model_dir: ""
-  # MemPalace 3.5+: explicit ONNX Runtime intra-op cap. 0 keeps the native
-  # auto default; set a positive value after cross-Realm CPU/latency testing.
-  embedding_threads: 0
-  # Unused while backend is chroma. Listed so switching to milvus is a matter of
-  # filling these in rather than discovering they exist. milvus_db_name becomes
-  # mandatory as soon as milvus_uri is set.
-  milvus_uri: ""
-  milvus_token_env: EIDOLON_MEMORY_MILVUS_TOKEN
-  milvus_db_name: ""
-  milvus_namespace: eidolon
+  #   auto        read it off `model`: ours if we implement that name (the nine in
+  #               LOCAL_EMBEDDING_MODELS), MemPalace's if they do (minilm,
+  #               embeddinggemma). The default.
+  #   local       an in-process quantized ONNX session. ~130MB for the default
+  #               model, no network, sub-millisecond.
+  #   http        a hosted OpenAI-compatible /v1/embeddings endpoint. Never
+  #               inferred — a model name cannot imply a network address — so it
+  #               has to be written here. See the `http:` block below.
+  #   mempalace   one of MemPalace's own two.
+  #
+  # Changing the effective encoder means rebuilding the palace. Chroma persists
+  # the embedder's name on the collection and refuses mismatched reads, so the
+  # switch fails loudly rather than silently comparing vectors from two different
+  # vector spaces. That refusal is the mechanism, not a defect.
+  provider: auto
+
+  # Measured on the real corpus, twice — two runs whose palaces held 35 and 36
+  # stored fragments, same 49 queries (benchmarks/suites/probe_embedders.py):
+  #
+  #   model                  dim   top-1        top-5          RSS   ms/call
+  #   bge-small-zh           512   27 → 24 /43  36 → 35 /43   130MB       1.0  ← default
+  #   bge-base-zh            768   26 → 24 /43  39 → 36 /43   130MB       3.0
+  #   bge-large-zh          1024   24 → 26 /43  38 → 36 /43   485MB       8.6
+  #   multilingual-e5-small  384   21 → 24 /43  35 → 35 /43   180MB       1.5
+  #   embeddinggemma         384        25/43        37/43      3GB      44.4
+  #   minilm                 384         5/43        16/43    380MB      17.5
+  #
+  # The arrows are one model on the two corpora. A model swings ±3 between them,
+  # which is more than the gap between the three BGE sizes — the ranking even
+  # inverts. So at 43 queries these three cannot be told apart on quality, and
+  # the default is picked on cost: among models we cannot distinguish, take the
+  # cheapest. bge-large buys ~3.7x the memory and ~8x the latency for nothing
+  # measurable.
+  #
+  # minilm's 5/43 and embeddinggemma's 37/43 are far outside that band, so those
+  # differences are real: minilm is the wrong tool for Chinese, and
+  # embeddinggemma genuinely retrieves best — it is excluded by needing 3GB on a
+  # 4GB Raspberry Pi that also runs eidolon_channel, not by its quality.
+  #
+  # An unrecognised name is refused at config load, because MemPalace answers
+  # anything it does not know with minilm and says nothing.
+  model: bge-small-zh
+  # ONNX Runtime execution provider for `local`: auto, cpu, cuda, coreml, or dml.
+  device: ""
+  # Optional local copy of the model files, so a deployment can ship them instead
+  # of probing the hub on first use. Our own encoder reads this directory
+  # directly; for MemPalace's it is bridged into their download call, which is the
+  # one case still needing a process-wide patch.
+  model_dir: ""
+  # Explicit ONNX Runtime intra-op cap. 0 keeps the native auto default (≈ core
+  # count), which a background mine will happily use all of.
+  threads: 0
+
+  # Read only when provider is http. Moving the encoder off the box is the one
+  # way to run the model that retrieves best of everything measured on hardware
+  # that cannot hold it — embeddinggemma needs 3GB on a 4GB Pi — at the cost of a
+  # network hop inside the recall path.
+  #
+  # Nothing is stored off this machine by this. The endpoint sees the text of a
+  # query or a fragment and answers with a vector; the palace stays local. This
+  # is not the cloud storage that was deliberately removed from this project.
+  http:
+    # The API root, ending in /v1. `/embeddings` is appended.
+    base_url: ""
+    # The model id the endpoint accepts. Defaults to `model` above when blank.
+    model: ""
+    # Name of the env var holding the key; put the value in config/.env. Blank
+    # means the endpoint needs no credential. A named variable that resolves
+    # empty is an error, not an empty Bearer header answered with a 401.
+    api_key_env: ""
+    # The width the endpoint returns. Required, and not discoverable: it fixes
+    # the collection's width at creation, and a palace build that first has to
+    # ask a network service is a build that fails differently on a bad day.
+    # Checked against every response, so a wrong value is reported here rather
+    # than surfacing later as a rejected write.
+    dimension: 0
+    # Persisted by Chroma on the collection. Derived from the model id when
+    # blank (as http_<model>), which is enough to keep two hosted models apart.
+    collection_name: ""
+    # As mandatory for a hosted E5 as for a local one, and as silent when
+    # omitted: not an error, just worse ranking.
+    query_prefix: ""
+    document_prefix: ""
+    # A ceiling for a failing call, not a target — this sits inside the recall
+    # path, whose end-to-end p95 is 20ms on the local embedder.
+    timeout_seconds: 30.0
+    batch_size: 32
+    # Retries cover a transport error, a 429 or a 5xx. A 4xx is not retried: a
+    # wrong model id or a rejected key will be just as wrong the second time.
+    max_retries: 2
 
 kg:
   # sqlite keeps the graph in the palace directory. Set "none" to run on vector
   # recall alone — the service starts, graph tools are not offered, and nothing
-  # already stored is deleted. "postgres" is for the multi-host shape.
+  # already stored is deleted.
   backend: sqlite
-  # Read only when backend is postgres.
-  postgres_dsn_env: EIDOLON_MEMORY_KG_PG_DSN
   min_confidence_to_write: 0.6
 
 ledgers:
@@ -62,13 +132,11 @@ ledgers:
   # that stops a corrected fact being recalled, and commitments are what
   # commitment queries are answered from.
   #
-  # "palace" keeps them as SQLite files next to the memories, which needs one
-  # owning process. Separate from the kg setting on purpose: the graph is optional
-  # at runtime, and reading these out of an optional section would mean turning
-  # the graph off took the ledgers with it.
+  # SQLite files next to the memories. Its own section rather than part of kg on
+  # purpose: the graph can be turned off at runtime, and reading the ledgers'
+  # location out of an optional section would mean turning the graph off took
+  # commitments and the invalidation chain with it.
   backend: palace
-  # Read only when backend is postgres.
-  postgres_dsn_env: EIDOLON_MEMORY_LEDGER_PG_DSN
 
 registry:
   # Which memory spaces to serve. eidolon-admin asks an Eidolon OS admin service;

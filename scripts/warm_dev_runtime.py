@@ -8,31 +8,57 @@ import sys
 from pathlib import Path
 
 
-def _onnx_cache_dir() -> Path:
+def _minilm_cache_dir() -> Path:
+    """Where Chroma extracts MiniLM, which is the only model that lands there.
+
+    Everything else — ours and embeddinggemma — is fetched by huggingface_hub into
+    its own cache. So this path only answers a question about minilm, and checking
+    it for any other model reports a missing cache after a successful warmup.
+    """
+
     return Path.home() / ".cache" / "chroma" / "onnx_models" / "all-MiniLM-L6-v2"
 
 
 def warm_embedding() -> None:
-    from mempalace.embedding import describe_device, get_embedding_function
+    from mempalace.embedding import describe_device
 
     from eidolon.memory.config.memory_settings import get_memory_settings
+    from eidolon.memory.infrastructure.embedder_factory import active_embedder
     from eidolon.memory.infrastructure.mempalace_backend import apply_mempalace_backend_env
 
     settings = get_memory_settings()
     apply_mempalace_backend_env(settings)
-    model = settings.mempalace.embedding_model or "minilm"
-    print(f"warming Chroma ONNX embedding ({model})…")
-    ef = get_embedding_function()
-    vectors = ef(["eidolon memory warmup"])
+    model = settings.embedding.model or "minilm"
+    print(f"warming embedding ({model}, provider={settings.embedding.resolved_provider()})…")
+    # Through the port, so this warms whatever is configured rather than whatever
+    # MemPalace resolves — those are the same thing only when registration worked,
+    # and this script is one of the places you would run to find out that it did.
+    vectors = active_embedder().embed_documents(["eidolon memory warmup"])
     dim = len(vectors[0]) if vectors else 0
-    cache = _onnx_cache_dir()
-    has_extracted = (cache / "onnx").is_dir()
-    has_archive = (cache / "onnx.tar.gz").is_file()
     print(f"  device={describe_device()} embedding_dim={dim}")
-    print(f"  cache={cache}")
-    print(f"  extracted_onnx={has_extracted} archive={has_archive}")
-    if not has_extracted and not has_archive:
-        raise RuntimeError("embedding warmup finished but ONNX model cache is missing")
+
+    expected = settings.embedding.declared_identity()
+    if dim == 0:
+        raise RuntimeError(f"embedding warmup returned no vector for model {model!r}")
+    if expected is not None and dim != expected.dimension:
+        # The width a warmup actually produced against the width a palace would
+        # be created at. This is the assertion the old minilm-cache check was
+        # standing in for, and it holds for every provider — including a hosted
+        # one, which has no local cache to inspect at all.
+        raise RuntimeError(
+            f"embedding warmup produced {dim}-dimensional vectors but the "
+            f"configuration declares {expected.dimension} for {model!r}. A palace "
+            f"created now would be built at the declared width and reject writes."
+        )
+
+    if model == "minilm":
+        cache = _minilm_cache_dir()
+        has_extracted = (cache / "onnx").is_dir()
+        has_archive = (cache / "onnx.tar.gz").is_file()
+        print(f"  cache={cache}")
+        print(f"  extracted_onnx={has_extracted} archive={has_archive}")
+        if not has_extracted and not has_archive:
+            raise RuntimeError("embedding warmup finished but ONNX model cache is missing")
 
 
 def warm_closets(palace_path: str) -> None:

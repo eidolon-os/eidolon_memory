@@ -46,7 +46,7 @@
       "additionalProperties": false,
       "required": ["vector_backend", "kg_backend", "embedder"],
       "properties": {
-        "vector_backend": { "enum": ["chroma", "milvus"] },
+        "vector_backend": { "enum": ["chroma"] },
         "kg_backend": { "enum": ["none", "sqlite", "postgres"] },
         "embedder": {
           "type": "string",

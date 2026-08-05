@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pathlib
 import sys
 from types import SimpleNamespace
 
@@ -203,3 +204,101 @@ async def test_every_loss_path_is_counted(monkeypatch: pytest.MonkeyPatch) -> No
     assert _count("proposed") - before["proposed"] == 2
     assert _count("dropped_importance") - before["dropped_importance"] == 1
     assert _count("written") - before["written"] == 1
+
+
+# ─── identity fields belong to the turn, not to the model ─────────────────────
+#
+# A run on 2026-08-04 lost one turn of 40 to this: the model omitted
+# ``memory_space_id``, ``MemoryFragment`` rejects a blank one, and the whole
+# decision failed validation — over a field ``stamp_fragment_identity`` overwrites
+# from the context a few lines later. The turn fell back to rule-based extraction
+# and, because the ledger's identity is the *configured policy*, was never
+# re-extracted. Zero occurrences in the 160 turns before it, which is the rate
+# that makes a benchmark irreproducible rather than obviously broken.
+
+
+def _ctx():
+    class Ctx:
+        memory_space_id = "default.alice.default"
+        memory_realm_id = "default.alice.default"
+        owner_id = "alice"
+        companion_id = "default"
+        device_id = None
+        session_id = None
+
+    return Ctx()
+
+
+def _fragment(**overrides):
+    base = {
+        "content": "我妈失眠",
+        "wing": "Wing_Relationship",
+        "room": "sleep",
+        "source_turn_id": "t1",
+        "memory_type": "relationship",
+        "importance": 4,
+        "confidence": 0.9,
+        "scope": "persona",
+        "visibility": "all_devices",
+    }
+    base.update(overrides)
+    return base
+
+
+def _steward():
+    import yaml
+
+    from eidolon.memory.application.steward.llm import LiteLLMSteward
+    from eidolon.memory.config.memory_settings import MemorySettings
+
+    config = pathlib.Path(__file__).resolve().parents[2] / "config/settings.example.yaml"
+    settings = MemorySettings.model_validate(
+        yaml.safe_load(config.read_text(encoding="utf-8"))
+    )
+    return LiteLLMSteward(settings)
+
+
+def _parse(fragment, *, context):
+    import json as _json
+
+    payload = {"should_write": True, "reason": "t", "fragments": [fragment]}
+    return _steward()._parse_decision(
+        _json.dumps(payload, ensure_ascii=False), context=context
+    )
+
+
+def test_an_omitted_space_id_is_taken_from_the_turn() -> None:
+    """The case that cost a run. Validation must not reject what we overwrite."""
+
+    decision = _parse(_fragment(), context=_ctx())
+
+    assert decision.fragments[0].memory_space_id == "default.alice.default"
+
+
+def test_a_blank_space_id_is_taken_from_the_turn() -> None:
+    decision = _parse(_fragment(memory_space_id=""), context=_ctx())
+
+    assert decision.fragments[0].memory_space_id == "default.alice.default"
+
+
+def test_a_space_id_the_model_invented_is_discarded() -> None:
+    """Replaced rather than defaulted, so this is not reachable.
+
+    ``stamp_fragment_identity`` already overwrites unconditionally, so the write
+    path was never at risk. Asserted here so it stays safe without depending on
+    the order of two functions.
+    """
+
+    decision = _parse(_fragment(memory_space_id="default.bob.default"), context=_ctx())
+
+    assert decision.fragments[0].memory_space_id == "default.alice.default"
+
+
+def test_without_a_turn_context_a_blank_is_still_refused() -> None:
+    """No context means nothing authoritative to substitute, so the old strictness
+    is the right answer rather than inventing a space."""
+
+    from eidolon.memory.domain.errors import StewardOutputError
+
+    with pytest.raises(StewardOutputError):
+        _parse(_fragment(memory_space_id=""), context=None)

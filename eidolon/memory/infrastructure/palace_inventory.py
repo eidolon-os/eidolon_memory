@@ -88,7 +88,7 @@ def build_palace_manifest(palace_path: Path, *, deep: bool = False) -> dict[str,
         "total_bytes": sum(path.stat().st_size for path in files),
         "artifacts": {},
     }
-    for name in ("chroma.sqlite3", "milvus_backend.json", "knowledge_graph.sqlite3"):
+    for name in ("chroma.sqlite3", "knowledge_graph.sqlite3"):
         path = palace_path / name
         manifest["artifacts"][name] = {
             "exists": path.is_file(),

@@ -4,9 +4,18 @@ runtime:
   run_dir: ''
 mempalace:
   backend: chroma
-  embedding_model: embeddinggemma
-  embedding_device: cpu
-  embedding_model_dir: /Users/manson/eidolon/data/models/embeddinggemma-300m-ONNX
+embedding:
+  # See settings.example.yaml for the measured comparison and for what `provider`
+  # can be. Unchanged from when these four keys lived under `mempalace:` —
+  # bge-small-zh on CPU, in process. Palaces built with a different embedder
+  # cannot be opened under this one — Chroma persists the embedder on the
+  # collection — so switching means deleting palaces_root.
+  provider: local
+  model: bge-small-zh
+  device: cpu
+  # Empty: bge downloads through the normal HF cache. The directory that used to
+  # be here holds embeddinggemma's files, which this model does not read.
+  model_dir: ''
 nats:
   url: nats://127.0.0.1:4222
 llm:

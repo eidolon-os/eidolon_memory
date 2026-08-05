@@ -62,6 +62,15 @@ class RuleBasedSteward:
         return "rules:v2"
 
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
+        """Decide, and stamp who decided.
+
+        One stamp site rather than one per ``return`` — there are four inside
+        ``_decide`` and a fifth would otherwise be a silent omission.
+        """
+
+        return (await self._decide(turn)).stamped_by(self.extraction_version)
+
+    async def _decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         text = f"{turn.user_text}\n{turn.assistant_text}".strip()
         timestamp = turn.timestamp or datetime.now(UTC).isoformat()
         privacy_actions = self._privacy_actions(turn.user_text)

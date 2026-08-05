@@ -1,29 +1,29 @@
-"""The local and cloud profiles must differ in values only.
+"""The shipped configuration template has to be a working deployment.
 
-The promise is that moving a deployment between one machine and many is a config
-change. That is easy to claim and easy to break — a field that exists in only one
-profile, or a shape only one of them can express, turns the move into a code
-change. These tests pin it.
+An example settings file is documentation that runs, so the ways it can rot are
+the ways documentation rots — a field that no longer validates, a secret written
+in place of the variable that holds it, an embedder left blank. None of those are
+visible by reading it.
+
+This suite once compared a local profile against a cloud one, asserting they
+differed in values only. There is one profile now.
 """
 
 from __future__ import annotations
 
 import pathlib
 
-import pytest
 import yaml
 
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.config.registry import load_users_config
 from eidolon.memory.infrastructure.mempalace_backend import (
-    mempalace_backend_env,
     selected_mempalace_backend,
     vector_sqlite_integrity_targets,
 )
 
 _CONFIG = pathlib.Path(__file__).resolve().parents[2] / "config"
 _LOCAL = _CONFIG / "settings.example.yaml"
-_CLOUD = _CONFIG / "settings.cloud.example.yaml"
 _ROSTER = _CONFIG / "registry.example.yaml"
 
 
@@ -31,78 +31,34 @@ def _load(path: pathlib.Path) -> MemorySettings:
     return MemorySettings.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
 
 
-def _keys(node, prefix: str = "") -> set[str]:
-    if not isinstance(node, dict):
-        return {prefix}
-    found: set[str] = set()
-    for key, value in node.items():
-        found |= _keys(value, f"{prefix}.{key}" if prefix else key)
-    return found
-
-
-@pytest.mark.parametrize("path", [_LOCAL, _CLOUD])
-def test_both_profiles_are_valid_settings(path: pathlib.Path) -> None:
-    _load(path)
-
-
-def test_the_profiles_declare_the_same_fields() -> None:
-    """A field present in one profile only means the move is not just values."""
-
-    local = _keys(yaml.safe_load(_LOCAL.read_text(encoding="utf-8")))
-    cloud = _keys(yaml.safe_load(_CLOUD.read_text(encoding="utf-8")))
-
-    assert local == cloud, (
-        "the profiles have diverged in shape; "
-        f"only local: {sorted(local - cloud)}, only cloud: {sorted(cloud - local)}"
-    )
-
-
-def test_the_profiles_select_different_storage() -> None:
-    """Sanity check that these are genuinely two deployment shapes."""
-
-    assert selected_mempalace_backend(_load(_LOCAL)) == "chroma"
-    assert selected_mempalace_backend(_load(_CLOUD)) == "milvus"
-    assert _load(_LOCAL).kg.backend == "sqlite"
-    assert _load(_CLOUD).kg.backend == "postgres"
-
-
-def test_the_cloud_profile_confines_itself_to_one_milvus_database() -> None:
-    """Shared instances are the norm; a stray deployment must not spill into one."""
-
-    assert _load(_CLOUD).mempalace.milvus_db_name.strip()
+def test_the_example_is_valid_settings() -> None:
+    _load(_LOCAL)
 
 
 def test_secrets_are_referenced_by_environment_variable_not_value() -> None:
-    for path in (_LOCAL, _CLOUD):
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for section in raw.values():
-            if not isinstance(section, dict):
-                continue
-            for key, value in section.items():
-                if key.endswith("_env"):
-                    assert value == "" or value.isupper(), (
-                        f"{path.name}: {key} should name an environment variable, "
-                        f"got {value!r}"
-                    )
+    """A template is committed, so a value here would be a committed secret."""
+
+    raw = yaml.safe_load(_LOCAL.read_text(encoding="utf-8"))
+    for section in raw.values():
+        if not isinstance(section, dict):
+            continue
+        for key, value in section.items():
+            if key.endswith("_env"):
+                assert value == "" or value.isupper(), (
+                    f"{_LOCAL.name}: {key} should name an environment variable, "
+                    f"got {value!r}"
+                )
 
 
-def test_local_integrity_checks_have_nothing_to_check_in_the_cloud(tmp_path) -> None:
-    """A remote store's health is the server's to verify, not a startup gate."""
+def test_the_configured_store_has_something_to_check_at_startup() -> None:
+    """Embedded storage is verifiable before serving, and that is the point of it
+    being embedded: a corrupt file is found at startup rather than on a read."""
 
-    local = vector_sqlite_integrity_targets(tmp_path, selected_mempalace_backend(_load(_LOCAL)))
-    cloud = vector_sqlite_integrity_targets(tmp_path, selected_mempalace_backend(_load(_CLOUD)))
+    targets = vector_sqlite_integrity_targets(
+        pathlib.Path("/nonexistent"), selected_mempalace_backend(_load(_LOCAL))
+    )
 
-    assert local and not cloud
-
-
-def test_the_cloud_profile_reaches_milvus_through_the_environment_bridge() -> None:
-    """MemPalace is configured by environment, so the profile must translate."""
-
-    env = mempalace_backend_env(_load(_CLOUD), base={})
-
-    assert env["MEMPALACE_BACKEND"] == "milvus"
-    assert env["MEMPALACE_MILVUS_URI"]
-    assert env["MEMPALACE_MILVUS_DB_NAME"] == "eidolon"
+    assert targets
 
 
 def test_the_example_roster_serves_what_it_declares() -> None:
@@ -117,27 +73,13 @@ def test_the_example_roster_serves_what_it_declares() -> None:
     assert {entry.id for entry in roster.users if entry.consolidator_enabled()} == {"dave"}
 
 
-def test_both_profiles_name_the_same_embedder() -> None:
-    """A palace is bound to the embedder it was built with.
+def test_the_embedder_is_named_rather_than_defaulted() -> None:
+    """Blank means we pass no model and MemPalace picks minilm, its own default.
 
-    MemPalace refuses to open a palace whose stored embedder identity differs, so
-    profiles disagreeing here would make a space unmovable between deployments —
-    and would only be discoverable at startup on the far side.
+    A new palace would then silently be built with the English-only encoder,
+    which measures 5/43 top-1 on our Chinese corpus. Naming it is the difference
+    between a deliberate choice and an accident — and this exact accident is what
+    every quality figure before 2026-08-03 was measured under.
     """
 
-    local = _load(_LOCAL).mempalace.embedding_model
-    cloud = _load(_CLOUD).mempalace.embedding_model
-
-    assert local == cloud, f"local uses {local!r}, cloud uses {cloud!r}"
-
-
-@pytest.mark.parametrize("path", [_LOCAL, _CLOUD])
-def test_the_embedder_is_named_rather_than_defaulted(path: pathlib.Path) -> None:
-    """Empty means we send no model and MemPalace picks minilm, its own default.
-
-    That is fine for an existing palace, which keeps its own embedder either way,
-    but a new one would silently get the English-only model. Naming it is the
-    difference between a deliberate choice and an accident.
-    """
-
-    assert _load(path).mempalace.embedding_model.strip()
+    assert _load(_LOCAL).mempalace.embedding_model.strip()

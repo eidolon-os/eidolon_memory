@@ -1,13 +1,16 @@
-"""One suite, both storages — the switch is proven, not designed.
+"""What the six ledgers must do, stated against their port rather than their file.
 
-Local and cloud are meant to be the same service with different storage
-underneath. That claim is only worth something if the same behavioural tests pass
-against both, so every test here runs twice: once on the SQLite ledger inside a
-palace, once on the PostgreSQL ledger a replica reaches over the network.
+Each test takes a ledger through a fixture and asserts on the behaviour the port
+promises — that a replayed turn is recognised, that a claim is not handed to two
+workers, that an applied command is never downgraded. None of them reach into
+SQLite.
 
-Where the two genuinely differ, the difference is asserted rather than smoothed
-over. A test that passed against both by avoiding what separates them would be
-the most misleading kind of green.
+That is deliberate and it is what makes them a contract rather than
+implementation tests. This suite once ran every case twice, against the SQLite
+ledgers and against PostgreSQL ones, to prove local and cloud were the same
+service with different storage. The PostgreSQL half is gone with the cloud shape;
+the suite kept the property that mattered — the behaviour is specified
+independently of where the rows live.
 """
 
 from __future__ import annotations
@@ -58,39 +61,21 @@ def _record(
     )
 
 
-# ── the two storages, behind one fixture ─────────────────────────────────────
+# ── the ledgers, each behind a fixture ───────────────────────────────────────
 
 
-@pytest.fixture(params=["embedded", "shared"])
-async def decisions(request: pytest.FixtureRequest, tmp_path, postgres_pool):
-    """The decision ledger, once per storage shape.
+@pytest.fixture
+async def decisions(tmp_path):
+    """The extraction-decision ledger."""
 
-    ``postgres_pool`` is requested for both cases rather than looked up inside
-    the shared branch: an async fixture cannot pull another async fixture through
-    ``getfixturevalue``. The server is session-scoped, so the embedded case pays
-    nothing beyond a schema it does not use.
-
-    The shared case is never skipped for a missing server — a skip there would
-    mean the cloud half of a switchability claim silently stops being checked.
-    """
-
-    if request.param == "embedded":
-        return ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
-
-    from eidolon.memory.infrastructure.ledgers_postgres import (
-        PostgresExtractionDecisionLedger,
-    )
-
-    ledger = PostgresExtractionDecisionLedger(postgres_pool)
-    await ledger.ensure_schema()
-    return ledger
+    return ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
 
 
-# ── behaviour that must be identical ─────────────────────────────────────────
+# ── extraction decisions ─────────────────────────────────────────────────────
 
 
 async def test_it_satisfies_the_port(decisions) -> None:
-    """Whichever storage it is, it is handed over as the same protocol."""
+    """Handed to callers as the protocol, not as the class."""
 
     assert isinstance(decisions, ExtractionDecisionStore)
 
@@ -147,8 +132,11 @@ async def test_a_different_extractor_version_is_a_separate_decision(decisions) -
 
 
 async def test_two_spaces_cannot_see_each_others_decisions(decisions) -> None:
-    """On shared storage both rows live in one table, so this is the isolation
-    boundary rather than a file-system one."""
+    """The ledger filters by space rather than relying on its file.
+
+    Each space has its own file today, so a query that forgot the space column
+    would still pass by accident. Asserted anyway: the column is what the
+    isolation actually rests on, and three ledgers were once missing it."""
 
     await decisions.put_if_absent(_record(space="default.alice.default"))
     await decisions.put_if_absent(
@@ -162,24 +150,14 @@ async def test_two_spaces_cannot_see_each_others_decisions(decisions) -> None:
     assert bob.input_hash == "bob-hash"
 
 
-# ── where they differ on purpose ─────────────────────────────────────────────
+# ── device sync ──────────────────────────────────────────────────────────────
 
 
-# ── device sync, both storages ───────────────────────────────────────────────
+@pytest.fixture
+async def sync(tmp_path):
+    """The sync ledger for space ``SPACE``."""
 
-
-@pytest.fixture(params=["embedded", "shared"])
-async def sync(request: pytest.FixtureRequest, tmp_path, postgres_pool):
-    """The sync ledger for space ``SPACE``, once per storage shape."""
-
-    if request.param == "embedded":
-        return SyncLedger(tmp_path / "sync.sqlite3", space_id=SPACE)
-
-    from eidolon.memory.infrastructure.ledgers_postgres import PostgresSyncLedger
-
-    ledger = PostgresSyncLedger(postgres_pool, space_id=SPACE)
-    await ledger.ensure_schema()
-    return ledger
+    return SyncLedger(tmp_path / "sync.sqlite3", space_id=SPACE)
 
 
 async def test_sync_satisfies_the_port(sync) -> None:
@@ -236,45 +214,9 @@ async def test_marking_the_same_batch_twice_is_not_an_error(sync) -> None:
     assert await sync.seen(event_id="e1", idempotency_hash="h1") is True
 
 
-async def test_another_spaces_batch_does_not_count_as_seen(postgres_pool) -> None:
-    """The failure the space column exists to prevent.
-
-    Two spaces on shared storage are in one table. Scoped by event id alone —
-    which a per-palace file gave for free — one owner's sync history would make
-    another owner's turns look already-applied and silently drop them.
-    """
-
-    from eidolon.memory.infrastructure.ledgers_postgres import PostgresSyncLedger
-
-    alice = PostgresSyncLedger(postgres_pool, space_id="default.alice.default")
-    bob = PostgresSyncLedger(postgres_pool, space_id="default.bob.default")
-    await alice.ensure_schema()
-
-    await alice.mark_synced(
-        event_id="shared-id",
-        device_id="d1",
-        instance_id="i1",
-        turn_id="t1",
-        idempotency_hash="shared-hash",
-    )
-
-    assert await alice.seen(event_id="shared-id", idempotency_hash="shared-hash") is True
-    assert await bob.seen(event_id="shared-id", idempotency_hash="shared-hash") is False
-
-
-# ── dead letters, both storages ──────────────────────────────────────────────
-
-
-@pytest.fixture(params=["embedded", "shared"])
-async def dlq(request: pytest.FixtureRequest, tmp_path, postgres_pool):
-    if request.param == "embedded":
-        return DlqLedger(tmp_path / "dlq.sqlite3", space_id=SPACE)
-
-    from eidolon.memory.infrastructure.ledgers_postgres import PostgresDlqLedger
-
-    ledger = PostgresDlqLedger(postgres_pool, space_id=SPACE)
-    await ledger.ensure_schema()
-    return ledger
+@pytest.fixture
+async def dlq(tmp_path):
+    return DlqLedger(tmp_path / "dlq.sqlite3", space_id=SPACE)
 
 
 async def test_dlq_satisfies_the_port(dlq) -> None:
@@ -372,38 +314,9 @@ async def test_stats_count_by_state(dlq) -> None:
     assert stats.payload_bytes == 5
 
 
-async def test_another_spaces_failures_are_not_listed(postgres_pool) -> None:
-    """A dead letter holds a whole conversation turn, so this is the strongest
-    reason the shared tables need a space column."""
-
-    from eidolon.memory.infrastructure.ledgers_postgres import PostgresDlqLedger
-
-    alice = PostgresDlqLedger(postgres_pool, space_id="default.alice.default")
-    bob = PostgresDlqLedger(postgres_pool, space_id="default.bob.default")
-    await alice.ensure_schema()
-
-    entry = await alice.add(subject="s", payload=b"alice-turn", error="e", deliveries=1)
-
-    assert await bob.get(entry.entry_id) is None
-    assert await bob.list() == []
-    assert (await bob.stats()).total == 0
-
-
-# ── command status, both storages ────────────────────────────────────────────
-
-
-@pytest.fixture(params=["embedded", "shared"])
-async def commands(request: pytest.FixtureRequest, tmp_path, postgres_pool):
-    if request.param == "embedded":
-        return CommandStatusLedger(tmp_path / "cmd.sqlite3", space_id=SPACE)
-
-    from eidolon.memory.infrastructure.ledgers_postgres import (
-        PostgresCommandStatusLedger,
-    )
-
-    ledger = PostgresCommandStatusLedger(postgres_pool, space_id=SPACE)
-    await ledger.ensure_schema()
-    return ledger
+@pytest.fixture
+async def commands(tmp_path):
+    return CommandStatusLedger(tmp_path / "cmd.sqlite3", space_id=SPACE)
 
 
 async def test_command_status_satisfies_the_port(commands) -> None:
@@ -524,71 +437,6 @@ async def test_pruning_keeps_commands_still_in_flight(commands) -> None:
     assert (await commands.get("running")) is not None
 
 
-async def test_another_spaces_command_is_not_visible(postgres_pool) -> None:
-    from eidolon.memory.infrastructure.ledgers_postgres import (
-        PostgresCommandStatusLedger,
-    )
-
-    alice = PostgresCommandStatusLedger(postgres_pool, space_id="default.alice.default")
-    bob = PostgresCommandStatusLedger(postgres_pool, space_id="default.bob.default")
-    await alice.ensure_schema()
-
-    await alice.record_applied("shared-request-id", kind="k")
-
-    assert await bob.get("shared-request-id") is None
-    assert (await bob.stats()).total == 0
-
-
-# ── where they differ on purpose ─────────────────────────────────────────────
-
-
-async def test_the_shared_command_ledger_polls_rather_than_waiting_on_an_event(
-    postgres_pool,
-) -> None:
-    """An in-process event cannot cross replicas.
-
-    Locally MCP and the command worker share one ledger object, so an
-    ``asyncio.Event`` is exact and free. With replicas the request may be served
-    by one and the command applied by another, and an event set there is never
-    seen here — so this implementation polls, and has no event machinery at all.
-    """
-
-    from eidolon.memory.infrastructure.ledgers_postgres import (
-        PostgresCommandStatusLedger,
-    )
-
-    ledger = PostgresCommandStatusLedger(postgres_pool, space_id=SPACE)
-    await ledger.ensure_schema()
-
-    assert not hasattr(ledger, "_terminal_events")
-    assert ledger.POLL_INTERVAL_SECONDS > 0
-
-
-async def test_a_status_written_by_one_replica_is_seen_by_another(
-    postgres_pool,
-) -> None:
-    """What the polling buys: the property the embedded ledger cannot have."""
-
-    from eidolon.memory.infrastructure.ledgers_postgres import (
-        PostgresCommandStatusLedger,
-    )
-
-    worker = PostgresCommandStatusLedger(postgres_pool, space_id=SPACE)
-    await worker.ensure_schema()
-    frontend = PostgresCommandStatusLedger(postgres_pool, space_id=SPACE)
-
-    await worker.record_accepted("r1", kind="k")
-
-    async def _apply_shortly() -> None:
-        await asyncio.sleep(0.05)
-        await worker.record_applied("r1", kind="k")
-
-    waiter = asyncio.create_task(frontend.wait_terminal("r1", timeout_seconds=5.0))
-    await _apply_shortly()
-
-    assert (await waiter).status == "applied"
-
-
 async def test_the_embedded_dlq_releases_claims_when_it_reopens(tmp_path) -> None:
     """Safe locally: a palace has one owning process, so a claim left behind can
     only be from this process dying."""
@@ -601,59 +449,6 @@ async def test_the_embedded_dlq_releases_claims_when_it_reopens(tmp_path) -> Non
     reopened = DlqLedger(path, space_id=SPACE)
 
     assert (await reopened.get(entry.entry_id)).state == "unresolved"
-
-
-async def test_the_shared_dlq_does_not_release_claims_when_it_opens(
-    postgres_pool,
-) -> None:
-    """The same reset would be destructive here.
-
-    A replica starting up cannot tell another replica's in-flight entry from an
-    abandoned one, so resetting on open would hand live work to a second worker.
-    Stale claims are released by age instead, explicitly.
-    """
-
-    from eidolon.memory.infrastructure.ledgers_postgres import PostgresDlqLedger
-
-    ledger = PostgresDlqLedger(postgres_pool, space_id=SPACE)
-    await ledger.ensure_schema()
-    entry = await ledger.add(subject="s", payload=b"p", error="e", deliveries=1)
-    await ledger.claim_replay(entry.entry_id)
-
-    another_replica = PostgresDlqLedger(postgres_pool, space_id=SPACE)
-    await another_replica.ensure_schema()
-
-    assert (await another_replica.get(entry.entry_id)).state == "replaying"
-
-    # Age is the only signal available, so recovery is explicit and threshold-based.
-    assert await another_replica.release_stale_claims(older_than_seconds=0) == 1
-    assert (await another_replica.get(entry.entry_id)).state == "unresolved"
-
-
-async def test_the_shared_ledger_holds_no_lock(postgres_pool) -> None:
-    """A lock held across a round trip would serialise the concurrency this
-    deployment exists to have.
-
-    The embedded ledger depends on a single owning process instead; correctness
-    here comes from the primary key and the transaction.
-    """
-
-    from eidolon.memory.infrastructure.ledgers_postgres import (
-        PostgresExtractionDecisionLedger,
-    )
-
-    ledger = PostgresExtractionDecisionLedger(postgres_pool)
-
-    assert getattr(ledger, "lock", None) is None
-
-
-# ── opening a file written by an older version ───────────────────────────────
-#
-# Three of these ledgers gained a memory_space_id column. CREATE TABLE IF NOT
-# EXISTS does not alter an existing table, so a file from before it still opens
-# and then fails on the first statement — from inside a constructor, which takes
-# down the whole space rather than one request. That is not hypothetical: the four
-# palaces on this development machine were all in exactly that state.
 
 
 def test_an_empty_outdated_ledger_is_rebuilt(tmp_path) -> None:
@@ -758,7 +553,7 @@ async def test_a_populated_command_status_is_rebuilt_rather_than_refused(
     assert (await ledger.get("r2")).status == "accepted"
 
 
-# ── commitments, both storages ───────────────────────────────────────────────
+# ── commitments ──────────────────────────────────────────────────────────────
 
 
 def _commitment_intent(
@@ -800,16 +595,9 @@ def _commitment_intent(
     )
 
 
-@pytest.fixture(params=["embedded", "shared"])
-async def commitments(request: pytest.FixtureRequest, tmp_path, postgres_pool):
-    if request.param == "embedded":
-        return CommitmentLedger(tmp_path / "commitments.sqlite3")
-
-    from eidolon.memory.infrastructure.ledgers_postgres import PostgresCommitmentLedger
-
-    ledger = PostgresCommitmentLedger(postgres_pool)
-    await ledger.ensure_schema()
-    return ledger
+@pytest.fixture
+async def commitments(tmp_path):
+    return CommitmentLedger(tmp_path / "commitments.sqlite3")
 
 
 async def test_commitments_satisfies_the_port(commitments) -> None:
@@ -1029,49 +817,3 @@ async def test_marking_a_superseded_revision_is_refused(commitments) -> None:
             SPACE, first.commitment.commitment_id, 1, targets={"drawer"}
         )
 
-
-async def test_an_abandoned_claim_is_recovered_by_the_next_claimer(
-    postgres_pool,
-) -> None:
-    """The recovery path now has a caller, which it did not before.
-
-    A replica that died mid-replay leaves an entry in `replaying`. Nothing else
-    looks for that, so if releasing stale claims only happened on a schedule the
-    entry would stay unreplayable until the schedule fired — and with no schedule
-    wired up, forever.
-
-    Claiming is the only moment anything cares, so that is where it happens.
-    """
-
-    from eidolon.memory.infrastructure.ledgers_postgres import PostgresDlqLedger
-
-    dead_replica = PostgresDlqLedger(postgres_pool, space_id=SPACE)
-    await dead_replica.ensure_schema()
-    entry = await dead_replica.add(subject="s", payload=b"p", error="e", deliveries=1)
-    await dead_replica.claim_replay(entry.entry_id)
-    assert (await dead_replica.get(entry.entry_id)).state == "replaying"
-
-    live_replica = PostgresDlqLedger(postgres_pool, space_id=SPACE)
-    live_replica.STALE_CLAIM_SECONDS = 0  # the entry is "old" immediately
-
-    claimed = await live_replica.claim_replay(entry.entry_id)
-
-    assert claimed is not None, "an abandoned claim was never recovered"
-    assert claimed.payload == b"p"
-
-
-async def test_a_live_claim_is_not_stolen(postgres_pool) -> None:
-    """The other half. With the default threshold an in-flight entry stays with
-    its worker, so recovery cannot hand live work to a second replica."""
-
-    from eidolon.memory.infrastructure.ledgers_postgres import PostgresDlqLedger
-
-    worker = PostgresDlqLedger(postgres_pool, space_id=SPACE)
-    await worker.ensure_schema()
-    entry = await worker.add(subject="s", payload=b"p", error="e", deliveries=1)
-    await worker.claim_replay(entry.entry_id)
-
-    other = PostgresDlqLedger(postgres_pool, space_id=SPACE)
-
-    assert await other.claim_replay(entry.entry_id) is None
-    assert (await other.get(entry.entry_id)).state == "replaying"

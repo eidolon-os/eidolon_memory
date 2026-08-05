@@ -25,20 +25,19 @@ mcp / litellm 这些第三方包,加上同仓库自持的 `eidolon-memory-contra
 - **独立形态**:`registry.source: static` + NATS + 本地 chroma 即可完整服务任何客户端,
   无需 admin 服务在场。
 
-| 部署形态 | 向量 | 知识图谱 | 名册来源 |
-|---|---|---|---|
-| 本地单机 | chroma(palace 目录内文件) | sqlite(**本服务自写**,非 mempalace) | admin HTTP 或 static YAML |
-| 跨主机 | milvus(server / Zilliz) | postgres(见下方验证状态) | 同上 |
+| | 存储 | 名册来源 |
+|---|---|---|
+| 向量 | chroma(palace 目录内文件) | — |
+| 知识图谱 | sqlite(**本服务自写**,非 mempalace) | — |
+| 6 个 ledger | sqlite(palace 目录内) | — |
+| embedder | 进程内 ONNX 会话,多 palace 共享一份 | — |
+| 名册 | — | admin HTTP 或 static YAML |
 
-两者共用一套配置 schema,只换值 —— 见 `config/settings.example.yaml` 与
-`config/settings.cloud.example.yaml`(有测试断言两者字段集一致)。
+配置见 `config/settings.example.yaml`。
 
-**知识图谱的验证状态**(诚实说明):两个实现共享同一套 SQL(`adapters/kg_sql.py`)。
-SQLite 那份由 41 个测试直接验证。PostgreSQL 那份有**方言一致性**结构测试把守
-(schema 只在 sensitive 列类型上不同、参数个数一致、投影顺序一致 —— 见
-`test_kg_dialects.py`),但**尚未对真实 PostgreSQL 运行过**:那需要一个服务器,
-`test_live_postgres_kg.py` 在配了 `EIDOLON_MEMORY_KG_PG_TEST_DSN` 时跑完整验证。
-向量层的 milvus 路径已对真实实例验证过(`test_live_milvus.py`)。
+**这是一台机器的形态。** 曾经有第二套实现服务多主机部署(milvus 向量、PostgreSQL 图与
+ledger、无状态 router),已按决定整体删除。抽象层留下了 —— 它解决的是"一个进程服务多个
+space"这个当下的问题,不是多形态。
 
 ### 0.1 可观测性
 
@@ -71,18 +70,17 @@ metrics 运行时可选:`prometheus_client` 缺失时所有 helper 走 no-op,服
 runtime = await router.resolve(space_id)   # backend / kg / ledgers
 ```
 
-两个实现,由**存储配置**推导(没有 `mode: local|cloud` 开关 —— 否则可能与存储配置矛盾):
+`LocalPalaceRouter` 是实现,`FixedSpaceRouter` 是"句柄已在别处打开"时的包装器。
 
-| | `LocalPalaceRouter`(嵌入式) | `SharedStoreRouter`(远端) |
-|---|---|---|
-| 选中条件 | `mempalace.backend: chroma` | 其他(milvus) |
-| palace 目录 | **就是数据**,必须持久 | 只放 marker,容器本地、可丢弃重建 |
-| 同一 space 第二个持有者 | **拒绝**(flock;两个持有者会损坏 palace) | **允许**(副本可互换 = 水平扩展) |
-| ONNX 模型 | 进程内共享一份(实测 3 palace:291MB → +10MB → +5MB) | 同上 |
-| 分片 `allowed_spaces` | 有意义(限制一个进程崩溃的影响面) | 被忽略(每副本服务全部) |
+| | |
+|---|---|
+| palace 目录 | **就是数据**,必须持久 |
+| 同一 space 第二个持有者 | **拒绝**(flock;两个持有者会损坏 palace) |
+| ONNX 模型 | 进程内共享一份(实测 3 palace:291MB → +10MB → +5MB) |
+| 分片 `allowed_spaces` | 限制一个进程崩溃的影响面 |
 
-这个不对称由 `tests/memory/test_router_contract.py` 断言 —— 两个实现跑同一套契约测试,
-且显式验证"两副本并发服务同一 space"不报错。任何重新引入 host 绑定的改动会让它失败。
+注意约束在 **palace** 而不是进程:一个进程可以持有很多 palace,这正是 1:N 的空间。
+契约由 `tests/memory/test_router_contract.py` 断言。
 
 > 现状:`agent_runner` 仍只服务一个 space(router 被限制到它)。让一个进程服务 K 个 space
 > 需要 MCP 工具从请求参数取 space —— 27 个工具里只有 2 个带 `context`,其余靠端口绑定,
@@ -102,8 +100,8 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 读写都最终经同一个 `LockedBackend` + `SqliteKnowledgeGraph`(共享一把 `asyncio.Lock`
 串行 chromadb + KG SQLite 调用),保证 single-owner-per-palace 不变量。
 
-> 锁属于**嵌入式**存储。远端后端(milvus / postgres)自己管并发,其适配器的 `lock` 为
-> `None` —— 跨网络调用持锁会把并发召回串行化。
+> 锁属于**嵌入式**存储:它保护的是 chroma(无服务端并发控制)与单写者的 SQLite,不是业务
+> 逻辑。裸适配器的 `lock` 按设计是 `None` —— 加锁是包装器的职责,这是项目既有约定。
 
 ---
 
@@ -173,7 +171,8 @@ application/   用例编排(无 IO 细节,只编排)
         ▼
 domain/        纯数据 + 契约(pydantic,零 IO)
   ports.py             MemoryReader/Writer/Backend Protocol(= VectorStorePort)
-  kg_port.py           KnowledgeGraphPort(sqlite / postgres 两实现)
+  kg_port.py           KnowledgeGraphPort(sqlite)
+  embedding_port.py    EmbeddingPort + 模型规格表(pooling / 前缀 / 维度)
   space_runtime.py     MemorySpaceRouter + 一个 space 的句柄集合
   wire.py / fragments.py / payloads.py / kg.py / steward.py / wings.py
         ▲ 被实现
@@ -662,15 +661,20 @@ recall:
   top_k: 5
 
 kg:
-  backend: sqlite                # none | sqlite | postgres —— none 时纯向量召回可运行
-  postgres_dsn_env: EIDOLON_MEMORY_KG_PG_DSN  # backend=postgres 时读此环境变量
+  backend: sqlite                # none | sqlite —— none 时纯向量召回可运行
   min_confidence_to_write: 0.6   # steward 输出低于此置信的 triple 丢弃 (G10)
 
 mempalace:
-  backend: chroma                # chroma | milvus
-  milvus_uri: ""                 # 设了就必须同时设 milvus_db_name(否则拒绝启动)
-  milvus_db_name: ""
-  milvus_token_env: EIDOLON_MEMORY_MILVUS_TOKEN
+  backend: chroma                # 只剩向量存储的选择;embedder 不在这一节了
+
+embedding:                       # embedder 自己的一节,有自己的校验
+  provider: local                # auto | local | http | mempalace —— 换实现只改这一行
+  model: bge-small-zh            # 未知名字在配置加载时被拒(否则 mempalace 静默用 minilm)
+  device: cpu
+  # provider: http 时读这一块;把 encoder 挪到机器外面,palace 仍在本地
+  # http:
+  #   base_url: https://.../v1
+  #   dimension: 1024            # 必填:它定下 collection 的宽度,并逐条校验返回值
 
 chromadb:
   synchronous: FULL              # D3 hard-kill 持久性
@@ -689,9 +693,6 @@ supervisor:
 | `EIDOLON_MEMORY_PALACES_ROOT` | palace 目录的父根 |
 | `EIDOLON_MEMORY_MCP_TOKEN` | MCP HTTP bearer token |
 | `EIDOLON_MEMORY_LLM_API_KEY` | steward LLM 密钥 |
-| `EIDOLON_MEMORY_MILVUS_TOKEN` | Milvus / Zilliz token(`mempalace.backend=milvus` 时) |
-| `EIDOLON_MEMORY_KG_PG_DSN` | KG Postgres 连接串(`kg.backend=postgres` 时) |
-| `EIDOLON_MEMORY_LEDGER_PG_DSN` | ledger Postgres 连接串(`ledgers.backend=postgres` 时) |
 
 密钥一律不写进 YAML —— 配置里只出现 `*_env` 字段名,值放 `config/.env`。
 
@@ -757,10 +758,8 @@ uv run pytest tests -q --ignore=tests/memory/e2e
 # 全量(e2e 会起真实 nats-server + agent_runner 子进程,含 LLM 调用,~16min)
 uv run pytest tests -q
 
-# 云端向量路径(默认跳过;需要一个可达的 Milvus)
-EIDOLON_MEMORY_MILVUS_TEST_URI=http://host:19530 \
-EIDOLON_MEMORY_MILVUS_TEST_DB=eidolon \
-  uv run --extra milvus pytest tests/memory/test_live_milvus.py
+# 只测 embedder(几秒;用真实 run 存下的 fragment 与真实查询)
+uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palaces
 
 # 性能基线 (300ms SLA):
 .venv/bin/python scripts/benchmark/bench_read_livekit.py
@@ -776,7 +775,8 @@ EIDOLON_MEMORY_MILVUS_TEST_DB=eidolon \
 |---|---|
 | `test_os_import_boundary.py` | 核心不 import `eidolon_*`;子进程屏蔽 OS 包后仍能加载全部 entrypoint |
 | `test_lazy_import_guard.py` | 禁内部 lazy import(长驻进程 + 磁盘改动会让 `sys.modules` 错配) |
-| `test_deployment_profiles.py` | 本地/云端两份 profile 字段集一致 —— 切换只该是改值 |
+| `test_deployment_profiles.py` | 出厂配置模板能加载、密钥只用变量名、embedder 已显式命名 |
+| `test_local_embedder.py` | 注入 mempalace 生效(经公开函数验证)、pooling/前缀正确、infrastructure 不 import adapters |
 | `test_kg_optional.py` | `kg.backend=none` 下服务完整可用,且关闭不销毁数据 |
 | `test_backend_contract.py` | 后端契约面 + 隐私批量操作的跨 space 保护 |
 
@@ -796,13 +796,12 @@ EIDOLON_MEMORY_MILVUS_TEST_DB=eidolon \
   `recall_policy.visible()` 这道既有可见性闸门里过滤,两侧都以 owner 层为默认。
   **写入归层仍全是 owner 层** —— 按语句判断需要 steward 参与,而默认收窄会把 owner
   自己的事实藏起来不给其他 companion 看,那是两种错误里更糟的一种。
-- **KG 自写 + Postgres**:已落地。`adapters/kg_sqlite.py` 与 `kg_postgres.py` 共享
-  `kg_sql.py` 的 schema 与查询形状;PG 版由 11 个真机测试验证(`pgserver` 以 wheel
-  分发 PostgreSQL 二进制,不需要 docker)。mempalace 的图已不再使用。
-- **ledger 的共享存储实现**:6 个中已完成 4 个(extraction decisions / device sync /
-  dlq / command status),每个都有双存储契约测试。**commitments 与 canonical_facts
-  未实现** —— 云端因此不会失效已纠正的事实,承诺查询返回空;见
-  `docs/TEST_REPORT.md`。
+- **KG 自写**:已落地。`adapters/kg_sqlite.py`,schema 与查询在 `kg_sql.py` 一处定义,
+  41 个测试。mempalace 的图已不再使用。
+- **local only**:已落地。云端实现整体删除 —— PG 的 6 个 ledger、PG 图、无状态 router、
+  milvus 配置管道、云端 profile、两个 extra。抽象层保留。
+- **中文 embedder**:已落地。`bge-small-zh`(512 维 / 111MB / 0.6ms),播种 mempalace 的
+  进程级 embedder 缓存并验证注入生效。选型实测见 `docs/ARCHITECTURE.md`。
 - **MCP 契约统一**:`focus_subjects` 取代 `kg_subjects`,并从返回中移除 `kg_triples` /
   `working_memory` —— 让调用方无法推断本服务是否有知识图谱。**这一步必须 memory 与
   agent 同批**:agent 的 `port_adapter.py:201` 正在消费 `kg_triples`,只在 memory 侧

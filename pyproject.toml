@@ -35,11 +35,6 @@ dependencies = [
 # and the turn-absorption audit log. The service runs without it — see
 # eidolon/memory/integrations/.
 eidolon-os = ["eidolon-data"]
-# Milvus client, for mempalace.backend = milvus.
-milvus = ["mempalace[milvus]==3.6.0"]
-# PostgreSQL client, for kg.backend = postgres. Pooled because a replica serves
-# every space, so per-space connections would grow with tenants.
-postgres = ["psycopg[binary]>=3.2", "psycopg-pool>=3.2"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -48,28 +43,6 @@ dev = [
     # Validates benchmark manifests against the published schema, so a
     # provenance field cannot be quietly dropped or misspelled.
     "jsonschema>=4.20",
-    # The shared-storage paths are tested, not just reviewed. The client is
-    # optional to *run* the service and mandatory to *test* it: without it the
-    # PostgreSQL suites skip, and a skipped suite reads as a passing one.
-    "psycopg[binary]>=3.2",
-    "psycopg-pool>=3.2",
-    # Ships PostgreSQL binaries as a wheel, so a real server starts with no
-    # system package and no container. Point EIDOLON_MEMORY_PG_TEST_DSN at
-    # another server to check against a specific version instead.
-    "pgserver>=0.1.4",
-]
-
-[tool.uv]
-# Offering the milvus extra makes the resolver pick a protobuf that satisfies
-# pymilvus (>= 7) for every install, including ones without that extra. Chroma
-# reaches OpenTelemetry's OTLP exporter transitively, and the resolver would
-# otherwise settle on a 2022-era version whose generated protobuf code cannot
-# load under protobuf 7 — it imports, then raises "Descriptors cannot be created
-# directly" on first use. Constraining the floor keeps both backends installable
-# in one environment; it adds no dependency of its own.
-constraint-dependencies = [
-    "opentelemetry-exporter-otlp-proto-grpc>=1.44",
-    "opentelemetry-proto>=1.44",
 ]
 
 [tool.uv.sources]

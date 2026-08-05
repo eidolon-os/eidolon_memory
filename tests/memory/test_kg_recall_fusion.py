@@ -204,6 +204,89 @@ def test_transcribe_pet_role_as_breed_identity() -> None:
     assert "担任" not in out
 
 
+# ─── the transcription reaches the model, so a bad one is a stated falsehood ──
+#
+# These lines go into the [MEMORY] block and from there into the prompt. Eight of
+# the thirty-two predicates used to render as broken sentences: the table mixed a
+# fragment-with-ellipsis shape for relational predicates ("是…的孩子") with a
+# bare-verb shape for the rest ("喜欢"), and the renderer concatenated
+# subject + entry + object either way. So "铁锤 是…的孩子 用户" reached the model —
+# in exactly the kinship and employment relations kinship_alias tests.
+
+
+def test_every_predicate_template_carries_both_slots() -> None:
+    """One shape, asserted, so the mixed-shape bug cannot come back.
+
+    A template missing ``{o}`` silently drops the object; one missing ``{s}``
+    drops the subject. Neither raises — the line just states something else.
+    """
+
+    from eidolon.memory.application.kg_recall import _PREDICATE_ZH
+
+    for predicate, template in _PREDICATE_ZH.items():
+        assert "{s}" in template, f"{predicate} has no subject slot: {template!r}"
+        assert "{o}" in template, f"{predicate} has no object slot: {template!r}"
+        assert "…" not in template, (
+            f"{predicate} still holds an ellipsis placeholder: {template!r}"
+        )
+
+
+def test_relational_predicates_read_as_sentences() -> None:
+    """The eight that were broken, checked as output rather than as a table."""
+
+    from eidolon.memory.application.kg_recall import transcribe_triple
+    from eidolon.memory.domain.kg import KgTripleRecord
+
+    expected = {
+        ("pet:铁锤", "child_of", "self"): "铁锤 是 用户 的孩子",
+        ("self", "parent_of", "child:小明"): "用户 是 小明 的父母",
+        ("self", "partner_of", "partner:王芳"): "用户 是 王芳 的伴侣",
+        ("self", "sibling_of", "sister:小红"): "用户 是 小红 的兄弟姐妹",
+        ("self", "friend_of", "friend:阿强"): "用户 和 阿强 是朋友",
+        ("self", "colleague_of", "boss:李总"): "用户 和 李总 是同事",
+        ("self", "works_at", "org:某公司"): "用户 在 某公司 工作",
+        ("self", "studies_at", "org:某大学"): "用户 在 某大学 学习",
+    }
+
+    for (subject, predicate, object_), sentence in expected.items():
+        out = transcribe_triple(
+            KgTripleRecord(id="t", subject=subject, predicate=predicate, object=object_)
+        )
+        assert sentence in out, f"{predicate} rendered as {out!r}"
+
+
+def test_the_owner_is_not_named_self_in_the_prompt() -> None:
+    """``self`` is how the graph stores the owner, not a word for a model to read.
+
+    Untranslated it arrives as "self 计划 去日本" — a schema token presented as
+    part of a fact about the user.
+    """
+
+    from eidolon.memory.application.kg_recall import transcribe_triple
+    from eidolon.memory.domain.kg import KgTripleRecord
+
+    out = transcribe_triple(
+        KgTripleRecord(id="t", subject="self", predicate="planned_to", object="去日本")
+    )
+
+    assert "self" not in out
+    assert "用户 计划 去日本" in out
+
+
+def test_an_unknown_predicate_still_produces_a_line() -> None:
+    """Dropping the fact would be worse than rendering it awkwardly."""
+
+    from eidolon.memory.application.kg_recall import transcribe_triple
+    from eidolon.memory.domain.kg import KgTripleRecord
+
+    out = transcribe_triple(
+        KgTripleRecord(id="t", subject="self", predicate="invented_predicate", object="X")
+    )
+
+    assert "用户" in out
+    assert "X" in out
+
+
 # ─── list_entity_names freshness (post-cache-deletion architecture) ───────
 
 

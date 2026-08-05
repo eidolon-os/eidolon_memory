@@ -113,7 +113,7 @@ def storage_facts(settings: Any, *, palace_path: Path | None = None) -> dict[str
     if palace_path is not None:
         embedder, source = palace_embedder(palace_path)
     if not embedder:
-        embedder = (settings.mempalace.embedding_model or "").strip() or "minilm"
+        embedder = (settings.embedding.model or "").strip() or "minilm"
         # Weaker evidence: this is what a new palace would use, which is not
         # necessarily what the one measured was built with.
         source = "configured"
@@ -124,10 +124,6 @@ def storage_facts(settings: Any, *, palace_path: Path | None = None) -> dict[str
         "embedder": embedder,
         "embedder_source": source,
     }
-    uri = (settings.mempalace.milvus_uri or "").strip()
-    if uri:
-        # Host only. A DSN or token in a committed manifest would be a leak.
-        facts["vector_uri"] = uri.split("@")[-1]
     return facts
 
 

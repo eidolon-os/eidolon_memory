@@ -1,0 +1,899 @@
+{
+  "suite": "embedder-selection",
+  "purpose": "Rank embedders for Chinese short-fragment retrieval, the task this service actually runs. Includes an English suite for contrast and the reason it must not be used for the choice.",
+  "chinese": {
+    "task": "C-MTEB VideoRetrieval",
+    "queries": 1000,
+    "corpus_pool": 20000,
+    "document_median_chars": 24,
+    "our_fragment_median_chars": 20,
+    "truncation": "none for any tokenizer",
+    "binomial_sd_pp": 1.49,
+    "models": {
+      "multilingual-e5-large": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 296.3,
+        "query_seconds": 1.0,
+        "ms_per_document": 14.82,
+        "recall@1": 0.605,
+        "recall@5": 0.809,
+        "recall@10": 0.863,
+        "mrr@10": 0.6922,
+        "task": "VideoRetrieval",
+        "model": "multilingual-e5-large",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T174601Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model multilingual-e5-large --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_multilingual-e5-large.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "multilingual-e5-large",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      },
+      "bge-m3": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 275.7,
+        "query_seconds": 1.1,
+        "ms_per_document": 13.78,
+        "recall@1": 0.605,
+        "recall@5": 0.805,
+        "recall@10": 0.865,
+        "mrr@10": 0.6928,
+        "task": "VideoRetrieval",
+        "model": "bge-m3",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T173550Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model bge-m3 --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_bge-m3.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "bge-m3",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      },
+      "gte-multilingual-base": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 138.7,
+        "query_seconds": 0.9,
+        "ms_per_document": 6.94,
+        "recall@1": 0.733,
+        "recall@5": 0.909,
+        "recall@10": 0.94,
+        "mrr@10": 0.8074,
+        "task": "VideoRetrieval",
+        "model": "gte-multilingual-base",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T173816Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model gte-multilingual-base --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_gte-multilingual-base.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "gte-multilingual-base",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      },
+      "multilingual-e5-small": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 36.5,
+        "query_seconds": 0.5,
+        "ms_per_document": 1.82,
+        "recall@1": 0.601,
+        "recall@5": 0.791,
+        "recall@10": 0.854,
+        "mrr@10": 0.6845,
+        "task": "VideoRetrieval",
+        "model": "multilingual-e5-small",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T173857Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model multilingual-e5-small --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_multilingual-e5-small.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "multilingual-e5-small",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      },
+      "bge-small-zh": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 13.2,
+        "query_seconds": 0.6,
+        "ms_per_document": 0.66,
+        "recall@1": 0.678,
+        "recall@5": 0.862,
+        "recall@10": 0.905,
+        "mrr@10": 0.7563,
+        "task": "VideoRetrieval",
+        "model": "bge-small-zh",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T172103Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model bge-small-zh --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_bge-small-zh.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "bge-small-zh",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      },
+      "embeddinggemma": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 460.0,
+        "query_seconds": 0.5,
+        "ms_per_document": 23.0,
+        "recall@1": 0.424,
+        "recall@5": 0.607,
+        "recall@10": 0.681,
+        "mrr@10": 0.5022,
+        "task": "VideoRetrieval",
+        "model": "embeddinggemma",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T175846Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model embeddinggemma --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_embeddinggemma.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "embeddinggemma",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      },
+      "bge-base-zh": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 78.6,
+        "query_seconds": 0.7,
+        "ms_per_document": 3.93,
+        "recall@1": 0.707,
+        "recall@5": 0.89,
+        "recall@10": 0.924,
+        "mrr@10": 0.7847,
+        "task": "VideoRetrieval",
+        "model": "bge-base-zh",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T172226Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model bge-base-zh --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_bge-base-zh.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "bge-base-zh",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      },
+      "multilingual-e5-base": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 106.3,
+        "query_seconds": 0.9,
+        "ms_per_document": 5.31,
+        "recall@1": 0.579,
+        "recall@5": 0.774,
+        "recall@10": 0.835,
+        "mrr@10": 0.6689,
+        "task": "VideoRetrieval",
+        "model": "multilingual-e5-base",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T174049Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model multilingual-e5-base --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_multilingual-e5-base.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "multilingual-e5-base",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      },
+      "bge-large-zh": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 306.1,
+        "query_seconds": 1.3,
+        "ms_per_document": 15.31,
+        "recall@1": 0.737,
+        "recall@5": 0.909,
+        "recall@10": 0.942,
+        "mrr@10": 0.8126,
+        "task": "VideoRetrieval",
+        "model": "bge-large-zh",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T172745Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model bge-large-zh --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_bge-large-zh.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "bge-large-zh",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      },
+      "minilm": {
+        "queries": 1000,
+        "corpus": 20000,
+        "embed_seconds": 276.0,
+        "query_seconds": 0.4,
+        "ms_per_document": 13.8,
+        "recall@1": 0.104,
+        "recall@5": 0.188,
+        "recall@10": 0.23,
+        "mrr@10": 0.1394,
+        "task": "VideoRetrieval",
+        "model": "minilm",
+        "provenance": {
+          "suite": "cmteb-retrieval",
+          "started_at": "20260804T175052Z",
+          "code": {
+            "git_sha": "990ec82e308a5d3bc5bdcee8c9c1b028a5144b10",
+            "dirty": true,
+            "python": "3.12.13",
+            "branch": "refactor/memory-contracts-v2",
+            "mempalace": "3.6.0"
+          },
+          "machine": {
+            "platform": "macOS-26.5.2-arm64-arm-64bit",
+            "cpu_count": 12,
+            "processor": "arm",
+            "memory_gb": 36.0
+          },
+          "command": "scripts/benchmark/bench_cmteb_retrieval.py --model minilm --task VideoRetrieval --corpus-limit 20000 --progress-every 0 --out benchmarks/runs/cmteb/video_minilm.json",
+          "params": {
+            "task": "VideoRetrieval",
+            "model": "minilm",
+            "corpus_limit": 20000,
+            "batch_size": 64,
+            "sort_by_length": true
+          }
+        }
+      }
+    }
+  },
+  "english": {
+    "task": "LongMemEval dev-50",
+    "queries": 50,
+    "document_median_tokens": 345,
+    "known_confound": "25-26% of documents exceed the 512-token limit for a 21k Chinese vocabulary against 9% for XLM-R; 512 is max_position_embeddings, not a parameter. Not usable for selecting an embedder for Chinese fragments.",
+    "models": {
+      "bge-base-zh": {
+        "arm": "ours",
+        "model": "bge-base-zh",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 0.88,
+        "recall_all@5": 0.8,
+        "ndcg@10": 0.8062,
+        "seconds": 282.1,
+        "ms_per_question_p50": 5625.8,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 0.8889
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 0.5
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 0.7143
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 0.8889
+          }
+        },
+        "split": "dev"
+      },
+      "multilingual-e5-base": {
+        "arm": "ours",
+        "model": "multilingual-e5-base",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 0.96,
+        "recall_all@5": 0.86,
+        "ndcg@10": 0.9024,
+        "seconds": 238.5,
+        "ms_per_question_p50": 4727.0,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 1.0
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 1.0
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 0.8571
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 0.8889
+          }
+        },
+        "split": "dev"
+      },
+      "bge-small-zh": {
+        "arm": "ours",
+        "model": "bge-small-zh",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 0.76,
+        "recall_all@5": 0.58,
+        "ndcg@10": 0.5983,
+        "seconds": 52.8,
+        "ms_per_question_p50": 1056.0,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 0.6667
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 0.8889
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 0.5
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 0.7143
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 0.5556
+          }
+        },
+        "split": "dev"
+      },
+      "minilm": {
+        "arm": "ours",
+        "model": "minilm",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 0.96,
+        "recall_all@5": 0.84,
+        "ndcg@10": 0.902,
+        "seconds": 48.8,
+        "ms_per_question_p50": 969.8,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 1.0
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 0.5
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 0.8571
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 1.0
+          }
+        },
+        "split": "dev"
+      },
+      "bge-m3": {
+        "arm": "ours",
+        "model": "bge-m3",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 0.98,
+        "recall_all@5": 0.9,
+        "ndcg@10": 0.9222,
+        "seconds": 826.8,
+        "ms_per_question_p50": 16707.1,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 1.0
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 0.5
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 1.0
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 1.0
+          }
+        },
+        "split": "dev"
+      },
+      "embeddinggemma": {
+        "arm": "ours",
+        "model": "embeddinggemma",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 0.98,
+        "recall_all@5": 0.94,
+        "ndcg@10": 0.9485,
+        "seconds": 3351.3,
+        "ms_per_question_p50": 63341.1,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 1.0
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 0.5
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 1.0
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 1.0
+          }
+        },
+        "split": "dev"
+      },
+      "multilingual-e5-small": {
+        "arm": "ours",
+        "model": "multilingual-e5-small",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 1.0,
+        "recall_all@5": 0.94,
+        "ndcg@10": 0.9582,
+        "seconds": 112.2,
+        "ms_per_question_p50": 2251.8,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 1.0
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 1.0
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 1.0
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 1.0
+          }
+        },
+        "split": "dev"
+      },
+      "gte-multilingual-base": {
+        "arm": "ours",
+        "model": "gte-multilingual-base",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 0.98,
+        "recall_all@5": 0.9,
+        "ndcg@10": 0.9333,
+        "seconds": 352.7,
+        "ms_per_question_p50": 7130.1,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 1.0
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 0.5
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 1.0
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 1.0
+          }
+        },
+        "split": "dev"
+      },
+      "qwen3-embedding-0.6b": {
+        "arm": "ours",
+        "model": "qwen3-embedding-0.6b",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 0.98,
+        "recall_all@5": 0.88,
+        "ndcg@10": 0.8985,
+        "seconds": 1501.5,
+        "ms_per_question_p50": 22491.6,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 0.9444
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 1.0
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 1.0
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 1.0
+          }
+        },
+        "split": "dev"
+      },
+      "bge-large-zh": {
+        "arm": "ours",
+        "model": "bge-large-zh",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 0.92,
+        "recall_all@5": 0.82,
+        "ndcg@10": 0.8273,
+        "seconds": 889.1,
+        "ms_per_question_p50": 17739.1,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 0.9444
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 0.5
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 0.8571
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 0.8889
+          }
+        },
+        "split": "dev"
+      },
+      "multilingual-e5-large": {
+        "arm": "ours",
+        "model": "multilingual-e5-large",
+        "k": 5,
+        "questions": 50,
+        "recall_any@5": 1.0,
+        "recall_all@5": 0.9,
+        "ndcg@10": 0.9582,
+        "seconds": 650.3,
+        "ms_per_question_p50": 13074.9,
+        "by_question_type": {
+          "knowledge-update": {
+            "n": 9,
+            "recall_any@5": 1.0
+          },
+          "multi-session": {
+            "n": 18,
+            "recall_any@5": 1.0
+          },
+          "single-session-assistant": {
+            "n": 2,
+            "recall_any@5": 1.0
+          },
+          "single-session-preference": {
+            "n": 5,
+            "recall_any@5": 1.0
+          },
+          "single-session-user": {
+            "n": 7,
+            "recall_any@5": 1.0
+          },
+          "temporal-reasoning": {
+            "n": 9,
+            "recall_any@5": 1.0
+          }
+        },
+        "split": "dev"
+      }
+    }
+  },
+  "english_full_500": {
+    "bge-small-zh": {
+      "arm": "ours",
+      "model": "bge-small-zh",
+      "k": 5,
+      "questions": 500,
+      "recall_any@5": 0.77,
+      "recall_all@5": 0.554,
+      "ndcg@10": 0.624,
+      "seconds": 364.9,
+      "ms_per_question_p50": 723.8,
+      "by_question_type": {
+        "knowledge-update": {
+          "n": 78,
+          "recall_any@5": 0.8333
+        },
+        "multi-session": {
+          "n": 133,
+          "recall_any@5": 0.812
+        },
+        "single-session-assistant": {
+          "n": 56,
+          "recall_any@5": 0.875
+        },
+        "single-session-preference": {
+          "n": 30,
+          "recall_any@5": 0.5667
+        },
+        "single-session-user": {
+          "n": 70,
+          "recall_any@5": 0.6857
+        },
+        "temporal-reasoning": {
+          "n": 133,
+          "recall_any@5": 0.7368
+        }
+      },
+      "split": "all"
+    },
+    "default": {
+      "arm": "upstream",
+      "model": "default",
+      "k": 5,
+      "questions": 500,
+      "recall_any@5": 0.966,
+      "recall_all@5": 0.85,
+      "ndcg@10": 0.8877,
+      "seconds": 404.4,
+      "ms_per_question_p50": 799.9,
+      "by_question_type": {
+        "knowledge-update": {
+          "n": 78,
+          "recall_any@5": 1.0
+        },
+        "multi-session": {
+          "n": 133,
+          "recall_any@5": 0.9925
+        },
+        "single-session-assistant": {
+          "n": 56,
+          "recall_any@5": 0.9643
+        },
+        "single-session-preference": {
+          "n": 30,
+          "recall_any@5": 0.9667
+        },
+        "single-session-user": {
+          "n": 70,
+          "recall_any@5": 0.9143
+        },
+        "temporal-reasoning": {
+          "n": 133,
+          "recall_any@5": 0.9474
+        }
+      },
+      "split": "all"
+    }
+  }
+}

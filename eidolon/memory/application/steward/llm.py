@@ -54,12 +54,24 @@ class LiteLLMSteward:
         return f"llm:{digest}"
 
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
+        """Decide, and stamp who decided.
+
+        ``stamped_by`` does not overwrite, which is what keeps the fallback
+        honest: on that path ``_decide`` returns the rule steward's decision,
+        already stamped ``rules:…``, and it survives this call unchanged. So the
+        ledger can tell a degraded turn from a successful one without any code at
+        the fallback site.
+        """
+
+        return (await self._decide(turn)).stamped_by(self.extraction_version)
+
+    async def _decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         try:
             if not self._settings.llm.model:
                 msg = "llm.model is not configured in memory settings YAML"
                 raise StewardOutputError(msg)
             raw = await self._call_llm(turn)
-            decision = self._parse_decision(raw)
+            decision = self._parse_decision(raw, context=turn.context)
             proposed = decision.fragments
             capped = proposed[: self._settings.steward.max_fragments_per_turn]
             kept = [
@@ -159,11 +171,50 @@ class LiteLLMSteward:
             f"[ASSISTANT]\n{turn.assistant_text}\n"
         )
 
-    def _parse_decision(self, raw: str) -> StewardDecision:
+    def _parse_decision(self, raw: str, *, context: object | None = None) -> StewardDecision:
+        """Validate the model's JSON, after taking back the fields that are ours.
+
+        Which memory space a fragment belongs to is decided by the turn, not by the
+        model — ``stamp_fragment_identity`` overwrites it from the context a few
+        lines after this returns. But validation ran first and
+        ``MemoryFragment.memory_space_id`` rejects a blank one, so a model that
+        omitted the field failed the whole decision over a value we were about to
+        replace. The turn then fell back to rule-based extraction and, because the
+        ledger records the *configured policy* as its identity, was never
+        re-extracted.
+
+        Observed once in 40 turns, and not at all in the 160 turns before it — the
+        kind of rate that makes a benchmark irreproducible rather than obviously
+        broken.
+
+        So the field is set from the context here rather than merely defaulted:
+        replacing it means a model that invents a *different* space id cannot get
+        one past validation either. That path is already safe — the stamp
+        overwrites unconditionally — and this keeps it safe without depending on
+        the order of two functions.
+        """
+
         try:
             data = json.loads(_strip_json_fence(raw))
+        except json.JSONDecodeError as exc:
+            msg = f"invalid LLM steward output: {exc}"
+            raise StewardOutputError(msg) from exc
+
+        space_id = ""
+        if context is not None:
+            space_id = str(
+                getattr(context, "memory_space_id", "")
+                or getattr(context, "memory_realm_id", "")
+                or ""
+            ).strip()
+        if space_id and isinstance(data, dict):
+            for fragment in data.get("fragments") or []:
+                if isinstance(fragment, dict):
+                    fragment["memory_space_id"] = space_id
+
+        try:
             return StewardDecision.model_validate(data)
-        except (json.JSONDecodeError, ValidationError) as exc:
+        except ValidationError as exc:
             msg = f"invalid LLM steward output: {exc}"
             raise StewardOutputError(msg) from exc
 

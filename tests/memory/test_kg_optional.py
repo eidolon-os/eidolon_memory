@@ -16,7 +16,6 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from eidolon_memory_contracts import envelope_memory_payload, memory_command_subject
 
 from eidolon.memory.application.public_recall import recall_with_kg_fusion
@@ -60,19 +59,6 @@ def test_none_is_the_only_setting_that_disables_the_graph() -> None:
     assert not _settings(backend="none").kg.enabled
     assert _settings(backend="sqlite").kg.enabled
     assert _settings().kg.enabled, "sqlite remains the default"
-
-
-def test_postgres_must_say_where_its_connection_string_lives() -> None:
-    """A shared database is not something to guess the address of."""
-
-    with pytest.raises(ValueError, match="postgres_dsn_env"):
-        MemorySettings.model_validate({"kg": {"backend": "postgres", "postgres_dsn_env": ""}})
-
-
-def test_a_dsn_is_read_from_the_environment_not_the_config_file() -> None:
-    settings = _settings(backend="postgres", postgres_dsn_env="ABSENT_DSN_VAR")
-
-    assert settings.kg.resolve_postgres_dsn() == ""
 
 
 async def test_recall_still_answers_with_the_graph_off() -> None:

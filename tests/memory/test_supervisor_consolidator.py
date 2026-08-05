@@ -232,8 +232,25 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
     """
     _patch_registry(monkeypatch, [])
     sup = _build_supervisor(tmp_path)
-    sup._settings.mempalace.embedding_model = "embeddinggemma"
-    sup._settings.mempalace.embedding_device = "cpu"
+    # Set on the section that owns the embedder, and re-validated so the load-time
+    # mirror onto ``mempalace.embedding_*`` actually runs. The supervisor reads
+    # that legacy field to build its ``palace set-embedder`` argument, so the
+    # assertions below — the CLI argument *and* the child's environment, which is
+    # derived from the new section — are what check the two agree. Assigning the
+    # legacy field directly would only prove the supervisor reads what it was
+    # handed.
+    #
+    # ``provider`` moves with the model: the project settings pin ``local``, and
+    # embeddinggemma is MemPalace's. Naming a model one provider does not implement
+    # is refused at load, which is the whole point of the provider being explicit.
+    raw = sup._settings.model_dump()
+    raw["embedding"] = {
+        **raw["embedding"],
+        "provider": "mempalace",
+        "model": "embeddinggemma",
+        "device": "cpu",
+    }
+    sup._settings = type(sup._settings).model_validate(raw)
     user = UserEntry(
         id=ALICE_SPACE,
         port=9001,

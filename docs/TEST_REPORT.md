@@ -19,9 +19,9 @@ uv sync --all-extras
 
 | Category | Tests | Result | Notes |
 |---|---|---|---|
-| Unit | 830 | **830 passed, 6 skipped** | 79% line coverage |
-| Functional (e2e) | 35 | **25 passed, 2 failed, 8 skipped** | 2 pre-existing LLM extraction failures |
-| Local↔cloud switch | 144 | **144 passed** | Same tests, both storages |
+| Unit | 820 | **818 passed, 2 skipped** | Was 830/6; the cloud removal took its tests and every skip was a PostgreSQL one |
+| Functional (e2e) | 35 | **needs a rerun** | Changing the embedder rebuilds the index. The quality bench *has* been rerun on it: 21/49, p95 30 ms — see below |
+| Configuration switch | 97 | **97 passed** | Was 144 across two storages; see below for what the category is now |
 | Contract | 133 | **133 passed** | 46 standalone + 87 in-repo |
 
 The two e2e failures are a steward extraction shortfall that predates this work
@@ -59,7 +59,6 @@ The 6 skips are MemPalace-marked tests needing a real palace on disk.
 | `application/mempalace_hierarchy.py` | 20% | **Not acceptable** — this is library code, not wiring. Untested |
 | `infrastructure/nats/commands.py` | 33% | **Not acceptable** — command dispatch is exercised only through e2e |
 | `adapters/mempalace_fast_search.py` | 44% | **Partly** — the uncovered half is the hot-path bypass, covered by benchmarks rather than tests |
-| `adapters/kg_postgres.py` | 66% | **Acceptable now** — the uncovered part is the connect/pool path; every query is exercised by the live suite |
 
 ---
 
@@ -110,63 +109,89 @@ real wrappers, and it is the only category that would have caught this.
 
 ---
 
-## Local↔cloud switch tests
+## Configuration switch tests
 
 ```bash
 uv run pytest tests/memory/test_deployment_profiles.py \
   tests/memory/test_router_contract.py tests/memory/test_ledger_contract.py \
-  tests/memory/test_kg_dialects.py tests/memory/test_live_postgres_kg.py -q
+  tests/memory/test_kg_optional.py tests/memory/test_local_embedder.py \
+  tests/memory/test_embedding_model_dir.py -q
 ```
 
-**144 passed, 62s.**
+**144 passed, 31s.**
 
-This is the category where a passing test is easiest to fake, so what each suite
-actually proves is spelled out.
+This category was "local↔cloud switch": the same behavioural tests run against
+SQLite ledgers and PostgreSQL ones, against a Chroma file and a live Milvus, to
+prove that moving between one machine and many was a config change. The cloud
+implementations have been removed, so that claim is no longer made and those
+tests are gone with the code they covered.
+
+What remains is the switching that a local deployment actually does, and it is
+worth its own category for the same reason as before: these are the settings
+where a wrong value produces a *working* service that answers differently.
 
 | Suite | Tests | What it proves |
 |---|---|---|
-| `test_router_contract` | 29 | Both routers satisfy one interface, and the **one asymmetry**: embedded storage refuses a second holder, shared storage serves the same space from two replicas concurrently |
-| `test_ledger_contract` | 78 | Every behaviour of four ledgers asserted against **both** SQLite and PostgreSQL, plus opening a file written before the space column existed |
-| `test_live_postgres_kg` | 11 | The graph against a **real server**, not a mock |
-| `test_kg_dialects` | 14 | The two dialects build structurally identical statements |
-| `test_deployment_profiles` | 12 | Local and cloud config files carry the same field set |
+| `test_ledger_contract` | 53 | Every ledger behaviour asserted against the port, never against SQLite — including opening a file written before the space column existed |
+| `test_local_embedder` | 61 | The embedder seam: three implementations behind one port, the Chroma shape living in one adapter instead of on the encoder, our encoder being what MemPalace resolves (verified through its public function, not assumed from the cache key), pooling and prefixes per family, a hosted endpoint's batching / retry / declared width, the config migration, and that `infrastructure` does not import `adapters` |
+| `test_router_contract` | 13 | The router contract, and that a palace refuses a second holder |
+| `test_kg_optional` | 6 | `kg.backend: none` serves recall vector-only, offers no graph tools, and deletes nothing |
+| `test_embedding_model_dir` | 6 | The one embedder whose files we cannot resolve ourselves — and, as much, where the process-wide download patch is *not* installed |
+| `test_deployment_profiles` | 5 | The shipped template loads, names its embedder, and keeps secrets in variables |
 
-### What "seamless" is verified to mean
-
-Changing storage is a configuration edit, with **no code change**, for:
+### What is verified to be a config change
 
 | Axis | Switch | Verified by |
 |---|---|---|
-| Vector: chroma ↔ milvus | `mempalace.backend` | Live milvus (8.140.214.42, `eidolon` db) |
-| Graph: none ↔ sqlite ↔ postgres | `kg.backend` | 11 live PG tests + round-trip e2e |
-| Ledgers: palace ↔ postgres | `ledgers.backend` | 78 contract tests, both storages (4 of 6 ledgers) |
-| Deployment shape | *derived from storage config* | `test_router_contract` |
+| **Embedder implementation: in-process ONNX ↔ hosted HTTP endpoint ↔ MemPalace's own** | `embedding.provider` | `test_local_embedder` — same factory call, three classes, and the registration path holding a hosted embedder without knowing it is one. Exercised for real: a palace built end to end against an OpenAI-compatible endpoint, Chroma persisting the declared width, and reading it back under `provider: local` refused with `EmbedderIdentityMismatchError` naming both encoders |
+| Embedder model: bge-small-zh ↔ bge-base-zh ↔ e5-small ↔ MemPalace's two | `embedding.model` | `test_local_embedder`, plus full bench runs at five of them — the palace marker records the configured model each time, which is the check that the earlier runs were missing |
+| Graph: none ↔ sqlite | `kg.backend` | `test_kg_optional` + round-trip e2e |
+| Model files: hub ↔ local directory | `embedding.model_dir` | `test_local_embedder` for ours (the implementation reads the directory itself), `test_embedding_model_dir` for MemPalace's (their download call, patched process-wide because there is no other surface) |
+| Shard: which spaces one process serves | `allowed_spaces` | `test_router_contract` |
 
-Deployment shape has no flag of its own: `build_space_router` derives it from
-where storage lives, so a config cannot say "cloud" while pointing at a local
-directory.
+`mempalace.embedding_model` and its three siblings still configure the embedder and
+are folded into the `embedding` section before validation, so a value written at the
+old address is validated by the new rules rather than skipping them. Setting the
+same thing in both places is refused when the two disagree.
 
-### What is not switchable yet
+An unrecognised embedder name is refused at config load. That is the one switch
+where a typo used to be silent: MemPalace answers a name it does not know with
+`minilm`, so the service would start, build the palace, and retrieve badly — which
+is how every quality number before 2026-08-03 came to measure the wrong model.
 
-**Two of six ledgers have no PostgreSQL implementation**: `commitments` and
-`canonical_facts`. On shared storage the router hands back `None` for them and
-each consumer's existing `None` handling keeps the service running — so it starts
-and serves recall, but:
+### The switch that was actually exercised
 
-- a corrected fact is not invalidated (`canonical_facts` holds that chain);
-- commitment queries return empty.
+Three full pipeline runs, differing only in the configured embedding model (written
+as `mempalace.embedding_model` at the time, `embedding.model` now):
 
-Both are product behaviour, not bookkeeping. Stated in the router's startup log
-and in `settings.cloud.example.yaml`, so an operator is not left to discover it.
+| embedder | correct | p50 | p95 | RSS |
+|---|---|---|---|---|
+| minilm | 11/49 (22.4%) | — | 92 ms | 381 MB |
+| embeddinggemma | 23/49 (46.9%) | 575 ms | 704 ms | 3 GB |
+| **bge-small-zh** | 21/49 (42.9%) | **26 ms** | **30 ms** | **133 MB** |
 
-These two are deliberately not translated the way the first four were. Their
-`apply` paths interleave reading, deciding, and writing across ~170 and ~400
-lines — the state machine, the idempotency probe, and the conflict rules all sit
-between SQL statements. Copying that produces two implementations of the same
-decision logic, which is exactly the drift this design has been avoiding. Doing
-it properly means extracting the decisions as pure functions both storages call,
-and that is a refactor of live persistence code, so it wants the both-storage
-test suite in place first.
+Each run rebuilt its palace from the same 40 turns, and each palace's
+`mempalace_embedder.json` recorded the configured model — which is what proves the
+registration reached the spawned agent subprocess, not just the test process.
+
+The bge run had 35 fragments stored at query time against embeddinggemma's 39, so
+the two-answer gap is measured on four fewer documents and the comparison favours
+embeddinggemma. The latency difference is not subject to that.
+
+`abstention` (0/5) and `future_plans` (0/3) came out identical under both, which
+the offline probe predicted before either run. They are the two categories no
+embedder choice will move.
+
+### What was removed rather than fixed
+
+The cloud implementations: six PostgreSQL ledgers, the PostgreSQL graph, the
+stateless router, the Milvus configuration path, the cloud profile, and two
+optional dependency groups. About 2000 lines, plus their tests.
+
+The abstraction layer stayed. It is not there for a second implementation — the
+router is what makes a space a parameter instead of the process's identity, and
+`EmbeddingPort` exists because MemPalace picks its encoder with a hardcoded
+if/else and offers no registration hook. Both solve a problem that exists today.
 
 ### Opening data written by an older version
 
@@ -250,29 +275,33 @@ nothing:
 | Capabilities | `WarmableBackend`, `RoomGraphBackend` | Startup and the graph tool, checked with `isinstance` |
 | Graph | `KnowledgeGraphPort` | Two implementations |
 | Ledgers | 6 × Reader/Writer/Store | **Read/write separation is used**: `mcp_server` takes `CanonicalFactReader`/`CommitmentReader`, `turn_processor` takes four `*Writer`. Each consumer declares the smallest surface it needs |
-| Routing | `MemorySpaceRouter` | Three implementations: embedded pool, shared stateless, fixed single-space |
+| Routing | `MemorySpaceRouter` | `LocalPalaceRouter` (the handle pool) and `FixedSpaceRouter` (a wrapper for handles opened elsewhere) |
 
 `DlqReader` has no direct consumer but composes `DlqStore`, so removing it would
 leave `DlqStore` undefinable — structural, not empty.
 
-The real gap in this dimension is the two ledgers without a PostgreSQL
-implementation, not the protocols.
+The protocols are not the gap in this dimension. Read/write separation is used
+properly: `mcp_server.py` declares `CanonicalFactReader` and `CommitmentReader`
+for its read surface, `turn_processor.py` declares the writer halves, and each
+consumer names the smallest face it needs.
 
 ### The gap in this category
 
 `MemoryReadContract` and `MemoryWriteContract` are defined and tested, but
-**nothing implements them**. A grep across memory, agent, and admin finds them
-only in the contracts package's own tests. The read path has no typed contract in
-practice: the agent defines its own `MemoryRecallResult` and consumes MCP tool
-JSON.
+`MemoryReadContract` is now implemented — all eight methods are on
+`MemoryService`, and the service *is* the contract rather than something adapted
+to it. What is still missing is the other side: the agent defines its own
+`MemoryRecallResult` and consumes MCP tool JSON, so the read path has no typed
+contract *in practice*.
 
 What is actually load-bearing today is the wire layer — subjects, envelope,
 payload, and `MemoryActorContext` — of which the agent uses five symbols, all on
 the write path.
 
-So this suite proves the contracts are *self-consistent*, not that they are *in
-use*. Closing that is the next piece of work, and it is smaller than it looks:
-all seven read methods already have a matching MCP tool, under a different name.
+Closing that is a two-repository change, not a one-repository one:
+`RecallResult` deliberately omits `kg_triples`, and the agent reads it in
+seventeen places. Narrowing the response means both sides ship together.
+Every read method does already have a matching MCP tool, under a different name.
 
 | Contract method | MCP tool |
 |---|---|
@@ -312,11 +341,12 @@ tools by request — only 2 of 27 take a caller context today.
 
 ## Standing test properties
 
-- **No test is skipped for a missing dependency it could provide itself.** psycopg
-  and pgserver are dev dependencies, not just extras: optional to run the service,
-  mandatory to test it. A skipped suite reads as a passing one.
-- **Differences between local and cloud are asserted, not avoided.** A test that
-  passed against both by steering around what separates them would be the most
-  misleading kind of green. Both known asymmetries — the second-holder rule and
-  DLQ claim recovery — have tests that pin them in each direction.
+- **No test is skipped for a missing dependency it could provide itself.** A
+  skipped suite reads as a passing one. This is why the PostgreSQL suites became
+  dev dependencies rather than extras while they existed, and why the two skips
+  that remain are named in the report rather than left as a count.
+- **Behaviour is asserted against ports, not files.** The 53 ledger tests never
+  touch SQLite. That began as a way to run one suite against two storages; it is
+  kept because a state machine expressed in SQL statements cannot be tested
+  without a database.
 - **Guard tests are sabotage-verified.** A guard that cannot fail is decoration.

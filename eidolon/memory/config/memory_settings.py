@@ -17,6 +17,13 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from eidolon.memory.domain.embedding_port import (
+    LOCAL_EMBEDDING_MODELS,
+    MEMPALACE_EMBEDDING_MODELS,
+    EmbedderIdentity,
+    local_model_spec,
+    mempalace_model_identity,
+)
 from eidolon.memory.domain.wings import CANONICAL_WINGS, WingDefinition
 from eidolon.memory.support.logging import get_logger
 
@@ -161,69 +168,259 @@ class ChromadbConfig(BaseModel):
     synchronous: str = "FULL"
 
 
+#: The old location of each embedder setting, and where it lives now. One table so
+#: the fold and the mirror below cannot drift apart, and so adding a fifth setting
+#: to ``embedding`` does not accidentally acquire a legacy alias it never had.
+_LEGACY_EMBEDDING_KEYS = {
+    "embedding_model": "model",
+    "embedding_device": "device",
+    "embedding_model_dir": "model_dir",
+    "embedding_threads": "threads",
+}
+
+
+class HttpEmbeddingConfig(BaseModel):
+    """A hosted OpenAI-compatible ``/v1/embeddings`` endpoint.
+
+    Read only when ``embedding.provider`` is ``http``. Everything here is
+    something the endpoint knows and we cannot: which model id it accepts, what
+    width it returns, whether it wants a credential.
+
+    ``dimension`` has to be declared rather than discovered. It fixes the
+    collection's width at creation, so a palace could otherwise only be built by
+    first asking a network service — and a build that depends on the network is a
+    build that fails differently on a bad day. Declared here and then checked
+    against every response, so a wrong value is reported as the configuration
+    error it is instead of surfacing later as a rejected write.
+    """
+
+    base_url: str = ""  # the API root, ending in /v1; /embeddings is appended
+    model: str = ""  # the id the endpoint knows; defaults to embedding.model
+    api_key_env: str = ""  # name of the env var holding the key; blank = no auth
+    dimension: int = Field(default=0, ge=0)
+    # Persisted by Chroma on the collection. Derived from the model id when
+    # blank, which is enough to keep two hosted models apart.
+    collection_name: str = ""
+    # Present for the same reason they are on a local ModelSpec: a hosted E5
+    # needs them as much as a local one, and omitting them is not an error, only
+    # worse ranking.
+    query_prefix: str = ""
+    document_prefix: str = ""
+    # Sits inside the recall path, whose end-to-end p95 is 20 ms on the local
+    # embedder. This default is a ceiling for a failing call, not a target.
+    timeout_seconds: float = Field(default=30.0, gt=0)
+    batch_size: int = Field(default=32, ge=1)
+    max_retries: int = Field(default=2, ge=0)
+
+
+class EmbeddingConfig(BaseModel):
+    """Which encoder runs, and how to reach it.
+
+    Its own section rather than part of ``mempalace``, because the embedder is no
+    longer MemPalace's. We choose it, we implement it, and we inject it into
+    MemPalace — the settings that decide it belong with the thing they decide.
+    ``mempalace.embedding_*`` is still accepted as input and is folded in here
+    before validation; see ``MemorySettings``.
+
+    ``provider`` is the switch the whole abstraction exists for. Changing it, and
+    nothing else, changes which implementation runs:
+
+    * ``local`` — an in-process quantized ONNX session (``OnnxSentenceEmbedder``).
+    * ``http`` — a hosted OpenAI-compatible endpoint (``HttpEmbedder``). Never
+      inferred: a model name cannot imply a network address, so this one has to
+      be written down.
+    * ``mempalace`` — MemPalace's own ``minilm`` or ``embeddinggemma``.
+    * ``auto`` (the default) — read it off ``model``: ours if we implement that
+      name, MemPalace's if they do.
+
+    ``model`` is refused when it names an encoder nobody implements, rather than
+    being passed through. MemPalace answers anything it does not recognise with
+    ``minilm`` — an English-only model that scores 5/43 top-1 on our Chinese
+    corpus — so a typo would not fail; it would quietly build the palace with the
+    worst available retriever. That is how every quality number this project
+    published before 2026-08-03 came to measure the wrong model.
+
+    Changing the effective encoder means rebuilding the palace. Chroma persists
+    the embedder's name on the collection and refuses mismatched reads, so the
+    switch fails rather than silently comparing vectors from two different
+    spaces. That refusal is the mechanism, not a defect.
+    """
+
+    provider: Literal["auto", "local", "http", "mempalace"] = "auto"
+    model: str = "bge-small-zh"
+    # ONNX Runtime execution provider for ``local``: auto, cpu, cuda, coreml, dml.
+    device: str = ""
+    # An operator's local copy of the model files. Our own implementation reads
+    # it directly; for MemPalace's embedders it is bridged into their hub call,
+    # which is the one case that still needs a process-wide patch.
+    model_dir: str = ""
+    # Explicit ORT intra-op cap. 0 keeps the native default (≈ core count),
+    # which a background mine will happily use all of.
+    threads: int = Field(default=0, ge=0)
+    http: HttpEmbeddingConfig = Field(default_factory=HttpEmbeddingConfig)
+
+    @model_validator(mode="after")
+    def _the_implementation_exists_and_is_reachable(self) -> EmbeddingConfig:
+        provider = self.provider
+        model = self.model.strip().lower()
+
+        if provider == "auto":
+            # Blank means "pass no model and let MemPalace apply its default",
+            # which is minilm. Allowed because an existing palace may have been
+            # built that way, and refused by the benchmark preflight because no
+            # measurement should describe an encoder nobody chose.
+            unknown = local_model_spec(model) is None and mempalace_model_identity(model) is None
+            if model and unknown:
+                known = ", ".join(
+                    sorted(set(LOCAL_EMBEDDING_MODELS) | set(MEMPALACE_EMBEDDING_MODELS))
+                )
+                raise ValueError(
+                    f"embedding.model {self.model!r} is not an encoder anything "
+                    f"here implements; available: {known}. For a hosted endpoint "
+                    f"set embedding.provider: http, which takes any model id the "
+                    f"endpoint accepts."
+                )
+        elif provider == "local":
+            if local_model_spec(model) is None:
+                known = ", ".join(sorted(LOCAL_EMBEDDING_MODELS))
+                raise ValueError(
+                    f"embedding.provider is 'local' but embedding.model "
+                    f"{self.model!r} is not one we implement; available: {known}"
+                )
+        elif provider == "mempalace":
+            if model and mempalace_model_identity(model) is None:
+                known = ", ".join(sorted(MEMPALACE_EMBEDDING_MODELS))
+                raise ValueError(
+                    f"embedding.provider is 'mempalace' but embedding.model "
+                    f"{self.model!r} is not one of theirs; available: {known}"
+                )
+        elif provider == "http":
+            missing = []
+            if not self.http.base_url.strip():
+                missing.append("embedding.http.base_url")
+            if self.http.dimension < 1:
+                missing.append("embedding.http.dimension")
+            if not (self.http.model.strip() or model):
+                missing.append("embedding.http.model (or embedding.model)")
+            if missing:
+                raise ValueError(
+                    "embedding.provider is 'http' but these are unset: "
+                    + ", ".join(missing)
+                    + ". The endpoint's address and the width it returns cannot "
+                    "be guessed, and the width fixes the collection at creation."
+                )
+
+        return self
+
+    def resolved_provider(self) -> str:
+        """The implementation this configuration selects.
+
+        One function, so nothing else has to re-derive the mapping. Validation
+        above has already refused the combinations this would have to guess at.
+        """
+
+        if self.provider != "auto":
+            return self.provider
+        if local_model_spec(self.model) is not None:
+            return "local"
+        return "mempalace"
+
+    def endpoint_model(self) -> str:
+        """The model id to send to a hosted endpoint."""
+
+        return self.http.model.strip() or self.model.strip()
+
+    def declared_identity(self) -> EmbedderIdentity | None:
+        """The name and width a new collection would be created with.
+
+        ``None`` only when the configured model is one MemPalace resolves for
+        itself and we do not recognise the name — in which case the width is
+        whatever their probe returns and nothing here can say it in advance.
+        """
+
+        provider = self.resolved_provider()
+        if provider == "local":
+            spec = local_model_spec(self.model)
+            if spec is None:  # pragma: no cover - refused by the validator
+                return None
+            return EmbedderIdentity(
+                name=spec.collection_name or self.model.strip().lower(),
+                dimension=spec.dimension,
+            )
+        if provider == "http":
+            return EmbedderIdentity(
+                name=self.http.collection_name.strip() or hosted_collection_name(
+                    self.endpoint_model()
+                ),
+                dimension=self.http.dimension,
+            )
+        return mempalace_model_identity(self.model)
+
+
+def hosted_collection_name(endpoint_model: str) -> str:
+    """A Chroma-safe embedder name for a hosted model id.
+
+    Prefixed rather than used bare so it cannot collide with one of the local
+    names, which is the collision that would let a palace built by one
+    implementation be read by the other — comparing vectors from two different
+    spaces, silently. Model ids carry slashes and colons that Chroma's name
+    validation rejects, so everything outside its allowed set becomes an
+    underscore.
+    """
+
+    cleaned = "".join(
+        c if c.isalnum() else "_" for c in endpoint_model.strip().lower()
+    ).strip("_")
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return f"http_{cleaned or 'embeddings'}"
+
+
 class MempalaceBackendConfig(BaseModel):
     """Vector storage selection.
 
-    Two backends, one per deployment shape. ``chroma`` keeps vectors in a file
-    inside the palace directory and is the local default. ``milvus`` talks to a
-    Milvus server or Zilliz Cloud, which is what a deployment serving spaces from
-    more than one host needs. Switching is a config change and nothing else.
+    ``chroma`` keeps vectors in a file inside the palace directory, which is what
+    this deployment is: local, one machine, one owning process per palace.
 
-    Backends MemPalace also offers are deliberately not exposed. ``sqlite_exact``
-    scans every row in Python on each query — correct, but its latency grows with
-    the collection, which the voice path cannot absorb. ``qdrant`` and
-    ``pgvector`` are simply not shapes we run.
+    The other backends MemPalace offers are deliberately not exposed.
+    ``sqlite_exact`` scans every row in Python per query — correct, but its
+    latency grows with the collection, and the voice path cannot absorb that.
+    ``milvus``, ``qdrant`` and ``pgvector`` are server backends, and serving from
+    more than one host is not a shape this project runs.
 
-    ``embedding_model`` is blank by default so an existing palace keeps the
-    embedder it was built with; MemPalace refuses to open a palace with a
-    different one, and changing it means rebuilding the index.
+    **The four ``embedding_*`` fields have moved to the ``embedding`` section and
+    survive here only as a compatibility surface.** They are read as input —
+    folded into ``embedding`` before validation, so a bad value still fails there
+    — and then overwritten with whatever ``embedding`` resolved to, so a reader
+    that has not been repointed yet still sees the effective value rather than a
+    stale default. Both halves are in ``MemorySettings``. Write to ``embedding``;
+    these are for configuration files and call sites that predate it.
     """
 
     backend: str = "chroma"
-    embedding_model: str = ""
-    embedding_device: str = ""
-    embedding_model_dir: str = ""
-    embedding_threads: int = Field(default=0, ge=0)
-
-    # Milvus. An empty uri means Milvus Lite against a file in the palace
-    # directory, which is useful for tests but is not the cloud shape — a server
-    # deployment must set this.
-    milvus_uri: str = ""
-    milvus_token_env: str = "EIDOLON_MEMORY_MILVUS_TOKEN"
-    # Milvus databases are hard tenancy boundaries; naming one keeps this
-    # deployment's collections out of every other database on the instance.
-    milvus_db_name: str = ""
-    # Prefixes collection names, so several deployments can share a database.
-    milvus_namespace: str = "eidolon"
+    # Kept at the same defaults as their ``embedding`` counterparts, so a
+    # deployment that sets neither reads the same value from either place.
+    #
+    # ``exclude=True`` keeps them out of ``model_dump``, which is what makes them a
+    # compatibility surface rather than a second serialised copy of the embedder.
+    # Without it, dumping settings and validating the result would present the
+    # same setting in two sections, and changing one of them would be refused as a
+    # disagreement — the mirror would have manufactured the conflict it exists to
+    # report.
+    embedding_model: str = Field(default="bge-small-zh", exclude=True)
+    embedding_device: str = Field(default="", exclude=True)
+    embedding_model_dir: str = Field(default="", exclude=True)
+    embedding_threads: int = Field(default=0, ge=0, exclude=True)
 
     # Tests and benchmarks only. Substitutes a tiny hash-based vector for the
     # real embedder so a test can exercise the actual storage adapter without
     # loading a 300MB model. Recall ranking is meaningless under it — never set
     # this in a deployment.
+    #
+    # Not an embedding provider, though it looks like one: it also changes how
+    # the storage adapter writes, passing explicit vectors instead of letting the
+    # collection embed. That makes it a property of the store, not of the encoder.
     offline_embedding: bool = False
-
-    @model_validator(mode="after")
-    def _server_deployment_names_its_database(self) -> MempalaceBackendConfig:
-        """A remote Milvus must say which database to use.
-
-        Without one, MemPalace creates collections in the instance's default
-        database — mixing this deployment's data into whatever else lives there.
-        Refusing at config load is much better than discovering it later.
-        """
-
-        if self.backend.strip().lower() == "milvus" and self.milvus_uri.strip():
-            if not self.milvus_db_name.strip():
-                raise ValueError(
-                    "mempalace.milvus_db_name is required when milvus_uri is set, so "
-                    "collections are confined to a named database"
-                )
-        return self
-
-    def resolve_milvus_token(self) -> str:
-        env = (self.milvus_token_env or "").strip()
-        if not env:
-            return ""
-        return os.environ.get(env, "").strip()
 
 
 class WorkerConfig(BaseModel):
@@ -249,33 +446,16 @@ class LedgerStorageConfig(BaseModel):
     makes a corrected fact stop being recalled, and commitments are what the
     service answers commitment queries from.
 
-    ``palace`` keeps them as SQLite files beside the memories, which needs a
-    single owning process. ``postgres`` puts them in a shared database so any
-    replica can serve any space.
+    ``palace`` keeps them as SQLite files beside the memories, which is what
+    having a single owning process per palace allows.
 
-    Configured separately from ``kg`` even though both would point at the same
-    database: the graph is optional at runtime, and reading the ledgers' location
-    out of an optional section would mean turning the graph off took the ledgers
-    with it.
+    Kept as its own section rather than folded into ``kg``: the graph can be
+    turned off at runtime, and reading the ledgers' location out of an optional
+    section would mean turning the graph off took the ledgers with it — losing
+    commitments and the invalidation chain as a side effect of a graph setting.
     """
 
-    backend: Literal["palace", "postgres"] = "palace"
-    postgres_dsn_env: str = "EIDOLON_MEMORY_LEDGER_PG_DSN"
-
-    def resolve_postgres_dsn(self) -> str:
-        env = (self.postgres_dsn_env or "").strip()
-        if not env:
-            return ""
-        return os.environ.get(env, "").strip()
-
-    @model_validator(mode="after")
-    def _postgres_needs_a_dsn_source(self) -> LedgerStorageConfig:
-        if self.backend == "postgres" and not (self.postgres_dsn_env or "").strip():
-            raise ValueError(
-                "ledgers.postgres_dsn_env must name the environment variable "
-                "holding the connection string when ledgers.backend is 'postgres'"
-            )
-        return self
+    backend: Literal["palace"] = "palace"
 
 
 class KgConfig(BaseModel):
@@ -286,13 +466,11 @@ class KgConfig(BaseModel):
     a command that would write to one is answered honestly rather than hanging.
     Turning it back on is a config change; nothing is deleted when it is off.
 
-    ``sqlite`` keeps the graph in the palace directory. ``postgres`` puts it in a
-    shared database, which is what a deployment spanning hosts needs — the graph
-    is the one part of a palace that cannot live on local disk in that shape.
+    ``sqlite`` keeps the graph in the palace directory, beside the vectors and the
+    ledgers.
     """
 
-    backend: Literal["none", "sqlite", "postgres"] = "sqlite"
-    postgres_dsn_env: str = "EIDOLON_MEMORY_KG_PG_DSN"
+    backend: Literal["none", "sqlite"] = "sqlite"
 
     min_confidence_to_write: float = 0.6
     """Steward-extracted triples below this confidence get dropped before write."""
@@ -300,21 +478,6 @@ class KgConfig(BaseModel):
     @property
     def enabled(self) -> bool:
         return self.backend != "none"
-
-    def resolve_postgres_dsn(self) -> str:
-        env = (self.postgres_dsn_env or "").strip()
-        if not env:
-            return ""
-        return os.environ.get(env, "").strip()
-
-    @model_validator(mode="after")
-    def _postgres_needs_a_dsn_source(self) -> KgConfig:
-        if self.backend == "postgres" and not (self.postgres_dsn_env or "").strip():
-            raise ValueError(
-                "kg.postgres_dsn_env must name the environment variable holding "
-                "the connection string when kg.backend is 'postgres'"
-            )
-        return self
 
 
 class SupervisorConfig(BaseModel):
@@ -444,6 +607,7 @@ class MemorySettings(BaseModel):
     llm: LlmConfig = Field(default_factory=LlmConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     chromadb: ChromadbConfig = Field(default_factory=ChromadbConfig)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     mempalace: MempalaceBackendConfig = Field(default_factory=MempalaceBackendConfig)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     command_status: CommandStatusConfig = Field(default_factory=CommandStatusConfig)
@@ -454,6 +618,79 @@ class MemorySettings(BaseModel):
     nats: NatsConfig = Field(default_factory=NatsConfig)
     mcp_http: McpHttpConfig = Field(default_factory=McpHttpConfig)
     discovery_http: DiscoveryHttpConfig = Field(default_factory=DiscoveryHttpConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_the_legacy_embedding_keys(cls, data: Any) -> Any:
+        """Move ``mempalace.embedding_*`` into ``embedding``, before validation.
+
+        Before rather than after, so a value arriving under the old key is
+        validated by the new section's rules instead of skipping them. A typo'd
+        model name has to keep failing at load wherever it was written; the whole
+        reason that validation exists is that MemPalace answers an unknown name
+        with its English-only default and says nothing.
+
+        Specifying the same setting in both places is only an error when the two
+        disagree. Then it is refused rather than resolved by precedence: whichever
+        rule we picked, half the readers would be right and nobody could tell
+        which half from the file.
+        """
+
+        if not isinstance(data, dict):
+            return data
+        legacy_section = data.get("mempalace")
+        if not isinstance(legacy_section, dict):
+            return data
+
+        present = {k: v for k, v in _LEGACY_EMBEDDING_KEYS.items() if k in legacy_section}
+        if not present:
+            return data
+
+        new_section = data.get("embedding")
+        folded = dict(new_section) if isinstance(new_section, dict) else {}
+        conflicts = []
+        for legacy_key, new_key in present.items():
+            legacy_value = legacy_section[legacy_key]
+            if new_key in folded:
+                if str(folded[new_key]).strip() != str(legacy_value).strip():
+                    conflicts.append(
+                        f"mempalace.{legacy_key}={legacy_value!r} vs "
+                        f"embedding.{new_key}={folded[new_key]!r}"
+                    )
+                continue
+            folded[new_key] = legacy_value
+
+        if conflicts:
+            raise ValueError(
+                "the embedder is configured twice and the two disagree: "
+                + "; ".join(conflicts)
+                + ". mempalace.embedding_* is the old location and is kept only "
+                "for compatibility — delete it and keep the embedding section."
+            )
+
+        data = dict(data)
+        data["embedding"] = folded
+        return data
+
+    @model_validator(mode="after")
+    def _mirror_the_effective_embedder_onto_the_legacy_keys(self) -> MemorySettings:
+        """Keep ``mempalace.embedding_*`` equal to what ``embedding`` resolved to.
+
+        Not a second source of truth: the values only travel this way, after the
+        real section has validated. It exists because some readers have not been
+        repointed — ``entrypoints/supervisor.py`` builds a ``palace set-embedder``
+        argument from ``mempalace.embedding_model``, and the supervisor is off
+        limits. Without the mirror, a deployment that writes only the new section
+        would hand that command a stale default, which is the recording of which
+        embedder built the palace — the one record the benchmark preflight treats
+        as authoritative.
+        """
+
+        self.mempalace.embedding_model = self.embedding.model
+        self.mempalace.embedding_device = self.embedding.device
+        self.mempalace.embedding_model_dir = self.embedding.model_dir
+        self.mempalace.embedding_threads = self.embedding.threads
+        return self
 
     @property
     def wings(self) -> list[WingDefinition]:

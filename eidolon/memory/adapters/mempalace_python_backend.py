@@ -23,6 +23,7 @@ from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.room_graph import RoomGraphSnapshot, RoomNode
 from eidolon.memory.domain.wire import MemoryWireRecord, parse_memory_datetime
+from eidolon.memory.infrastructure.embedder_factory import active_embedder
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.infrastructure.mempalace_hnsw import probe_hnsw_safety
 from eidolon.memory.support.logging import get_logger
@@ -116,13 +117,15 @@ class MemPalacePythonBackend(MemoryBackend):
         await asyncio.to_thread(self._warm_read_path_sync, tuple(wings))
 
     def _warm_read_path_sync(self, wings: tuple[str, ...]) -> None:
-        from mempalace.embedding import get_embedding_function
         from mempalace.palace import get_closets_collection
         from mempalace.searcher import search_memories
 
         log.info("warm_embedding_start", palace=self._palace)
-        ef = get_embedding_function()
-        ef(["eidolon memory warmup"])
+        # Through the port, and on the query side, because what this is warming is
+        # the read path: a first call pays the model load, and for a hosted
+        # embedder it also opens the connection. Warming the document side would
+        # leave the query-side prefix cold, which for E5 is a different code path.
+        active_embedder().embed_queries(["eidolon memory warmup"])
 
         get_closets_collection(self._palace, create=True)
 
@@ -169,7 +172,11 @@ class MemPalacePythonBackend(MemoryBackend):
                 if room:
                     where = {"$and": [where, {"room": room}]}
                 result = collection.query(
-                    query_embeddings=[_deterministic_embedding(query)],
+                    query_embeddings=[
+                        _deterministic_embedding(
+                            query, dim=_offline_embedding_dim(self._settings)
+                        )
+                    ],
                     n_results=n_results,
                     where=where,
                     include=["documents", "metadatas", "distances"],
@@ -375,7 +382,11 @@ class MemPalacePythonBackend(MemoryBackend):
                 "metadatas": [meta],
             }
             if self._settings.mempalace.offline_embedding:
-                upsert_kwargs["embeddings"] = [_deterministic_embedding(content)]
+                upsert_kwargs["embeddings"] = [
+                    _deterministic_embedding(
+                        content, dim=_offline_embedding_dim(self._settings)
+                    )
+                ]
             collection.upsert(**upsert_kwargs)
             inserted = collection.get(ids=[drawer_id], include=[])
             if not _ids(inserted):
@@ -690,11 +701,26 @@ def _drawer_id(wing: str, room: str, content: str) -> str:
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
-#: Must match the dimension MemPalace's embedders produce — both minilm and
-#: embeddinggemma emit 384. A palace's collection is created with the real
-#: embedder's dimension during initialisation, so a hash vector of any other
-#: width is rejected on the first write.
+#: Fallback width, used only when the configured embedder's dimension is unknown —
+#: which now means a model name MemPalace resolves for itself and we do not
+#: recognise, since it answers those with minilm at 384. It was once a bare
+#: constant on the grounds that both of MemPalace's own embedders emit 384, but a
+#: palace's collection is created with the *configured* embedder's width, and ours
+#: run from 384 to 1024. A hash vector of any other width is rejected on the first
+#: write, so the width has to follow the configuration.
 _OFFLINE_EMBEDDING_DIM = 384
+
+
+def _offline_embedding_dim(settings: MemorySettings) -> int:
+    """The width the collection will have been created with.
+
+    Asked of the embedding configuration rather than looked up in one
+    implementation's model table: a hosted embedder declares its width too, and a
+    mismatch is not a degraded result — Chroma rejects the write outright.
+    """
+
+    identity = settings.embedding.declared_identity()
+    return identity.dimension if identity is not None else _OFFLINE_EMBEDDING_DIM
 
 
 def _deterministic_embedding(text: str, *, dim: int = _OFFLINE_EMBEDDING_DIM) -> list[float]:

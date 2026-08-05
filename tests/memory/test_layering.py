@@ -168,7 +168,7 @@ def test_the_logic_layer_does_not_branch_on_backend_identity() -> None:
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            for name in ('"chroma"', "'chroma'", '"milvus"', "'milvus'"):
+            for name in ('"chroma"', "'chroma'"):
                 if name in stripped and ("==" in stripped or "!=" in stripped):
                     offenders.append(f"{path.relative_to(MEMORY_ROOT)}:{lineno} → {stripped}")
 
@@ -177,32 +177,30 @@ def test_the_logic_layer_does_not_branch_on_backend_identity() -> None:
     )
 
 
-# ── the commitment decision is shared, not duplicated ────────────────────────
+# ── the commitment decision stays out of the storage ─────────────────────────
 
 
-def test_both_commitment_storages_call_the_same_decision() -> None:
-    """The state machine exists once.
+def test_the_commitment_storage_calls_the_shared_decision() -> None:
+    """The state machine stays outside the storage that persists it.
 
-    Two copies of it would drift in the way that is hardest to notice: both
-    plausible, disagreeing only on an input nobody tested. Asserted against the
-    source because the alternative — a second copy — would pass every behavioural
-    test until the day the two diverged.
+    It was pulled out when a second storage needed it, to stop two copies from
+    drifting in the way that is hardest to notice — both plausible, disagreeing
+    only on an input nobody tested. The second storage is gone; keeping the
+    decision separate is still right, because a transition table living inside
+    SQL statements is a state machine you cannot test without a database.
     """
 
     import inspect
 
-    from eidolon.memory.infrastructure import commitments, ledgers_postgres
+    from eidolon.memory.infrastructure import commitments
 
-    for module in (commitments, ledgers_postgres):
-        source = inspect.getsource(module)
-        assert "decide_commitment_apply" in source, (
-            f"{module.__name__} does not use the shared decision"
-        )
-        # A second table would pass every behavioural test until the two
-        # disagreed on an input nobody wrote a test for.
-        assert "_TRANSITIONS" not in source and "TRANSITIONS: dict" not in source, (
-            f"{module.__name__} holds its own transition table"
-        )
+    source = inspect.getsource(commitments)
+    assert "decide_commitment_apply" in source, (
+        "the commitment ledger does not use the shared decision"
+    )
+    assert "_TRANSITIONS" not in source and "TRANSITIONS: dict" not in source, (
+        "the commitment ledger holds its own transition table"
+    )
 
 
 def test_the_decision_is_pure() -> None:

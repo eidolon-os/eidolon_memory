@@ -82,25 +82,6 @@ def test_an_unreadable_palace_marker_does_not_produce_a_confident_answer(
     assert (name, source) == ("", "unknown")
 
 
-def test_credentials_never_reach_a_manifest() -> None:
-    """Manifests are committed as baselines; a DSN in one would be a leak."""
-
-    settings = MemorySettings.model_validate(
-        {
-            "mempalace": {
-                "backend": "milvus",
-                "milvus_uri": "https://user:secret@milvus.internal:19530",
-                "milvus_db_name": "eidolon",
-            }
-        }
-    )
-
-    facts = m.storage_facts(settings)
-
-    assert "secret" not in facts["vector_uri"]
-    assert facts["vector_uri"] == "milvus.internal:19530"
-
-
 def test_a_dirty_tree_is_recorded_as_such() -> None:
     """A dirty run did not come from the recorded sha, so it cannot be a baseline."""
 

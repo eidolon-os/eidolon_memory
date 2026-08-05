@@ -57,6 +57,7 @@ from eidolon.memory.infrastructure.integrity import (
     run_integrity_check,
 )
 from eidolon.memory.infrastructure.mempalace_backend import (
+    apply_mempalace_backend_env,
     mempalace_backend_env,
     reconcile_configured_backend,
     selected_mempalace_backend,
@@ -77,6 +78,19 @@ class LocalPalaceRouter:
     Construction does no I/O. A space's handles are built the first time it is
     resolved, which keeps startup proportional to the number of spaces actually
     used rather than the number configured.
+
+    It does prepare embedder resolution, because this class is the only source of
+    store handles — a rule the layering suite enforces — so it is the one place
+    "before any store is opened" can be guaranteed. Entrypoints also apply it
+    while setting up the MemPalace environment; the call is idempotent, and
+    having both means a caller that assembles a router directly cannot end up
+    embedding with MemPalace's default while the palace records something else.
+
+    That call writes to ``os.environ``, so it is process-global and not scoped to
+    this router. That is not a leak to be tidied up: MemPalace takes its backend
+    and embedder from the environment, so a process has exactly one of each no
+    matter how many routers it holds. Two routers with different storage settings
+    in one process would already be incoherent, and the second would win.
     """
 
     def __init__(
@@ -88,6 +102,7 @@ class LocalPalaceRouter:
         palace_path_override: str | None = None,
     ) -> None:
         self._settings = settings
+        apply_mempalace_backend_env(settings)
         # None means "any space this deployment is asked about". A list restricts
         # to a shard, which is how a supervisor splits spaces across processes to
         # bound the blast radius of one crashing.

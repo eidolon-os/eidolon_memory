@@ -21,6 +21,9 @@ logs/*
 # Benchmark artifacts
 benchmarks/runs/*
 !benchmarks/runs/README.md
+# results/ is committed on purpose: a decision that rests on a number
+# nobody can re-read is a decision nobody can check.
+!benchmarks/results/
 benchmark/runs/
 reports/benchmark*/
 reports/*benchmark*/
@@ -69,3 +72,4 @@ logs/
 *.sock
 *.db-wal
 *.db-shm
+benchmarks/data/

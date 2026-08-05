@@ -39,6 +39,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -62,7 +63,10 @@ from eidolon_memory_contracts import (
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-from eidolon.memory.config.memory_settings import get_memory_settings
+from eidolon.memory.config.memory_settings import (
+    default_memory_settings_path,
+    get_memory_settings,
+)
 from eidolon.memory.infrastructure.nats.names import memory_consumer_name
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -70,6 +74,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.benchmark.preflight import require_nats  # noqa: E402
+
 _FIXTURES = _REPO_ROOT / "tests" / "memory" / "e2e" / "fixtures"
 _DEFAULT_CORPUS = _FIXTURES / "companion_corpus.jsonl"
 _DEFAULT_QUERIES = _FIXTURES / "quality_queries.jsonl"
@@ -125,7 +130,7 @@ def require_expected_embedder(palace_root: Path, *, configured: str) -> None:
 
     if not configured:
         print(
-            "[FAIL] mempalace.embedding_model is empty in the project settings.\n"
+            "[FAIL] embedding.model is empty in the project settings.\n"
             "       MemPalace then picks its own default (minilm, English-only),\n"
             "       so the run would measure a retriever nobody deploys.",
             file=sys.stderr,
@@ -158,6 +163,89 @@ def require_expected_embedder(palace_root: Path, *, configured: str) -> None:
         raise SystemExit(2)
 
     print(f"[check] palace embedder is {configured} (read from the palace, not the config)")
+
+
+def extractor_counts(palace_root: Path) -> dict[str, int] | None:
+    """Which extractor produced each stored decision, counted.
+
+    ``None`` when there is no ledger yet — during ingestion that means "too early
+    to tell", which is not the same as "clean".
+    """
+
+    ledgers = sorted(palace_root.glob("*/extraction_decisions.sqlite3"))
+    if not ledgers:
+        return None
+
+    counts: dict[str, int] = {}
+    for path in ledgers:
+        conn = sqlite3.connect(path)
+        try:
+            rows = conn.execute("SELECT decision_json FROM extraction_decisions").fetchall()
+        except sqlite3.DatabaseError:
+            continue  # the ledger is mid-write; the next poll will read it
+        finally:
+            conn.close()
+        for (blob,) in rows:
+            try:
+                producer = str(json.loads(blob).get("produced_by") or "")
+            except (ValueError, TypeError):
+                producer = ""
+            key = producer or "(unrecorded)"
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def require_uniform_extractor(palace_root: Path) -> None:
+    """Refuse a corpus whose turns were not all extracted the same way.
+
+    The steward falls back to rule-based extraction when its LLM call fails, and
+    the pipeline carries on — correct for production, fatal for a measurement. A
+    corpus where some turns were extracted by an LLM and others by regexes is not
+    comparable to one where all were, and the difference is large: a run on
+    2026-08-04 lost 16 calls to connection errors and produced 6 triples where the
+    previous run produced 36.
+
+    That run was caught, but only indirectly, by the triple floor. A run with two
+    or three fallbacks would clear the floor and publish a number that quietly
+    measured something else — which is the failure mode that cost four earlier
+    probe runs. So the extractor is read per decision from the ledger and any
+    mixture is refused by name.
+
+    Readable at all only because ``StewardDecision.produced_by`` is stamped by
+    whichever extractor ran; the ledger's ``extractor_version`` column cannot
+    answer this, since it is the idempotency key and is computed before the
+    extraction it identifies.
+    """
+
+    counts = extractor_counts(palace_root)
+    if counts is None:
+        print(
+            f"[FAIL] no extraction_decisions ledger under {palace_root}; cannot "
+            f"confirm how the corpus was extracted.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    if not counts:
+        print(f"[FAIL] the extraction ledger under {palace_root} is empty.", file=sys.stderr)
+        raise SystemExit(2)
+
+    degraded = {k: v for k, v in counts.items() if not k.startswith("llm:")}
+    if degraded:
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        print(
+            f"[FAIL] the corpus was not extracted uniformly by the LLM steward: {summary}.\n"
+            f"       A rules-extracted turn yields far fewer fragments and triples, so "
+            f"any\n       quality figure here would describe a mixture. Check the agent "
+            f"log for\n       'llm_steward_fallback_to_rules' and its error, then delete "
+            f"{palace_root}\n       and rerun once the steward endpoint is healthy.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    total = sum(counts.values())
+    (version,) = counts
+    print(f"[check] all {total} turns extracted by {version}")
 
 
 async def _turns_pending(nats_url: str, user_id: str) -> int | None:
@@ -232,7 +320,15 @@ def _spawn_agent(
     log_path: Path,
     steward_mode: str = "llm",
 ) -> subprocess.Popen:
-    project_settings = _REPO_ROOT / "config" / "settings.yaml"
+    # Resolved the way the settings module resolves it, so an override via
+    # EIDOLON_MEMORY_SETTINGS_YAML reaches the child. Hardcoding
+    # config/settings.yaml here made the parent and the child disagree: the parent
+    # validated against the override while the child built its palace from the
+    # committed file, and a run labelled with one embedder measured another. That
+    # is the same defect the comment below records, arriving by a second route —
+    # so the lesson is not "copy the vector section" but "derive the spawn
+    # settings from whatever the parent actually resolved".
+    project_settings = default_memory_settings_path()
     settings_doc: dict[str, Any] = {
         "steward": {"mode": steward_mode},
         "mcp_http": {"host": "127.0.0.1", "port": port},
@@ -241,14 +337,20 @@ def _spawn_agent(
     if project_settings.is_file():
         parent = yaml.safe_load(project_settings.read_text()) or {}
         if isinstance(parent, dict):
-            # The vector section matters as much as the LLM one. Omitting it left
-            # embedding_model empty, and MemPalace then applies its own default of
+            # The embedder's section matters as much as the LLM one. Omitting it
+            # left the model empty, and MemPalace then applies its own default of
             # minilm — an English-only model. Every quality figure before
             # 2026-08-03 was therefore measured on minilm against a Chinese
             # corpus, where cross-lingual cosine is about 0.35, while production
             # runs embeddinggemma. settings.example.yaml warns about exactly this
             # failure; the bench was an instance of it.
-            for section in ("llm", "mempalace", "kg", "recall"):
+            #
+            # ``embedding`` is where the embedder is configured now. ``mempalace``
+            # stays in the list because it still carries the vector backend, and
+            # because a settings file may configure the embedder there — the two
+            # are reconciled at load, and copying only one of them would recreate
+            # the same defect by a third route.
+            for section in ("llm", "embedding", "mempalace", "kg", "recall"):
                 if section in parent:
                     settings_doc[section] = parent[section]
     settings_path.write_text(yaml.safe_dump(settings_doc, allow_unicode=True), encoding="utf-8")
@@ -838,6 +940,8 @@ async def _wait_for_ingestion(
     target_triples: int,
     target_fragments: int,
     timeout_s: float,
+    palace_root: Path,
+    steward_mode: str,
 ) -> tuple[bool, dict[str, Any], int, float]:
     """Block until every published turn has been consumed.
 
@@ -862,6 +966,28 @@ async def _wait_for_ingestion(
         stats = stats_raw if isinstance(stats_raw, dict) else {}
         last_stats = stats
         last_fragments = await _list_fragment_count(session)
+        # Checked while draining, not only at the end. A single fallback invalidates
+        # the run, and finding that out after twenty minutes of ingestion means the
+        # twenty minutes were spent for nothing — the same reason the NATS check
+        # moved to a preflight. There is no recovering within a run: the decision is
+        # already durable under an identity a replay would reuse.
+        producers = extractor_counts(palace_root) or {}
+        degraded = {k: v for k, v in producers.items() if not k.startswith("llm:")}
+        if degraded and steward_mode == "llm":
+            elapsed = time.monotonic() - start
+            print(
+                f"[FAIL] after {elapsed:.0f}s the steward has fallen back to rules on "
+                f"{sum(degraded.values())} turn(s): "
+                f"{', '.join(f'{k}={v}' for k, v in sorted(producers.items()))}.\n"
+                f"       Giving up now rather than finishing the ingestion, because a "
+                f"mixed corpus\n       cannot be compared with a clean one and the "
+                f"decision is already durable.\n"
+                f"       Check the agent log for 'llm_steward_fallback_to_rules' and "
+                f"its error.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
         pending = await _turns_pending(nats_url, user_id)
         # None means the consumer could not be read; waiting is the safe reading,
         # since an unreadable backlog is not an empty one.
@@ -1010,6 +1136,8 @@ async def amain(args: argparse.Namespace) -> int:
                 target_triples=args.min_triples,
                 target_fragments=args.min_fragments,
                 timeout_s=args.ingest_timeout,
+                palace_root=palace_root,
+                steward_mode=args.steward_mode,
             )
             if not ok:
                 # A warning on stderr does not reach the report, so every number
@@ -1034,8 +1162,9 @@ async def amain(args: argparse.Namespace) -> int:
                     return 2
             require_expected_embedder(
                 palace_root,
-                configured=(get_memory_settings().mempalace.embedding_model or "").strip(),
+                configured=(get_memory_settings().embedding.model or "").strip(),
             )
+            require_uniform_extractor(palace_root)
 
             print(
                 f"[wait] palace state after {ingest_s:.1f}s: "
@@ -1226,7 +1355,27 @@ def main() -> int:
                         help="Run eidolon-memory-consolidator after ingestion so the "
                              "[主题] section is populated for the query battery")
     args = parser.parse_args()
-    return asyncio.run(amain(args))
+    try:
+        return asyncio.run(amain(args))
+    except BaseExceptionGroup as group:
+        # A gate raises SystemExit(2) from inside the MCP client's TaskGroup, which
+        # wraps it in an ExceptionGroup. Python then exits 1 and dumps a traceback,
+        # so a deliberate refusal — "the palace was built with a different
+        # embedder" — reads as a crash, and the exit code that distinguishes the
+        # two is lost. Both matter: 2 is "the run was refused, the message says
+        # why", 1 is "the script broke".
+        #
+        # ``split`` rather than a scan of ``group.exceptions``: the groups nest
+        # (the client opens a task group inside a task group), so a scan of the
+        # direct children misses a SystemExit one level down and re-raises. A first
+        # version of this did exactly that and still exited 1.
+        refusals, other = group.split(SystemExit)
+        if other is None and refusals is not None:
+            leaf = refusals
+            while isinstance(leaf, BaseExceptionGroup):
+                leaf = leaf.exceptions[0]
+            return int(leaf.code or 2)
+        raise
 
 
 if __name__ == "__main__":

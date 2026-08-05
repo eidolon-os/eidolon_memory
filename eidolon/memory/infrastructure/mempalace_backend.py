@@ -17,11 +17,20 @@ from pathlib import Path
 from typing import Any
 
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.infrastructure.embedder_factory import (
+    EMBEDDING_CONFIG_ENV,
+    embedding_config_env_value,
+)
+from eidolon.memory.infrastructure.embedder_registration import register_embedder
 from eidolon.memory.infrastructure.embedding_model_dir import (
-    apply_local_embedding_model_dir_from_env,
+    apply_mempalace_model_dir_bridge_from_env,
 )
 
-SUPPORTED_MEMPALACE_BACKENDS = frozenset({"chroma", "milvus"})
+#: One backend, because this deployment is local. MemPalace offers others;
+#: they are server backends and serving from several hosts is not a shape we
+#: run. Kept as a set rather than inlined so the check reads the same and a
+#: second embedded backend would be one entry.
+SUPPORTED_MEMPALACE_BACKENDS = frozenset({"chroma"})
 _SQLITE_REQUIRED_TABLES = {
     "chroma": frozenset({"collections", "embeddings"}),
 }
@@ -83,86 +92,112 @@ def selected_mempalace_backend(settings: MemorySettings) -> str:
     return backend
 
 
+#: Variables this module owns in a child's environment. The MemPalace-prefixed
+#: ones are theirs to read; ``EIDOLON_EMBEDDING_CONFIG`` is the whole embedding
+#: section, which a spawned process needs because the encoder is ours and its
+#: settings no longer fit into four strings MemPalace happens to understand.
+_EXPORTED_ENV_PREFIXES = ("MEMPALACE_", EMBEDDING_CONFIG_ENV)
+
+
 def mempalace_backend_env(
     settings: MemorySettings,
     *,
     base: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Return an environment with MemPalace backend selection applied."""
-    env = dict(base or os.environ)
+    """Return an environment with backend and embedder selection applied.
+
+    The four ``MEMPALACE_EMBEDDING_*`` variables are still written, because
+    MemPalace reads them itself and because the model name among them is both the
+    key its embedder cache is looked up under and the identity it records on the
+    palace. They are derived from the ``embedding`` section, which is where the
+    embedder is configured now.
+
+    ``EIDOLON_EMBEDDING_CONFIG`` carries the section entire. A child process gets
+    a hosted endpoint's address, timeout and declared width from it without this
+    function growing a variable per field — and it is the per-field list that
+    someone eventually forgets to extend.
+    """
+    # ``is None`` rather than a truthiness check: ``base={}`` means "start from
+    # nothing", and treating it as "not given" silently returned the whole ambient
+    # environment instead. The tests that pass an empty base to assert a variable
+    # is *absent* were therefore reading this machine's environment, so they would
+    # have passed or failed by what happened to be exported.
+    env = dict(os.environ if base is None else base)
     backend = selected_mempalace_backend(settings)
     env["MEMPALACE_BACKEND"] = backend
 
-    embedding_model = settings.mempalace.embedding_model.strip().lower()
+    embedding = settings.embedding
+    embedding_model = embedding.model.strip().lower()
     if embedding_model:
         env["MEMPALACE_EMBEDDING_MODEL"] = embedding_model
-    embedding_device = settings.mempalace.embedding_device.strip().lower()
+    embedding_device = embedding.device.strip().lower()
     if embedding_device:
         env["MEMPALACE_EMBEDDING_DEVICE"] = embedding_device
-    embedding_model_dir = settings.mempalace.embedding_model_dir.strip()
-    if embedding_model_dir:
-        env["MEMPALACE_EMBEDDING_MODEL_DIR"] = str(Path(embedding_model_dir).expanduser())
-    if settings.mempalace.embedding_threads > 0:
-        env["MEMPALACE_EMBEDDING_THREADS"] = str(settings.mempalace.embedding_threads)
-
-    if backend == "milvus":
-        env.update(_milvus_env(settings))
+    model_dir = embedding.model_dir.strip()
+    if model_dir:
+        env["MEMPALACE_EMBEDDING_MODEL_DIR"] = str(Path(model_dir).expanduser())
+    if embedding.threads > 0:
+        env["MEMPALACE_EMBEDDING_THREADS"] = str(embedding.threads)
+    env[EMBEDDING_CONFIG_ENV] = embedding_config_env_value(embedding)
 
     return env
 
 
-def _milvus_env(settings: MemorySettings) -> dict[str, str]:
-    """Milvus connection settings, as MemPalace's environment contract.
+def apply_mempalace_backend_env(settings: MemorySettings) -> str | None:
+    """Apply backend selection to the current process, and install our embedder.
 
-    MemPalace reads these rather than taking arguments, so this is the one place
-    that translates our config into its vocabulary.
+    Returns the embedding model that was installed, or ``None`` when the
+    configured model is one of MemPalace's own.
 
-    ``MEMPALACE_MILVUS_DB_NAME`` is the important one for a server: it confines
-    every collection this deployment creates to a named database, leaving the
-    rest of the instance alone. The settings model requires it whenever a uri is
-    set, so reaching here without one means Milvus Lite against a local file.
+    The embedder registration lives here rather than in its own hook because its
+    ordering requirement is identical — after the environment is applied, before
+    any store is opened — and because this function has six call sites, five of
+    them benchmark scripts. A separate hook would have to be remembered at each,
+    and forgetting it in a bench is precisely the defect that made every quality
+    number this project published before 2026-08-03 measure the wrong model.
     """
-
-    cfg = settings.mempalace
-    env: dict[str, str] = {}
-
-    uri = cfg.milvus_uri.strip()
-    if uri:
-        env["MEMPALACE_MILVUS_URI"] = uri
-    db_name = cfg.milvus_db_name.strip()
-    if db_name:
-        env["MEMPALACE_MILVUS_DB_NAME"] = db_name
-    namespace = cfg.milvus_namespace.strip()
-    if namespace:
-        env["MEMPALACE_MILVUS_NAMESPACE"] = namespace
-    token = cfg.resolve_milvus_token()
-    if token:
-        env["MEMPALACE_MILVUS_TOKEN"] = token
-    return env
-
-
-def apply_mempalace_backend_env(settings: MemorySettings) -> None:
-    """Apply backend selection to the current process."""
     env = mempalace_backend_env(settings)
     for key, value in env.items():
-        if key.startswith("MEMPALACE_"):
+        if key.startswith(_EXPORTED_ENV_PREFIXES):
             os.environ[key] = value
-    apply_local_embedding_model_dir_from_env()
+    # Registered from the settings rather than by re-reading what was just
+    # written: the round trip through the environment is the transport for a
+    # *child* process, and using it here too would mean a parsing bug showed up
+    # only in the parent, where it is hardest to attribute.
+    return register_embedder(settings.embedding)
+
+
+def prepare_embedder_resolution_from_env() -> str | None:
+    """Make this process able to resolve the embedder its environment names.
+
+    Two steps, and doing only one of them is a silent wrong answer, which is why
+    they live in a single function: bridge a local model directory into
+    MemPalace's own hub calls, and install our encoder when the configured one is
+    not theirs.
+
+    Needed by any process that opens or creates a collection — including the
+    subprocess that materialises a fresh palace, which runs a ``python -c`` and
+    therefore inherits none of the parent's registration. Without this there, a
+    new palace is created with MemPalace's default encoder while its marker
+    records the configured name: minilm vectors under a label saying otherwise,
+    and nothing reports a problem.
+    """
+
+    apply_mempalace_model_dir_bridge_from_env()
+    return register_embedder()
 
 
 def backend_artifact_path(palace_path: Path, backend: str) -> Path:
     """The file whose presence says this palace was built with ``backend``.
 
-    Chroma's is its database. Milvus stores vectors remotely, but MemPalace still
-    leaves a marker recording which uri and database the palace was bound to, so
-    a changed target is caught instead of silently creating a second, empty
-    collection set.
+    For Chroma that is its own database, which also carries the collections — so
+    a palace with the file but no collections is a distinguishable state, and
+    ``inspect_backend_artifact`` reports it rather than treating the file as
+    proof.
     """
 
     if backend == "chroma":
         return palace_path / "chroma.sqlite3"
-    if backend == "milvus":
-        return palace_path / "milvus_backend.json"
     raise ValueError(f"unsupported mempalace backend {backend!r}")
 
 
@@ -211,6 +246,13 @@ def inspect_configured_backend(
         for backend in sorted(SUPPORTED_MEMPALACE_BACKENDS)
     )
     selected = next(a for a in artifacts if a.backend == configured)
+    # The two "foreign" branches below cannot fire while one backend is
+    # supported: the set has a single member, so there is no other artifact to
+    # find. They are written over the set rather than over a pair of names, so
+    # they come back with a second entry — but until there is one, the state this
+    # function really distinguishes is whether the configured store is valid,
+    # empty, or unreadable. Said here because a reader would otherwise take the
+    # conflict handling for protection that is currently active.
     foreign_valid = [
         a.backend for a in artifacts if a.backend != configured and a.state == "valid"
     ]

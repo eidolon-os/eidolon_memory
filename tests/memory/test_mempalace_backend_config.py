@@ -6,10 +6,7 @@ import pytest
 
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.infrastructure.mempalace_backend import (
-    BackendArtifactError,
     backend_artifact_path,
-    backend_is_initialized,
-    inspect_configured_backend,
     mempalace_backend_env,
     reconcile_configured_backend,
     selected_mempalace_backend,
@@ -24,69 +21,18 @@ def test_default_backend_is_chroma() -> None:
     assert env["MEMPALACE_BACKEND"] == "chroma"
 
 
-def test_only_the_two_deployment_shapes_are_accepted() -> None:
-    """Backends MemPalace offers but we do not run must be refused, not passed through."""
+def test_backends_we_do_not_run_are_refused() -> None:
+    """MemPalace offers five; passing one through would fail later and deeper.
+
+    ``milvus``, ``qdrant`` and ``pgvector`` are server backends and this service
+    is local. ``sqlite_exact`` scans every row per query, which the voice path
+    cannot absorb.
+    """
 
     for rejected in ("sqlite_exact", "qdrant", "pgvector", "nonsense"):
         settings = MemorySettings.model_validate({"mempalace": {"backend": rejected}})
         with pytest.raises(ValueError, match="unsupported mempalace backend"):
             selected_mempalace_backend(settings)
-
-
-def test_milvus_env_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MILVUS_TOKEN_FOR_TEST", "secret")
-    settings = MemorySettings.model_validate(
-        {
-            "mempalace": {
-                "backend": "milvus",
-                "milvus_uri": "http://milvus.internal:19530",
-                "milvus_db_name": "eidolon",
-                "milvus_namespace": "ab-test",
-                "milvus_token_env": "MILVUS_TOKEN_FOR_TEST",
-            }
-        }
-    )
-
-    env = mempalace_backend_env(settings, base={})
-
-    assert env["MEMPALACE_BACKEND"] == "milvus"
-    assert env["MEMPALACE_MILVUS_URI"] == "http://milvus.internal:19530"
-    assert env["MEMPALACE_MILVUS_DB_NAME"] == "eidolon"
-    assert env["MEMPALACE_MILVUS_NAMESPACE"] == "ab-test"
-    assert env["MEMPALACE_MILVUS_TOKEN"] == "secret"
-
-
-def test_a_remote_milvus_must_name_its_database() -> None:
-    """Without a database name, collections land in the instance default.
-
-    That silently mixes this deployment's data in with whatever else lives on
-    the server, so it is refused at config load rather than discovered later.
-    """
-
-    with pytest.raises(ValueError, match="milvus_db_name"):
-        MemorySettings.model_validate(
-            {"mempalace": {"backend": "milvus", "milvus_uri": "http://milvus.internal:19530"}}
-        )
-
-
-def test_milvus_without_a_uri_is_allowed_for_local_lite_use() -> None:
-    settings = MemorySettings.model_validate({"mempalace": {"backend": "milvus"}})
-
-    env = mempalace_backend_env(settings, base={})
-
-    assert env["MEMPALACE_BACKEND"] == "milvus"
-    assert "MEMPALACE_MILVUS_URI" not in env
-
-
-def test_milvus_token_is_read_from_the_environment_not_the_file() -> None:
-    """Secrets live in the environment; config only names the variable."""
-
-    settings = MemorySettings.model_validate(
-        {"mempalace": {"backend": "milvus", "milvus_token_env": "ABSENT_TOKEN_VAR"}}
-    )
-
-    assert settings.mempalace.resolve_milvus_token() == ""
-    assert "MEMPALACE_MILVUS_TOKEN" not in mempalace_backend_env(settings, base={})
 
 
 def test_embedding_env_is_applied() -> None:
@@ -128,14 +74,12 @@ def test_embedding_threads_auto_leaves_native_default_unset() -> None:
 
 def test_backend_artifacts_and_integrity_targets(tmp_path: Path) -> None:
     assert backend_artifact_path(tmp_path, "chroma") == tmp_path / "chroma.sqlite3"
-    assert backend_artifact_path(tmp_path, "milvus") == tmp_path / "milvus_backend.json"
 
-    (tmp_path / "milvus_backend.json").write_text("{}", encoding="utf-8")
-    assert backend_is_initialized(tmp_path, "milvus")
+    with pytest.raises(ValueError, match="unsupported mempalace backend"):
+        backend_artifact_path(tmp_path, "milvus")
 
-    # A remote store's integrity is the server's business, and there is no local
-    # file whose corruption should stop this process from starting.
-    assert vector_sqlite_integrity_targets(tmp_path, "milvus") == []
+    # The file is local, so its integrity is checkable before serving — which is
+    # the reason a corrupt palace is a startup failure rather than a bad read.
     assert vector_sqlite_integrity_targets(tmp_path, "chroma") == [
         ("chroma", tmp_path / "chroma.sqlite3")
     ]
@@ -153,52 +97,17 @@ def _sqlite_with_tables(path: Path, *tables: str) -> None:
         connection.close()
 
 
-def test_empty_foreign_artifact_is_invalid_and_removed(tmp_path: Path) -> None:
-    _sqlite_with_tables(tmp_path / "chroma.sqlite3", "collections", "embeddings")
-    stale = tmp_path / "milvus_backend.json"
-    stale.touch()
-
-    before = inspect_configured_backend(tmp_path, "chroma")
-    assert before.state == "stale_artifact"
-
-    after = reconcile_configured_backend(tmp_path, "chroma")
-    assert after.ready is True
-    assert after.removed_artifacts == (str(stale),)
-    assert not stale.exists()
-
-
-def test_valid_foreign_backend_fails_closed(tmp_path: Path) -> None:
-    """Two usable backends in one palace means we cannot tell which holds the data."""
-
-    _sqlite_with_tables(tmp_path / "chroma.sqlite3", "collections", "embeddings")
-    (tmp_path / "milvus_backend.json").write_text('{"uri": "http://x:19530"}', encoding="utf-8")
-
-    with pytest.raises(BackendArtifactError) as exc_info:
-        reconcile_configured_backend(tmp_path, "chroma")
-
-    assert exc_info.value.report.state == "conflict"
-    assert "milvus" in str(exc_info.value)
-
-
-def test_nonempty_invalid_foreign_artifact_is_not_deleted(tmp_path: Path) -> None:
-    """Only a zero-byte artifact is safe to remove; anything else may hold data."""
-
-    _sqlite_with_tables(tmp_path / "chroma.sqlite3", "collections", "embeddings")
-    stale = tmp_path / "milvus_backend.json"
-    stale.write_bytes(b"not json")
-
-    with pytest.raises(BackendArtifactError) as exc_info:
-        reconcile_configured_backend(tmp_path, "chroma")
-
-    assert exc_info.value.report.state == "stale_artifact"
-    assert stale.read_bytes() == b"not json"
-
-
 def test_empty_selected_artifact_is_reinitialized_candidate(tmp_path: Path) -> None:
-    selected = tmp_path / "milvus_backend.json"
+    """A zero-byte database cannot hold data, so it is cleared rather than opened.
+
+    Only zero bytes qualifies. Anything larger may hold memories, and deleting it
+    to recover from an unreadable file would be the worse outcome of the two.
+    """
+
+    selected = tmp_path / "chroma.sqlite3"
     selected.touch()
 
-    report = reconcile_configured_backend(tmp_path, "milvus")
+    report = reconcile_configured_backend(tmp_path, "chroma")
 
     assert report.state == "uninitialized"
     assert report.removed_artifacts == (str(selected),)

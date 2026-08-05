@@ -53,12 +53,46 @@ class StewardDecision(BaseEidolonModel):
 
     Phase 3 adds ``mentions``: pydantic default ``[]`` keeps JetStream replay
     safe on payloads from older runs that didn't carry the field.
+
+    ``produced_by`` says which extractor actually produced this decision, and it
+    is the only place that information exists. The configured policy version — the
+    ledger's identity key — cannot carry it: that key is computed *before*
+    ``decide`` runs, because it is what the idempotency lookup is keyed on, so it
+    can only describe the policy in force, never the outcome. Collapsing the two
+    meant a turn whose LLM call failed and fell back to rules was recorded as
+    LLM-extracted, and therefore never re-extracted when the endpoint recovered:
+    the memory stayed degraded and the ledger said otherwise.
+
+    Stamped by the implementation that produced the decision, so a steward
+    delegating to another needs no code at the delegation site — the returned
+    decision already carries the right value. That is what makes the mistake
+    unrepresentable rather than fixed.
     """
 
     should_write: bool
     reason: str = ""
+    #: Empty means "not recorded" — decisions replayed from before this field
+    #: existed, and test fixtures that do not care. Readers must treat it as
+    #: unknown rather than as a value.
+    produced_by: str = ""
     fragments: list[MemoryFragment] = Field(default_factory=list)
     triples: list[KgTripleAction] = Field(default_factory=list)
     invalidations: list[KgInvalidationAction] = Field(default_factory=list)
     privacy_actions: list[PrivacyAction] = Field(default_factory=list)
     mentions: list[EntityMention] = Field(default_factory=list)
+
+    def stamped_by(self, producer: str) -> StewardDecision:
+        """Record ``producer`` as the extractor, unless one is already recorded.
+
+        Never overwriting is the whole mechanism. A steward that falls back to
+        another returns the other's decision, already stamped; if the outer
+        steward's stamp won, the fallback would again be indistinguishable from a
+        successful extraction — the exact defect this field exists to prevent.
+
+        So each implementation stamps unconditionally at one place, and delegation
+        stays honest without any code at the delegation site.
+        """
+
+        if self.produced_by:
+            return self
+        return self.model_copy(update={"produced_by": producer})

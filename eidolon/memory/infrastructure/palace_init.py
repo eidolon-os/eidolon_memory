@@ -170,11 +170,17 @@ def _materialize_backend_collection(
     (especially chromadb PersistentClient) — the same rationale as
     ``subprocess.run`` for ``mempalace init``.
     """
+    # The embedder is prepared inside the subprocess because it inherits the
+    # parent's environment but none of its in-process registration. Creating the
+    # collection is exactly when the embedder matters: it fixes the vector width
+    # and the embedder name Chroma persists, and getting it from MemPalace's
+    # default instead would build the palace with minilm under a label saying
+    # otherwise.
     code = (
         "import sys; "
-        "from eidolon.memory.infrastructure.embedding_model_dir import "
-        "apply_local_embedding_model_dir_from_env; "
-        "apply_local_embedding_model_dir_from_env(); "
+        "from eidolon.memory.infrastructure.mempalace_backend import "
+        "prepare_embedder_resolution_from_env; "
+        "prepare_embedder_resolution_from_env(); "
         "from mempalace.palace import get_collection; "
         "palace, backend = sys.argv[1], sys.argv[2]; "
         "col = get_collection(palace, create=True, backend=backend); "
