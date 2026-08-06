@@ -1,0 +1,185 @@
+{
+  "topic": "bge-base-zh on a Raspberry Pi 5",
+  "model": "bge-base-zh (Xenova/bge-base-zh-v1.5, cls pooling, no query prefix, 768-dim)",
+  "measured": "2026-08-05 12:21 — 2026-08-06 17:0x CST",
+  "code": {
+    "git_sha": "0ed429b816a8e4c2855e37b8a5d2b2dbe17de71d",
+    "branch": "refactor/memory-contracts-v2",
+    "dirty": true,
+    "dirty_files": 12,
+    "warning": "dirty tree — not usable as a regression baseline"
+  },
+  "machine": {
+    "platform": "Linux-6.18.39+rpt-rpi-2712-aarch64-with-glibc2.41",
+    "cpu_count": 4,
+    "memory_gb": 7.9,
+    "swap": "none",
+    "env": "OMP_NUM_THREADS=4, HF_HUB_OFFLINE=1",
+    "observed": "all four cores at ~397% makes sshd unable to complete a handshake; the board looked offline for ~40 minutes while uptime showed it had never restarted"
+  },
+  "reliability": {
+    "slice": {
+      "task": "VideoRetrieval",
+      "corpus": 1400,
+      "queries": 200,
+      "note": "each query has exactly one correct answer inside the pool"
+    },
+    "determinism": {
+      "identical_per_question_ranks": true,
+      "mrr_run_a": 0.941548,
+      "mrr_run_b": 0.941548,
+      "batch_size": 32
+    },
+    "batch_size": {
+      "ladder": [
+        16,
+        32,
+        64
+      ],
+      "mrr_spread": 0.007702,
+      "rank_flips_16_vs_64": 9,
+      "questions": 200,
+      "reading": "the floor below which a difference is not the model"
+    },
+    "bge_query_instruction": {
+      "prefix": "为这个句子生成表示以用于检索相关文章：",
+      "mrr_without": 0.9415,
+      "mrr_with": 0.9332,
+      "delta": -0.0084,
+      "reading": "lowers the score; production omits it, correctly"
+    },
+    "scoring_sanity": {
+      "rank_of_document_identical_to_query": 1
+    },
+    "truncation_at_512": {
+      "cmteb/VideoRetrieval": {
+        "docs": 100930,
+        "median": 20,
+        "p99": 185,
+        "max": 3273,
+        "over_512": 63,
+        "pct": 0.06
+      },
+      "cmteb/EcomRetrieval": {
+        "docs": 100902,
+        "median": 32,
+        "p99": 60,
+        "max": 74,
+        "over_512": 0,
+        "pct": 0.0
+      },
+      "cmteb/MedicalRetrieval": {
+        "docs": 100999,
+        "median": 104,
+        "p99": 489,
+        "max": 514,
+        "over_512": 403,
+        "pct": 0.4
+      },
+      "locomo/turn": {
+        "docs": 5882,
+        "median": 42,
+        "p99": 114,
+        "max": 156,
+        "over_512": 0,
+        "pct": 0.0
+      },
+      "locomo/session": {
+        "docs": 272,
+        "median": 900,
+        "p99": 1773,
+        "max": 1965,
+        "over_512": 268,
+        "pct": 98.53
+      },
+      "clongeval/turn": {
+        "docs": 110613,
+        "median": 44,
+        "p99": 112,
+        "max": 327,
+        "over_512": 0,
+        "pct": 0.0
+      }
+    }
+  },
+  "runs": {
+    "clongeval": {
+      "recall@1": 0.2524,
+      "recall@5": 0.6372,
+      "recall@10": 0.7508,
+      "mrr@10": 0.4066,
+      "ms_per_document": 48.21,
+      "questions": 317,
+      "corpus": null,
+      "candidates_median": 289,
+      "label_source": "derived",
+      "questions_unlabelled": 41,
+      "batch_size": 32
+    },
+    "cmteb": {
+      "recall@1": 0.709,
+      "recall@5": 0.893,
+      "recall@10": 0.926,
+      "mrr@10": 0.787,
+      "ms_per_document": 32.45,
+      "questions": 1000,
+      "corpus": 20000,
+      "candidates_median": null,
+      "label_source": null,
+      "questions_unlabelled": null,
+      "batch_size": 32,
+      "task": "VideoRetrieval"
+    },
+    "locomo": {
+      "recall@1": 0.1416,
+      "recall@5": 0.303,
+      "recall@10": 0.393,
+      "mrr@10": 0.2111,
+      "ms_per_document": 50.32,
+      "questions": 1977,
+      "corpus": null,
+      "candidates_median": 663,
+      "label_source": "annotated",
+      "questions_unlabelled": 0,
+      "batch_size": 32
+    },
+    "cmteb/EcomRetrieval": {
+      "recall@1": 0.642,
+      "recall@5": 0.847,
+      "recall@10": 0.892,
+      "mrr@10": 0.728,
+      "ms_per_document": 46.02,
+      "queries": 1000,
+      "corpus": 20000,
+      "batch_size": 32
+    }
+  },
+  "not_measured": {
+    "cmteb/MedicalRetrieval": "still running when the sweep was paused",
+    "pi_rss_and_latency": "queued behind MedicalRetrieval in the same script",
+    "locomo/session": "never launched; 98.5% of sessions exceed 512 tokens, so it would measure the truncation as much as the model"
+  },
+  "bge_m3_rejected": {
+    "reason": "resident memory, not quality",
+    "rss_gb_batch8_fresh_process": 2.79,
+    "rss_gb_batch16": 6.7,
+    "disk_mb": 1117,
+    "board": "8 GB shared with Chroma, NATS and the steward; no swap",
+    "collateral": "two OOM kills and at least one unclean reboot on 2026-08-06",
+    "checks_that_did_complete": {
+      "determinism": {
+        "identical_ranks": true,
+        "mrr": 0.891006
+      },
+      "batch_size": {
+        "ladder": [
+          4,
+          8,
+          16
+        ],
+        "mrr_spread": 0.007147,
+        "rank_flips_4_vs_16": 14
+      }
+    }
+  }
+}
