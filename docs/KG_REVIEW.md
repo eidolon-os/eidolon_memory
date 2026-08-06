@@ -308,8 +308,21 @@ eidolon_memory_kg_timeline   OK
 `delete` → 真删，且真删前先把整行写进 `<palace>.ledgers/forgotten/<date>.jsonl`、fsync、
 读回校验，写不成就拒绝而不是照删。图先于向量执行，因为图这一半是可恢复的那一半。
 
+**第一版只修了一半，随后补上。** `privacy_mutation` 是**两条遗忘路径里较少走的那条**——它要
+先 preview、再签名确认、再发命令。另一条是用户在对话里直接说"忘掉…"，steward 识别出
+`PrivacyAction` 走 `apply_privacy_actions`，不需要任何工具调用。**那条才是常走的**，而它同样
+没有 `kg`。两条现在共用 `forget_graph_for_drawers`，`apply_privacy_actions` 的 `kg` 参数默认
+`None`（因为图确实可以没有），所以第四个调用点漏传不会在运行时报错——有一条测试遍历三个模块
+的调用点断言都带了 `kg=`。
+
 **没做的、要说清楚的**：孤儿实体不清理（一个实体可能被别的 turn 引用，逐个求证要一次查询；
 这属于 sweep）。所以硬删除掉的是"说过的话"，不是"这个名字曾经存在过"。
+
+**还有一个同形状的洞没修**：`find_forget_candidates` 只扫 drawer。fragment 和 triple 是两道
+独立的门（`min_importance_to_write=3` 对 `min_confidence_to_write=0.6`），所以一句
+importance 2 / confidence 0.9 的话**只产生三元组、不产生 drawer**——这时 preview 一个候选都
+找不到，什么都不会被忘掉。修它要改 preview 的语义（候选列表里要不要出现三元组、用户怎么确认
+一条他没见过的三元组），是产品决定，没有顺手做。
 
 `FORGETTING_PROPOSAL.md` 第一期的另外两条——补 `PredicateTemporality`（32 个谓词里 23 个
 躺在默认值上）和第二到四期——**没做，等数据**。`PredicateTemporality` 今天全仓零消费者，

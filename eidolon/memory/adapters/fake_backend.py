@@ -132,6 +132,14 @@ class FakeMemoryBackend:
         did = self._doc_id(memory_space_id, key)
         return self.docs.get(did)
 
+    async def get_many(
+        self, memory_space_id: str, keys: list[str]
+    ) -> list[MemoryWireRecord]:
+        """Missing ids omitted, matching the real store rather than the loop."""
+
+        found = (self.docs.get(self._doc_id(memory_space_id, key)) for key in keys)
+        return [record for record in found if record is not None]
+
     async def get_all(
         self,
         memory_space_id: str,

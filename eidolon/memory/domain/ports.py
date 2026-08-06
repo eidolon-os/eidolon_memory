@@ -136,6 +136,15 @@ class MemoryAdmin(Protocol):
     async def get(self, user_id: str, key: str) -> MemoryWireRecord | None:
         """Exact id lookup when the backend supports stable doc ids."""
 
+    async def get_many(self, user_id: str, keys: list[str]) -> list[MemoryWireRecord]:
+        """The same lookup for a batch, in one round trip.
+
+        Here because a loop over ``get`` is not equivalent on this hot-ish path:
+        every call crosses the space lock, and the forget path reads up to a
+        hundred drawers before it may delete any of them. Missing ids are
+        omitted, so the result is not positionally aligned with ``keys``.
+        """
+
     async def get_all(
         self,
         user_id: str,

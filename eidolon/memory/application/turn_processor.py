@@ -39,7 +39,7 @@ from eidolon.memory.application.explicit_intents import (
 from eidolon.memory.application.forget import (
     archive_exact_drawers,
     delete_exact_drawers,
-    source_turns_for_drawers,
+    forget_graph_for_drawers,
 )
 from eidolon.memory.application.ingest import (
     ingest_memory_fragment,
@@ -207,14 +207,23 @@ def _stamped_for_turn(
     return stamped.model_copy(update={"occurred_at": turn_ts})
 
 
-async def _apply_privacy(backend: Any, memory_space_id: str, actions: list) -> None:
-    """Wrapper for the steward's privacy-action handler (delete / archive)."""
+async def _apply_privacy(
+    backend: Any, memory_space_id: str, actions: list, kg: Any = None
+) -> None:
+    """Wrapper for the steward's privacy-action handler (delete / archive).
+
+    ``kg`` is threaded through because this is how a forget usually arrives —
+    the person says "忘掉…" and the steward acts on it, with no tool call and no
+    confirmation round trip. Without it the drawer went and the triple stayed.
+    """
+
     if not actions:
         return
     await apply_privacy_actions(
         backend,
         memory_space_id=memory_space_id,
         actions=actions,
+        kg=kg,
     )
 
 
@@ -359,7 +368,7 @@ async def process_turn_message(
     fragments_written = 0
     try:
         # Privacy actions first; they may purge before we attempt new writes.
-        await _apply_privacy(backend, memory_space_id, decision.privacy_actions)
+        await _apply_privacy(backend, memory_space_id, decision.privacy_actions, kg)
         if decision.should_write:
             # Stamped first, written once. Writing them one at a time took the
             # space's writer lock per fragment and made three Chroma calls each —
@@ -828,24 +837,14 @@ async def process_command_message(
             # rendered into the next prompt, so the product said yes and then
             # produced the fact it had just agreed to forget.
             #
-            # Read the turns first — the drawer's metadata is the only pointer to
-            # its triples, and deleting the drawer destroys it.
-            turn_ids = await source_turns_for_drawers(
-                backend, cmd.memory_space_id, cmd.drawer_ids
+            # Before the vector mutation, deliberately — see the helper.
+            forgotten = await forget_graph_for_drawers(
+                backend,
+                kg,
+                cmd.memory_space_id,
+                cmd.drawer_ids,
+                hard=cmd.action == "delete",
             )
-            forgotten = 0
-            if kg is not None and turn_ids:
-                # Before the vector mutation, deliberately. Neither store can
-                # join the other's transaction, so one of them goes second and
-                # a failure between them leaves a partial forget either way. The
-                # graph goes first because its half is the recoverable one — an
-                # archive only ends an interval, and a hard forget is written out
-                # before it deletes — while ``delete_many`` is gone for good. A
-                # retry is idempotent on this side: nothing is still valid to
-                # invalidate, nothing is left to delete.
-                forgotten = await kg.forget_source_turns(
-                    turn_ids, hard=cmd.action == "delete"
-                )
             if cmd.action == "delete":
                 changed = await delete_exact_drawers(
                     backend, cmd.memory_space_id, cmd.drawer_ids
@@ -865,7 +864,6 @@ async def process_command_message(
                 # questions and their ratio is the interesting one: turns with no
                 # triples are ordinary, but a forget that touched drawers and no
                 # statements on a graph-enabled space is worth looking at.
-                kg_turn_count=len(turn_ids),
                 kg_statements_forgotten=forgotten,
             )
         elif isinstance(cmd, DeviceSyncBatchPayload):
@@ -989,6 +987,7 @@ async def process_sync_message(
     settings: MemorySettings,
     expected_memory_space_id: str,
     decision_store: ExtractionDecisionStore | None = None,
+    kg: Any = None,
 ) -> None:
     """Handle ``DeviceSyncBatchPayload`` from ``eidolon.memory.sync.<memory_space_token>``."""
     del settings
@@ -1043,6 +1042,7 @@ async def process_sync_message(
                 backend,
                 expected_memory_space_id,
                 decision.privacy_actions,
+                kg,
             )
             for fragment in decision.fragments if decision.should_write else []:
                 stamped = (

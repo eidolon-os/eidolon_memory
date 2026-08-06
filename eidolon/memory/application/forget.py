@@ -177,17 +177,62 @@ async def source_turns_for_drawers(
     the rest of a confirmed privacy request from being honoured.
     """
 
+    wanted = list(dict.fromkeys(k.strip() for k in drawer_ids if k.strip()))
+    if not wanted:
+        return []
+
+    batch = getattr(backend, "get_many", None)
+    if batch is not None:
+        records = await batch(memory_space_id, wanted)
+    else:
+        # A backend that predates the plural. Correct, just a round trip each,
+        # and the batch above exists because a hundred of those is the actual
+        # cost of one privacy command.
+        found = [await backend.get(memory_space_id, key) for key in wanted]
+        records = [record for record in found if record is not None]
+
     turn_ids: list[str] = []
     seen: set[str] = set()
-    for key in dict.fromkeys(k.strip() for k in drawer_ids if k.strip()):
-        record = await backend.get(memory_space_id, key)
-        if record is None:
-            continue
+    for record in records:
         turn_id = str(record.metadata.get("source_turn_id") or "").strip()
         if turn_id and turn_id not in seen:
             seen.add(turn_id)
             turn_ids.append(turn_id)
     return turn_ids
+
+
+async def forget_graph_for_drawers(
+    backend: MemoryAdmin,
+    kg: Any,
+    memory_space_id: str,
+    drawer_ids: list[str],
+    *,
+    hard: bool,
+) -> int:
+    """The graph half of a forget, for whichever path asked for one.
+
+    There are two ways to be forgotten and they used to disagree. The confirmed
+    MCP command and the steward acting on "忘掉…" mid-conversation both end at
+    ``delete_exact_drawers`` / ``archive_exact_drawers``, and neither reached the
+    graph; the second is the one people actually use, since it needs no tool call.
+    Shared here so a third caller cannot arrive and quietly forget half again.
+
+    **Call before mutating the drawers.** The turn id lives in drawer metadata, so
+    a deleted drawer takes the only pointer to its triples with it — this reads
+    them while they still exist. Graph first is also the safer order: its half is
+    recoverable (an archive ends an interval, a hard forget is exported first),
+    while ``delete_many`` is not.
+
+    Returns statements affected; zero for a graph-less space, a turn that produced
+    no triples, or drawers already gone.
+    """
+
+    if kg is None:
+        return 0
+    turn_ids = await source_turns_for_drawers(backend, memory_space_id, drawer_ids)
+    if not turn_ids:
+        return 0
+    return await kg.forget_source_turns(turn_ids, hard=hard)
 
 
 async def delete_exact_drawers(

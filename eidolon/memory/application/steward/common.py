@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from eidolon.memory.application.forget import (
     archive_exact_drawers,
     delete_exact_drawers,
     find_forget_candidates,
+    forget_graph_for_drawers,
 )
 from eidolon.memory.domain.errors import MemoryBackendUnsupported
 from eidolon.memory.support.logging import get_logger
@@ -31,6 +32,11 @@ class PrivacyActionResult:
     confirmation_required: dict[str, list[dict[str, object]]] = field(
         default_factory=dict
     )
+    #: Graph statements forgotten alongside the drawers. Separate from the key
+    #: lists because they count different things, and because a batch that
+    #: touched drawers and no statements on a graph-enabled space is the shape
+    #: the old bug had.
+    statements_forgotten: int = 0
 
 
 def normalize_content(text: str) -> str:
@@ -145,12 +151,24 @@ async def apply_privacy_actions(
     *,
     memory_space_id: str,
     actions: list[PrivacyAction],
+    kg: Any = None,
 ) -> PrivacyActionResult:
     """Resolve targets, then run a serialized and verified privacy batch.
 
     Resolution is read-only and deliberately separate from mutation. The
     backend therefore guarantees the selected IDs, not a serializable
     natural-language predicate spanning both calls.
+
+    ``kg`` is optional because the graph is, and defaults to ``None`` for the same
+    reason every other graph call site does. That default is also a hazard worth
+    naming: this ran without a graph argument at all until 2026-08-06, so a
+    "忘掉…" said in conversation removed the drawer and left the triple to be
+    rendered into the next prompt. **This is the path people actually take** — it
+    needs no tool call and no confirmation round trip — so it was the more common
+    half of the same defect, fixed later than the rarer half.
+
+    Passing ``kg=None`` from a caller that has a graph therefore silently restores
+    the bug. All three call sites pass it; a fourth must too.
     """
     result = PrivacyActionResult()
     for action in actions:
@@ -172,6 +190,9 @@ async def apply_privacy_actions(
                 continue
             keys = [candidate.key for candidate in candidates]
             if action.action == "archive_topic":
+                result.statements_forgotten += await forget_graph_for_drawers(
+                    backend, kg, memory_space_id, keys, hard=False
+                )
                 archived = await archive_exact_drawers(
                     backend,
                     memory_space_id,
@@ -189,6 +210,12 @@ async def apply_privacy_actions(
                         candidate_count=len(candidates),
                     )
                     continue
+                # After the ambiguity check, not before: an unconfirmed delete
+                # must not forget triples it has already declined to forget
+                # drawers for.
+                result.statements_forgotten += await forget_graph_for_drawers(
+                    backend, kg, memory_space_id, keys, hard=True
+                )
                 deleted = await delete_exact_drawers(
                     backend,
                     memory_space_id,

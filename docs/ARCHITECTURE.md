@@ -443,7 +443,7 @@ palace 而不是进程——一个进程可以持有很多 palace，这正是 1:
 | ledger 写入有界 | 每 ledger 在 event loop 里串行化，外加一个低于线程池规模的进程级上限 |
 | 两层可见性 | 在图查询和向量可见性 gate 里强制 |
 | 可观测性 | prometheus `/metrics` 挂在既有端口；contextvar span，字段用 OTel 命名。图的大小/WAL 页数/checkpoint 进度在 checkpoint 循环里采样，不在 scrape 时打库 |
-| 遗忘跨两个存储 | 一条 `privacy_mutation` 同时落到 drawer 和三元组，靠 `source_turn_id` 桥接；archive → 结束有效期，delete → 导出后真删 |
+| 遗忘跨两个存储 | **两条路径都落到 drawer 和三元组**——MCP 确认命令，以及对话里说"忘掉…"走 steward 的那条（后者才是常走的）。靠 `source_turn_id` 桥接；archive → 结束有效期，delete → 导出后真删。第四个调用点漏传 `kg` 会被测试挡下 |
 
 **885 个单元/契约测试通过，2 skipped**（901 → 818 是删掉云端实现带走了它们的测试；
 skip 从 6 降到 2 是因为跳过的都是 PostgreSQL 的。818 → 885 是 embedder 隔离带来的：

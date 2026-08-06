@@ -294,6 +294,30 @@ class LockedBackend(MemoryBackend):
             write=False,
         )
 
+    async def get_many(self, user_id: str, keys: list[str]) -> list[MemoryWireRecord]:
+        """One lock hold for the whole batch, which is the point of the batch.
+
+        Declared rather than left to a fallback: callers probe for this method to
+        decide between one round trip and N, and a wrapper that hides it turns
+        the optimisation off for every real deployment while the tests, which use
+        an unwrapped fake, keep exercising the fast path.
+        """
+
+        inner = getattr(self._inner, "get_many", None)
+        if inner is None:
+            # An inner store from before the plural. Still one lock hold, which
+            # is most of the saving.
+            async def _one_by_one() -> list[MemoryWireRecord]:
+                found = [await self._inner.get(user_id, key) for key in keys]
+                return [record for record in found if record is not None]
+
+            return await self._serialized(_one_by_one, name="get_many", write=False)
+        return await self._serialized(
+            lambda: inner(user_id, keys),
+            name="get_many",
+            write=False,
+        )
+
     async def get_all(
         self,
         user_id: str,

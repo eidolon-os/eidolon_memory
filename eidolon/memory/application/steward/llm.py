@@ -117,12 +117,25 @@ class LiteLLMSteward:
             log.warning("llm_steward_fallback_to_rules", error=str(exc))
             return await self._fallback.decide(turn)
 
-    async def handle_turn(self, turn: ConversationTurnPayload, backend: MemoryBackend) -> None:
+    async def handle_turn(
+        self,
+        turn: ConversationTurnPayload,
+        backend: MemoryBackend,
+        kg: Any = None,
+    ) -> None:
+        """Decide and apply, for callers that are not the turn worker.
+
+        ``kg`` mirrors what ``process_turn_message`` passes. It is not the
+        production path — that one calls ``apply_privacy_actions`` itself — but
+        the two must not disagree about whether a forget reaches the graph.
+        """
+
         decision = await self.decide(turn)
         await apply_privacy_actions(
             backend,
             memory_space_id=turn.context.memory_space_id,
             actions=decision.privacy_actions,
+            kg=kg,
         )
         if not decision.should_write:
             return

@@ -512,6 +512,40 @@ class MemPalacePythonBackend(MemoryBackend):
             return None
         return _record_from_get_result(result, 0, drawer_id=key)
 
+    async def get_many(
+        self, memory_space_id: str, keys: list[str]
+    ) -> list[MemoryWireRecord]:
+        """Fetch a batch of drawers in one call.
+
+        Chroma's ``get`` has always taken a list of ids; ``get`` above passes a
+        list of one. A privacy command carries up to a hundred drawer ids and the
+        forget path has to read every one before deleting it, which as a loop over
+        ``get`` was a hundred round trips each taking the space's read lock — on a
+        Pi, the difference between imperceptible and noticeable, for no reason
+        other than the port never having offered the plural.
+
+        Missing ids are omitted rather than returned as gaps. Callers here are
+        reconciling against ids they already hold, so position carries no meaning
+        and a shorter list is the honest answer.
+        """
+
+        del memory_space_id
+        wanted = list(dict.fromkeys(key.strip() for key in keys if key.strip()))
+        if not wanted:
+            return []
+        try:
+            collection = _get_collection(self._palace, create=False)
+            result = collection.get(ids=wanted, include=["documents", "metadatas"])
+        except ImportError as exc:
+            raise MemoryBackendUnavailable("mempalace package is not installed") from exc
+        except Exception as exc:
+            raise MemoryBackendUnavailable(str(exc)) from exc
+        found = _ids(result)
+        return [
+            _record_from_get_result(result, index, drawer_id=drawer_id)
+            for index, drawer_id in enumerate(found)
+        ]
+
     async def get_all(
         self,
         memory_space_id: str,

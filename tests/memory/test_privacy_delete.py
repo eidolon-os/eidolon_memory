@@ -9,6 +9,7 @@ from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     extract_privacy_target,
     find_forget_candidates,
+    source_turns_for_drawers,
 )
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.steward.common import apply_privacy_actions
@@ -178,3 +179,243 @@ async def test_candidate_resolution_fails_on_ambiguous_result_overflow() -> None
             max_candidates=3,
             page_size=2,
         )
+
+
+def _seed_with_turn(backend, key: str, text: str, *, turn_id: str) -> None:
+    backend.docs[f"{SPACE}::{key}"] = MemoryWireRecord(
+        memory_space_id=SPACE,
+        key=key,
+        value=text,
+        metadata={
+            "memory_space_id": SPACE,
+            "wing": "Wing_Profile",
+            "source_turn_id": turn_id,
+        },
+    )
+
+
+@pytest.fixture
+def graph(tmp_path):
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
+    from eidolon.memory.domain.space_lock import SpaceLock
+
+    made = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE, lock=SpaceLock())
+    yield made
+    made.close()
+
+
+async def test_a_spoken_delete_reaches_the_graph(graph) -> None:
+    """The path a person actually takes to be forgotten.
+
+    Saying "忘掉…" runs through the steward, which needs no tool call and no
+    confirmation round trip — so it is the common case, and it was the half of
+    the defect that stayed broken longest: the drawer went and the triple was
+    still transcribed into the next prompt.
+    """
+
+    backend = FakeMemoryBackend()
+    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
+    await graph.add_triple(
+        subject="用户", predicate="likes", object="绿茶",
+        audience="owner", source_turn_id="turn-tea",
+    )
+
+    result = await apply_privacy_actions(
+        backend,
+        memory_space_id=SPACE,
+        actions=[
+            PrivacyAction(
+                action="delete_request",
+                target="请删掉绿茶的记忆",
+                reason="explicit user request",
+            )
+        ],
+        kg=graph,
+    )
+
+    assert result.deleted_keys == ["drawer_tea"]
+    assert result.statements_forgotten == 1
+    assert (await graph.stats())["triples_total"] == 0
+
+
+async def test_a_spoken_archive_ends_the_triple_without_deleting_it(graph) -> None:
+    backend = FakeMemoryBackend()
+    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
+    await graph.add_triple(
+        subject="用户", predicate="likes", object="绿茶",
+        audience="owner", source_turn_id="turn-tea",
+    )
+
+    result = await apply_privacy_actions(
+        backend,
+        memory_space_id=SPACE,
+        actions=[
+            PrivacyAction(
+                action="archive_topic",
+                target="绿茶",
+                reason="explicit user request",
+            )
+        ],
+        kg=graph,
+    )
+
+    assert result.archived_keys == ["drawer_tea"]
+    assert result.statements_forgotten == 1
+    stats = await graph.stats()
+    assert stats["triples_total"] == 1
+    assert stats["triples_active"] == 0
+
+
+async def test_an_ambiguous_delete_forgets_nothing_at_all(graph) -> None:
+    """Not the drawers, and therefore not the triples either.
+
+    A delete matching several drawers stops and asks. The graph mutation sits
+    after that check on purpose: forgetting triples for a deletion that was
+    declined would be the worst of both — irreversible, and not what was asked.
+    """
+
+    backend = FakeMemoryBackend()
+    for index, key in enumerate(("drawer_tea_1", "drawer_tea_2")):
+        _seed_with_turn(backend, key, f"用户喜欢绿茶{index}", turn_id=f"turn-{index}")
+        await graph.add_triple(
+            subject="用户", predicate="likes", object=f"绿茶{index}",
+            audience="owner", source_turn_id=f"turn-{index}",
+        )
+
+    result = await apply_privacy_actions(
+        backend,
+        memory_space_id=SPACE,
+        actions=[
+            PrivacyAction(
+                action="delete_request",
+                target="绿茶",
+                reason="explicit user request",
+            )
+        ],
+        kg=graph,
+    )
+
+    assert result.confirmation_required
+    assert result.deleted_keys == []
+    assert result.statements_forgotten == 0
+    assert (await graph.stats())["triples_active"] == 2
+
+
+async def test_a_space_without_a_graph_still_forgets_its_drawers() -> None:
+    backend = FakeMemoryBackend()
+    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
+
+    result = await apply_privacy_actions(
+        backend,
+        memory_space_id=SPACE,
+        actions=[
+            PrivacyAction(
+                action="delete_request",
+                target="请删掉绿茶的记忆",
+                reason="explicit user request",
+            )
+        ],
+    )
+
+    assert result.deleted_keys == ["drawer_tea"]
+    assert result.statements_forgotten == 0
+
+
+def test_every_caller_hands_the_graph_to_the_privacy_handler() -> None:
+    """A fourth call site that forgets ``kg=`` restores the bug silently.
+
+    ``kg`` has to default to ``None`` — a space can genuinely have no graph — so
+    nothing at runtime distinguishes "no graph here" from "forgot to pass it".
+    That is exactly how this survived: the parameter did not exist, every caller
+    was consistent, and consistency looked like correctness.
+    """
+
+    import inspect
+
+    from eidolon.memory.application import turn_processor
+    from eidolon.memory.application.steward import common, llm, rules
+
+    for module in (turn_processor, llm, rules):
+        source = inspect.getsource(module)
+        for index, line in enumerate(source.splitlines()):
+            if "apply_privacy_actions(" not in line or "def " in line:
+                continue
+            call = "\n".join(source.splitlines()[index : index + 8])
+            assert "kg=" in call, f"{module.__name__} calls it without a graph"
+
+    assert "kg" in inspect.signature(common.apply_privacy_actions).parameters
+
+
+async def test_the_turn_lookup_uses_one_round_trip_not_one_per_drawer() -> None:
+    """A privacy command carries up to a hundred drawer ids.
+
+    As a loop over ``get`` that was a hundred calls, each crossing the space
+    lock, to answer a single question before the deletion could start. Invisible
+    on a laptop and not on a four-core board sharing itself with Chroma.
+    """
+
+    backend = FakeMemoryBackend()
+    for index in range(25):
+        _seed_with_turn(
+            backend, f"drawer_{index}", f"记忆{index}", turn_id=f"turn-{index % 5}"
+        )
+
+    calls = {"get": 0, "get_many": 0}
+    original_get = backend.get
+    original_many = backend.get_many
+
+    async def _counted_get(space, key):
+        calls["get"] += 1
+        return await original_get(space, key)
+
+    async def _counted_many(space, keys):
+        calls["get_many"] += 1
+        return await original_many(space, keys)
+
+    backend.get = _counted_get
+    backend.get_many = _counted_many
+
+    turns = await source_turns_for_drawers(
+        backend, SPACE, [f"drawer_{i}" for i in range(25)]
+    )
+
+    assert calls == {"get": 0, "get_many": 1}
+    # Five distinct turns behind twenty-five drawers, deduplicated and ordered.
+    assert turns == [f"turn-{i}" for i in range(5)]
+
+
+async def test_a_backend_without_the_batch_still_answers() -> None:
+    """The plural is an optimisation, not a requirement of the port."""
+
+    class _SingularOnly:
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def get(self, space, key):
+            return await self._inner.get(space, key)
+
+    backend = FakeMemoryBackend()
+    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
+
+    assert await source_turns_for_drawers(
+        _SingularOnly(backend), SPACE, ["drawer_tea", "drawer_gone"]
+    ) == ["turn-tea"]
+
+
+async def test_a_locked_backend_does_not_hide_the_batch() -> None:
+    """The wrapper is what production uses, so the fast path must survive it.
+
+    ``LockedBackend`` has no ``__getattr__``: anything it does not declare is
+    simply absent, and the caller probing for ``get_many`` would quietly fall
+    back to N round trips in every real deployment while the tests — which use a
+    bare fake — kept exercising the batch.
+    """
+
+    from eidolon.memory.adapters.locked_backend import LockedBackend
+
+    backend = FakeMemoryBackend()
+    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
+    locked = LockedBackend(backend)
+
+    assert hasattr(locked, "get_many")
+    assert await source_turns_for_drawers(locked, SPACE, ["drawer_tea"]) == ["turn-tea"]
