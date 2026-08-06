@@ -52,6 +52,7 @@ from eidolon.memory.config.memory_settings import (
     get_memory_settings,
 )
 from eidolon.memory.config.palace_directory import (
+    LEDGERS_DIR_SUFFIX,
     resolve_palaces_root,
     validate_memory_space_id,
 )
@@ -443,7 +444,9 @@ def _compose_starlette_lifespan(
     palace_path: str,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
-    kg_sqlite = str(Path(palace_path) / "knowledge_graph.sqlite3")
+    # Beside the palace, not inside it: MemPalace's repair renames its own
+    # directory, so anything of ours kept there is lost on an embedder change.
+    kg_sqlite = str(Path(str(palace_path) + LEDGERS_DIR_SUFFIX) / "knowledge_graph.sqlite3")
     stop_event = asyncio.Event()
     nats_ready_event = asyncio.Event()
     session_manager = mcp.session_manager

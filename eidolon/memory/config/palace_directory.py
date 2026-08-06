@@ -49,8 +49,66 @@ def resolve_palace_for_memory_space(
     *,
     path_override: str | Path | None = None,
 ) -> Path:
-    """Return per-memory-space palace directory; does not create it."""
+    """Return per-memory-space palace directory; does not create it.
+
+    This directory is **MemPalace's**. It holds ``chroma.sqlite3``, their segment
+    directories and their embedder marker, and they treat it as theirs to move:
+    ``repair --archive-existing`` does ``os.rename`` on the whole thing. Our own
+    state goes in the sibling returned by :func:`resolve_ledgers_for_memory_space`.
+    """
     if path_override:
         return Path(path_override).expanduser().resolve()
     mid = validate_memory_space_id(memory_space_id)
     return resolve_palaces_root(settings) / memory_space_storage_name(mid)
+
+
+#: Appended to the palace directory's name to get ours. A sibling rather than a
+#: subdirectory, because the palace path is what MemPalace's CLI is handed and what
+#: every existing deployment already has on disk — nesting it would mean migrating
+#: their files too, for no additional guarantee.
+LEDGERS_DIR_SUFFIX = ".ledgers"
+
+#: Everything in a space that is ours rather than MemPalace's: the six append-only
+#: ledgers and the knowledge graph.
+LEDGER_FILENAMES = (
+    "knowledge_graph.sqlite3",
+    "command_status.sqlite3",
+    "dlq.sqlite3",
+    "extraction_decisions.sqlite3",
+    "canonical_facts.sqlite3",
+    "commitments.sqlite3",
+    "sync_ledger.sqlite3",
+)
+
+
+def resolve_ledgers_for_memory_space(
+    settings: MemorySettings,
+    memory_space_id: str,
+    *,
+    path_override: str | Path | None = None,
+) -> Path:
+    """Where this space's Eidolon-owned databases live. Does not create it.
+
+    A sibling of the palace, not a directory inside it, and that is the whole
+    point. ``mempalace repair --mode from-sqlite --archive-existing`` — which our
+    supervisor runs to change embedder — renames the palace directory aside and
+    rebuilds a fresh one, then copies back exactly one filename:
+    ``knowledge_graph.sqlite3`` and its ``-wal``/``-shm`` (their
+    ``_preserve_knowledge_graph_sqlite``, added for their issue #1816).
+
+    So with our files inside the palace, a repair silently dropped all six
+    ledgers. Two of them are product behaviour rather than bookkeeping: canonical
+    facts hold the invalidation chain that stops a corrected fact being recalled,
+    and commitments are what commitment queries are answered from. The graph
+    survived only by being named what their hardcoded string happens to expect —
+    preserved by a coincidence with a third-party constant, not by a contract.
+
+    The alternative was to teach our supervisor to copy the ledgers back. That
+    patches one operation; this removes the whole class, because nothing MemPalace
+    does to its own directory can reach a path it was never given.
+    """
+
+    palace = resolve_palace_for_memory_space(
+        settings, memory_space_id, path_override=path_override
+    )
+    return palace.with_name(palace.name + LEDGERS_DIR_SUFFIX)

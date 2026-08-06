@@ -39,7 +39,12 @@ from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_run_dir
-from eidolon.memory.config.palace_directory import resolve_palace_for_memory_space
+from eidolon.memory.config.palace_directory import (
+    LEDGER_FILENAMES,
+    LEDGERS_DIR_SUFFIX,
+    resolve_ledgers_for_memory_space,
+    resolve_palace_for_memory_space,
+)
 from eidolon.memory.domain.space_runtime import (
     MemorySpaceRuntime,
     MemorySpaceUnavailable,
@@ -70,6 +75,52 @@ from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _adopt_ledgers_beside_the_palace(palace_path: Path, ledgers_path: Path) -> None:
+    """Move a space's Eidolon-owned databases out of MemPalace's directory.
+
+    Runs on every open and does nothing once done, so an existing deployment
+    migrates the first time each space is resolved rather than needing a step
+    someone has to remember. Idempotent: a file already at the destination is left
+    alone and the stale copy is not moved over it.
+
+    ``os.replace`` is not used for that reason. Two files with the same name means
+    the destination is the live one — the space has already been served from the
+    new layout — and the leftover in the palace is what a MemPalace rebuild would
+    have restored from an archive. Overwriting would lose whatever was written
+    since.
+
+    The ``-wal`` and ``-shm`` sidecars move with their database. Leaving them
+    behind would silently discard anything committed to the write-ahead log but
+    not yet checkpointed, which for the graph is the most recent turns.
+    """
+
+    if not palace_path.is_dir():
+        return
+
+    moved: list[str] = []
+    for filename in LEDGER_FILENAMES:
+        for suffix in ("", "-wal", "-shm"):
+            source = palace_path / f"{filename}{suffix}"
+            if not source.is_file():
+                continue
+            destination = ledgers_path / f"{filename}{suffix}"
+            if destination.exists():
+                continue
+            ledgers_path.mkdir(parents=True, exist_ok=True)
+            source.rename(destination)
+            moved.append(source.name)
+
+    if moved:
+        log.info(
+            "space_ledgers_moved_out_of_palace",
+            palace=str(palace_path),
+            ledgers=str(ledgers_path),
+            moved=moved,
+            reason="mempalace repair renames the palace directory and restores only "
+            "knowledge_graph.sqlite3",
+        )
 
 
 class LocalPalaceRouter:
@@ -176,7 +227,14 @@ class LocalPalaceRouter:
             if self._palace_path_override
             else resolve_palace_for_memory_space(self._settings, space_id)
         )
+        ledgers_path = (
+            Path(str(palace_path) + LEDGERS_DIR_SUFFIX)
+            if self._palace_path_override
+            else resolve_ledgers_for_memory_space(self._settings, space_id)
+        )
         self._prepare_palace(space_id, palace_path)
+        _adopt_ledgers_beside_the_palace(palace_path, ledgers_path)
+        self._assert_ledgers_intact(space_id, ledgers_path)
 
         backend = LockedBackend(
             MemPalacePythonBackend(self._settings, str(palace_path), memory_space_id=space_id)
@@ -193,7 +251,7 @@ class LocalPalaceRouter:
             # Shares the vector store's lock: a turn writes to both, and one
             # critical section over the pair beats an ordering between two.
             kg = SqliteKnowledgeGraph(
-                palace_path / "knowledge_graph.sqlite3",
+                ledgers_path / "knowledge_graph.sqlite3",
                 space_id=space_id,
                 lock=backend.lock,
             )
@@ -205,21 +263,46 @@ class LocalPalaceRouter:
             kg=kg,
             ledgers=SpaceLedgers(
                 command_status=CommandStatusLedger(
-                    palace_path / "command_status.sqlite3",
+                    ledgers_path / "command_status.sqlite3",
                     space_id=space_id,
                     retention_days=self._settings.command_status.retention_days,
                     max_records=self._settings.command_status.max_records,
                     prune_every_writes=self._settings.command_status.prune_every_writes,
                 ),
-                dlq=DlqLedger(palace_path / "dlq.sqlite3", space_id=space_id),
+                dlq=DlqLedger(ledgers_path / "dlq.sqlite3", space_id=space_id),
                 decisions=ExtractionDecisionLedger(
-                    palace_path / "extraction_decisions.sqlite3"
+                    ledgers_path / "extraction_decisions.sqlite3"
                 ),
-                canonical_facts=CanonicalFactLedger(palace_path / "canonical_facts.sqlite3"),
-                commitments=CommitmentLedger(palace_path / "commitments.sqlite3"),
-                sync=SyncLedger(palace_path / "sync_ledger.sqlite3", space_id=space_id),
+                canonical_facts=CanonicalFactLedger(ledgers_path / "canonical_facts.sqlite3"),
+                commitments=CommitmentLedger(ledgers_path / "commitments.sqlite3"),
+                sync=SyncLedger(ledgers_path / "sync_ledger.sqlite3", space_id=space_id),
             ),
         )
+
+    def _assert_ledgers_intact(self, space_id: str, ledgers_path: Path) -> None:
+        """Integrity-check the graph, once it is where we keep it.
+
+        Separate from ``_prepare_palace`` because it runs *after* the migration
+        above — checking the old location would pass on a file that is no longer
+        the one being opened.
+
+        Only what already exists is checked. The graph creates its schema on open,
+        so a first run has nothing here yet, and an absent file is not a corrupt
+        one.
+        """
+
+        if not self._settings.kg.enabled:
+            return
+        kg_path = ledgers_path / "knowledge_graph.sqlite3"
+        if not kg_path.is_file():
+            return
+        result = run_integrity_check(str(kg_path), quick=False)
+        if not result.ok:
+            raise IntegrityCheckFailed(
+                f"refusing to open memory space {space_id!r}: kg "
+                f"integrity_check failed ({result.detail!r}); "
+                "investigate and restore from a snapshot"
+            )
 
     def _claim_palace_directory(self, space_id: str, palace_path: Path) -> None:
         """Refuse a second space that resolves to a directory this one already holds.
@@ -292,16 +375,7 @@ class LocalPalaceRouter:
             env=mempalace_backend_env(self._settings),
         )
 
-        targets = list(vector_sqlite_integrity_targets(palace_path, backend_name))
-        if self._settings.kg.enabled:
-            kg_path = palace_path / "knowledge_graph.sqlite3"
-            if kg_path.is_file():
-                # Only check what already exists. The graph creates its schema on
-                # open, so a first run has nothing here yet — and an absent file
-                # is not a corrupt one.
-                targets.append(("kg", kg_path))
-
-        for label, db_path in targets:
+        for label, db_path in vector_sqlite_integrity_targets(palace_path, backend_name):
             result = run_integrity_check(str(db_path), quick=False)
             if not result.ok:
                 raise IntegrityCheckFailed(
