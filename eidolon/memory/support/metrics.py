@@ -5,6 +5,14 @@ answered are about latency and where it went: which of recall's parallel signals
 was slow, how often the graph timed out, whether a result was degraded and why.
 Counts of stored memories matter far less — those are visible in the store.
 
+**One exception, added 2026-08-06 after the sentence above proved too broad.**
+The graph's size is not bookkeeping, it is the independent variable of a latency
+that fails silently: ``GRAPH_TIMEOUTS`` says the graph was dropped from a recall
+and its own docstring says a climbing rate is the signal, but there was no series
+that could say *why* it climbed. "Visible in the store" is true and useless — it
+means someone must already suspect the graph, open the file, and count. The four
+``GRAPH_*`` gauges below exist so the correlation can be seen instead of guessed.
+
 Prometheus rather than OpenTelemetry, deliberately. A local deployment has no
 collector to send traces to, and the supervisor already knows every worker's
 address, so pull-based scraping needs no infrastructure that does not exist.
@@ -164,6 +172,51 @@ exclusive mutex this replaced, that budget could be spent entirely waiting — a
 the result was reported as a graph timeout, which reads as "the graph is slow"
 rather than "the graph never started". The ``read`` series is what distinguishes
 those two, and it is the number to look at before tuning any recall timeout."""
+
+GRAPH_ENTITIES = Gauge(
+    "eidolon_memory_graph_entities",
+    "Entity rows in this space's graph.",
+)
+"""The independent variable behind ``GRAPH_TIMEOUTS``.
+
+Entities and not statements, which is counter-intuitive enough to be worth
+stating: the one graph read that still grows with the graph is entity-name
+matching, and it scans ``kg_entities``. Measured on a 60 000-statement graph,
+deleting 21% of the statements moved that read by nothing at all, while removing
+the orphaned entities moved it by a quarter. A statement count that climbs is
+information; this is the number that predicts a timeout.
+
+Nothing has ever deleted an entity row — ``_upsert_entity`` is
+``INSERT OR IGNORE`` and there is no counterpart — so this series only rises.
+That is the point of having it."""
+
+GRAPH_STATEMENTS = Gauge(
+    "eidolon_memory_graph_statements",
+    "Statement rows in this space's graph, by whether they are still valid.",
+    ("state",),
+)
+"""``active`` and ``invalidated`` separately, because their sum is the file's
+size and their ratio is a product signal: a graph that is mostly invalidated is
+one whose owner keeps correcting it."""
+
+GRAPH_WAL_PAGES = Gauge(
+    "eidolon_memory_graph_wal_pages",
+    "Pages in the graph's write-ahead log at the last checkpoint attempt.",
+)
+"""Paired with ``GRAPH_CHECKPOINT_PAGES``, and only meaningful next to it.
+
+A single reader that never drains its cursor holds the checkpoint at its
+snapshot: the WAL then grows without bound while the main database file stays
+frozen, and every checkpoint reports success having moved nothing. That failure
+is invisible in either number alone — this one climbing while the counter stays
+flat is the whole signal. On an SD card it is also the worst way to fail."""
+
+GRAPH_CHECKPOINT_PAGES = Counter(
+    "eidolon_memory_graph_checkpoint_pages_total",
+    "Graph WAL pages merged back into the main database file.",
+)
+"""See ``GRAPH_WAL_PAGES``. A counter rather than a gauge because the question is
+whether progress is being made at all, not how much any one attempt made."""
 
 
 def render_metrics() -> bytes:

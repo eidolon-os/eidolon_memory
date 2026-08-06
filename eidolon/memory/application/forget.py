@@ -155,6 +155,41 @@ async def find_forget_candidates(
     return candidates
 
 
+async def source_turns_for_drawers(
+    backend: MemoryAdmin,
+    memory_space_id: str,
+    drawer_ids: list[str],
+) -> list[str]:
+    """Which conversation turns produced these drawers.
+
+    The bridge between the two stores in a forget. There is no fact-level
+    identity shared by a drawer and a triple — the steward emits fragments and
+    triples from one turn without claiming they correspond one to one — so the
+    turn is the narrowest thing both sides can name, and the only one.
+
+    Must be called *before* the drawers are mutated: the turn id lives in the
+    drawer's metadata, so a deleted drawer takes the only pointer to its triples
+    with it. That ordering is the reason this is a separate function rather than
+    something the deletion helpers do on the way past.
+
+    Missing drawers and drawers without a turn id are skipped rather than
+    refused. A drawer predating the field, or one already gone, should not stop
+    the rest of a confirmed privacy request from being honoured.
+    """
+
+    turn_ids: list[str] = []
+    seen: set[str] = set()
+    for key in dict.fromkeys(k.strip() for k in drawer_ids if k.strip()):
+        record = await backend.get(memory_space_id, key)
+        if record is None:
+            continue
+        turn_id = str(record.metadata.get("source_turn_id") or "").strip()
+        if turn_id and turn_id not in seen:
+            seen.add(turn_id)
+            turn_ids.append(turn_id)
+    return turn_ids
+
+
 async def delete_exact_drawers(
     backend: MemoryPrivacyAdmin,
     memory_space_id: str,

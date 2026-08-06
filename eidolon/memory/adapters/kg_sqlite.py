@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import os
 import re
 import sqlite3
 import threading
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -354,6 +357,146 @@ class SqliteKnowledgeGraph:
                  entity_id_for(object)),
             )
         return cursor.rowcount or 0
+
+    async def forget_source_turns(
+        self,
+        turn_ids: Sequence[str],
+        *,
+        hard: bool = False,
+        ended: str | None = None,
+    ) -> int:
+        wanted = list(dict.fromkeys(t.strip() for t in turn_ids if t and t.strip()))
+        if not wanted:
+            return 0
+        ended_at = canonical_temporal(ended) or now_iso()
+        async with self._lock.writer():
+            return await asyncio.to_thread(
+                self._forget_source_turns_sync, wanted, hard, ended_at
+            )
+
+    def _forget_source_turns_sync(
+        self, turn_ids: list[str], hard: bool, ended_at: str
+    ) -> int:
+        """Invalidate or remove every statement these turns produced.
+
+        One statement rather than the chunked loop a background sweep would need:
+        a privacy command carries at most 100 drawers and a turn yields one to
+        three triples, so the whole batch is a few hundred rows and bounding the
+        lock hold would cost more in round trips than it saves. A sweep over years
+        of statements is a different operation and should not borrow this one.
+
+        ``idx_kg_statements_source`` covers the predicate, so the scan is a lookup
+        per turn rather than a walk of the graph.
+        """
+
+        placeholders = ", ".join("?" for _ in turn_ids)
+        connection = self._connection()
+
+        if not hard:
+            # Same semantics as ``invalidate``: the row stays, its interval ends.
+            # ``valid_to IS NULL`` so re-running a command counts nothing twice.
+            with connection:
+                cursor = connection.execute(
+                    f"""
+                    UPDATE kg_statements SET valid_to = ?
+                    WHERE space_id = ? AND source_turn_id IN ({placeholders})
+                      AND valid_to IS NULL
+                    """,
+                    (ended_at, self._space_id, *turn_ids),
+                )
+            return cursor.rowcount or 0
+
+        doomed = connection.execute(
+            f"""
+            SELECT * FROM kg_statements
+            WHERE space_id = ? AND source_turn_id IN ({placeholders})
+            """,
+            (self._space_id, *turn_ids),
+        ).fetchall()
+        if not doomed:
+            return 0
+
+        # Written out before anything is removed, and the write is verified by
+        # reading it back. A hard forget is irreversible for the product on
+        # purpose; it must not also be irreversible for whoever has to answer
+        # "what did we delete on the 6th". Refusing here is the intended
+        # behaviour when the record cannot be made — deleting without one is the
+        # failure this is meant to prevent, not a degraded success.
+        self._record_forgotten(doomed, ended_at)
+
+        with connection:
+            connection.execute(
+                f"""
+                DELETE FROM kg_statements
+                WHERE space_id = ? AND source_turn_id IN ({placeholders})
+                """,
+                (self._space_id, *turn_ids),
+            )
+        # Verified rather than trusted, the way ``delete_many`` verifies on the
+        # vector side. A DELETE that silently matched nothing and a DELETE that
+        # worked have the same rowcount when the caller retries.
+        remaining = connection.execute(
+            f"""
+            SELECT COUNT(*) FROM kg_statements
+            WHERE space_id = ? AND source_turn_id IN ({placeholders})
+            """,
+            (self._space_id, *turn_ids),
+        ).fetchone()[0]
+        if remaining:
+            raise RuntimeError(
+                f"hard forget left {remaining} statement(s) for {len(turn_ids)} turn(s) "
+                f"in space {self._space_id}"
+            )
+
+        # Entity rows are deliberately left. An entity may be named by statements
+        # from other turns, and finding out costs a query per entity; orphan
+        # collection is a sweep's job. It also means a hard forget does not remove
+        # the *name* — an operator inspecting the entity table can still see that
+        # someone called 张丽 was known, which is worth stating rather than
+        # implying this erases every trace.
+        return len(doomed)
+
+    def _record_forgotten(self, rows: Sequence[sqlite3.Row], ended_at: str) -> None:
+        """Append the rows to the forgetting log, and prove it landed.
+
+        Beside the graph file, which is inside ``<palace>.ledgers`` and therefore
+        outside the palace directory MemPalace renames during a repair. That is
+        not incidental: an audit trail stored inside the thing being repaired is
+        an audit trail that disappears exactly when someone needs it.
+
+        Nothing prunes this directory and nothing should. It has to outlive what
+        it describes, or the record of a deletion becomes deletable by the same
+        mechanisms — which is the one property that makes "we can tell you what we
+        removed" true rather than aspirational.
+        """
+
+        directory = self._path.parent / "forgotten"
+        directory.mkdir(parents=True, exist_ok=True)
+        destination = directory / f"{ended_at[:10]}.jsonl"
+        payload = "".join(
+            json.dumps(
+                {"forgotten_at": ended_at, "space_id": self._space_id, **dict(row)},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            + "\n"
+            for row in rows
+        )
+        with destination.open("a", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Read back rather than trust the write: an fsync that succeeded on a
+        # full disk still leaves a truncated line, and the whole point of this
+        # file is being readable later.
+        with destination.open("r", encoding="utf-8") as handle:
+            written = [line for line in handle if line.strip()]
+        if len(written) < len(rows):
+            raise RuntimeError(
+                f"forgetting log {destination} holds {len(written)} line(s), "
+                f"expected at least {len(rows)}"
+            )
+        json.loads(written[-1])
 
     async def supersede(
         self,

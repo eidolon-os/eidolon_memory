@@ -36,7 +36,11 @@ from eidolon.memory.application.explicit_intents import (
     MemoryIntentRejected,
     apply_explicit_intent,
 )
-from eidolon.memory.application.forget import archive_exact_drawers, delete_exact_drawers
+from eidolon.memory.application.forget import (
+    archive_exact_drawers,
+    delete_exact_drawers,
+    source_turns_for_drawers,
+)
 from eidolon.memory.application.ingest import (
     ingest_memory_fragment,
     ingest_memory_fragments,
@@ -818,6 +822,30 @@ async def process_command_message(
                 authority=cmd.intent.authority,
             )
         elif isinstance(cmd, PrivacyMutationCommand):
+            # Both stores, because a person forgetting something means the thing
+            # and not the copy of it that happens to live in Chroma. Until
+            # 2026-08-06 only the drawer went: the triples stayed and kept being
+            # rendered into the next prompt, so the product said yes and then
+            # produced the fact it had just agreed to forget.
+            #
+            # Read the turns first — the drawer's metadata is the only pointer to
+            # its triples, and deleting the drawer destroys it.
+            turn_ids = await source_turns_for_drawers(
+                backend, cmd.memory_space_id, cmd.drawer_ids
+            )
+            forgotten = 0
+            if kg is not None and turn_ids:
+                # Before the vector mutation, deliberately. Neither store can
+                # join the other's transaction, so one of them goes second and
+                # a failure between them leaves a partial forget either way. The
+                # graph goes first because its half is the recoverable one — an
+                # archive only ends an interval, and a hard forget is written out
+                # before it deletes — while ``delete_many`` is gone for good. A
+                # retry is idempotent on this side: nothing is still valid to
+                # invalidate, nothing is left to delete.
+                forgotten = await kg.forget_source_turns(
+                    turn_ids, hard=cmd.action == "delete"
+                )
             if cmd.action == "delete":
                 changed = await delete_exact_drawers(
                     backend, cmd.memory_space_id, cmd.drawer_ids
@@ -833,6 +861,12 @@ async def process_command_message(
                 preview_id=cmd.preview_id,
                 action=cmd.action,
                 drawer_count=len(changed),
+                # Separate from ``drawer_count`` because they answer different
+                # questions and their ratio is the interesting one: turns with no
+                # triples are ordinary, but a forget that touched drawers and no
+                # statements on a graph-enabled space is worth looking at.
+                kg_turn_count=len(turn_ids),
+                kg_statements_forgotten=forgotten,
             )
         elif isinstance(cmd, DeviceSyncBatchPayload):
             log.info(

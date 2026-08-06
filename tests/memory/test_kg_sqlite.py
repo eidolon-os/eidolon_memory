@@ -702,3 +702,107 @@ async def test_longer_names_still_win(graph) -> None:
     assert await graph.match_entities_for_query("mother:张丽 住在哪", cap=1) == [
         "mother:张丽"
     ]
+
+
+async def test_a_soft_forget_ends_only_what_is_still_valid(graph) -> None:
+    await graph.add_triple(
+        subject="用户", predicate="likes", object="绿茶",
+        audience=OWNER, source_turn_id="turn-1",
+    )
+    await graph.add_triple(
+        subject="用户", predicate="likes", object="咖啡",
+        audience=OWNER, source_turn_id="turn-2",
+    )
+
+    assert await graph.forget_source_turns(["turn-1"]) == 1
+    # Nothing left valid from that turn, so a repeat counts nothing — the shape a
+    # retry after a partial failure takes.
+    assert await graph.forget_source_turns(["turn-1"]) == 0
+
+    objects = {r.object for r in await graph.query_entity("用户", audiences=(OWNER,))}
+    assert objects == {"咖啡"}
+
+
+async def test_a_soft_forget_keeps_the_row_answerable(graph) -> None:
+    """Ending an interval is not deleting: the history is still there to read."""
+
+    await graph.add_triple(
+        subject="用户", predicate="likes", object="绿茶",
+        audience=OWNER, source_turn_id="turn-1",
+    )
+    await graph.forget_source_turns(["turn-1"])
+
+    stats = await graph.stats()
+    assert stats["triples_total"] == 1
+    assert stats["triples_active"] == 0
+    assert stats["triples_invalidated"] == 1
+
+
+async def test_an_unknown_turn_is_not_an_error(graph) -> None:
+    assert await graph.forget_source_turns(["never-happened"]) == 0
+    assert await graph.forget_source_turns(["never-happened"], hard=True) == 0
+    assert await graph.forget_source_turns([]) == 0
+    assert await graph.forget_source_turns(["", "   "]) == 0
+
+
+async def test_a_hard_forget_refuses_rather_than_delete_unrecorded(graph, tmp_path) -> None:
+    """The rule the port states: no record, no deletion.
+
+    A deletion that cannot be written down is the failure this whole path exists
+    to prevent, so it has to raise rather than proceed and log a warning. Blocked
+    here by putting a file where the log directory needs to be, which is the
+    cheapest stand-in for the disk being full or read-only.
+    """
+
+    await graph.add_triple(
+        subject="用户", predicate="likes", object="绿茶",
+        audience=OWNER, source_turn_id="turn-1",
+    )
+    (tmp_path / "forgotten").write_text("in the way", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        await graph.forget_source_turns(["turn-1"], hard=True)
+
+    # Still there. The point of refusing is that nothing was lost.
+    assert (await graph.stats())["triples_total"] == 1
+    objects = {r.object for r in await graph.query_entity("用户", audiences=(OWNER,))}
+    assert objects == {"绿茶"}
+
+
+async def test_a_hard_forget_keeps_appending_to_one_day(graph, tmp_path) -> None:
+    """Two forgets on the same day are two lines, not one file overwriting another."""
+
+    for index, turn in enumerate(("turn-1", "turn-2")):
+        await graph.add_triple(
+            subject="用户", predicate="likes", object=f"茶{index}",
+            audience=OWNER, source_turn_id=turn,
+        )
+    await graph.forget_source_turns(["turn-1"], hard=True)
+    await graph.forget_source_turns(["turn-2"], hard=True)
+
+    exports = sorted((tmp_path / "forgotten").glob("*.jsonl"))
+    assert len(exports) == 1
+    lines = [l for l in exports[0].read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(lines) == 2
+    assert (await graph.stats())["triples_total"] == 0
+
+
+async def test_a_hard_forget_leaves_the_entities(graph) -> None:
+    """Stated because it is a limit on the promise, not an oversight.
+
+    An entity can be named by statements from turns nobody asked to forget, and
+    proving otherwise costs a query per entity. Collecting orphans belongs to a
+    sweep. So a hard forget removes what was said, not the fact that a name was
+    once known.
+    """
+
+    await graph.add_triple(
+        subject="张丽", predicate="lives_in", object="杭州",
+        audience=OWNER, source_turn_id="turn-1",
+    )
+    before = (await graph.stats())["entities"]
+
+    await graph.forget_source_turns(["turn-1"], hard=True)
+
+    assert (await graph.stats())["triples_total"] == 0
+    assert (await graph.stats())["entities"] == before

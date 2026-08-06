@@ -23,7 +23,11 @@ OTHER_SPACE = "default.bob.default"
 
 @pytest.fixture
 def kg_setup(tmp_path: Path):
-    """Real KG + LockedKnowledgeGraph; mocked NATS via in-memory queue."""
+    """The real graph adapter; NATS mocked via an in-memory queue.
+
+    It used to say "real KG + LockedKnowledgeGraph". There is no such wrapper —
+    the lock moved inside ``SqliteKnowledgeGraph``, and the name outlived it.
+    """
     pytest.importorskip("mempalace")
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 
@@ -416,3 +420,183 @@ async def test_subject_helpers() -> None:
     assert "eidolon.memory.turn.*" in patterns
     assert "eidolon.memory.cmd.*" in patterns
     assert "eidolon.memory.sync.*" in patterns
+
+
+def _seed_drawer(backend, key: str, *, turn_id: str, text: str = "绿茶") -> None:
+    from eidolon.memory.domain.wire import MemoryWireRecord
+
+    backend.docs[f"{SPACE}::{key}"] = MemoryWireRecord(
+        memory_space_id=SPACE,
+        key=key,
+        value=text,
+        metadata={
+            "memory_space_id": SPACE,
+            "wing": "Wing_Profile",
+            "source_turn_id": turn_id,
+        },
+    )
+
+
+def _privacy_msg(action: str, drawer_ids: list[str], *, request_id: str):
+    return _stub_msg(
+        {
+            "kind": "privacy_mutation",
+            "request_id": request_id,
+            "memory_space_id": SPACE,
+            "issued_at": "2026-08-06T10:00:00Z",
+            "action": action,
+            "drawer_ids": drawer_ids,
+            "preview_id": f"preview-{request_id}",
+            "target": "绿茶",
+        }
+    )
+
+
+async def _apply_privacy(msg, backend, kg, ledger) -> None:
+    from eidolon.memory.application.turn_processor import process_command_message
+    from eidolon.memory.config.memory_settings import get_memory_settings
+
+    await process_command_message(
+        msg,
+        backend=backend,
+        kg=kg,
+        settings=get_memory_settings(),
+        expected_memory_space_id=SPACE,
+        command_status=ledger,
+    )
+
+
+async def test_a_confirmed_delete_reaches_the_graph_and_not_only_the_drawer(
+    tmp_path: Path, kg_setup
+) -> None:
+    """The defect this exists for: forgetting used to mean forgetting half.
+
+    A drawer and the triples from the same turn are two records of one thing the
+    person said. Deleting the drawer alone left the triple to be transcribed into
+    the next prompt, so the product agreed to forget and then produced the fact.
+    """
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+
+    backend = FakeMemoryBackend()
+    _seed_drawer(backend, "drawer_tea", turn_id="turn-tea")
+    await kg_setup.add_triple(
+        subject="用户", predicate="likes", object="绿茶",
+        audience="owner", source_turn_id="turn-tea",
+    )
+    # A different turn, which must survive: a forget is scoped to what was said,
+    # not to everything about the subject.
+    await kg_setup.add_triple(
+        subject="用户", predicate="likes", object="乌龙茶",
+        audience="owner", source_turn_id="turn-oolong",
+    )
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
+
+    msg = _privacy_msg("delete", ["drawer_tea"], request_id="p-delete")
+    await _apply_privacy(msg, backend, kg_setup, ledger)
+
+    assert msg.ack_calls == ["ack"]
+    assert await backend.get(SPACE, "drawer_tea") is None
+
+    objects = {r.object for r in await kg_setup.query_entity("用户", audiences=("owner",))}
+    assert "绿茶" not in objects, "the triple outlived the drawer it came from"
+    assert "乌龙茶" in objects, "an unrelated turn was forgotten too"
+
+    stats = await kg_setup.stats()
+    assert stats["triples_total"] == 1, "a hard forget must remove the row, not end it"
+
+
+async def test_a_hard_forget_writes_what_it_removed_before_removing_it(
+    tmp_path: Path, kg_setup
+) -> None:
+    """Irreversible for the product, recoverable for whoever has to answer for it."""
+
+    import json as _json
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+
+    backend = FakeMemoryBackend()
+    _seed_drawer(backend, "drawer_city", turn_id="turn-city", text="杭州")
+    await kg_setup.add_triple(
+        subject="张丽", predicate="lives_in", object="杭州",
+        audience="owner", source_turn_id="turn-city",
+    )
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
+
+    await _apply_privacy(
+        _privacy_msg("delete", ["drawer_city"], request_id="p-export"),
+        backend, kg_setup, ledger,
+    )
+
+    # Beside the graph file, which is outside the palace directory MemPalace
+    # renames during a repair — an audit trail inside the thing being repaired
+    # is one that vanishes exactly when it is wanted.
+    exports = sorted((tmp_path / "forgotten").glob("*.jsonl"))
+    assert exports, "a hard forget left no record of itself"
+    lines = [
+        _json.loads(line)
+        for line in exports[0].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(lines) == 1
+    assert lines[0]["predicate"] == "lives_in"
+    assert lines[0]["space_id"] == SPACE
+    assert lines[0]["forgotten_at"]
+
+
+async def test_an_archive_ends_the_triple_rather_than_deleting_it(
+    tmp_path: Path, kg_setup
+) -> None:
+    """Archive and delete are different promises, and the graph keeps both."""
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+
+    backend = FakeMemoryBackend()
+    _seed_drawer(backend, "drawer_tea", turn_id="turn-tea")
+    await kg_setup.add_triple(
+        subject="用户", predicate="likes", object="绿茶",
+        audience="owner", source_turn_id="turn-tea",
+    )
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
+
+    await _apply_privacy(
+        _privacy_msg("archive", ["drawer_tea"], request_id="p-archive"),
+        backend, kg_setup, ledger,
+    )
+
+    records = await kg_setup.query_entity("用户", audiences=("owner",))
+    assert not records, "an archived turn's triples must stop being recalled"
+
+    stats = await kg_setup.stats()
+    assert stats["triples_total"] == 1
+    assert stats["triples_invalidated"] == 1
+    assert not (tmp_path / "forgotten").exists(), "nothing was deleted, so nothing to log"
+
+
+async def test_forgetting_a_turn_twice_is_not_an_error(tmp_path: Path, kg_setup) -> None:
+    """The retry a failure between the two stores would produce."""
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+
+    backend = FakeMemoryBackend()
+    _seed_drawer(backend, "drawer_tea", turn_id="turn-tea")
+    await kg_setup.add_triple(
+        subject="用户", predicate="likes", object="绿茶",
+        audience="owner", source_turn_id="turn-tea",
+    )
+    ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
+
+    first = _privacy_msg("delete", ["drawer_tea"], request_id="p-1")
+    await _apply_privacy(first, backend, kg_setup, ledger)
+    # The drawer is gone now, so the second pass cannot even find the turn — which
+    # is the point: it must ack rather than fail on a request already honoured.
+    second = _privacy_msg("delete", ["drawer_tea"], request_id="p-2")
+    await _apply_privacy(second, backend, kg_setup, ledger)
+
+    assert second.ack_calls == ["ack"]
+    assert second.nak_calls == []
+    assert (await kg_setup.stats())["triples_total"] == 0

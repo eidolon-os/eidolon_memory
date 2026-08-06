@@ -212,6 +212,43 @@ async def _nats_subscriber_loop(
         while not stop.is_set():
             await _drain(psub, handler)
 
+    async def _publish_graph_size() -> None:
+        """Report how big the graph has become, from the loop that already has the lock.
+
+        Here rather than at scrape time because ``stats()`` runs four counting
+        queries: a Prometheus endpoint that touches the database is one an
+        operator can accidentally turn into load, and scrape intervals are not
+        ours to bound. This runs at most once per ``sync_every`` writes instead.
+
+        Called *after* the checkpoint releases the space lock, never inside it:
+        ``stats()`` takes the reader side, and ``SpaceLock`` is not reentrant, so
+        a writer awaiting its own reader would deadlock the process outright.
+
+        Unlabelled, because this process serves exactly one space (see ``main``).
+        Whoever makes that N:1 has to add the label here, or two spaces will
+        overwrite each other's readings and the series will look like noise.
+        """
+
+        if kg is None:
+            return
+        try:
+            stats = await kg.stats()
+        except Exception as exc:  # noqa: BLE001 - telemetry must not break the loop
+            log.warning(
+                "agent_runner_graph_stats_failed",
+                memory_space_id=memory_space_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return
+        metrics.GRAPH_ENTITIES.set(int(stats.get("entities") or 0))
+        metrics.GRAPH_STATEMENTS.labels(state="active").set(
+            int(stats.get("triples_active") or 0)
+        )
+        metrics.GRAPH_STATEMENTS.labels(state="invalidated").set(
+            int(stats.get("triples_invalidated") or 0)
+        )
+
     async def _checkpoint_forever() -> None:
         """Checkpoint the WAL once enough writes accrue, in its own task.
 
@@ -219,6 +256,9 @@ async def _nats_subscriber_loop(
         and a checkpoint failure degrades gracefully (log + retry) instead of
         forcing a NATS reconnect the way it did when it shared the drain loop's
         try-block.
+
+        Also where the graph's size is sampled, because this is the only periodic
+        task in the process and it already takes the lock.
         """
         nonlocal writes_since_checkpoint
         while not stop.is_set():
@@ -240,8 +280,23 @@ async def _nats_subscriber_loop(
                     # With the graph off there is no such file to checkpoint.
                     if kg is None:
                         return
-                    await asyncio.to_thread(checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE")
+                    result = await asyncio.to_thread(
+                        checkpoint_sqlite_wal, kg_sqlite, mode="PASSIVE"
+                    )
                     await asyncio.to_thread(fsync_directory, Path(kg_sqlite).parent)
+                    metrics.GRAPH_WAL_PAGES.set(result.wal_pages)
+                    metrics.GRAPH_CHECKPOINT_PAGES.inc(result.checkpointed_pages)
+                    if result.stalled:
+                        # A log with pages that would not move. Logged and not
+                        # raised: the service is still correct, it is just no
+                        # longer durable at the rate it thinks it is, and the
+                        # cause is usually a reader that will finish on its own.
+                        log.warning(
+                            "agent_runner_checkpoint_stalled",
+                            memory_space_id=memory_space_id,
+                            wal_pages=result.wal_pages,
+                            busy=result.busy,
+                        )
 
                 lock = getattr(backend, "lock", None)
                 if lock is not None:
@@ -249,6 +304,7 @@ async def _nats_subscriber_loop(
                         await _checkpoint_targets()
                 else:
                     await _checkpoint_targets()
+                await _publish_graph_size()
             except Exception as exc:  # noqa: BLE001 - best-effort durability
                 log.warning(
                     "agent_runner_checkpoint_failed",

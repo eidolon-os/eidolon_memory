@@ -287,6 +287,34 @@ eidolon_memory_kg_timeline   OK
 
 **仍然成立、没有动的**：P1-5（无旧 schema 迁移）、P1-6（`record_entity_mention` 命名空间）、P2-7（`supersede` 零调用者 + 生产的竞态窗口）、P2-8 到 P2-13、P2-15、P3 其余死代码。
 
+### 后续几批（`78717e0`、`4aecb3d`、本批）
+
+这三批不在上面那张表里，因为它们不是这份 review 找出来的——前两批是性能，第三批来自
+`FORGETTING_PROPOSAL.md` 的核查。列在这里是为了这份文档仍然能当作图的现状读。
+
+| 批次 | 做了什么 |
+|---|---|
+| `78717e0` | 四个读全部重做。`query_subjects` 的窗口函数换成每 subject 一条有界分支；`query_entity` 的 `subject_id = ? OR object_id = ?` 拆成两条走索引的分支再 UNION（**默认召回路径**，OR 让 SQLite 退回最宽的索引加临时 B 树）；`match` 的比较下推到 SQL；`DEFAULT_ENTITY_LIMIT`。外加**每线程一个连接**——8 并发读原本比串行慢 11 倍 |
+| `4aecb3d` | `kg_entities (space_id, name)` 覆盖索引。**更正了 `78717e0` 自己的结论**：它说剩下的线性只有 trigram FTS 能解，那是把"消除扫描"和"消除扫描里的回表"混为一谈。扫描消不掉，回表可以，实测 60k 时 28.44 → 9.64 ms |
+| 本批 | **"忘掉 X"以前不动图**（下详）；图的大小、WAL 页数、checkpoint 进度进 `/metrics` |
+
+**"忘掉 X"只删向量不删图**，是 `FORGETTING_PROPOSAL.md` §2.10 找出来的，我核过
+`turn_processor.py` 的 `privacy_mutation` 分支里确实没有 `kg`。后果是 drawer 没了、三元组
+还在，下一轮 `transcribe_triple` 照样把它渲染进 prompt——**产品答应忘了，然后把那件事说了
+出来**。
+
+修法：`source_turns_for_drawers` 在删 drawer **之前**读出它们的 `source_turn_id`（turn 是
+两个存储唯一共有的身份），再走新的 `forget_source_turns`。`archive` → 结束有效期，
+`delete` → 真删，且真删前先把整行写进 `<palace>.ledgers/forgotten/<date>.jsonl`、fsync、
+读回校验，写不成就拒绝而不是照删。图先于向量执行，因为图这一半是可恢复的那一半。
+
+**没做的、要说清楚的**：孤儿实体不清理（一个实体可能被别的 turn 引用，逐个求证要一次查询；
+这属于 sweep）。所以硬删除掉的是"说过的话"，不是"这个名字曾经存在过"。
+
+`FORGETTING_PROPOSAL.md` 第一期的另外两条——补 `PredicateTemporality`（32 个谓词里 23 个
+躺在默认值上）和第二到四期——**没做，等数据**。`PredicateTemporality` 今天全仓零消费者，
+填了运行时也不变；它的价值取决于第二期做不做。
+
 ---
 
 ## 13. 逻辑架构图

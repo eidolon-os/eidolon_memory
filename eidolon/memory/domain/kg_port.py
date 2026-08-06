@@ -28,6 +28,7 @@ read.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from eidolon.memory.domain.kg import KgTripleRecord
@@ -92,6 +93,42 @@ class KnowledgeGraphPort(Protocol):
         Zero means nothing matching was still valid — which is a legitimate
         outcome, not a failure. Nothing is deleted: the row keeps its interval so
         the history remains answerable.
+        """
+        ...
+
+    async def forget_source_turns(
+        self,
+        turn_ids: Sequence[str],
+        *,
+        hard: bool = False,
+        ended: str | None = None,
+    ) -> int:
+        """Forget everything a set of conversation turns put in the graph.
+
+        The graph half of an explicit "forget that" — the *only* deletion in this
+        port driven by a person rather than by a correction, which is why it is
+        addressed by turn and not by triple. A user who asks to be forgotten does
+        not know a subject-predicate-object; they know what they said. The turn is
+        also the only identity the vector store and the graph share, so it is the
+        widest thing this can honour without guessing.
+
+        Until 2026-08-06 this did not exist and the vector half ran alone: the
+        drawer went and the triples stayed, and stayed in every later prompt. A
+        product that answers "yes" and then keeps the fact is worse than one that
+        cannot forget at all, because only one of the two is a lie.
+
+        ``hard`` distinguishes the two things a person can mean. False ends the
+        statements' validity — they stop being recalled and the history stays
+        answerable, matching what archiving does on the vector side. True removes
+        the rows, matching a delete: for a privacy request, "no longer returned"
+        and "no longer present" are not the same promise, and an object name still
+        sitting in a column is still the thing that was asked about.
+
+        A hard forget must be recoverable by an operator even though it is not
+        recoverable by the product — implementations write the rows out before
+        removing them, and refuse rather than delete unrecorded. Returns the
+        number of statements affected; zero is a legitimate answer for a turn that
+        produced no triples.
         """
         ...
 
