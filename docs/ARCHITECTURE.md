@@ -60,6 +60,7 @@ VectorStorePort ───── MemPalacePythonBackend  chroma
                   └── FakeMemoryBackend       测试用
 
 KnowledgeGraphPort ── SqliteKnowledgeGraph    schema 与查询在 kg_sql.py，一处定义
+                                              （单实现；方言参数已随 PG 图一起删掉）
 
 EmbeddingPort ─────── OnnxSentenceEmbedder    进程内 ONNX,9 个模型,默认 bge-small-zh
                   ├── HttpEmbedder            OpenAI 兼容的 /v1/embeddings
@@ -70,13 +71,21 @@ EmbeddingPort ─────── OnnxSentenceEmbedder    进程内 ONNX,9 个
 WarmableBackend      能力协议——存储自己回答能不能预热
 RoomGraphBackend     能力协议——存储自己回答能不能枚举房间
 
-6 × ledger ports ──── SQLite（palace 内）     语句模板在 ledger_sql.py
+6 × ledger ports ──── SQLite（<space>.ledgers/） 语句在 ledger_sql.py 一处定义
 ```
 
 **为什么大部分 Port 只有一个实现，抽象层还留着**：这些 Port 不是为了"将来换实现"存在的。
 `MemorySpaceRouter` 是把 space 从进程身份变回参数的那个东西——没有它，一个进程只能服务
-一个 space。`KnowledgeGraphPort` 存在是因为 mempalace 的图层硬编码 `import sqlite3`，
-我们只能自写。每一个都在解决一个当下的问题，不是占位。
+一个 space。
+
+`KnowledgeGraphPort` 存在是因为 mempalace 的图层没有留任何接缝，这一点是读它的代码确认
+的：`knowledge_graph.py:40` 直接 `import sqlite3`，`:49` 把路径写死成
+`~/.mempalace/knowledge_graph.sqlite3` 这个全局默认——没有 backend 概念、没有注入点。它
+**有**时间有效性（`valid_from`/`valid_to`），但**没有** audience 和 sensitive 列，而且
+date-only 的 `valid_to` 是在每次比较时用长度判断加宽的（`:112`），不是写入时归一。我们
+在写入时归一，于是区间判断是普通 SQL。
+
+每一个都在解决一个当下的问题，不是占位。
 
 `EmbeddingPort` 是这里唯一有多个实现的：它先是因为 mempalace 用 if/else 选 embedder、
 没有注册点而存在——选择权必须在我们这边——现在**换实现只是一行配置**
@@ -353,22 +362,54 @@ audience = "companion:<id>"  与那一个 companion 之间发生的——对它�
 （`companion_id`）与可见性（`audience`）是**分开的两个字段**——混在一起会让每条记忆
 意外变成私有。
 
-**这条轴目前在生产中是惰性的**，原因是结构性的：今天一个 space 是
-`(owner, companion)`，所以每个 companion 是独立的库。没有可泄漏的，也没有可共享的。
-它在 space 变成 owner 之后才真正生效，而那正是下面 1:N 那项工作所解锁的。
+**这条轴目前在生产中是惰性的，而且那是对的，不是没做完。** 原因是结构性的：今天一个
+space 就是 `(tenant, owner, companion)`，每个 companion 一个独立的库。没有可泄漏的，也
+没有可共享的；往单 companion 的库里写 `companion:<id>` 不改变任何可观测行为，只是多了一
+个 steward 每条都得判断对的东西。
+
+它在 **space 变成 per-owner**、一个库里装下多个 companion 的语句之后才真正生效。那是一次
+数据模型变更加迁移。
+
+**更正**：这里原先写着"那正是下面 1:N 那项工作所解锁的"。不对，那是两条轴——
+`进程 : space = 1:N` 讲的是一个进程持有几个库，`space 变成 per-owner` 讲的是一个库里装
+什么。1:N 不会让 space 变成 per-owner；两者反而是同一个内存问题的两种解法，取舍不同
+（1:N 保住每库一把锁和独立的故障域，per-owner 不保）。
+
+`tests/memory/test_kg_audience_layering.py` 把当前状态钉成故意的：任何生产路径开始写非
+owner 层就失败，并在失败信息里说明为什么现在不该写。同一个文件也断言读侧**已经**分好层，
+所以"等"的理由是数据模型，不是缺机制。
 
 ---
 
 ## 部署形态
 
-一台机器。向量在 chroma 文件里，图和六个 ledger 在 SQLite 文件里，全部在各自的 palace
-目录内。
+一台机器。向量在 chroma 文件里，图和六个 ledger 在 SQLite 文件里。
+
+**它们不在同一个目录，这是刻意的：**
+
+```
+<palaces_root>/<space>/            ← mempalace 的：chroma.sqlite3、mempalace.yaml、它的 marker
+<palaces_root>/<space>.ledgers/    ← 我们的：6 个 ledger + knowledge_graph.sqlite3
+```
+
+`mempalace repair --mode from-sqlite --archive-existing`（supervisor 换 embedder 时跑的
+就是它）会对**整个 palace 目录**做 `os.rename`，然后在原位重建一个新的，最后只拷回一个
+文件名——`knowledge_graph.sqlite3` 及其 `-wal`/`-shm`（他们的
+`_preserve_knowledge_graph_sqlite`，为其 issue #1816 加的）。
+
+所以我们的东西放在里面时，**每次 repair 都会静默丢掉六个 ledger**，其中两个是产品行为而不
+是记账。图活下来只是因为它的名字恰好等于对方硬编码的那个字符串——是和第三方常量的一次巧
+合，不是任何契约。
+
+修法是结构性的而不是"记得拷回来"：放到一个 rename 够不着的兄弟目录。既有 palace 在首次打
+开时自动迁移（`-wal`/`-shm` 跟着走；用 `rename` 而不是 `os.replace`，同名文件说明目标端
+才是活的）。supervisor 一行没动，它原本就在报的 `kg_preserved` 反而变成真的了。
 
 | | |
 |---|---|
 | 向量 | chroma，palace 内文件 |
-| 图 | palace 内 SQLite |
-| ledger | palace 内 SQLite，6 个 |
+| 图 | `<space>.ledgers/` 内 SQLite |
+| ledger | `<space>.ledgers/` 内 SQLite，6 个 |
 | embedder | 进程内 ONNX 会话，多 palace 共享一份（`embedding.provider: http` 可换成远端端点，palace 仍在本地） |
 | router | `LocalPalaceRouter`——每 space 一把 flock |
 | turn ring | 进程内 |
@@ -393,7 +434,7 @@ palace 而不是进程——一个进程可以持有很多 palace，这正是 1:
 | 脱离 Eidolon OS 独立 | 核心代码不 import 任何 `eidolon_*` 包——由两个守护测试强制（静态 AST 扫描，加一个屏蔽 OS 包后加载所有 entrypoint 的子进程）。contracts 的 46 个测试在只装 pydantic 时通过。**精确说**：核心依赖里唯一的 `eidolon-*` 是 `eidolon-memory-contracts`，那是本仓自己的包（`path = "./contracts"`，仅依赖 pydantic）；`eidolon-data` 只出现在可选的 `eidolon-os` extra 和 dev 里 |
 | 契约包自持 | 12 文件 1230 行，仅依赖 pydantic |
 | `MemoryReadContract` 已实现 | 8 个方法全部在 `MemoryService` 上；契约**就是**服务本身 |
-| 自有图 | 41 个 SQLite 测试；schema 与查询在 `kg_sql.py` 一处定义 |
+| 自有图 | 41 个 SQLite 测试；schema 与查询在 `kg_sql.py` 一处定义。audience 是列、在 SQL 里过滤；时间戳写入时归一，区间判断是普通 SQL |
 | 中文 embedder，注入 mempalace | mempalace 用 if/else 选 embedder、无注册点 → 我们播种它的进程级缓存，并**验证注入生效**（不是假设键算对了）。默认 `bge-small-zh`：512 维、133MB、0.6ms。整条链实测：**召回 p95 从 704ms 降到 30ms，正确率只差 2 个答案** |
 | **embedder 完全隔离** | 抽象层只剩 `identity()` / `embed_documents` / `embed_queries`；chroma 那套形状退到一个 adapter 里；三个实现（进程内 ONNX、hosted HTTP、mempalace 自己那两个）；换实现只改 `embedding.provider` 一行。**真跑过**：对着一个 OpenAI 兼容端点端到端建出 palace，chroma 持久化了声明的宽度，再用 `provider: local` 去读被 `EmbedderIdentityMismatchError` 挡住并报出两个名字 |
 | ledger 行为定义在 Port 上 | 47 个契约测试，无一碰 SQLite |
@@ -416,7 +457,7 @@ e2e 待重跑——换 embedder 会重建索引。
 | NATS 一个 consumer 服务所有 space | 通配 subject 辅助函数已存在；`turn_processor` 本来就从 payload 取 space | 同样是那 47 个调用点 |
 | 单端点 / discovery | | supervisor 掌管进程拓扑——**按你的指示暂缓** |
 | 收窄 MCP 响应 | `RecallResult` 按设计不含 `kg_triples` | agent 的 `port_adapter.py:201` 在读它——需要两个仓库同批 |
-| 写入侧 audience 归层 | 目前全是 owner 层 | 需要 steward 逐条判断 |
+| space 变成 per-owner | 读侧全就绪：audience 是列、SQL 过滤、无通配、空集合失败关闭 | **产品决定 + 迁移**。写侧全是 owner 层是当前数据模型下的正确值，不是欠账——见"两层可见性"。做了它才让那条轴有意义 |
 | 四个公开 benchmark | 口径已对齐、探针已跑两次、超时已按实测调正 | **抽取质量目前仍是未知数** —— 前两次探针的准确率测的是等待预算而非记忆，见下 |
 
 ## 目前最重要的一件事：召回，不是抽取

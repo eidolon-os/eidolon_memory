@@ -10,9 +10,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+#: Which tables to count in each database an inventory walks past.
+#:
+#: The graph's three were ``entities`` / ``triples`` / ``entity_mentions`` until
+#: 2026-08-06 — **MemPalace's** table names, left behind when we stopped borrowing
+#: their graph in ``c90c08b`` and wrote our own with the ``kg_`` prefix. The lookup
+#: skips a table it does not find, so this did not raise; it reported every graph's
+#: counts as ``{}``, which reads as "an empty graph" rather than "the wrong names".
 _SQLITE_COUNT_TABLES = {
     "chroma.sqlite3": ("collections", "segments", "embeddings", "embeddings_queue"),
-    "knowledge_graph.sqlite3": ("entities", "triples", "entity_mentions"),
+    "knowledge_graph.sqlite3": ("kg_entities", "kg_statements", "kg_entity_mentions"),
 }
 
 

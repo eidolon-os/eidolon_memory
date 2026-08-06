@@ -39,10 +39,15 @@ def test_deep_inventory_has_hashes_integrity_and_counts(tmp_path: Path) -> None:
     palace = tmp_path / _storage_name("realm-a")
     palace.mkdir()
     (palace / "note.txt").write_text("hello", encoding="utf-8")
+    # ``kg_entities``, the name our own schema creates. This fixture said
+    # ``entities`` — MemPalace's name — which matched the inventory's equally stale
+    # constant, so the pair agreed with each other and disagreed with every real
+    # graph on disk. A fixture built to match the code under test cannot catch the
+    # code under test being wrong.
     _create_sqlite(
         palace / "knowledge_graph.sqlite3",
-        "CREATE TABLE entities(id TEXT PRIMARY KEY)",
-        ["INSERT INTO entities VALUES ('self')"],
+        "CREATE TABLE kg_entities(id TEXT PRIMARY KEY)",
+        ["INSERT INTO kg_entities VALUES ('self')"],
     )
 
     inventory = build_palaces_inventory(tmp_path, deep=True)
@@ -51,7 +56,7 @@ def test_deep_inventory_has_hashes_integrity_and_counts(tmp_path: Path) -> None:
     entry = inventory["palaces"][0]
     assert entry["memory_space_id"] == "realm-a"
     assert entry["sqlite"]["knowledge_graph.sqlite3"]["quick_check"] == "ok"
-    assert entry["sqlite"]["knowledge_graph.sqlite3"]["counts"]["entities"] == 1
+    assert entry["sqlite"]["knowledge_graph.sqlite3"]["counts"]["kg_entities"] == 1
     note = next(item for item in entry["files"] if item["path"] == "note.txt")
     assert note["sha256"] == hashlib.sha256(b"hello").hexdigest()
     assert "error" not in entry["sqlite"]["knowledge_graph.sqlite3"]

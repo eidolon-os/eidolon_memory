@@ -4,6 +4,19 @@
 
 **标注约定**：带 ✅ 的是我自己跑过或逐行读过确认的；其余是通读结论，都附了 `file:line`，但没有单独复现。
 
+> **状态更新（2026-08-06，同日晚些）**：§11 的六项已全部处理，见 `96c9bef` 和 `2aeafe4`；
+> §10 里的 P0-1、P0-2、P1-3、P1-4 和 P3 的方言参数已修。逐条对照在文末的
+> [§12 已处理](#12-已处理)。**§10 其余各条仍然成立**，没有动。
+>
+> 同时更正这份文档自己的两处错：
+>
+> - **P0-2 说"回来的只有 knowledge_graph 和重建的 chroma"**——这句是对的，但我在口头汇报
+>   里一度说成"连图也丢"。图**不丢**，mempalace 的 `_preserve_knowledge_graph_sqlite`
+>   明确按文件名拷回它。丢的是另外六个。
+> - **"我们的图之所以能活下来，纯粹是因为文件名和他们的一样"**——成立，但不是"命名冲突"。
+>   他们自己的图在 `~/.mempalace/knowledge_graph.sqlite3`（全局默认路径），不在 palace
+>   里，两者从不在同一个目录出现。是"和一个第三方常量恰好同名"，不是"撞名"。
+
 ---
 
 ## 0. 一句话
@@ -254,3 +267,105 @@ eidolon_memory_kg_timeline   OK
 4. **`kg_sql.py` 的方言参数**：只剩一个实现了，和 embedder 那次相反——这次可能该收掉，因为没有第二个图存储在排队。
 5. **audience 写入归层**（ARCHITECTURE 的未完成项）要不要现在做。它是"两层可见性"从惰性变成真实生效的前提，但需要 steward 逐条判断。
 6. **`query_entity_combined` 的 N 次往返**要不要换成单语句——它是默认召回路径，跑在 50ms 预算里。
+
+---
+
+## 12. 已处理
+
+`96c9bef` 和 `2aeafe4` 两个 commit。
+
+| § | 问题 | 怎么解的 |
+|---|---|---|
+| P0-1 | `kg_snapshot` 调不通 | 补上 `audiences`；`current_only` 推进 SQL（原先在 `LIMIT` 之后用 Python 过滤，还拿过滤后的条数算 `capped`）。**加了一道遍历所有工具、按 schema 必填参数各调一次的守卫**——它第一版是空的（`_Kg` 桩太薄，先死在 `AttributeError` 上被裸 `except` 吞掉），把 bug 种回去测试依然全绿；桩改成和 port 签名一致后，正反两向都验证过 |
+| P0-2 | `repair` 丢六个 ledger | **结构性解法**：我们的 7 个库搬到 `<palace>.ledgers/`，rename 够不着。首次打开自动迁移，`-wal`/`-shm` 跟着走，用 `rename` 不用 `os.replace`。supervisor 一行没动 |
+| P1-3 | `kg_window_days` 死配置 | 删掉，连同零调用者的 `computed_kg_window_iso`。**没有去实现它**——`PredicateTemporality` 已经按谓词分好时效性，那才是对的形状 |
+| P1-4 | `palace_inventory` 用旧表名 | 改成 `kg_entities`/`kg_statements`/`kg_entity_mentions`。**那个测试的 fixture 也是用旧名建的表**，所以它和错误的常量互相印证——按代码写出来的 fixture 抓不到代码本身是错的 |
+| P2-14 | 单语句 vs N 次往返 | **实测后决定不改**：本地 3 个实体差 0.125 ms，占 50 ms voice 预算的 0.25%。改的是注释——原话"against a database each extra query is another round trip"是给已删掉的 PG 图写的 |
+| P3 | 方言参数 | `kg_sql.py` 和 `ledger_sql.py` **两处**都收掉（后者 46 条语句的 `{m}` + 每次调用一个 `render()`）。模块留着，去掉的是"还有第二种方言"的伪装 |
+| §11-2 | `include_sensitive_kg` | 从 agent 面拿掉，改成 `recall.include_sensitive_kg`。理由和 audience 一致：**放宽可见性的开关是 capability，不该由信任度最低的调用方自己授予自己** |
+| §11-5 | audience 写入归层 | **钉成"故意的"而不是做掉**。`test_kg_audience_layering` 在任何生产路径开始写非 owner 层时失败。今天一个 space 就是一个 companion，没有可泄漏的；这条轴要等 space 变 per-owner |
+
+**仍然成立、没有动的**：P1-5（无旧 schema 迁移）、P1-6（`record_entity_mention` 命名空间）、P2-7（`supersede` 零调用者 + 生产的竞态窗口）、P2-8 到 P2-13、P2-15、P3 其余死代码。
+
+---
+
+## 13. 逻辑架构图
+
+```
+                          ┌─ 写 ─────────────────────────────────────────────┐
+   一个 turn                                                                  │
+      │                                                                       │
+      ▼                                                                       │
+  steward (LLM)  ──►  StewardDecision{ triples[], invalidations[], mentions[] }
+      │                                                                       │
+      ▼                                                                       │
+  turn_processor ──── 三种写，各自失败模型不同 ──────────────────────────────┤
+      │  add_triple      写图失败 → log + ack（对话不能因为图卡住）           │
+      │  invalidate      canonical 失效失败 → NAK / DLQ（可确定重放）         │
+      │  record_mention  只接受本 turn 三元组里出现过的实体                    │
+      └───────────────────────────┬──────────────────────────────────────────┘
+                                  │  writer 侧
+                                  ▼
+   ┌──────────────────────────────────────────────────────────────────────┐
+   │  SpaceLock（每 space 一把，多读一写，writer-preferring）               │
+   │     writer: add_triple / invalidate / supersede / record_mention     │
+   │     reader: 其余 8 个读 + 3 个幂等探针                                 │
+   │  与向量库共用——一个 turn 原子地写两者                                  │
+   └──────────────────────────────┬───────────────────────────────────────┘
+                                  ▼
+   ┌──────────────────────────────────────────────────────────────────────┐
+   │  SqliteKnowledgeGraph          <space>.ledgers/knowledge_graph.sqlite3│
+   │  ─────────────────────────────────────────────────────────────────── │
+   │  kg_entities        entity_id = slug(name)，首写定名                   │
+   │  kg_statements      (s,p,o) + audience + sensitive + [valid_from,to)  │
+   │  kg_entity_mentions alias → entity_id，让"我爸"落到同一个实体           │
+   │                                                                       │
+   │  幂等两道闸（顺序要紧）：                                              │
+   │    ① source_turn_id 命中 → 直接返回旧 id（重放不得撤销之后的失效）      │
+   │    ② 同 (s,p,o) 且 valid_to IS NULL → 就是同一条                       │
+   └──────────────────────────────┬───────────────────────────────────────┘
+                                  │  reader 侧
+   ┌─ 读 ─────────────────────────┴───────────────────────────────────────┐
+   │                                                                       │
+   │  recall_with_kg_fusion ── 向量搜索 ┐                                   │
+   │        （两个任务并发起）           ├─ gather，图侧 50 ms voice 预算    │
+   │                          图查找 ────┘   超时就降级成纯向量              │
+   │                             │                                          │
+   │                             ▼                                          │
+   │   match_entities_for_query   自由文本 → 实体名（先整名后别名，长优先）  │
+   │             │                                                          │
+   │             ├─ 有 focus subjects → query_subjects   一条语句            │
+   │             │                       ROW_NUMBER() PARTITION BY subject   │
+   │             │                       ← 每个 subject 有自己的配额         │
+   │             └─ 否则            → query_entity_combined  每实体一次      │
+   │                                     （实测差 0.125 ms，不值得改）       │
+   │                             │                                          │
+   │                             ▼                                          │
+   │            transcribe_triple → 中文句子 → [MEMORY] 块 → 模型            │
+   └───────────────────────────────────────────────────────────────────────┘
+
+   每次读都必须带的两个过滤，都在 SQL 里：
+     audience IN (...)   ← readable_audiences(companion_id) 推导，无通配，空集合返回空
+     sensitive = 0       ← 除非 include_sensitive；是列，不是读出来再丢
+```
+
+### 三条轴，分清楚
+
+| 轴 | 问的是 | 现状 |
+|---|---|---|
+| **有效时间** `[valid_from, valid_to)` | 这件事什么时候**是真的** | 半开区间，`as_of` 可查任意时点。**做完了** |
+| **事务时间** `recorded_at` | 我们什么时候**知道**的 | 存了，排序用，**没有任何查询能按它过滤**——双时态只做了一半 |
+| **可见性** `audience` / `sensitive` | 谁**可以看** | 读侧做完了；写侧全是 owner 层，且在 space 变 per-owner 之前那是正确值 |
+
+### 和 mempalace 的边界
+
+```
+  我们的                                    他们的
+  ─────────────────────────────────────    ────────────────────────────────
+  <space>.ledgers/knowledge_graph.sqlite3   ~/.mempalace/knowledge_graph.sqlite3
+  kg_entities / kg_statements / ...         entities / triples / ...
+  audience + sensitive 是列，SQL 过滤        没有这两个概念
+  时间戳写入时归一                           date-only 在每次比较时按长度加宽
+  一跳查询，无遍历                           同样是一跳
+  ↑ 我们从不调用他们的图。唯一的交集是文件名——而那正是 repair 会拷回我们那个的原因。
+```

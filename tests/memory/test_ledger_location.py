@@ -195,3 +195,22 @@ def test_a_real_sqlite_file_survives_the_move(tmp_path: Path) -> None:
         assert moved.execute("SELECT x FROM t").fetchone()[0] == "kept"
     finally:
         moved.close()
+
+
+def test_the_inventory_counts_our_tables_and_not_mempalace_s() -> None:
+    """A table name that does not exist is skipped, not reported.
+
+    The inventory listed ``entities`` / ``triples`` / ``entity_mentions`` — MemPalace's
+    names, left behind when we stopped borrowing their graph. Nothing raised; every
+    graph's counts came back ``{}``, which reads as an empty graph rather than as a
+    lookup against the wrong schema. Pinned against the DDL so a rename fails here.
+    """
+
+    from eidolon.memory.adapters.kg_sql import SCHEMA_STATEMENTS
+    from eidolon.memory.infrastructure.palace_inventory import _SQLITE_COUNT_TABLES
+
+    ddl = "\n".join(SCHEMA_STATEMENTS)
+    for table in _SQLITE_COUNT_TABLES["knowledge_graph.sqlite3"]:
+        assert f"CREATE TABLE IF NOT EXISTS {table} " in ddl, (
+            f"the inventory counts {table!r}, which the graph's schema does not create"
+        )
