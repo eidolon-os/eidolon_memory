@@ -6,12 +6,17 @@ mempalace:
   backend: chroma
 embedding:
   # See settings.example.yaml for the measured comparison and for what `provider`
-  # can be. Unchanged from when these four keys lived under `mempalace:` —
-  # bge-small-zh on CPU, in process. Palaces built with a different embedder
-  # cannot be opened under this one — Chroma persists the embedder on the
-  # collection — so switching means deleting palaces_root.
+  # can be. Palaces built with a different embedder cannot be opened under this
+  # one — Chroma persists the embedder on the collection — so switching means
+  # deleting palaces_root.
+  #
+  # This machine runs bge-large-zh; the Pi runs bge-base-zh. Measured on a Pi 5
+  # over 1000 C-MTEB VideoRetrieval queries (benchmarks/results/bge-base-pi5):
+  # large scores MRR 0.813 against base's 0.787, for 626 MB on disk against 198
+  # and 104 ms/doc against 32. A laptop can pay that and the board cannot, which
+  # is the whole reason the two differ.
   provider: local
-  model: bge-small-zh
+  model: bge-large-zh
   device: cpu
   # Empty: bge downloads through the normal HF cache. The directory that used to
   # be here holds embeddinggemma's files, which this model does not read.

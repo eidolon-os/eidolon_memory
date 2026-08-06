@@ -43,32 +43,46 @@ embedding:
   # vector spaces. That refusal is the mechanism, not a defect.
   provider: auto
 
-  # Measured on the real corpus, twice — two runs whose palaces held 35 and 36
-  # stored fragments, same 49 queries (benchmarks/suites/probe_embedders.py):
+  # Set per host: bge-base-zh on the Pi, bge-large-zh on a workstation. The two
+  # differ because the cost differs, not because the ranking does.
   #
-  #   model                  dim   top-1        top-5          RSS   ms/call
-  #   bge-small-zh           512   27 → 24 /43  36 → 35 /43   130MB       1.0  ← default
-  #   bge-base-zh            768   26 → 24 /43  39 → 36 /43   130MB       3.0
-  #   bge-large-zh          1024   24 → 26 /43  38 → 36 /43   485MB       8.6
-  #   multilingual-e5-small  384   21 → 24 /43  35 → 35 /43   180MB       1.5
-  #   embeddinggemma         384        25/43        37/43      3GB      44.4
-  #   minilm                 384         5/43        16/43    380MB      17.5
+  # Measured on a Raspberry Pi 5 over C-MTEB VideoRetrieval — 1000 queries
+  # against a 20 000-document corpus, full runs, batch 32
+  # (benchmarks/results/bge-base-pi5):
   #
-  # The arrows are one model on the two corpora. A model swings ±3 between them,
-  # which is more than the gap between the three BGE sizes — the ranking even
-  # inverts. So at 43 queries these three cannot be told apart on quality, and
-  # the default is picked on cost: among models we cannot distinguish, take the
-  # cheapest. bge-large buys ~3.7x the memory and ~8x the latency for nothing
-  # measurable.
+  #   model            dim    R@1     MRR@10   on disk   ms/doc (Pi 5)
+  #   bge-small-zh     512   67.2%    0.753      47MB       6.5
+  #   bge-base-zh      768   70.9%    0.787     198MB      32.5   ← the Pi
+  #   bge-large-zh    1024   73.9%    0.813     626MB     104.1   ← a workstation
   #
-  # minilm's 5/43 and embeddinggemma's 37/43 are far outside that band, so those
-  # differences are real: minilm is the wrong tool for Chinese, and
-  # embeddinggemma genuinely retrieves best — it is excluded by needing 3GB on a
-  # 4GB Raspberry Pi that also runs eidolon_channel, not by its quality.
+  # An earlier version of this comment carried a 43-query table and concluded the
+  # three sizes could not be told apart, so the cheapest should win. **At 1000
+  # queries they can.** The ordering is monotone in size and both gaps (0.034 and
+  # 0.026 MRR) sit far outside the 0.0077 MRR that batch size alone moves this
+  # metric — the noise floor, measured rather than assumed. The 43-query reading
+  # was a sample-size limit being reported as a tie.
+  #
+  # What did not change is that quality is not free. bge-large costs 3.2x the
+  # latency of base per document on this board, which a laptop can absorb and a
+  # four-core Pi sharing itself with Chroma, NATS and the steward cannot.
+  #
+  # Two further findings from the same runs, both about this family:
+  #
+  #   * BGE's optional Chinese retrieval instruction on the query side **lowers**
+  #     the score — 0.9415 to 0.9332 MRR over 200 queries — so no prefix is
+  #     configured for it, deliberately.
+  #   * bge-*-zh is Chinese-only. On English dialogue (LoCoMo, 1977 annotated
+  #     questions) the whole family scores 0.211 to 0.247 MRR and scaling does not
+  #     help: 24M to 326M parameters moves R@1 only between 14.2% and 16.7%. If a
+  #     palace holds much English, no size of this model is the right choice.
+  #
+  # bge-m3 is implemented and rejected for this board on memory: 2.79 GB resident
+  # at batch 8 and 6.7 GB at batch 16 on 8 GB with no swap, and second-worst of
+  # eight models on Chinese dialogue anyway.
   #
   # An unrecognised name is refused at config load, because MemPalace answers
   # anything it does not know with minilm and says nothing.
-  model: bge-small-zh
+  model: bge-base-zh
   # ONNX Runtime execution provider for `local`: auto, cpu, cuda, coreml, or dml.
   device: ""
   # Optional local copy of the model files, so a deployment can ship them instead
