@@ -64,6 +64,49 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 
+#: Who a tool is for. Declared at each tool rather than derived from a list
+#: elsewhere, so adding one forces the question — and getting it wrong by putting an
+#: operator tool on the agent surface is the mistake with consequences.
+_AGENT = "agent"
+_OPS = "ops"
+
+#: The two tools the conversational agent calls. Everything else on this server is
+#: for operators, benchmarks and the admin UI.
+#:
+#: Measured before splitting: 27 tools were 15,602 characters of name, description
+#: and JSON schema — about 3,900 tokens in front of every agent request, of which
+#: 3,347 described tools the agent must never call. That is the smaller half of the
+#: problem. The larger half is that the list included ``forget_confirm``,
+#: ``dlq_replay``, ``dlq_resolve``, ``kg_invalidate`` and ``user_confirm``: a model
+#: reading "忘了这件事吧" from a user had a plausible destructive tool in reach, and
+#: nothing but its own judgement between the two.
+AGENT_SURFACE_TOOLS = ("eidolon_memory_search", "eidolon_memory_recall_context")
+
+
+def _audience_gate(mcp: Any, surface: str):
+    """Return a decorator that registers a tool only if this surface serves it.
+
+    ``surface="agent"`` keeps the two the agent calls. ``surface="all"`` keeps
+    everything, and is the default so every existing caller — tests, the admin
+    surface, the benches — is unaffected by the split.
+
+    There is no ``"ops"`` surface with the agent tools removed. An operator
+    debugging a space wants ``search`` more than anything else on the list, and a
+    second endpoint that could not answer the first question anyone asks would just
+    be answered by opening the agent's.
+    """
+
+    def tool(audience: str):
+        def decorate(fn):
+            if surface == "all" or audience == _AGENT:
+                mcp.tool()(fn)
+            return fn
+
+        return decorate
+
+    return tool
+
+
 async def _all_audiences(kg: Any) -> tuple[str, ...]:
     """Every audience a space's graph actually contains.
 
@@ -96,6 +139,8 @@ def build_control_plane_mcp(
     commitments: CommitmentReader | None = None,
     dlq_store: DlqStore | None = None,
     replay_publisher: Any = None,
+    surface: str = "all",
+    path: str | None = None,
 ):
     """Construct a FastMCP server bound to ``(host, port)`` for one user's runner.
 
@@ -108,11 +153,17 @@ def build_control_plane_mcp(
     write-side: via ``command_publisher`` → NATS, per KG plan §3.3). When
     ``kg``/``command_publisher`` are absent the KG tools are not registered —
     keeps the tool surface clean for backwards-compatible smoke tests.
+
+    ``surface`` selects who the server is for: ``"agent"`` registers only
+    :data:`AGENT_SURFACE_TOOLS`, ``"all"`` registers everything. Defaults to
+    ``"all"`` so nothing that already calls this changes. ``path`` overrides the
+    streamable-HTTP path, which is how two of these live on one port.
     """
     from mcp.server.fastmcp import FastMCP
 
     cfg = settings.mcp_http
-    streamable_path = cfg.path if cfg.path.startswith("/") else f"/{cfg.path}"
+    raw_path = cfg.path if path is None else path
+    streamable_path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
 
     mcp_kwargs: dict[str, Any] = {
         "host": host,
@@ -148,9 +199,11 @@ def build_control_plane_mcp(
             command_publisher=command_publisher,
         )
 
-    mcp = FastMCP(f"eidolon-memory-{memory_space_id}", **mcp_kwargs)
+    name = f"eidolon-memory-{memory_space_id}"
+    mcp = FastMCP(name if surface == "all" else f"{name}-{surface}", **mcp_kwargs)
+    tool = _audience_gate(mcp, surface)
 
-    @mcp.tool()
+    @tool(_AGENT)
     async def eidolon_memory_search(
         query: str,
         context: dict[str, Any],
@@ -181,7 +234,7 @@ def build_control_plane_mcp(
         )
         return [wire_record_to_public_dict(r) for r in records]
 
-    @mcp.tool()
+    @tool(_AGENT)
     async def eidolon_memory_recall_context(
         query: str,
         context: dict[str, Any],
@@ -219,7 +272,7 @@ def build_control_plane_mcp(
             "working_memory": fused["working_memory"],
         }
 
-    @mcp.tool()
+    @tool(_OPS)
     async def eidolon_memory_status() -> dict[str, Any]:
         """Report this agent runner's memory service status."""
         mempalace_backend = selected_mempalace_backend(settings)
@@ -249,7 +302,7 @@ def build_control_plane_mcp(
 
     if command_status is not None:
 
-        @mcp.tool()
+        @tool(_OPS)
         async def eidolon_memory_command_status(request_id: str) -> dict[str, Any]:
             """Read asynchronous write status without acquiring memory storage locks."""
             clean_id = (request_id or "").strip()
@@ -260,19 +313,19 @@ def build_control_plane_mcp(
                 return {"status": "unknown", "request_id": clean_id}
             return record.to_dict()
 
-        @mcp.tool()
+        @tool(_OPS)
         async def eidolon_memory_command_status_stats() -> dict[str, Any]:
             """Capacity and active-work metrics for the write-status projection."""
             return (await command_status.stats()).to_dict()
 
     if canonical_facts is not None:
 
-        @mcp.tool()
+        @tool(_OPS)
         async def eidolon_memory_canonical_stats() -> dict[str, Any]:
             """Read exact-fact evidence and projection-state counts."""
             return (await canonical_facts.stats()).to_dict()
 
-        @mcp.tool()
+        @tool(_OPS)
         async def eidolon_memory_fact_history(
             subject: str,
             predicate: str,
@@ -315,7 +368,7 @@ def build_control_plane_mcp(
 
     if commitments is not None:
 
-        @mcp.tool()
+        @tool(_OPS)
         async def eidolon_memory_commitments(
             include_terminal: bool = False,
             limit: int = 100,
@@ -336,7 +389,7 @@ def build_control_plane_mcp(
                 ],
             }
 
-        @mcp.tool()
+        @tool(_OPS)
         async def eidolon_memory_commitment_history(
             commitment_id: str,
             limit: int = 200,
@@ -357,14 +410,14 @@ def build_control_plane_mcp(
                 "revisions": [row.model_dump(mode="json") for row in revisions],
             }
 
-    if dlq_store is not None:
+    if surface == "all" and dlq_store is not None:
         _register_dlq_tools(
             mcp,
             dlq_store=dlq_store,
             replay_publisher=replay_publisher or command_publisher,
         )
 
-    @mcp.tool()
+    @tool(_OPS)
     async def eidolon_memory_list(
         limit: int = 500,
         offset: int = 0,
@@ -382,7 +435,7 @@ def build_control_plane_mcp(
             "total_hint": len(filtered),
         }
 
-    @mcp.tool()
+    @tool(_OPS)
     async def eidolon_memory_get_by_source_turn(
         source_turn_id: str,
         include_private: bool = False,
@@ -398,7 +451,7 @@ def build_control_plane_mcp(
             return {"record": None}
         return {"record": wire_record_to_public_dict(row)}
 
-    @mcp.tool()
+    @tool(_OPS)
     async def eidolon_memory_hierarchy_snapshot(
         max_records: int = 8000,
         max_drawers_per_room: int = 48,
@@ -414,7 +467,7 @@ def build_control_plane_mcp(
             max_drawers_per_room=md,
         )
 
-    @mcp.tool()
+    @tool(_OPS)
     async def eidolon_memory_palace_graph(
         max_nodes: int = 120,
         max_edges: int = 200,
@@ -429,7 +482,10 @@ def build_control_plane_mcp(
         me = max(10, min(max_edges, 2000))
         return await build_palace_graph(backend, max_nodes=mn, max_edges=me)
 
-    if command_publisher is not None:
+    # Gated as whole groups rather than per tool, because every tool in all three
+    # is an operator tool — these are the write and confirm paths, and they are the
+    # ones it matters most to keep off the agent's list.
+    if surface == "all" and command_publisher is not None:
         _register_user_confirm_tool(
             mcp,
             command_publisher=command_publisher,
@@ -444,7 +500,7 @@ def build_control_plane_mcp(
             command_status=command_status,
         )
 
-    if kg is not None and command_publisher is not None:
+    if surface == "all" and kg is not None and command_publisher is not None:
         _register_kg_tools(
             mcp,
             kg=kg,

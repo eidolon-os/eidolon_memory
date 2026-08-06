@@ -55,7 +55,6 @@ from eidolon.memory.config.palace_directory import (
     resolve_palaces_root,
     validate_memory_space_id,
 )
-from eidolon.memory.domain.audit import AuditSinkPort
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
@@ -113,21 +112,27 @@ def _mount_metrics(app: Any) -> None:
     app.router.routes.append(Route("/metrics", _serve_metrics, methods=["GET"]))
 
 
-def _open_fanout_audit_sink() -> AuditSinkPort | None:
-    """Resolve an audit sink, or None when this deployment has no host to audit to.
+def _mount_ops_surface(app: Any, ops_mcp: Any, *, path: str) -> None:
+    """Serve the operator tool surface beside the agent's, on one port.
 
-    Standalone deployments have nowhere to record turn absorption, and the
-    ``eidolon-os`` extra that provides the sink is not installed — so the import
-    failing is an ordinary outcome, not an error. Either way the turn path is
-    unaffected; it treats None as "no audit configured".
+    Mounted rather than given its own port so nothing about the process topology
+    changes: the supervisor still spawns one child with one ``--port``, and
+    discovery still hands the agent the same URL it always did. What changes is only
+    which tools each path offers.
+
+    The ASGI app is taken from the second FastMCP and mounted whole. Its session
+    manager is started by the composed lifespan — an unstarted one answers every
+    request with a 500, which would make the operator surface look present and
+    broken rather than absent.
     """
-    try:
-        from eidolon.memory.integrations.eidolon_data import open_fanout_audit_sink
 
-        return open_fanout_audit_sink()
-    except Exception as exc:  # noqa: BLE001 - audit is optional, never fatal
-        log.info("fanout_audit_sink_unavailable", error=str(exc))
-        return None
+    from starlette.routing import Mount
+
+    mount_at = path if path.startswith("/") else f"/{path}"
+    # FastMCP serves its transport at ``streamable_http_path``, already set to this
+    # path, so mounting at "/" would nest it twice.
+    app.router.routes.append(Mount("", app=ops_mcp.streamable_http_app()))
+    log.info("agent_runner_ops_surface_mounted", path=mount_at)
 
 
 async def _nats_subscriber_loop(
@@ -159,7 +164,6 @@ async def _nats_subscriber_loop(
     ledger = sync
 
     steward = create_steward(settings)
-    audit_sink = _open_fanout_audit_sink()
     sync_every = max(1, settings.worker.sync_every_n_turns)
     writes_since_checkpoint = 0
 
@@ -342,7 +346,11 @@ async def _nats_subscriber_loop(
                     settings=settings,
                     max_deliveries=settings.nats.worker_max_deliveries,
                     expected_memory_space_id=memory_space_id,
-                    audit_sink=audit_sink,
+                    # Fanout absorption/rejection is high-frequency operational
+                    # telemetry, already represented by Memory metrics and
+                    # local ledgers. It must not synchronously write the shared
+                    # system-data SQLite database.
+                    audit_sink=None,
                     dlq_writer=dlq,
                     decision_store=decision_store,
                     canonical_facts=canonical_facts,
@@ -419,6 +427,7 @@ async def _nats_subscriber_loop(
 
 def _compose_starlette_lifespan(
     mcp: Any,
+    ops_mcp: Any = None,
     *,
     memory_space_id: str,
     settings: MemorySettings,
@@ -438,6 +447,7 @@ def _compose_starlette_lifespan(
     stop_event = asyncio.Event()
     nats_ready_event = asyncio.Event()
     session_manager = mcp.session_manager
+    ops_session_manager = None if ops_mcp is None else ops_mcp.session_manager
     nats_disabled = os.environ.get("EIDOLON_MEMORY_DISABLE_NATS", "").strip() == "1"
 
     @asynccontextmanager
@@ -494,7 +504,13 @@ def _compose_starlette_lifespan(
                     memory_space_id=memory_space_id,
                     elapsed_ms=_elapsed_ms(nats_started),
                 )
-            async with session_manager.run():
+            # Both surfaces' session managers, because both are mounted. A manager
+            # that was never started answers every request with a 500, so the
+            # operator surface would look mounted and broken rather than absent.
+            async with contextlib.AsyncExitStack() as sessions:
+                await sessions.enter_async_context(session_manager.run())
+                if ops_session_manager is not None:
+                    await sessions.enter_async_context(ops_session_manager.run())
                 yield
         finally:
             stop_event.set()
@@ -637,26 +653,41 @@ def _run_service(
     # context rather than from this process. That is what lets one process serve
     # several spaces; how many it actually holds is the router's decision.
     service = MemoryService(router, settings, command_publisher=command_publisher)
-    mcp = build_control_plane_mcp(
-        backend,
-        settings,
-        service=service,
-        memory_space_id=memory_space_id,
-        palace_path=str(palace_path),
-        host=host,
-        port=port,
-        lifespan=None,
-        kg=kg,
-        command_publisher=command_publisher,
-        command_status=command_status,
-        canonical_facts=canonical_facts,
-        commitments=commitments,
-        dlq_store=dlq,
-        replay_publisher=command_publisher,
-    )
+
+    # Two surfaces, one port, one set of handles. The agent's keeps the path it
+    # always had, so neither discovery nor the agent repo changes; the operator
+    # surface moves to its own. Both are built from the same arguments — the split
+    # is who may see which tool, not which store they reach.
+    def _surface(surface: str, path: str | None):
+        return build_control_plane_mcp(
+            backend,
+            settings,
+            service=service,
+            memory_space_id=memory_space_id,
+            palace_path=str(palace_path),
+            host=host,
+            port=port,
+            lifespan=None,
+            kg=kg,
+            command_publisher=command_publisher,
+            command_status=command_status,
+            canonical_facts=canonical_facts,
+            commitments=commitments,
+            dlq_store=dlq,
+            replay_publisher=command_publisher,
+            surface=surface,
+            path=path,
+        )
+
+    mcp = _surface("agent", None)
+    ops_mcp = _surface("all", settings.mcp_http.ops_path)
     log.info(
         "agent_runner_mcp_build_done",
         memory_space_id=memory_space_id,
+        agent_tools=len(mcp._tool_manager.list_tools()),
+        ops_tools=len(ops_mcp._tool_manager.list_tools()),
+        agent_path=settings.mcp_http.path,
+        ops_path=settings.mcp_http.ops_path,
         elapsed_ms=_elapsed_ms(step_started),
     )
 
@@ -690,8 +721,10 @@ def _run_service(
 
     starlette_app = mcp.streamable_http_app()
     _mount_metrics(starlette_app)
+    _mount_ops_surface(starlette_app, ops_mcp, path=settings.mcp_http.ops_path)
     starlette_app.router.lifespan_context = _compose_starlette_lifespan(
         mcp,
+        ops_mcp,
         memory_space_id=memory_space_id,
         settings=settings,
         backend=backend,

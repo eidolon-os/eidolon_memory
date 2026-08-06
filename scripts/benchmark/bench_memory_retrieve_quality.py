@@ -1122,7 +1122,13 @@ async def amain(args: argparse.Namespace) -> int:
         print(f"[seed] publish complete in {publish_dt:.1f}s")
 
         # 3) Open MCP session, wait for ingestion.
-        mcp_url = f"http://127.0.0.1:{args.port}/mcp"
+        #
+        # The operator surface, because this bench calls kg_stats and list as well
+        # as recall_context, and the agent surface deliberately offers only the two
+        # tools the agent calls. Both paths are the same process, the same service
+        # and the same handles — the tool list differs, the code a query runs
+        # through does not — so recall latency measured here is the agent's.
+        mcp_url = f"http://127.0.0.1:{args.port}{get_memory_settings().mcp_http.ops_path}"
         async with _mcp_session(mcp_url) as session:
             print(
                 f"[wait] waiting for the turn consumer to drain, then for "

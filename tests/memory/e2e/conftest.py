@@ -144,23 +144,28 @@ def live_nats(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
 
 
 def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
-    """Poll the agent_runner's MCP HTTP until it responds with ANY HTTP status.
+    """Poll both MCP surfaces until each responds with ANY non-5xx HTTP status.
 
-    A successful TCP+HTTP round-trip on /mcp/ means uvicorn + FastMCP are up;
-    we don't care which status code FastMCP picks for a bare GET.
+    A successful TCP+HTTP round-trip means uvicorn + FastMCP are up; we don't care
+    which status code FastMCP picks for a bare GET.
+
+    **Both** paths, not just the agent's. Nearly every e2e test drives operator
+    tools, which live on ``/ops/mcp``; checking only ``/mcp`` would report a healthy
+    start for a process whose operator surface failed to mount, and every one of
+    those tests would then fail on a 404 that says nothing about why.
     """
     deadline = time.monotonic() + timeout_s
+    paths = ("/mcp/", "/ops/mcp/")
     while time.monotonic() < deadline:
         try:
-            response = httpx.get(
-                f"http://127.0.0.1:{port}/mcp/",
-                timeout=1.0,
-                trust_env=False,
-            )
+            responses = [
+                httpx.get(f"http://127.0.0.1:{port}{path}", timeout=1.0, trust_env=False)
+                for path in paths
+            ]
             # Any non-5xx HTTP response means uvicorn + FastMCP are up. A
             # 502/500 means the MCP endpoint is alive but unhealthy; keep
             # polling so startup failures surface with the agent log tail.
-            if response.status_code < 500:
+            if all(response.status_code < 500 for response in responses):
                 return True
         except (
             httpx.ConnectError,
@@ -223,7 +228,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
 
         def test_x(live_agent_runner):
             handle = live_agent_runner(user_id="e2e_p0", port=19030)
-            assert handle.mcp_url == "http://127.0.0.1:19030/mcp"
+            assert handle.mcp_url == "http://127.0.0.1:19030/ops/mcp"
             # ... talk to it via mcp_session / nats_publish_turn ...
 
     Cleanup: every spawned process is SIGTERM'd (then SIGKILL) at fixture
@@ -415,7 +420,8 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         handle = _AgentHandle(
             user_id=memory_space_id,
             port=port,
-            mcp_url=f"http://127.0.0.1:{port}/mcp",
+            mcp_url=f"http://127.0.0.1:{port}/ops/mcp",
+            agent_mcp_url=f"http://127.0.0.1:{port}/mcp",
             nats_url=live_nats,
             palace_dir=palace_dir,
             log_path=log_path,
@@ -449,6 +455,7 @@ class _AgentHandle:
         "user_id",
         "port",
         "mcp_url",
+        "agent_mcp_url",
         "nats_url",
         "palace_dir",
         "log_path",
@@ -462,6 +469,7 @@ class _AgentHandle:
         user_id: str,
         port: int,
         mcp_url: str,
+        agent_mcp_url: str,
         nats_url: str,
         palace_dir: Path,
         log_path: Path,
@@ -470,7 +478,12 @@ class _AgentHandle:
     ) -> None:
         self.user_id = user_id
         self.port = port
+        # The operator surface. e2e drives nearly every operator tool, and this is
+        # the path that offers them; ``agent_mcp_url`` is the two-tool surface the
+        # conversational agent actually connects to. Same process, same service,
+        # same handles — only the tool list differs.
         self.mcp_url = mcp_url
+        self.agent_mcp_url = agent_mcp_url
         self.nats_url = nats_url
         self.palace_dir = palace_dir
         self.log_path = log_path

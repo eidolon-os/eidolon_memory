@@ -542,7 +542,15 @@ class McpHttpConfig(BaseModel):
 
     host: str = "127.0.0.1"
     port: int = 10030  # only used if CLI --port unset
+    # The agent's surface: the two tools it calls, and nothing else. Unchanged from
+    # when this path served all 27, so nothing addressing it needs to move.
     path: str = "/mcp"
+    # Operator, benchmark and admin surface, on the same port and the same handles.
+    # Separate because the agent's model reads its whole tool list every request:
+    # 27 tools measured 15,602 characters of schema — ~3,900 tokens, of which ~3,347
+    # described tools it must never call — and that list included forget_confirm,
+    # dlq_replay and kg_invalidate, which a model reading "忘了这件事吧" had in reach.
+    ops_path: str = "/ops/mcp"
     stateless_http: bool = True
     json_response: bool = True
     bearer_token: str = ""
@@ -566,7 +574,17 @@ class McpHttpConfig(BaseModel):
         return data
 
     def base_url(self, *, port: int | None = None) -> str:
-        path = self.path if self.path.startswith("/") else f"/{self.path}"
+        """The agent's endpoint. What discovery hands out."""
+
+        return self._url(self.path, port)
+
+    def ops_base_url(self, *, port: int | None = None) -> str:
+        """The operator endpoint, on the same port as the agent's."""
+
+        return self._url(self.ops_path, port)
+
+    def _url(self, raw_path: str, port: int | None) -> str:
+        path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
         effective_port = port if port is not None else self.port
         return f"http://{self.host}:{effective_port}{path}"
 
