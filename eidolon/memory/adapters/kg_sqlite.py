@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import re
 import sqlite3
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,13 +33,10 @@ from eidolon_memory_contracts import SENSITIVE_PREDICATES
 from eidolon.memory.adapters.kg_sql import (
     JOIN_ENTITIES,
     ORDER_BY_RELEVANCE,
-    RANKED_SUBJECT_COLUMNS,
     SCHEMA_STATEMENTS,
     SELECT_COLUMNS,
-    SUBJECT_RANK,
     VALID_AT,
     audience_filter,
-    name_appears_in,
 )
 from eidolon.memory.domain.kg import KgTripleRecord
 from eidolon.memory.domain.space_lock import SpaceLock
@@ -47,6 +45,19 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 _DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+#: How many statements one entity may contribute when the caller names no bound.
+#:
+#: ``query_entity`` had no LIMIT at all, so a companion's hot subject — and "用户"
+#: is in most statements a companion ever records — returned the whole of it. At
+#: 20 000 statements that was 13 333 rows crossing the thread boundary for a caller
+#: that then sliced the first eight.
+#:
+#: Generous rather than tight: ``kg_max_triples_per_entity`` is 8, so this is far
+#: above anything recall asks for, and it exists to bound the pathological case
+#: rather than to shape results. ``ORDER_BY_RELEVANCE`` means what a truncation
+#: drops is the least relevant; an operator tool that wants more passes its own.
+DEFAULT_ENTITY_LIMIT = 200
 
 
 def now_iso() -> str:
@@ -130,26 +141,70 @@ class SqliteKnowledgeGraph:
         self._space_id = space_id
         self._lock = lock
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        # One connection per thread, not one shared by all of them. See
+        # ``_connection``.
+        self._local = threading.local()
+        self._open_connections: list[sqlite3.Connection] = []
+        self._connections_guard = threading.Lock()
         self._initialise()
+
+    def _connection(self) -> sqlite3.Connection:
+        """This thread's connection, opened on first use.
+
+        Reads run in ``asyncio.to_thread`` and the space lock admits several at
+        once, so "several threads reading" is the normal case. They used to share
+        one ``sqlite3.Connection`` with ``check_same_thread=False`` — which permits
+        cross-thread use but does not make it concurrent: SQLite serialises on the
+        connection, and every row still becomes a Python object under the GIL.
+
+        Measured at 8 000 statements, eight concurrent reads of a hot subject:
+
+            serial                    145 ms   (18 ms each)
+            concurrent, one connection  1595 ms  (199 ms each)
+
+        **Eleven times slower than not being concurrent at all** — a mutex convoy
+        plus a hundred thousand object constructions contending for the GIL. Per
+        thread it was 3.3x better even before the queries were bounded.
+
+        Chroma reached the same conclusion for its own store (``PerThreadPool``).
+        The journal is already WAL, which is what makes concurrent readers
+        genuinely parallel once they stop sharing a handle — the pragma was there
+        and only the handle was missing.
+
+        The executor's pool is bounded (``min(32, cores + 4)`` — eight on a Pi), so
+        the number of connections is too.
+        """
+
+        connection = getattr(self._local, "conn", None)
+        if connection is not None:
+            return connection
+        connection = sqlite3.connect(str(self._path), check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        # Per connection, not per database, unlike journal_mode.
+        connection.execute("PRAGMA foreign_keys=ON")
+        self._local.conn = connection
+        with self._connections_guard:
+            self._open_connections.append(connection)
+        return connection
 
     @property
     def lock(self) -> SpaceLock:
         return self._lock
 
     def _initialise(self) -> None:
-        with self._conn:
+        with self._connection() as conn:
             # WAL so a reader is never blocked by the turn currently writing.
             #
             # That was true of the file and false of the code until 2026-08-05: the
             # shared lock was an exclusive mutex, so every read here waited for the
             # turn anyway and WAL bought nothing. Reads now take the reader side,
             # which is what makes this pragma mean what it says.
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
+            # journal_mode is a property of the database file, so it is set once
+            # here and every later connection inherits it.
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
             for statement in SCHEMA_STATEMENTS:
-                self._conn.execute(statement)
+                conn.execute(statement)
 
     # ── writes ──────────────────────────────────────────────────────────────
 
@@ -203,7 +258,7 @@ class SqliteKnowledgeGraph:
         # Replaying a turn must not duplicate, and must not undo an invalidation
         # that happened after it — so this check comes before the validity one.
         if source_turn_id:
-            existing = self._conn.execute(
+            existing = self._connection().execute(
                 """
                 SELECT statement_id FROM kg_statements
                 WHERE space_id = ? AND source_turn_id = ?
@@ -216,7 +271,7 @@ class SqliteKnowledgeGraph:
                 return existing["statement_id"]
 
         # An identical statement that is still open is the same statement.
-        still_valid = self._conn.execute(
+        still_valid = self._connection().execute(
             """
             SELECT statement_id FROM kg_statements
             WHERE space_id = ? AND subject_id = ? AND predicate = ? AND object_id = ?
@@ -232,10 +287,10 @@ class SqliteKnowledgeGraph:
         statement_id = statement_id_for(subject_id, predicate, object_id, started, recorded)
         is_sensitive = predicate_is_sensitive(predicate) if sensitive is None else sensitive
 
-        with self._conn:
+        with self._connection():
             self._upsert_entity(subject_id, subject, recorded)
             self._upsert_entity(object_id, object, recorded)
-            self._conn.execute(
+            self._connection().execute(
                 """
                 INSERT OR IGNORE INTO kg_statements (
                     space_id, statement_id, subject_id, predicate, object_id,
@@ -262,7 +317,7 @@ class SqliteKnowledgeGraph:
         return statement_id
 
     def _upsert_entity(self, entity_id: str, name: str, recorded: str) -> None:
-        self._conn.execute(
+        self._connection().execute(
             """
             INSERT OR IGNORE INTO kg_entities (
                 space_id, entity_id, name, entity_type, properties, created_at
@@ -288,8 +343,8 @@ class SqliteKnowledgeGraph:
         self, subject: str, predicate: str, object: str, ended: str | None
     ) -> int:
         ended_at = canonical_temporal(ended) or now_iso()
-        with self._conn:
-            cursor = self._conn.execute(
+        with self._connection():
+            cursor = self._connection().execute(
                 """
                 UPDATE kg_statements SET valid_to = ?
                 WHERE space_id = ? AND subject_id = ? AND predicate = ? AND object_id = ?
@@ -377,8 +432,8 @@ class SqliteKnowledgeGraph:
         if not normalised or not entity_id:
             return
         mention_id = f"{entity_id}:{normalised}"
-        with self._conn:
-            self._conn.execute(
+        with self._connection():
+            self._connection().execute(
                 """
                 INSERT OR IGNORE INTO kg_entity_mentions (
                     space_id, mention_id, entity_id, alias, source, confidence, created_at
@@ -398,6 +453,7 @@ class SqliteKnowledgeGraph:
         as_of: str | None = None,
         direction: str = "outgoing",
         include_sensitive: bool = False,
+        limit: int = DEFAULT_ENTITY_LIMIT,
     ) -> list[KgTripleRecord]:
         if direction not in {"outgoing", "incoming", "both"}:
             raise ValueError(
@@ -407,7 +463,7 @@ class SqliteKnowledgeGraph:
         async with self._lock.reader():
             return await asyncio.to_thread(
                 self._query_entity_sync, name, audiences, moment, direction,
-                include_sensitive,
+                include_sensitive, limit,
             )
 
     def _query_entity_sync(
@@ -417,27 +473,69 @@ class SqliteKnowledgeGraph:
         moment: str,
         direction: str,
         include_sensitive: bool,
+        limit: int,
     ) -> list[KgTripleRecord]:
         if not audiences:
             return []
         entity = entity_id_for(name)
-        columns = "s.subject_id = ?" if direction == "outgoing" else "s.object_id = ?"
+        bound = max(1, limit)
+
+        def branch(side: str, *, projection: str = SELECT_COLUMNS) -> tuple[str, list[Any]]:
+            return (
+                f"SELECT {projection} {JOIN_ENTITIES} "
+                f"WHERE s.space_id = ? AND s.{side} = ? "
+                f"AND {VALID_AT} "
+                f"AND {audience_filter(len(audiences))} "
+                f"{self._sensitive_clause(include_sensitive)} "
+                f"{ORDER_BY_RELEVANCE} LIMIT ?",
+                [self._space_id, entity, moment, moment, *audiences, bound],
+            )
+
         if direction == "both":
-            columns = "(s.subject_id = ? OR s.object_id = ?)"
-        params: list[Any] = [self._space_id]
-        params.extend([entity, entity] if direction == "both" else [entity])
-        params.append(moment)
-        params.append(moment)
-        params.extend(audiences)
-        sql = (
-            f"SELECT {SELECT_COLUMNS} {JOIN_ENTITIES} "
-            f"WHERE s.space_id = ? AND {columns} "
-            f"AND {VALID_AT} "
-            f"AND {audience_filter(len(audiences))} "
-            f"{self._sensitive_clause(include_sensitive)} "
-            f"{ORDER_BY_RELEVANCE}"
-        )
-        return [_to_record(row) for row in self._conn.execute(sql, params)]
+            # Two indexed branches rather than ``subject_id = ? OR object_id = ?``.
+            #
+            # The OR is what a reader would write, and it is why this was the
+            # slowest read in the graph. Measured at 20 000 statements, EXPLAIN
+            # QUERY PLAN on each shape:
+            #
+            #   s.subject_id = ?   SEARCH USING INDEX idx_kg_statements_relevance
+            #   the OR             SEARCH USING idx_kg_statements_source (space_id=?)
+            #                      + USE TEMP B-TREE FOR ORDER BY
+            #
+            # SQLite cannot satisfy an OR across two different indexes and one
+            # ordering, so it falls back to the widest index it has and sorts
+            # everything: 0.86 ms became 13.62 ms. This matters more than it
+            # sounds, because ``both`` is what ``query_entity_combined`` asks for
+            # and that is the default recall path.
+            #
+            # ``UNION`` and not ``UNION ALL``: a statement whose subject and object
+            # are the same entity satisfies both branches, and the rows are
+            # identical, so the set operation drops the duplicate. Each branch
+            # keeps its own LIMIT, and the outer one re-orders the merged pair —
+            # unprefixed, because by then the columns are the projection's aliases
+            # rather than ``s.``-qualified ones.
+            # ``recorded_at`` is projected here and nowhere else. The outer ORDER BY
+            # can only name columns the branches produced, and dropping it would
+            # break ties between the two branches differently from every other
+            # read. ``_to_record`` indexes rows positionally and stops at nine, so
+            # the tenth column costs nothing but its own ordering.
+            merged = f"{SELECT_COLUMNS}, s.recorded_at AS recorded_at"
+            outgoing_sql, outgoing_params = branch("subject_id", projection=merged)
+            incoming_sql, incoming_params = branch("object_id", projection=merged)
+            sql = (
+                f"SELECT * FROM ({outgoing_sql}) "
+                f"UNION "
+                f"SELECT * FROM ({incoming_sql}) "
+                f"ORDER BY confidence DESC, valid_from DESC, recorded_at DESC "
+                f"LIMIT ?"
+            )
+            params = [*outgoing_params, *incoming_params, bound]
+        else:
+            sql, params = branch(
+                "subject_id" if direction == "outgoing" else "object_id"
+            )
+
+        return [_to_record(row) for row in self._connection().execute(sql, params)]
 
     async def query_subjects(
         self,
@@ -469,32 +567,40 @@ class SqliteKnowledgeGraph:
         if not wanted:
             return []
 
-        # Ranked within each subject, so every subject asked about gets its own
-        # allowance. A single overall LIMIT would let one well-connected entity
-        # spend the whole budget and leave the others unrepresented — which is
-        # what a plain ordered query plus per-subject bucketing in Python does.
+        # Every subject asked about gets its own allowance. A single overall LIMIT
+        # would let one well-connected entity spend the whole budget and leave the
+        # others unrepresented — which is what a plain ordered query plus
+        # per-subject bucketing in Python does.
         #
-        # One statement rather than one query per subject. Measured, because the
-        # justification used to be "against a database each extra query is another
-        # round trip" and that database was deleted: locally the difference is
-        # 0.125 ms at the three entities recall asks for, 0.25% of the voice
-        # budget. So this shape is worth having for the per-subject bound above,
-        # not for the round trip — and ``query_entity_combined``, which does take
-        # the one-query-per-entity path, is not worth rewriting for 0.125 ms.
-        placeholders = ", ".join("?" for _ in wanted)
-        sql = (
-            f"SELECT {RANKED_SUBJECT_COLUMNS} FROM ("
-            f"  SELECT {SELECT_COLUMNS}, {SUBJECT_RANK} {JOIN_ENTITIES} "
-            f"  WHERE s.space_id = ? AND s.subject_id IN ({placeholders}) "
-            f"  AND {VALID_AT} "
-            f"  AND {audience_filter(len(audiences))} "
-            f"  {self._sensitive_clause(include_sensitive)}"
-            f") ranked WHERE ranked.subject_rank <= ?"
+        # One branch per subject, each with its own ORDER BY and LIMIT, unioned
+        # into one statement. This replaced a ``ROW_NUMBER() OVER (PARTITION BY
+        # subject_id)`` that produced the right answer at the wrong cost: a window
+        # function has to rank the *whole* partition before anything can be
+        # discarded, so returning 8 rows about a companion's hot subject meant
+        # sorting the 13 333 statements it had — 33 ms, measured at 20 000
+        # statements, to hand back 8 records.
+        #
+        # A bounded branch stops instead, because ``idx_kg_statements_relevance``
+        # is ordered the same way the query is. Recall asks about
+        # ``kg_max_entities`` subjects — three — so this is three index walks in
+        # one round trip rather than one full-partition sort.
+        clause = (
+            f"SELECT {SELECT_COLUMNS} {JOIN_ENTITIES} "
+            f"WHERE s.space_id = ? AND s.subject_id = ? "
+            f"AND {VALID_AT} "
+            f"AND {audience_filter(len(audiences))} "
+            f"{self._sensitive_clause(include_sensitive)} "
+            f"{ORDER_BY_RELEVANCE} LIMIT ?"
         )
-        params: list[Any] = [
-            self._space_id, *wanted, moment, moment, *audiences, limit_per_subject
-        ]
-        return [_to_record(row) for row in self._conn.execute(sql, params)]
+        params: list[Any] = []
+        for subject_id in wanted:
+            params.extend(
+                [self._space_id, subject_id, moment, moment, *audiences, limit_per_subject]
+            )
+        # Parenthesised so each branch keeps its own ORDER BY and LIMIT; without
+        # them SQLite reads a trailing ORDER BY as applying to the whole union.
+        sql = " UNION ALL ".join(f"SELECT * FROM ({clause})" for _ in wanted)
+        return [_to_record(row) for row in self._connection().execute(sql, params)]
 
     async def query_entity_combined(
         self,
@@ -579,7 +685,7 @@ class SqliteKnowledgeGraph:
             "ORDER BY s.valid_from DESC, s.recorded_at DESC LIMIT ?"
         )
         params.append(max(1, limit))
-        return [_to_record(row) for row in self._conn.execute(sql, params)]
+        return [_to_record(row) for row in self._connection().execute(sql, params)]
 
     async def match_entities_for_query(self, query: str, *, cap: int) -> list[str]:
         if cap <= 0:
@@ -602,6 +708,24 @@ class SqliteKnowledgeGraph:
 
         Best effort by design: a miss costs the graph's contribution to one
         recall, which the vector result already covers.
+
+        **The matching runs in SQL, and the direction is why that is not obvious.**
+        This asks "does the stored name occur in the query text", which is the
+        reverse of what an index serves — ``LIKE`` with the wildcard on the stored
+        side cannot use one, so this is still a scan. What moved is where the scan
+        happens: it used to pull every entity name and every alias into Python and
+        loop, so a graph with 70 000 entities built 70 000 objects on every recall,
+        under the GIL, three times a conversation. Now the comparison happens in C
+        and only the matches — at most ``cap`` — cross the boundary.
+
+        ``instr()`` rather than ``LIKE``: SQLite's ``LIKE`` is case-insensitive for
+        ASCII by default, and this test has always been case-sensitive on the
+        canonical side. ``instr(haystack, needle) > 0`` is exactly ``needle in
+        haystack`` and keeps that. The alias side compares lowercased text against
+        aliases that are stored lowercased, which is what the Python version did.
+
+        A true index would need a trigram FTS table over the names. That is a
+        bigger change and it is not obviously worth it — see the scale probe.
         """
 
         text = (query or "").strip()
@@ -610,44 +734,56 @@ class SqliteKnowledgeGraph:
 
         found: list[str] = []
         seen: set[str] = set()
+        connection = self._connection()
 
-        names = [
-            row["name"]
-            for row in self._conn.execute(
-                "SELECT name FROM kg_entities WHERE space_id = ?", (self._space_id,)
-            )
-        ]
-        for name in sorted(set(names), key=lambda value: -len(value)):
-            if name in seen:
-                continue
-            if name_appears_in(name, text):
+        # Whole name, or the tail after a type prefix. ``instr(name, ':')`` guards
+        # the tail branch so a name that is nothing but a prefix does not match
+        # every query containing a colon — the same rule ``name_appears_in``
+        # states, kept here so both sides of the port agree.
+        #
+        # Longest first, so ``mother:张丽`` beats a bare ``mother`` when both fire.
+        for row in connection.execute(
+            """
+            SELECT DISTINCT name FROM kg_entities
+            WHERE space_id = ?
+              AND name <> ''
+              AND (
+                    instr(?, name) > 0
+                 OR (instr(name, ':') > 0
+                     AND length(name) > instr(name, ':')
+                     AND instr(?, substr(name, instr(name, ':') + 1)) > 0)
+              )
+            ORDER BY length(name) DESC
+            LIMIT ?
+            """,
+            (self._space_id, text, text, cap),
+        ):
+            name = row["name"]
+            if name not in seen:
                 found.append(name)
                 seen.add(name)
-                if len(found) >= cap:
-                    return found
+        if len(found) >= cap:
+            return found[:cap]
 
-        aliases = [
-            (row["alias"] or "", row["name"] or "")
-            for row in self._conn.execute(
-                """
-                SELECT m.alias AS alias, e.name AS name FROM kg_entity_mentions m
-                JOIN kg_entities e ON e.space_id = m.space_id AND e.entity_id = m.entity_id
-                WHERE m.space_id = ?
-                """,
-                (self._space_id,),
-            )
-        ]
         # Longest alias first, so "我老婆" wins over the substring "老婆".
-        lowered = text.lower()
-        for alias, name in sorted(aliases, key=lambda pair: -len(pair[0])):
-            if not alias or name in seen:
+        for row in connection.execute(
+            """
+            SELECT e.name AS name, m.alias AS alias FROM kg_entity_mentions m
+            JOIN kg_entities e ON e.space_id = m.space_id AND e.entity_id = m.entity_id
+            WHERE m.space_id = ? AND m.alias <> '' AND instr(?, m.alias) > 0
+            ORDER BY length(m.alias) DESC
+            LIMIT ?
+            """,
+            (self._space_id, text.lower(), cap),
+        ):
+            name = row["name"] or ""
+            if not name or name in seen:
                 continue
-            if alias in lowered:
-                found.append(name)
-                seen.add(name)
-                if len(found) >= cap:
-                    return found
-        return found
+            found.append(name)
+            seen.add(name)
+            if len(found) >= cap:
+                break
+        return found[:cap]
 
     async def known_audiences(self) -> list[str]:
         """Which audiences this space's graph actually contains.
@@ -663,7 +799,7 @@ class SqliteKnowledgeGraph:
     def _known_audiences_sync(self) -> list[str]:
         return [
             row["audience"]
-            for row in self._conn.execute(
+            for row in self._connection().execute(
                 "SELECT DISTINCT audience FROM kg_statements WHERE space_id = ?",
                 (self._space_id,),
             )
@@ -676,7 +812,7 @@ class SqliteKnowledgeGraph:
     def _list_entity_names_sync(self) -> list[str]:
         return [
             row["name"]
-            for row in self._conn.execute(
+            for row in self._connection().execute(
                 "SELECT name FROM kg_entities WHERE space_id = ? ORDER BY name",
                 (self._space_id,),
             )
@@ -687,7 +823,7 @@ class SqliteKnowledgeGraph:
             return await asyncio.to_thread(self._stats_sync)
 
     def _stats_sync(self) -> dict[str, Any]:
-        row = self._conn.execute(
+        row = self._connection().execute(
             """
             SELECT
                 (SELECT COUNT(*) FROM kg_entities WHERE space_id = ?) AS entities,
@@ -714,7 +850,7 @@ class SqliteKnowledgeGraph:
 
     def _has_triple_sync(self, triple_id: str) -> bool:
         return (
-            self._conn.execute(
+            self._connection().execute(
                 "SELECT 1 FROM kg_statements WHERE space_id = ? AND statement_id = ?",
                 (self._space_id, triple_id),
             ).fetchone()
@@ -732,7 +868,7 @@ class SqliteKnowledgeGraph:
     def _find_pending_sync(
         self, source_turn_id: str, subject: str, predicate: str, object: str
     ) -> str | None:
-        row = self._conn.execute(
+        row = self._connection().execute(
             """
             SELECT statement_id FROM kg_statements
             WHERE space_id = ? AND source_turn_id = ?
@@ -757,7 +893,7 @@ class SqliteKnowledgeGraph:
         self, subject: str, predicate: str, object: str, ended_at_or_before: str
     ) -> bool:
         boundary = canonical_temporal(ended_at_or_before) or now_iso()
-        row = self._conn.execute(
+        row = self._connection().execute(
             """
             SELECT 1 FROM kg_statements
             WHERE space_id = ? AND subject_id = ? AND predicate = ? AND object_id = ?
@@ -781,10 +917,21 @@ class SqliteKnowledgeGraph:
         return "" if include_sensitive else "AND s.sensitive = 0"
 
     def close(self) -> None:
-        try:
-            self._conn.close()
-        except Exception as exc:  # noqa: BLE001 - closing twice is not an error
-            log.warning("kg_sqlite_close_failed", error=str(exc))
+        """Close every connection this graph opened, not just this thread's.
+
+        Each reader thread has its own, so closing the caller's would leave the
+        rest holding the file — which on a space being torn down means the palace
+        directory cannot be moved and the next process's claim looks contended.
+        """
+
+        with self._connections_guard:
+            connections, self._open_connections = self._open_connections, []
+        self._local = threading.local()
+        for connection in connections:
+            try:
+                connection.close()
+            except Exception as exc:  # noqa: BLE001 - closing twice is not an error
+                log.warning("kg_sqlite_close_failed", error=str(exc))
 
 
 def _to_record(row: sqlite3.Row) -> KgTripleRecord:

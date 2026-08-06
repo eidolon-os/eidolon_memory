@@ -89,6 +89,24 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_kg_statements_subject
         ON kg_statements (space_id, subject_id, predicate)
     """,
+    # The recall path's *ordering*, which the index above does not provide.
+    #
+    # Recall wants the best few statements about a subject, and the ranking is
+    # ``confidence DESC, valid_from DESC, recorded_at DESC``. With only the index
+    # above, SQLite finds the subject's rows quickly and then sorts all of them
+    # before the LIMIT can discard any — which for a companion's hot subject is
+    # most of the graph. Measured at 20 000 statements: 33 ms to return 8 rows,
+    # because "用户" held 13 333 of them.
+    #
+    # Column order mirrors the ORDER BY exactly, DESC included, so a bounded query
+    # walks the index and stops. That turns top-N-per-subject from O(rows for that
+    # subject) into O(log n + N).
+    """
+    CREATE INDEX IF NOT EXISTS idx_kg_statements_relevance
+        ON kg_statements (
+            space_id, subject_id, confidence DESC, valid_from DESC, recorded_at DESC
+        )
+    """,
     # Incoming direction — "what points at this entity".
     """
     CREATE INDEX IF NOT EXISTS idx_kg_statements_object
@@ -175,35 +193,16 @@ _RELEVANCE = "s.confidence DESC, s.valid_from DESC, s.recorded_at DESC"
 
 ORDER_BY_RELEVANCE = f"ORDER BY {_RELEVANCE}"
 
-SUBJECT_RANK = f"""
-    ROW_NUMBER() OVER (PARTITION BY s.subject_id ORDER BY {_RELEVANCE}) AS subject_rank
-"""
-"""Rank statements within each subject, so each gets its own allowance.
+# ``SUBJECT_RANK`` and ``RANKED_SUBJECT_COLUMNS`` lived here: a
+# ``ROW_NUMBER() OVER (PARTITION BY subject_id)`` that gave each subject its own
+# allowance in one statement. Correct, and removed on 2026-08-06 because a window
+# function has to rank a whole partition before anything can be discarded — 33 ms
+# to return 8 rows once a companion's hot subject held 13 333 statements.
+#
+# ``query_subjects`` now unions one bounded branch per subject, each walking
+# ``idx_kg_statements_relevance`` and stopping at its LIMIT. The per-subject bound
+# is unchanged; only its cost is.
 
-Needed because the recall read asks about several subjects at once and must not
-let one well-connected entity spend the whole budget. Taking a global ``LIMIT``
-and bucketing in Python does not bound per subject at all — that is what the
-previous implementation did, and one well-connected entity filled the budget while
-the others got nothing.
-
-The single round trip is a secondary benefit, and smaller than it reads. That
-clause used to say it "matters once the store is across a network", which was
-written when a PostgreSQL graph existed; it was deleted under the local-only
-decision. Measured against a local file — 200 statements, 40 entities, the
-``kg_max_entities = 3`` the recall path actually asks for —
-``query_entity_combined``'s three queries and three lock acquisitions cost 0.248 ms
-against ``query_subjects``' 0.123 ms. The 0.125 ms difference is 0.25% of the 50 ms
-voice budget, so the per-subject bound is the reason to prefer this shape and the
-round trip is not.
-"""
-
-# The outer projection over the ranked subquery, in the same order as
-# SELECT_COLUMNS so a row is read positionally either way.
-RANKED_SUBJECT_COLUMNS = """
-    ranked.statement_id, ranked.subject_name, ranked.predicate, ranked.object_name,
-    ranked.valid_from, ranked.valid_to, ranked.confidence,
-    ranked.source_turn_id, ranked.adapter_name
-"""
 
 def name_appears_in(name: str, query: str) -> bool:
     """Whether a canonical entity name is referred to by a piece of text.

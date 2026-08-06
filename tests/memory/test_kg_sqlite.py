@@ -645,3 +645,60 @@ async def test_a_bare_prefix_matches_nothing(graph) -> None:
     assert await graph.match_entities_for_query("what about pet: things", cap=3) == [
         "pet:"
     ]
+
+
+# ── the matching rule now exists twice ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("stored", "query"),
+    [
+        ("铁锤", "铁锤会说话吗"),            # whole name
+        ("pet:铁锤", "铁锤会说话吗"),         # tail after the type prefix
+        ("mother:张丽", "张丽住在哪"),
+        ("mother:张丽", "mother:张丽 是谁"),  # whole name including the prefix
+        ("铁锤", "完全无关的问题"),           # no match
+        ("pet:", "关于 pet: 的事"),           # bare prefix — whole-name branch fires
+        ("pet:", "没有冒号的问题"),
+        ("Alice", "alice 是谁"),              # case-sensitive: must NOT match
+        ("Alice", "Alice 是谁"),
+        ("老婆", "我老婆叫什么"),
+    ],
+)
+async def test_sql_matching_agrees_with_the_python_rule(stored, query, graph) -> None:
+    """``match_entities_for_query`` moved into SQL; ``name_appears_in`` still
+    states the rule.
+
+    The rule is written twice now — once as Python, once as ``instr()`` in the
+    query — so the two are compared here rather than assumed to agree. Case is the
+    one most likely to drift: SQLite's ``LIKE`` is case-insensitive for ASCII,
+    which is why the SQL uses ``instr()``, and a future edit back to ``LIKE`` would
+    pass every other case in this list.
+    """
+
+    from eidolon.memory.adapters.kg_sql import name_appears_in
+
+    await graph.add_triple(
+        subject=stored, predicate="holds_role", object="x", audience=OWNER
+    )
+    matched = stored in await graph.match_entities_for_query(query, cap=5)
+
+    assert matched == name_appears_in(stored, query), (
+        f"SQL and name_appears_in disagree on {stored!r} in {query!r}: "
+        f"SQL says {matched}, Python says {name_appears_in(stored, query)}"
+    )
+
+
+async def test_longer_names_still_win(graph) -> None:
+    """``mother:张丽`` must beat a bare ``mother`` when both could fire — the
+    ordering moved into the query's ``ORDER BY length(name) DESC`` and is easy to
+    drop while everything else keeps working."""
+
+    for name in ("mother", "mother:张丽"):
+        await graph.add_triple(
+            subject=name, predicate="holds_role", object="x", audience=OWNER
+        )
+
+    assert await graph.match_entities_for_query("mother:张丽 住在哪", cap=1) == [
+        "mother:张丽"
+    ]
