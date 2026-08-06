@@ -724,8 +724,13 @@ class SqliteKnowledgeGraph:
         haystack`` and keeps that. The alias side compares lowercased text against
         aliases that are stored lowercased, which is what the Python version did.
 
-        A true index would need a trigram FTS table over the names. That is a
-        bigger change and it is not obviously worth it — see the scale probe.
+        The scan is index-only: ``idx_kg_entities_name`` covers ``(space_id,
+        name)`` so no row is fetched to read a name. That is worth about three
+        times at 45 000 entities and the ratio grows — see the index's own note in
+        ``kg_sql``, which also records that this was missed the first time.
+
+        It remains linear. A trigram FTS table over the names is the only thing
+        that would change that, and it is a bigger change — see the scale probe.
         """
 
         text = (query or "").strip()

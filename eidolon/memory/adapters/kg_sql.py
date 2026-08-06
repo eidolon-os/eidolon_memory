@@ -122,6 +122,32 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_kg_statements_source
         ON kg_statements (space_id, source_turn_id)
     """,
+    # Entity-name matching, which is a scan and stays one.
+    #
+    # ``match_entities_for_query`` asks whether a *stored* name occurs in the
+    # query text, so the wildcard is on the stored side and no index can turn it
+    # into a lookup. That was the reason given on 2026-08-06 for leaving it linear
+    # and calling a trigram FTS table the only real fix.
+    #
+    # **That reasoning conflated two things.** The scan cannot be removed; the
+    # *table lookup inside it* can. Without this index SQLite walks the primary
+    # key — ``(space_id, entity_id)`` — and fetches each row to read ``name``.
+    # With it the whole predicate is answered from index pages:
+    #
+    #     without   SEARCH kg_entities USING INDEX sqlite_autoindex_kg_entities_1
+    #     with      SEARCH kg_entities USING COVERING INDEX idx_kg_entities_name
+    #
+    # Measured through the adapter, index built and dropped again to rule out a
+    # warm cache: 2.10 → 0.96 ms at 6 668 entities, 8.50 → 3.12 at 25 001,
+    # 19.08 → 6.45 at 45 001. The ratio grows with the table (2.2x, 2.7x, 3.0x)
+    # because the row fetch is what scales and the index-only walk is not.
+    #
+    # Still linear, and a trigram table is still the only thing that would change
+    # that. This is the cheaper three-fold that should have been taken first.
+    """
+    CREATE INDEX IF NOT EXISTS idx_kg_entities_name
+        ON kg_entities (space_id, name)
+    """,
     # Alias lookup, for resolving "my dad" to an entity.
     """
     CREATE INDEX IF NOT EXISTS idx_kg_mentions_alias
