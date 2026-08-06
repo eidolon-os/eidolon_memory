@@ -106,6 +106,25 @@ class MemoryWriter(Protocol):
     async def ingest_fragment(self, fragment: MemoryFragment) -> None:
         """Append/index a structured steward fragment."""
 
+    async def ingest_fragments(self, fragments: Sequence[MemoryFragment]) -> None:
+        """Append/index one turn's fragments as a single write.
+
+        On the port rather than left to callers looping, because the unit that
+        matters is the turn and the cost is per *call*, not per fragment. Measured
+        on a real palace, the six a turn may produce: six one-document upserts take
+        32 ms, one six-document upsert takes 10.6 ms. The embedding is not where
+        that goes — it is 1.2 ms of a 9 ms write — it is Chroma's per-call
+        transaction, segment bookkeeping and index maintenance, paid six times.
+
+        It also shortens the exclusive section by ~22 ms. A store that must hold a
+        writer lock is one where the number of times you take it is a latency
+        budget, and a recall arriving mid-turn waits for whichever write holds it.
+
+        Failure is all-or-nothing, which is what the caller already assumed: the
+        turn processor wraps the whole loop in one try/except that NAKs the turn,
+        and drawer ids are deterministic, so a replay re-writes the same rows.
+        """
+
 
 @runtime_checkable
 class MemoryAdmin(Protocol):

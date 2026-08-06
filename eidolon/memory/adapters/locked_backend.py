@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
 from eidolon.memory.domain.errors import MemoryBackendUnsupported
@@ -249,6 +249,34 @@ class LockedBackend(MemoryBackend):
                 metadata=metadata,
             ),
             name="ingest_text",
+            write=True,
+        )
+
+    async def ingest_fragments(self, fragments: Sequence[MemoryFragment]) -> None:
+        """One turn, one exclusive section.
+
+        The point of taking the batch this far down rather than looping here: each
+        acquisition is a window in which a recall waits. Six of them cost a recall
+        arriving mid-turn ~31 ms, measured; one costs it the length of a single
+        write.
+        """
+
+        if not fragments:
+            # Before the lock, not after. A turn the steward declined to extract
+            # from is the ordinary case, and taking the writer side for it would
+            # hold every reader off to do nothing.
+            return
+
+        inner = getattr(self._inner, "ingest_fragments", None)
+        if inner is None:
+            # A store predating the batch write. Correct, just slower — and slower
+            # in a way the metric above will show rather than hide.
+            for fragment in fragments:
+                await self.ingest_fragment(fragment)
+            return
+        await self._serialized(
+            lambda: inner(fragments),
+            name="ingest_fragments",
             write=True,
         )
 

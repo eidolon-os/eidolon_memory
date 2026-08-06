@@ -180,7 +180,9 @@ class MemPalaceEncoder:
 class Encoder:
     """One quantized ONNX encoder, fed according to what its graph declares."""
 
-    def __init__(self, model: str, *, batch_size: int = 32) -> None:
+    def __init__(
+        self, model: str, *, batch_size: int = 32, max_tokens: int = _MAX_TOKENS
+    ) -> None:
         import numpy as np
         import onnxruntime as ort
         from huggingface_hub import hf_hub_download
@@ -190,6 +192,7 @@ class Encoder:
         self.spec = spec
         self.np = np
         self.batch_size = batch_size
+        self.max_tokens = max_tokens
         weights = hf_hub_download(spec["repo"], filename="model_quantized.onnx", subfolder="onnx")
         self.session = ort.InferenceSession(weights, providers=["CPUExecutionProvider"])
         self.inputs = {i.name for i in self.session.get_inputs()}
@@ -202,7 +205,7 @@ class Encoder:
             hf_hub_download(spec["repo"], filename="tokenizer.json")
         )
         self.tokenizer.enable_padding()
-        self.tokenizer.enable_truncation(max_length=_MAX_TOKENS)
+        self.tokenizer.enable_truncation(max_length=max_tokens)
 
     def _encode(self, texts: list[str]) -> list[list[float]]:
         np = self.np

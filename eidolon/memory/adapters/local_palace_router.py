@@ -113,7 +113,7 @@ class LocalPalaceRouter:
         # One advisory lock per space, not one per process. Holding several is
         # what lets a process serve several spaces while each palace still has
         # exactly one owner.
-        self._locks: dict[str, IO] = {}
+        self._locks: dict[str, list[IO]] = {}
         # Resolved palace directory → the space that holds it. The flock above
         # answers "is another process serving this space"; this answers "is another
         # space in this process already using this directory", which is a different
@@ -266,8 +266,13 @@ class LocalPalaceRouter:
         stops this space — not the whole process, which may be serving others fine.
         """
 
-        self._acquire_space_lock(space_id)
+        # In-process first, on-disk second. Both refuse two spaces sharing one
+        # directory, but only the first can say *which* space in this process holds
+        # it — the flock would report "another process" while naming our own pid,
+        # which is the kind of message that sends someone hunting a second process
+        # that does not exist.
         self._claim_palace_directory(space_id, palace_path)
+        self._acquire_space_lock(space_id, palace_path)
         assert_palace_location_safe(palace_path)
 
         backend_name = selected_mempalace_backend(self._settings)
@@ -305,13 +310,36 @@ class LocalPalaceRouter:
                     "investigate and restore from a snapshot"
                 )
 
-    def _acquire_space_lock(self, space_id: str) -> None:
-        """Take this host's exclusive claim on one space.
+    def _acquire_space_lock(self, space_id: str, palace_path: Path) -> None:
+        """Take this host's exclusive claim, on **two** keys, for one space.
 
-        Guards two things at once: the palace directory's single-owner rule, and
-        ownership of the space's durable JetStream consumers. Two processes
-        serving one space would route its writes unpredictably, so this fails
-        fast rather than degrading.
+        They answer different questions and both have to hold:
+
+        ``eidolon-memory-agent-<space>.lock`` claims the *space*, which is what
+        owns the space's durable JetStream consumers. Two processes serving one
+        space would route its writes unpredictably.
+
+        ``eidolon-memory-palace-<dir>.lock`` claims the *directory*, which is what
+        Chroma cannot share — its own documented constraint is that it "is not
+        process-safe for concurrent writers sharing the same local persistence
+        path". The space key does not cover this: two different space ids can
+        resolve to one directory, which is exactly what ``palace_path_override``
+        does when a process serves more than one space. Two differently-named
+        locks would both be granted and one ``chroma.sqlite3`` would be opened
+        twice — the corruption this claim exists to prevent, arriving through the
+        mechanism meant to prevent it.
+
+        Both, rather than replacing the first with the second, because the space
+        lock's filename is load-bearing across an upgrade: a running process holds
+        that exact path, and a new process that only took the directory lock would
+        not see it. Keeping both means a mixed-version restart still collides. Once
+        every process on a host is past this change, the space lock is the
+        removable one.
+
+        Taken in a fixed order — space, then directory — because two processes
+        acquiring the same pair in opposite orders is how a deadlock is written.
+        Non-blocking acquisition makes that a failed claim rather than a hang, but
+        the ordering is what makes the outcome the same for both.
         """
 
         if space_id in self._locks:
@@ -319,32 +347,52 @@ class LocalPalaceRouter:
 
         run_dir = resolve_run_dir(self._settings)
         run_dir.mkdir(parents=True, exist_ok=True)
-        # The filename must stay as it is. A running process holds this exact
-        # path, so renaming it — however much better "space" reads than "agent"
-        # now that a process is not one space — would make an upgraded process
-        # take no lock the old one recognises. Both would then open the same
-        # palace, which is the corruption this claim exists to prevent, and the
-        # window is any deployment that is not a clean full stop.
-        lock_path = run_dir / f"eidolon-memory-agent-{nats_safe_name(space_id)}.lock"
-        handle = open(lock_path, "a+", encoding="utf-8")
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
+        resolved = palace_path.expanduser().resolve()
+        claims = (
+            # The filename must stay as it is. A running process holds this exact
+            # path, so renaming it — however much better "space" reads than "agent"
+            # now that a process is not one space — would make an upgraded process
+            # take no lock the old one recognises.
+            ("space", run_dir / f"eidolon-memory-agent-{nats_safe_name(space_id)}.lock"),
+            ("palace", run_dir / f"eidolon-memory-palace-{nats_safe_name(str(resolved))}.lock"),
+        )
+
+        taken: list[IO] = []
+        for kind, lock_path in claims:
+            handle = open(lock_path, "a+", encoding="utf-8")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                handle.seek(0)
+                holder = handle.read().strip()
+                handle.close()
+                # Release whatever this attempt already took, so a refused claim
+                # leaves nothing behind for the next one to trip over.
+                for opened in taken:
+                    fcntl.flock(opened.fileno(), fcntl.LOCK_UN)
+                    opened.close()
+                if kind == "space":
+                    # The wording is load-bearing: operators grep for it, and so
+                    # does tests/memory/e2e/test_concurrency_topology.py. Keep it
+                    # stable even though "process" would now read better than
+                    # "eidolon-memory-agent".
+                    raise MemorySpaceUnavailable(
+                        f"memory_space_id {space_id!r} is already owned by another "
+                        f"eidolon-memory-agent; lock={lock_path} holder={holder!r}"
+                    ) from exc
+                raise MemorySpaceUnavailable(
+                    f"refusing to open memory space {space_id!r}: its palace "
+                    f"directory {resolved} is already held by another process "
+                    f"(lock={lock_path} holder={holder!r}). A palace has exactly "
+                    f"one owner, whichever space id names it."
+                ) from exc
             handle.seek(0)
-            holder = handle.read().strip()
-            handle.close()
-            # The wording is load-bearing: operators grep for it, and so does
-            # tests/memory/e2e/test_concurrency_topology.py. Keep it stable even
-            # though "process" would now read better than "eidolon-memory-agent".
-            raise MemorySpaceUnavailable(
-                f"memory_space_id {space_id!r} is already owned by another "
-                f"eidolon-memory-agent; lock={lock_path} holder={holder!r}"
-            ) from exc
-        handle.seek(0)
-        handle.truncate()
-        handle.write(str(os.getpid()))
-        handle.flush()
-        self._locks[space_id] = handle
+            handle.truncate()
+            handle.write(f"{os.getpid()} {space_id}")
+            handle.flush()
+            taken.append(handle)
+
+        self._locks[space_id] = taken
 
     def held_spaces(self) -> list[str]:
         """Spaces whose handles are currently open. For diagnostics."""
@@ -369,10 +417,11 @@ class LocalPalaceRouter:
         metrics.SPACES_HELD.set(0)
         self._palace_dirs.clear()
         locks, self._locks = self._locks, {}
-        for space_id, handle in locks.items():
+        for space_id, handles in locks.items():
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                handle.close()
+                for handle in handles:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    handle.close()
             except Exception as exc:  # noqa: BLE001 - shutdown is best-effort
                 log.warning(
                     "space_lock_release_failed",

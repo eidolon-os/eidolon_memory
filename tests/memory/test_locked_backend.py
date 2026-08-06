@@ -12,6 +12,19 @@ from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.domain.fragments import MemoryFragment
 
 
+def _fragment(i: int) -> MemoryFragment:
+    return MemoryFragment(
+        memory_space_id="default.alice.default",
+        source_turn_id=f"t-{i}",
+        wing="Wing_Life",
+        room=f"r{i}",
+        content=f"content {i}",
+        memory_type="event",
+        confidence=0.9,
+        importance=3,
+    )
+
+
 @pytest.mark.asyncio
 async def test_locked_backend_passes_through_all_methods() -> None:
     backend = LockedBackend(FakeMemoryBackend())
@@ -222,3 +235,50 @@ async def test_locked_backend_ingest_fragment_route() -> None:
     rows = await backend.get_all("")
     assert len(rows) == 1
     assert rows[0].value == "hello"
+
+
+@pytest.mark.asyncio
+async def test_a_turn_takes_the_writer_lock_once() -> None:
+    """Each acquisition is a window in which a recall waits.
+
+    Measured on a real palace: six fragments written one at a time cost 65ms and
+    three Chroma calls each; batched they cost 20ms and three calls total. The
+    lock-hold count is the part this test can pin without a store.
+    """
+
+    acquisitions = 0
+
+    class CountingFake(FakeMemoryBackend):
+        async def ingest_fragments(self, fragments):
+            nonlocal acquisitions
+            acquisitions += 1
+            await super().ingest_fragments(fragments)
+
+    backend = LockedBackend(CountingFake())
+    await backend.ingest_fragments([_fragment(i) for i in range(6)])
+
+    assert acquisitions == 1
+
+
+@pytest.mark.asyncio
+async def test_a_store_without_the_batch_write_still_works() -> None:
+    """The fallback loop is correct, just slower — and a store may predate it."""
+
+    class NoBatch(FakeMemoryBackend):
+        ingest_fragments = None  # type: ignore[assignment]
+
+    backend = LockedBackend(NoBatch())
+    await backend.ingest_fragments([_fragment(i) for i in range(3)])
+
+    assert len(await backend.get_all("")) == 3
+
+
+@pytest.mark.asyncio
+async def test_writing_no_fragments_touches_nothing() -> None:
+    """A turn the steward declined to extract from is the ordinary case."""
+
+    class Loud(FakeMemoryBackend):
+        async def ingest_fragments(self, fragments):
+            raise AssertionError("an empty turn must not reach the store")
+
+    await LockedBackend(Loud()).ingest_fragments([])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from typing import Any
 
 from eidolon.memory.domain.fragments import MemoryFragment
@@ -46,3 +47,24 @@ async def ingest_memory_fragment(
         return
     async with serialize_lock:
         await backend.ingest_fragment(fragment)
+
+
+async def ingest_memory_fragments(
+    backend: MemoryBackend,
+    fragments: Sequence[MemoryFragment],
+    *,
+    serialize_lock: asyncio.Lock | None = None,
+) -> None:
+    """Persist a turn's fragments as one write.
+
+    Empty is a no-op rather than an empty batch: a turn the steward declined to
+    extract from is the ordinary case, and it should not reach the store at all.
+    """
+
+    if not fragments:
+        return
+    if serialize_lock is None:
+        await backend.ingest_fragments(fragments)
+        return
+    async with serialize_lock:
+        await backend.ingest_fragments(fragments)

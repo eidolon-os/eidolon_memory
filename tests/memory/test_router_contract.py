@@ -190,6 +190,33 @@ async def test_one_process_refuses_two_spaces_in_one_palace_directory(
         await router.aclose()
 
 
+async def test_two_routers_refuse_one_palace_under_different_space_ids(
+    tmp_path, monkeypatch
+) -> None:
+    """The half an in-process registry cannot cover.
+
+    Two routers stand in for two processes. They ask for *different* spaces, so the
+    space-keyed claim is granted to both — and before the directory-keyed one
+    existed, both then opened the same ``chroma.sqlite3``. Chroma's own constraint
+    is that it "is not process-safe for concurrent writers sharing the same local
+    persistence path", so the key has to be the path.
+    """
+
+    monkeypatch.delenv("EIDOLON_MEMORY_RUN_DIR", raising=False)
+    settings = _local_settings(tmp_path)
+    shared = str(tmp_path / "shared-palace")
+    first = LocalPalaceRouter(settings, palace_path_override=shared)
+    second = LocalPalaceRouter(settings, palace_path_override=shared)
+    try:
+        await first.resolve("alice")
+
+        with pytest.raises(MemorySpaceUnavailable, match="palace directory"):
+            await second.resolve("bob")
+    finally:
+        await second.aclose()
+        await first.aclose()
+
+
 async def test_a_shard_refuses_the_spaces_it_was_not_given(tmp_path, monkeypatch) -> None:
     """How a supervisor bounds what one crashing process takes down."""
 

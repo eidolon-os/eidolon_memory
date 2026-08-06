@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -115,6 +116,17 @@ class FakeMemoryBackend:
             text=fragment.content,
             metadata=meta,
         )
+
+    async def ingest_fragments(self, fragments: Sequence[MemoryFragment]) -> None:
+        """Must exist, or the tests stop exercising the path production takes.
+
+        ``LockedBackend`` falls back to a loop when its inner store has no batch
+        write. That fallback is correct, so a fake without this method would pass
+        every test while the batching under measurement never ran.
+        """
+
+        for fragment in fragments:
+            await self.ingest_fragment(fragment)
 
     async def get(self, memory_space_id: str, key: str) -> MemoryWireRecord | None:
         did = self._doc_id(memory_space_id, key)

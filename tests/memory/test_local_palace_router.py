@@ -292,26 +292,39 @@ def test_a_runtime_is_immutable() -> None:
         runtime.space_id = "bob"
 
 
-def test_the_lock_filename_is_pinned(settings: MemorySettings, tmp_path) -> None:
-    """Renaming it would let an upgraded process ignore a running one's claim.
+def test_both_claims_are_taken_and_the_space_filename_is_pinned(
+    settings: MemorySettings, tmp_path
+) -> None:
+    """Two locks per space, and the older name must not move.
 
-    A live process holds a path built from this exact name. If a new version
-    looked somewhere else, both would open the same palace — the corruption the
-    claim exists to prevent — and any deployment short of a clean full stop would
-    hit it. The better name is not worth that.
+    The space name is pinned because a live process holds a path built from this
+    exact string. If a new version looked somewhere else, both would open the same
+    palace — the corruption the claim exists to prevent — and any deployment short
+    of a clean full stop would hit it. The better name is not worth that.
+
+    The palace claim is the one that is actually correct: Chroma's constraint is
+    per *directory*, and two space ids can name one directory. Both are asserted
+    here because dropping either reopens a different hole.
     """
 
     from eidolon.memory.config.memory_settings import resolve_run_dir
     from eidolon.memory.infrastructure.nats.names import nats_safe_name
 
     router = LocalPalaceRouter(settings)
+    palace = tmp_path / "alice-palace"
     try:
-        router._acquire_space_lock("alice")
+        router._acquire_space_lock("alice", palace)
 
-        name = nats_safe_name("alice")
-        expected = resolve_run_dir(settings) / f"eidolon-memory-agent-{name}.lock"
-        assert expected.is_file(), f"expected the claim at {expected}"
+        run_dir = resolve_run_dir(settings)
+        by_space = run_dir / f"eidolon-memory-agent-{nats_safe_name('alice')}.lock"
+        by_palace = (
+            run_dir
+            / f"eidolon-memory-palace-{nats_safe_name(str(palace.resolve()))}.lock"
+        )
+        assert by_space.is_file(), f"expected the space claim at {by_space}"
+        assert by_palace.is_file(), f"expected the palace claim at {by_palace}"
     finally:
-        for handle in router._locks.values():
-            handle.close()
+        for handles in router._locks.values():
+            for handle in handles:
+                handle.close()
         router._locks.clear()
