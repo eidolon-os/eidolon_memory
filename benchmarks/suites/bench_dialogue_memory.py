@@ -75,39 +75,57 @@ _DATA = Path(os.environ.get("EIDOLON_BENCH_DATA", _REPO_ROOT / "benchmarks" / "d
 # ── LoCoMo: labels come from the dataset ─────────────────────────────────────
 
 
-def load_locomo(path: Path) -> list[dict]:
-    """One item per question: the turns of its conversation and the labelled ones.
+def load_locomo(path: Path, *, granularity: str = "turn") -> list[dict]:
+    """One item per question: the conversation's units and the labelled ones.
 
     ``evidence`` entries look like ``"D1:3"`` and turns carry ``dia_id``. Questions
     whose evidence names no turn present in the conversation are dropped and counted
     rather than scored as misses — a missing label is not a retrieval failure.
+
+    ``granularity`` decides what a retrieved unit is, and it is the difference
+    between two numbers that look comparable and are not:
+
+    * ``turn`` — one document per turn, a median 663 candidates. What this suite
+      has always measured.
+    * ``session`` — one document per ``session_N``, its turns concatenated, and a
+      question is labelled with whichever sessions hold its evidence turns. This is
+      MemPalace's unit: they store every session verbatim as a single document and
+      ask whether the labelled one is in the top 5. Roughly twenty candidates
+      instead of hundreds, each holding far more text to match against, so the two
+      settings are not the same task and their scores do not belong in one column.
     """
 
     conversations = json.loads(path.read_text(encoding="utf-8"))
     items: list[dict] = []
     for conversation in conversations:
         conv = conversation.get("conversation") or {}
-        turns: list[dict] = []
+        units: list[dict] = []
+        # dia_id -> the id of the unit that holds it, so evidence maps to whatever
+        # granularity is being scored without the caller knowing which.
+        owner: dict[str, str] = {}
         for key in sorted(k for k in conv if re.fullmatch(r"session_\d+", k)):
-            for turn in conv[key] or []:
-                text = (turn.get("text") or "").strip()
-                if text:
-                    turns.append(
-                        {
-                            "id": str(turn.get("dia_id") or ""),
-                            "text": f"{turn.get('speaker', '')}: {text}",
-                        }
-                    )
-        by_id = {t["id"] for t in turns}
+            turns = [t for t in (conv[key] or []) if (t.get("text") or "").strip()]
+            if not turns:
+                continue
+            lines = [f"{t.get('speaker', '')}: {(t.get('text') or '').strip()}" for t in turns]
+            if granularity == "session":
+                units.append({"id": key, "text": "\n".join(lines)})
+                for turn in turns:
+                    owner[str(turn.get("dia_id") or "")] = key
+            else:
+                for turn, line in zip(turns, lines):
+                    dia_id = str(turn.get("dia_id") or "")
+                    units.append({"id": dia_id, "text": line})
+                    owner[dia_id] = dia_id
         for question in conversation.get("qa") or []:
             evidence = [str(e) for e in (question.get("evidence") or [])]
-            labelled = [e for e in evidence if e in by_id]
+            labelled = sorted({owner[e] for e in evidence if e in owner})
             if not labelled:
                 continue
             items.append(
                 {
                     "query": question.get("question") or "",
-                    "documents": turns,
+                    "documents": units,
                     "answers": labelled,
                     "category": str(question.get("category", "")),
                     "label_source": "annotated",
@@ -233,8 +251,27 @@ def main() -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--limit", type=int, default=0, help="first N questions")
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--granularity",
+        choices=("turn", "session"),
+        default="turn",
+        help="what a retrieved unit is; 'session' is MemPalace's unit (locomo only)",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=512,
+        help="tokenizer truncation. A LoCoMo session runs to a median 688 tokens, so "
+             "the 512 default leaves a third of the corpus unembedded at session "
+             "granularity; only gte-multilingual-base and bge-m3 accept more",
+    )
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
+
+    if args.granularity == "session" and args.dataset != "locomo":
+        print("[FAIL] --granularity session needs per-session markers, which only "
+              "locomo carries", file=sys.stderr)
+        return 2
 
     known = set(MODELS) | set(MEMPALACE_MODELS)
     if args.model not in known:
@@ -249,7 +286,7 @@ def main() -> int:
             print(f"[FAIL] {path} missing — fetch data/locomo10.json from "
                   f"github.com/snap-research/locomo", file=sys.stderr)
             return 2
-        items = load_locomo(path)
+        items = load_locomo(path, granularity=args.granularity)
         language = "en"
     else:
         path = _DATA / "clongeval" / "1-2_long_conversation_memory_small.jsonl"
@@ -263,11 +300,14 @@ def main() -> int:
     if args.limit:
         items = items[: args.limit]
 
-    encoder = (
-        MemPalaceEncoder(args.model, batch_size=args.batch_size)
-        if args.model in MEMPALACE_MODELS
-        else Encoder(args.model, batch_size=args.batch_size)
-    )
+    if args.model in MEMPALACE_MODELS:
+        if args.max_tokens != 512:
+            print("[FAIL] --max-tokens does not reach MemPalace's own encoders; they "
+                  "tokenize inside their library", file=sys.stderr)
+            return 2
+        encoder = MemPalaceEncoder(args.model, batch_size=args.batch_size)
+    else:
+        encoder = Encoder(args.model, batch_size=args.batch_size, max_tokens=args.max_tokens)
     print(
         f"{args.dataset} ({language}) · {len(items)} labelled questions"
         + (f" · {unlabelled} unlabelled and skipped" if unlabelled else "")
@@ -279,6 +319,8 @@ def main() -> int:
     result["dataset"] = args.dataset
     result["language"] = language
     result["model"] = args.model
+    result["granularity"] = args.granularity
+    result["max_tokens"] = args.max_tokens
     result["questions_unlabelled"] = unlabelled
     result["label_source"] = "annotated" if args.dataset == "locomo" else "derived"
     result["provenance"] = provenance(
@@ -287,6 +329,8 @@ def main() -> int:
         params={
             "dataset": args.dataset,
             "model": args.model,
+            "granularity": args.granularity,
+            "max_tokens": args.max_tokens,
             "limit": args.limit,
             "batch_size": args.batch_size,
         },
@@ -298,8 +342,8 @@ def main() -> int:
     )
     print(
         f"{result['questions']} questions over a median {result['candidates_median']:.0f} "
-        f"candidate turns · {result['embed_seconds']:.0f}s embedding "
-        f"({result['ms_per_document']:.2f}ms/turn)"
+        f"candidate {args.granularity}s · {result['embed_seconds']:.0f}s embedding "
+        f"({result['ms_per_document']:.2f}ms/{args.granularity})"
     )
     if result["label_source"] == "derived":
         print(
