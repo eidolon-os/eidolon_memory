@@ -1,0 +1,38 @@
+{
+  "host": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu": "Apple M3 Pro",
+    "cpu_count": 12,
+    "total_ram_mb": 36864,
+    "python": "3.12.13",
+    "ledger_semaphore": 12,
+    "default_executor_threads": 16,
+    "omp_num_threads": "4"
+  },
+  "embedding_model": "bge-small-zh",
+  "process_fixed_rss_mb": 161.4,
+  "import_only_rss_mb": 61.5,
+  "rss_per_extra_space_mb": 0.67,
+  "spaces_held": 4,
+  "embed_query_p50_ms": 0.99,
+  "embed_query_p95_ms": 1.49,
+  "embed_6_docs_p50_ms": 5.65,
+  "write_one_fragment_p50_ms": 10.42,
+  "write_turn_batched_p50_ms": 18.89,
+  "write_turn_looped_p50_ms": 69.24,
+  "recall_p50_ms": 10.42,
+  "recall_p95_ms": 12.05,
+  "documents_in_palace": 70,
+  "graph_beside_vector_p50_ms": 0.36,
+  "graph_beside_vector_p95_ms": 0.51,
+  "voice_graph_budget_ms": 50.0,
+  "recall_x8_concurrent_ms": 54.87,
+  "peak_rss_mb": 219.3,
+  "probe_args": {
+    "fragments": 6,
+    "fanout": 8,
+    "rounds": 20,
+    "threads": 0
+  }
+}

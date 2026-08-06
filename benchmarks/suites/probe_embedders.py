@@ -27,7 +27,6 @@ import argparse
 import glob
 import json
 import os
-import resource
 import sqlite3
 import sys
 import time
@@ -38,6 +37,9 @@ os.environ.setdefault("OMP_NUM_THREADS", "4")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 FIXTURES = REPO_ROOT / "tests/memory/e2e/fixtures"
 QUERIES = FIXTURES / "quality_queries.jsonl"
@@ -48,8 +50,11 @@ CORPUS = FIXTURES / "companion_corpus.jsonl"
 MEMPALACE_MODELS = ("embeddinggemma", "minilm")
 
 
-def rss_mb() -> int:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // (1024 * 1024)
+# Shared, because the obvious one-liner here divided by 1024*1024 unconditionally
+# — correct on macOS, where ru_maxrss is bytes, and off by 1024 on Linux, where it
+# is kilobytes. This probe's whole point on the Raspberry Pi is the memory column,
+# and it would have reported every model as 0 MB.
+from hostinfo import rss_mb  # noqa: E402
 
 
 def documents_from_palace(palace_root: Path) -> list[str]:
@@ -158,7 +163,7 @@ def score(embedder, documents: list[str], queries: list[dict]) -> dict:
         "top1": top1,
         "top5": top5,
         "rss_mb": after,
-        "rss_delta_mb": after - before,
+        "rss_delta_mb": round(after - before, 1),
         "single_ms": round(single_ms, 1),
         "batch_ms": round(batch_ms, 1),
         "misses": misses,
@@ -226,7 +231,7 @@ def main() -> None:
         print(
             f"{result['model']:26} dim={result['dim']:4}  "
             f"top1={result['top1']:2}/{result['n']}  top5={result['top5']:2}/{result['n']}  "
-            f"rss={result['rss_mb']:5}MB (+{result['rss_delta_mb']})  "
+            f"rss={result['rss_mb']:7.1f}MB (+{result['rss_delta_mb']:5.1f})  "
             f"{result['single_ms']:6.1f}ms/1  {result['batch_ms']:5.1f}ms/batch"
         )
 
