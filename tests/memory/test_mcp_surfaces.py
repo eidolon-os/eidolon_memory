@@ -40,8 +40,77 @@ DESTRUCTIVE = (
 
 
 class _Kg:
-    async def known_audiences(self):
-        return ("owner",)
+    """A graph whose method signatures match :class:`KnowledgeGraphPort` exactly.
+
+    The signatures are the point, not the return values. A stub with
+    ``**kwargs``, or one missing a method entirely, turns a tool that calls the
+    port wrongly into an ``AttributeError`` or a silent success — and the
+    invocation probe below would then pass over exactly the defect it exists to
+    catch. That is not hypothetical: the first version of this file had
+    ``known_audiences`` and nothing else, and it reported the broken
+    ``kg_snapshot`` as fine.
+    """
+
+    async def known_audiences(self) -> list[str]:
+        return ["owner"]
+
+    async def list_entity_names(self) -> list[str]:
+        return []
+
+    async def match_entities_for_query(self, query: str, *, cap: int) -> list[str]:
+        return []
+
+    async def query_entity(
+        self,
+        name: str,
+        *,
+        audiences: tuple[str, ...],
+        as_of: str | None = None,
+        direction: str = "outgoing",
+        include_sensitive: bool = False,
+    ) -> list:
+        return []
+
+    async def query_subjects(
+        self,
+        names,
+        *,
+        audiences: tuple[str, ...],
+        as_of: str | None = None,
+        limit_per_subject: int = 8,
+        include_sensitive: bool = False,
+    ) -> list:
+        return []
+
+    async def query_entity_combined(
+        self,
+        names,
+        *,
+        audiences: tuple[str, ...],
+        as_of: str | None = None,
+        limit_per_entity: int = 8,
+        include_sensitive: bool = False,
+    ) -> list:
+        return []
+
+    async def timeline(
+        self,
+        entity_name: str | None = None,
+        *,
+        audiences: tuple[str, ...],
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 100,
+        current_only: bool = False,
+        include_sensitive: bool = False,
+    ) -> list:
+        return []
+
+    async def stats(self) -> dict:
+        return {"entities": 0, "triples_total": 0, "triples_active": 0}
+
+    async def has_triple(self, triple_id: str) -> bool:
+        return False
 
 
 class _Present:
@@ -182,3 +251,119 @@ def test_both_surfaces_answer_from_the_same_service(surface: str) -> None:
 
     assert built is not None
     assert set(AGENT_SURFACE_TOOLS) <= {t.name for t in built._tool_manager.list_tools()}
+
+
+# ── every registered tool can actually be called ──────────────────────────────
+
+
+async def test_every_registered_tool_survives_being_invoked() -> None:
+    """``kg_snapshot`` shipped calling ``timeline()`` without its required
+    keyword-only ``audiences``, so every invocation raised ``TypeError``.
+
+    Six of the seven graph tools passed it and one did not. That is not a
+    discipline problem — it is what happens when seven call sites each have to
+    remember the same argument in a project with no type checker
+    (``test_layering`` says so in as many words), and a wiring mistake in a tool
+    nothing calls stays invisible until an operator calls it.
+
+    So: invoke every registered tool with its schema's required arguments and
+    assert none fails to *bind*. Results are deliberately not asserted — a fake
+    backend makes most of them meaningless, and a behavioural assertion here would
+    have to be weakened per tool until it caught nothing. ``TypeError`` is the
+    whole target.
+
+    This only works because ``_Kg`` mirrors the port's real signatures. A thinner
+    stub raises ``AttributeError`` first and the probe passes over the bug; the
+    first version of this test did exactly that and was verified to be vacuous by
+    re-breaking ``kg_snapshot`` and watching it stay green.
+    """
+
+    import inspect
+
+    mcp = _build("all")
+    tools = mcp._tool_manager.list_tools()
+    assert len(tools) > 20, "the operator surface lost tools; this test is now vacuous"
+
+    context = {
+        "memory_realm_id": "default.alice.default",
+        "owner_id": "alice",
+        "companion_id": "default",
+    }
+    # Only what has no usable default. Plausible values rather than "" so a tool
+    # that validates its input is still exercised.
+    required_values = {
+        "query": "什么",
+        "context": context,
+        "subject": "用户",
+        "predicate": "likes",
+        "object": "乌龙茶",
+        "text": "用户喜欢乌龙茶",
+        "target": "乌龙茶",
+        "name": "用户",
+        "entity_name": "用户",
+        "source_turn_id": "turn-1",
+        "request_id": "req-1",
+        "entry_id": "dlq-1",
+        "commitment_id": "c-1",
+        "confirmation_token": "token-1",
+        # Required on purpose: resolving a dead letter without recording why is
+        # not something an operator should be able to do by omission.
+        "note": "closed by the invocation probe",
+    }
+
+    binding_failures: list[str] = []
+    unsupplied: list[str] = []
+    for tool in tools:
+        properties = (tool.parameters or {}).get("properties") or {}
+        required = set((tool.parameters or {}).get("required") or ())
+        missing = [name for name in required if name not in required_values]
+        if missing:
+            # A required argument this probe has no value for means the tool was
+            # never actually invoked — which is the vacuum this test is guarding
+            # against, so it fails rather than skipping quietly.
+            unsupplied.append(f"{tool.name}: {sorted(missing)}")
+            continue
+        kwargs = {name: required_values[name] for name in properties if name in required}
+        try:
+            result = tool.fn(**kwargs)
+            if inspect.isawaitable(result):
+                await result
+        except TypeError as exc:
+            binding_failures.append(f"{tool.name}: {exc}")
+        except Exception:
+            # Anything else is a stand-in ledger refusing to do real work.
+            pass
+
+    assert not unsupplied, (
+        "required_values has no entry for these, so they were skipped:\n  "
+        + "\n  ".join(unsupplied)
+    )
+    assert not binding_failures, "tools that cannot be invoked:\n  " + "\n  ".join(
+        binding_failures
+    )
+
+
+def test_the_agent_cannot_widen_its_own_visibility() -> None:
+    """Neither visibility axis is a parameter the agent supplies.
+
+    Audience was always derived: the agent passes ``context`` and
+    ``readable_audiences`` computes what it may see. Sensitivity used to be an
+    argument — ``include_sensitive_kg=True`` on the recall tool — which let the
+    least-trusted caller grant itself a capability. It is a deployment setting
+    now, and the operator surface keeps the explicit parameter.
+
+    Checked on the schema rather than the signature, because the schema is what
+    the model reads and therefore what it can ask for.
+    """
+
+    recall = next(
+        tool
+        for tool in _build("agent")._tool_manager.list_tools()
+        if tool.name == "eidolon_memory_recall_context"
+    )
+    properties = set((recall.parameters or {}).get("properties") or {})
+
+    assert "include_sensitive_kg" not in properties
+    assert "audiences" not in properties
+    # The derived input is still there — removing the axis, not the context.
+    assert "context" in properties

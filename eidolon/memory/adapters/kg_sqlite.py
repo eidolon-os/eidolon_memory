@@ -47,7 +47,6 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 _DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_MARKER = "?"
 
 
 def now_iso() -> str:
@@ -433,8 +432,8 @@ class SqliteKnowledgeGraph:
         sql = (
             f"SELECT {SELECT_COLUMNS} {JOIN_ENTITIES} "
             f"WHERE s.space_id = ? AND {columns} "
-            f"AND {VALID_AT.format(p=_MARKER)} "
-            f"AND {audience_filter(len(audiences), _MARKER)} "
+            f"AND {VALID_AT} "
+            f"AND {audience_filter(len(audiences))} "
             f"{self._sensitive_clause(include_sensitive)} "
             f"{ORDER_BY_RELEVANCE}"
         )
@@ -475,16 +474,20 @@ class SqliteKnowledgeGraph:
         # spend the whole budget and leave the others unrepresented — which is
         # what a plain ordered query plus per-subject bucketing in Python does.
         #
-        # One statement rather than one query per subject: locally the difference
-        # is nothing, but against a database each extra query is another round
-        # trip on a path with a latency budget.
-        placeholders = ", ".join(_MARKER for _ in wanted)
+        # One statement rather than one query per subject. Measured, because the
+        # justification used to be "against a database each extra query is another
+        # round trip" and that database was deleted: locally the difference is
+        # 0.125 ms at the three entities recall asks for, 0.25% of the voice
+        # budget. So this shape is worth having for the per-subject bound above,
+        # not for the round trip — and ``query_entity_combined``, which does take
+        # the one-query-per-entity path, is not worth rewriting for 0.125 ms.
+        placeholders = ", ".join("?" for _ in wanted)
         sql = (
             f"SELECT {RANKED_SUBJECT_COLUMNS} FROM ("
             f"  SELECT {SELECT_COLUMNS}, {SUBJECT_RANK} {JOIN_ENTITIES} "
             f"  WHERE s.space_id = ? AND s.subject_id IN ({placeholders}) "
-            f"  AND {VALID_AT.format(p=_MARKER)} "
-            f"  AND {audience_filter(len(audiences), _MARKER)} "
+            f"  AND {VALID_AT} "
+            f"  AND {audience_filter(len(audiences))} "
             f"  {self._sensitive_clause(include_sensitive)}"
             f") ranked WHERE ranked.subject_rank <= ?"
         )
@@ -526,12 +529,13 @@ class SqliteKnowledgeGraph:
         since: str | None = None,
         until: str | None = None,
         limit: int = 100,
+        current_only: bool = False,
         include_sensitive: bool = False,
     ) -> list[KgTripleRecord]:
         async with self._lock.reader():
             return await asyncio.to_thread(
                 self._timeline_sync, entity_name, audiences, since, until, limit,
-                include_sensitive,
+                current_only, include_sensitive,
             )
 
     def _timeline_sync(
@@ -541,6 +545,7 @@ class SqliteKnowledgeGraph:
         since: str | None,
         until: str | None,
         limit: int,
+        current_only: bool,
         include_sensitive: bool,
     ) -> list[KgTripleRecord]:
         if not audiences:
@@ -551,6 +556,12 @@ class SqliteKnowledgeGraph:
             entity = entity_id_for(entity_name)
             clauses.append("(s.subject_id = ? OR s.object_id = ?)")
             params.extend([entity, entity])
+        if current_only:
+            # In the WHERE clause, not applied to the result. A caller that asks
+            # for N current statements and filters a LIMIT-ed page afterwards gets
+            # fewer than N as soon as the graph has any history — and cannot tell,
+            # because the cap it compares against is the post-filter count.
+            clauses.append("s.valid_to IS NULL")
         start = canonical_temporal(since)
         if start:
             clauses.append("(s.valid_from IS NULL OR s.valid_from >= ?)")
@@ -559,7 +570,7 @@ class SqliteKnowledgeGraph:
         if end:
             clauses.append("(s.valid_from IS NULL OR s.valid_from <= ?)")
             params.append(end)
-        clauses.append(audience_filter(len(audiences), _MARKER))
+        clauses.append(audience_filter(len(audiences)))
         params.extend(audiences)
         sql = (
             f"SELECT {SELECT_COLUMNS} {JOIN_ENTITIES} "

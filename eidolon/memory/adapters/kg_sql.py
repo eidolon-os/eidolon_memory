@@ -1,20 +1,35 @@
-"""Schema and query shapes shared by the graph's two storage implementations.
+"""The graph's schema and query shapes, defined once.
 
-Both stores answer the same questions, so the SQL lives here once rather than
-diverging in two files that drift. The dialect differences are narrow and named
-explicitly — a parameter marker and an upsert clause — so a reader can see the
-whole of what differs.
+The SQL lives here rather than inside the adapter so that ``kg_sqlite`` reads as
+orchestration — take the lock, bind the parameters, map the rows — with the shapes
+it orchestrates stated in one place. That is worth doing for one implementation
+and it is why this module stays.
+
+**Correction, 2026-08-06.** It used to open "shared by the graph's two storage
+implementations", and describe the dialect differences as "narrow and named
+explicitly — a parameter marker and an upsert clause". There is one implementation.
+``kg_postgres.py`` was added in ``729ec17`` for multi-host replicas and deleted in
+``3fc70e0`` under the local-only decision, together with the dialect tests; this
+file was never revised after its second consumer went away. The upsert clause it
+named lived in the deleted file and has no counterpart here, and the parameter
+marker was threaded through ``audience_filter`` and ``VALID_AT`` to serve a caller
+that no longer exists. Both are now inlined as ``?``.
+
+The generality is not kept "in case". A second store would need this module
+reopened either way — the schema DDL is SQLite-flavoured throughout — so carrying a
+marker parameter bought a fraction of that at the cost of every reader wondering
+who the other implementation was.
 
 The queries are deliberately unremarkable: equality on a subject, an interval
 test, an audience filter, a bounded order. That is the entire graph workload this
 service has, which is why a relational store is the right answer and why a graph
 database would be buying capability we never exercise.
 
-Timestamps are stored as ISO-8601 text, in both stores. Text loses the range
-operators a native timestamp type gives, but ISO-8601 in UTC compares correctly
-as a string, and using one representation everywhere means the interval predicate
-below is literally the same SQL against both. A date-only value is normalised on
-the way in rather than being special-cased in every comparison.
+Timestamps are stored as ISO-8601 text. Text loses the range operators a native
+timestamp type gives, but ISO-8601 in UTC compares correctly as a string, and one
+representation everywhere keeps the interval predicate below ordinary SQL. A
+date-only value is normalised on the way in rather than being special-cased in
+every comparison.
 """
 
 from __future__ import annotations
@@ -104,8 +119,8 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
 # ── predicates ───────────────────────────────────────────────────────────────
 
 VALID_AT = """
-    (s.valid_from IS NULL OR s.valid_from <= {p})
-    AND (s.valid_to IS NULL OR s.valid_to > {p})
+    (s.valid_from IS NULL OR s.valid_from <= ?)
+    AND (s.valid_to IS NULL OR s.valid_to > ?)
 """
 """Whether a statement holds at a point in time.
 
@@ -118,10 +133,14 @@ recorded end as "still is".
 """
 
 
-def audience_filter(count: int, marker: str) -> str:
-    """An IN clause over the audiences a caller may read."""
+def audience_filter(count: int) -> str:
+    """An IN clause over the audiences a caller may read.
 
-    placeholders = ", ".join(marker for _ in range(count))
+    Built from the *count* only; the tokens themselves are always bound
+    parameters, never interpolated.
+    """
+
+    placeholders = ", ".join("?" for _ in range(count))
     return f"s.audience IN ({placeholders})"
 
 
@@ -162,9 +181,20 @@ SUBJECT_RANK = f"""
 """Rank statements within each subject, so each gets its own allowance.
 
 Needed because the recall read asks about several subjects at once and must not
-let one well-connected entity spend the whole budget. Ranking in the query rather
-than bucketing the results in Python is also what keeps it to a single round
-trip, which matters once the store is across a network.
+let one well-connected entity spend the whole budget. Taking a global ``LIMIT``
+and bucketing in Python does not bound per subject at all — that is what the
+previous implementation did, and one well-connected entity filled the budget while
+the others got nothing.
+
+The single round trip is a secondary benefit, and smaller than it reads. That
+clause used to say it "matters once the store is across a network", which was
+written when a PostgreSQL graph existed; it was deleted under the local-only
+decision. Measured against a local file — 200 statements, 40 entities, the
+``kg_max_entities = 3`` the recall path actually asks for —
+``query_entity_combined``'s three queries and three lock acquisitions cost 0.248 ms
+against ``query_subjects``' 0.123 ms. The 0.125 ms difference is 0.25% of the 50 ms
+voice budget, so the per-subject bound is the reason to prefer this shape and the
+round trip is not.
 """
 
 # The outer projection over the ranked subquery, in the same order as

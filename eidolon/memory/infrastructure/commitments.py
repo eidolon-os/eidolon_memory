@@ -38,15 +38,13 @@ from eidolon.memory.infrastructure.ledger_sql import (
     COMMITMENT_UPDATE,
     COMMITMENTS_INDEX,
     COMMITMENTS_SCHEMA,
-    SQLITE_MARKER,
     commitment_mark_projected,
-    render,
 )
 from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 
 def _sql(template: str) -> str:
-    return render(template, SQLITE_MARKER)
+    return template
 
 
 class CommitmentLedger(SerialisedSqliteWrites):
@@ -253,7 +251,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
             raise ValueError("commitment projection update requires known targets")
         with self._connect() as conn:
             result = conn.execute(
-                commitment_mark_projected(SQLITE_MARKER, [columns[t] for t in targets]),
+                commitment_mark_projected([columns[t] for t in targets]),
                 (memory_space_id, commitment_id, revision),
             )
             if result.rowcount != 1:

@@ -14,7 +14,7 @@ internal knowledge — the recall router shouldn't need to know about it.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from eidolon.memory.domain.kg import KgTripleRecord
 
@@ -30,7 +30,6 @@ async def query_kg_for_recall(
     entity_names: list[str],
     subject_names: list[str] | None = None,
     now_iso: str | None = None,
-    window_days: int,
     max_triples_per_entity: int,
     include_sensitive: bool = False,
 ) -> list[KgTripleRecord]:
@@ -170,7 +169,3 @@ def _entity_label(value: object) -> str:
         return label
     return text
 
-
-def computed_kg_window_iso(window_days: int) -> str:
-    """Earliest valid_from we'd accept for timeline-style queries."""
-    return (datetime.now(UTC) - timedelta(days=window_days)).strftime("%Y-%m-%dT%H:%M:%SZ")

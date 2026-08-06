@@ -27,15 +27,13 @@ from eidolon.memory.infrastructure.ledger_sql import (
     DLQ_SELECT_PAGE,
     DLQ_SELECT_PAGE_BY_STATE,
     DLQ_STATES,
-    SQLITE_MARKER,
     ensure_ledger_schema_current,
-    render,
 )
 from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 
 def _sql(template: str) -> str:
-    return render(template, SQLITE_MARKER)
+    return template
 
 
 class DlqLedger(SerialisedSqliteWrites):

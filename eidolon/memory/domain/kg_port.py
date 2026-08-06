@@ -185,9 +185,17 @@ class KnowledgeGraphPort(Protocol):
         since: str | None = None,
         until: str | None = None,
         limit: int = 100,
+        current_only: bool = False,
         include_sensitive: bool = False,
     ) -> list[KgTripleRecord]:
-        """Statements ordered by when they became true. For operators."""
+        """Statements ordered by when they became true. For operators.
+
+        The one read that returns ended statements — that is what a timeline is
+        for. ``current_only`` narrows to open ones, and belongs here rather than in
+        the caller: applied to a ``LIMIT``-ed page it silently returns fewer than
+        asked for, and the caller cannot tell the difference between "that is all
+        there is" and "the page was mostly history".
+        """
         ...
 
     async def match_entities_for_query(self, query: str, *, cap: int) -> list[str]:

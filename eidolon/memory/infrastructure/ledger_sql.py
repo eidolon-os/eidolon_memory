@@ -1,37 +1,28 @@
-"""Table shapes and statements shared by both ledger implementations.
+"""The ledgers' table shapes and statements, defined once.
 
-A ledger exists twice: as a SQLite file inside a palace, and as rows in a shared
-database that any replica can reach. Those are two deployments of one design, so
-the design lives here and each implementation supplies only what its database
-does differently.
+Six ledgers share this module: extraction decisions, canonical facts,
+commitments, command status, the dead-letter queue and device sync. Their column
+names, primary keys and filter predicates living in one file is what makes them
+provably the same shape rather than six files reviewed as similar — and two of
+them are product behaviour rather than bookkeeping, so a drift there is a
+user-visible bug, not an inconsistency.
 
-What differs is small and known:
+**Correction, 2026-08-06.** This opened "shared by both ledger implementations"
+and described what differs between them: a parameter marker (``?`` against
+SQLite, ``%s`` against PostgreSQL), a dialect-specific ignore-duplicate clause,
+and column types SQLite does not distinguish. There is one implementation. The
+PostgreSQL ledgers were deleted in ``3fc70e0`` under the local-only decision, and
+this file was never revised after — so every statement carried a ``{m}``
+placeholder and every use went through ``render()``, all of it resolving to ``?``.
 
-* the parameter marker — ``?`` against SQLite, ``%s`` against PostgreSQL;
-* how an insert is told to ignore a duplicate;
-* a handful of column types SQLite does not distinguish.
-
-What must not differ is the shape: column names, primary keys, and the
-predicates a query filters on. A drift there does not look like a bug — it looks
-like cloud answering differently from local, discovered by a user rather than a
-test. Keeping the statements in one place is what makes the two provably the same
-rather than reviewed as similar.
-
-Statements are templates: ``{m}`` is the marker, substituted by the
-implementation. They are deliberately not built by string concatenation at call
-time, so the shape can be compared between dialects without running anything.
+Inlined, for the same reason as ``adapters/kg_sql.py``: a second store would need
+this module reopened anyway, since the DDL is SQLite-flavoured throughout. The
+placeholder bought a fraction of a hypothetical migration at the cost of every
+statement being one indirection from readable, and every reader wondering who the
+second implementation was.
 """
 
 from __future__ import annotations
-
-SQLITE_MARKER = "?"
-POSTGRES_MARKER = "%s"
-
-
-def render(template: str, marker: str) -> str:
-    """Fill a statement template's parameter markers for one dialect."""
-    return template.replace("{m}", marker)
-
 
 class LedgerSchemaOutdated(RuntimeError):
     """A ledger file predates a column the current statements require.
@@ -131,12 +122,12 @@ The two implementations return rows differently, and a positional read of
 EXTRACTION_DECISION_SELECT = f"""
 SELECT {", ".join(EXTRACTION_DECISION_COLUMNS)}
 FROM extraction_decisions
-WHERE memory_space_id = {{m}} AND source_turn_id = {{m}} AND extractor_version = {{m}}
+WHERE memory_space_id = ? AND source_turn_id = ? AND extractor_version = ?
 """
 
 EXTRACTION_DECISION_INSERT = f"""
 INSERT INTO extraction_decisions ({", ".join(EXTRACTION_DECISION_COLUMNS)})
-VALUES ({", ".join(["{m}"] * len(EXTRACTION_DECISION_COLUMNS))})
+VALUES ({", ".join(["?"] * len(EXTRACTION_DECISION_COLUMNS))})
 """
 
 
@@ -190,12 +181,12 @@ SYNC_EVENT_COLUMNS = (
 
 SYNC_EVENT_SEEN = """
 SELECT 1 FROM sync_events
-WHERE memory_space_id = {m} AND (event_id = {m} OR idempotency_hash = {m})
+WHERE memory_space_id = ? AND (event_id = ? OR idempotency_hash = ?)
 """
 
 SYNC_EVENT_INSERT = f"""
 INSERT INTO sync_events ({", ".join(SYNC_EVENT_COLUMNS)})
-VALUES ({", ".join(["{m}"] * len(SYNC_EVENT_COLUMNS))})
+VALUES ({", ".join(["?"] * len(SYNC_EVENT_COLUMNS))})
 """
 
 
@@ -246,31 +237,31 @@ DLQ_COLUMNS = (
 
 _DLQ_SELECT = f"SELECT {', '.join(DLQ_COLUMNS)} FROM dlq_entries"
 
-DLQ_SELECT_ONE = f"{_DLQ_SELECT} WHERE memory_space_id = {{m}} AND entry_id = {{m}}"
+DLQ_SELECT_ONE = f"{_DLQ_SELECT} WHERE memory_space_id = ? AND entry_id = ?"
 
 DLQ_SELECT_PAGE = f"""
 {_DLQ_SELECT}
-WHERE memory_space_id = {{m}}
-ORDER BY created_at DESC LIMIT {{m}} OFFSET {{m}}
+WHERE memory_space_id = ?
+ORDER BY created_at DESC LIMIT ? OFFSET ?
 """
 
 DLQ_SELECT_PAGE_BY_STATE = f"""
 {_DLQ_SELECT}
-WHERE memory_space_id = {{m}} AND state = {{m}}
-ORDER BY created_at DESC LIMIT {{m}} OFFSET {{m}}
+WHERE memory_space_id = ? AND state = ?
+ORDER BY created_at DESC LIMIT ? OFFSET ?
 """
 
 DLQ_INSERT = """
 INSERT INTO dlq_entries (
     memory_space_id, entry_id, subject, payload, error, deliveries, state,
     replay_attempts, created_at, updated_at
-) VALUES ({m}, {m}, {m}, {m}, {m}, {m}, 'unresolved', 0, {m}, {m})
+) VALUES (?, ?, ?, ?, ?, ?, 'unresolved', 0, ?, ?)
 """
 
 DLQ_CLAIM = """
 UPDATE dlq_entries
-SET state = 'replaying', replay_attempts = replay_attempts + 1, updated_at = {m}
-WHERE memory_space_id = {m} AND entry_id = {m} AND state = 'unresolved'
+SET state = 'replaying', replay_attempts = replay_attempts + 1, updated_at = ?
+WHERE memory_space_id = ? AND entry_id = ? AND state = 'unresolved'
 """
 """Claiming is one conditional UPDATE, not a read followed by a write.
 
@@ -282,24 +273,24 @@ trip is what the shared deployment exists not to do.
 
 DLQ_FINISH_REPLAY = """
 UPDATE dlq_entries
-SET state = {m}, error = COALESCE({m}, error), updated_at = {m}
-WHERE memory_space_id = {m} AND entry_id = {m} AND state = 'replaying'
+SET state = ?, error = COALESCE(?, error), updated_at = ?
+WHERE memory_space_id = ? AND entry_id = ? AND state = 'replaying'
 """
 
 DLQ_RESOLVE = """
 UPDATE dlq_entries
-SET state = 'resolved', resolution_note = {m}, updated_at = {m}
-WHERE memory_space_id = {m} AND entry_id = {m} AND state != 'replaying'
+SET state = 'resolved', resolution_note = ?, updated_at = ?
+WHERE memory_space_id = ? AND entry_id = ? AND state != 'replaying'
 """
 
 DLQ_COUNT_BY_STATE = """
 SELECT state, COUNT(*) FROM dlq_entries
-WHERE memory_space_id = {m} GROUP BY state
+WHERE memory_space_id = ? GROUP BY state
 """
 
 DLQ_OLDEST_UNRESOLVED = """
 SELECT MIN(created_at) FROM dlq_entries
-WHERE memory_space_id = {m} AND state = 'unresolved'
+WHERE memory_space_id = ? AND state = 'unresolved'
 """
 
 
@@ -346,47 +337,47 @@ COMMAND_STATUS_COLUMNS = (
 
 COMMAND_STATUS_SELECT = f"""
 SELECT {", ".join(COMMAND_STATUS_COLUMNS)} FROM command_status
-WHERE memory_space_id = {{m}} AND request_id = {{m}}
+WHERE memory_space_id = ? AND request_id = ?
 """
 
 COMMAND_STATUS_INSERT = """
 INSERT INTO command_status (
     memory_space_id, request_id, kind, status, resource_id, error,
     attempts, created_at, updated_at
-) VALUES ({m}, {m}, {m}, {m}, {m}, {m}, {m}, {m}, {m})
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 COMMAND_STATUS_UPDATE = """
 UPDATE command_status
-SET kind = {m}, status = {m}, resource_id = {m}, error = {m},
-    attempts = {m}, updated_at = {m}
-WHERE memory_space_id = {m} AND request_id = {m}
+SET kind = ?, status = ?, resource_id = ?, error = ?,
+    attempts = ?, updated_at = ?
+WHERE memory_space_id = ? AND request_id = ?
 """
 
 COMMAND_STATUS_COUNT_BY_STATUS = """
 SELECT status, COUNT(*) FROM command_status
-WHERE memory_space_id = {m} GROUP BY status
+WHERE memory_space_id = ? GROUP BY status
 """
 
 COMMAND_STATUS_OLDEST_ACTIVE = """
 SELECT MIN(created_at) FROM command_status
-WHERE memory_space_id = {m} AND status IN ('accepted', 'retrying')
+WHERE memory_space_id = ? AND status IN ('accepted', 'retrying')
 """
 
 COMMAND_STATUS_PRUNE_EXPIRED = """
 DELETE FROM command_status
-WHERE memory_space_id = {m} AND status IN ('applied', 'failed') AND updated_at < {m}
+WHERE memory_space_id = ? AND status IN ('applied', 'failed') AND updated_at < ?
 """
 
-COMMAND_STATUS_COUNT_ALL = "SELECT COUNT(*) FROM command_status WHERE memory_space_id = {m}"
+COMMAND_STATUS_COUNT_ALL = "SELECT COUNT(*) FROM command_status WHERE memory_space_id = ?"
 
 COMMAND_STATUS_PRUNE_OVERFLOW = """
 DELETE FROM command_status
-WHERE memory_space_id = {m} AND request_id IN (
+WHERE memory_space_id = ? AND request_id IN (
     SELECT request_id FROM command_status
-    WHERE memory_space_id = {m} AND status IN ('applied', 'failed')
+    WHERE memory_space_id = ? AND status IN ('applied', 'failed')
     ORDER BY updated_at ASC, request_id ASC
-    LIMIT {m}
+    LIMIT ?
 )
 """
 """Oldest terminal rows first, so pruning never removes work still in flight.
@@ -500,24 +491,24 @@ _COMMITMENT_SELECT = f"SELECT {', '.join(COMMITMENT_COLUMNS)} FROM commitments"
 
 COMMITMENT_SELECT_ONE = f"""
 {_COMMITMENT_SELECT}
-WHERE memory_space_id = {{m}} AND commitment_id = {{m}}
+WHERE memory_space_id = ? AND commitment_id = ?
 """
 
-COMMITMENT_SELECT_BY_ID = f"{_COMMITMENT_SELECT} WHERE commitment_id = {{m}}"
+COMMITMENT_SELECT_BY_ID = f"{_COMMITMENT_SELECT} WHERE commitment_id = ?"
 
 # The 13 written columns; the two projection states default to 'pending'.
 COMMITMENT_INSERT = f"""
 INSERT INTO commitments ({", ".join(COMMITMENT_COLUMNS[:13])})
-VALUES ({", ".join(["{m}"] * 13)})
+VALUES ({", ".join(["?"] * 13)})
 """
 
 COMMITMENT_UPDATE = """
 UPDATE commitments
-SET participants_json = {m}, condition_value = {m}, due_at = {m},
-    status = {m}, revision = {m}, updated_at = {m},
+SET participants_json = ?, condition_value = ?, due_at = ?,
+    status = ?, revision = ?, updated_at = ?,
     drawer_projection_state = 'pending',
     kg_projection_state = 'pending'
-WHERE commitment_id = {m} AND memory_space_id = {m}
+WHERE commitment_id = ? AND memory_space_id = ?
 """
 """Any change resets both projections to pending.
 
@@ -525,12 +516,12 @@ A revision whose drawer or graph projection still reflects the previous one woul
 have the service answer from a stale rendering of a promise that has moved on.
 """
 
-COMMITMENT_COUNT = "SELECT COUNT(*) FROM commitments WHERE memory_space_id = {m}"
+COMMITMENT_COUNT = "SELECT COUNT(*) FROM commitments WHERE memory_space_id = ?"
 
 COMMITMENT_SELECT_PAGE = f"""
 {_COMMITMENT_SELECT}
-WHERE memory_space_id = {{m}}
-ORDER BY updated_at DESC LIMIT {{m}}
+WHERE memory_space_id = ?
+ORDER BY updated_at DESC LIMIT ?
 """
 
 # Soonest due first, undated last, then most recently touched. Ordering by the
@@ -561,7 +552,7 @@ def commitment_select_active_page(marker: str, status_count: int) -> str:
     )
 
 
-def commitment_mark_projected(marker: str, columns: list[str]) -> str:
+def commitment_mark_projected(columns: list[str]) -> str:
     """Mark named projections done, only if the revision has not moved on.
 
     The revision predicate is the guard: a projection that finished after the
@@ -570,30 +561,30 @@ def commitment_mark_projected(marker: str, columns: list[str]) -> str:
 
     assignments = ", ".join(f"{column} = 'projected'" for column in sorted(columns))
     return (
-        f"UPDATE commitments SET {assignments} WHERE memory_space_id = {marker} "
-        f"AND commitment_id = {marker} AND revision = {marker}"
+        f"UPDATE commitments SET {assignments} WHERE memory_space_id = ? "
+        "AND commitment_id = ? AND revision = ?"
     )
 
 
 COMMITMENT_REVISION_INSERT = f"""
 INSERT INTO commitment_revisions ({", ".join(COMMITMENT_REVISION_COLUMNS)})
-VALUES ({", ".join(["{m}"] * len(COMMITMENT_REVISION_COLUMNS))})
+VALUES ({", ".join(["?"] * len(COMMITMENT_REVISION_COLUMNS))})
 """
 
 COMMITMENT_REVISION_BY_INTENT = f"""
 SELECT {", ".join(COMMITMENT_REVISION_COLUMNS)} FROM commitment_revisions
-WHERE intent_id = {{m}}
+WHERE intent_id = ?
 """
 
 COMMITMENT_REVISION_BY_ID = f"""
 SELECT {", ".join(COMMITMENT_REVISION_COLUMNS)} FROM commitment_revisions
-WHERE revision_id = {{m}}
+WHERE revision_id = ?
 """
 
 COMMITMENT_REVISION_HISTORY = f"""
 SELECT {", ".join(COMMITMENT_REVISION_COLUMNS)} FROM commitment_revisions
-WHERE commitment_id = {{m}}
-ORDER BY recorded_at DESC, revision_id DESC LIMIT {{m}}
+WHERE commitment_id = ?
+ORDER BY recorded_at DESC, revision_id DESC LIMIT ?
 """
 
 

@@ -31,15 +31,13 @@ from eidolon.memory.infrastructure.ledger_sql import (
     COMMAND_STATUS_SCHEMA,
     COMMAND_STATUS_SELECT,
     COMMAND_STATUS_UPDATE,
-    SQLITE_MARKER,
     ensure_ledger_schema_current,
-    render,
 )
 from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
 
 def _sql(template: str) -> str:
-    return render(template, SQLITE_MARKER)
+    return template
 
 
 class CommandStatusLedger(SerialisedSqliteWrites):

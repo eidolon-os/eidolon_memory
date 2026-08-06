@@ -15,13 +15,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from eidolon.memory.infrastructure.ledger_sql import (
-    SQLITE_MARKER,
     SYNC_EVENT_INSERT,
     SYNC_EVENT_SEEN,
     SYNC_EVENTS_INDEX,
     SYNC_EVENTS_SCHEMA,
     ensure_ledger_schema_current,
-    render,
 )
 from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
 
@@ -83,7 +81,7 @@ class SyncLedger(SerialisedSqliteWrites):
     def _seen_sync(self, event_id: str, idempotency_hash: str) -> bool:
         with self._connect() as conn:
             row = conn.execute(
-                render(SYNC_EVENT_SEEN, SQLITE_MARKER),
+                SYNC_EVENT_SEEN,
                 (self._space_id, event_id, idempotency_hash),
             ).fetchone()
             return row is not None
@@ -100,7 +98,7 @@ class SyncLedger(SerialisedSqliteWrites):
         with self._connect() as conn:
             try:
                 conn.execute(
-                    render(SYNC_EVENT_INSERT, SQLITE_MARKER),
+                    SYNC_EVENT_INSERT,
                     (
                         self._space_id,
                         event_id,

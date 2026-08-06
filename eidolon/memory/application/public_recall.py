@@ -356,7 +356,6 @@ async def recall_with_kg_fusion(
                 audiences=readable_audiences(context.companion_id),
                 query=query,
                 max_entities=settings.recall.kg_max_entities,
-                window_days=settings.recall.kg_window_days,
                 max_triples_per_entity=settings.recall.kg_max_triples_per_entity,
                 timeout_s=kg_timeout,
                 include_sensitive=include_sensitive_kg,
@@ -545,7 +544,6 @@ async def _kg_path_with_timeout(
     audiences: tuple[str, ...],
     query: str,
     max_entities: int,
-    window_days: int,
     max_triples_per_entity: int,
     timeout_s: float,
     include_sensitive: bool,
@@ -579,7 +577,6 @@ async def _kg_path_with_timeout(
                 audiences=audiences,
                 entity_names=candidates,
                 subject_names=candidates if subject_names else None,
-                window_days=window_days,
                 max_triples_per_entity=max_triples_per_entity,
                 include_sensitive=include_sensitive,
             )

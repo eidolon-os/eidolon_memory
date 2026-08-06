@@ -54,7 +54,13 @@ class RecallPolicy(BaseModel):
     # still on the critical path of a reply, so this is far below the second that
     # used to be hardcoded here.
     kg_timeout_seconds_normal: float = 0.3
-    kg_window_days: int = 30
+    # Health predicates in recall. A deployment decision, not a per-request one:
+    # the agent's recall tool takes no ``include_sensitive_kg`` argument, because a
+    # flag that widens visibility is a capability and the least-trusted caller
+    # should not be able to grant itself one. Audience is already derived from the
+    # caller's context rather than passed; this is the same rule for the other
+    # visibility axis. Operator tools keep an explicit parameter.
+    include_sensitive_kg: bool = False
     kg_max_entities: int = 3
     kg_max_triples_per_entity: int = 8
     # Phase 1 — BM25 + cosine RRF rerank. Toggle off here for zero-cost rollback

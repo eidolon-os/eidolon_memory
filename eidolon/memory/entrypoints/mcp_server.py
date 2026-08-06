@@ -241,7 +241,6 @@ def build_control_plane_mcp(
         top_k: int = 5,
         voice: bool = False,
         include_kg: bool | None = None,
-        include_sensitive_kg: bool = False,
         kg_subjects: list[str] | None = None,
     ) -> dict[str, Any]:
         """Aggregated recall: vector + (optional) KG triples in parallel.
@@ -250,7 +249,15 @@ def build_control_plane_mcp(
         (shared query embedding across wings, skip closets); the LiveKit
         pipeline calls the same code via ``LiveKitRecallService.recall_context``.
         ``include_kg`` defaults to settings.recall.kg_in_recall.
-        ``include_sensitive_kg`` opt-in for health predicates.
+
+        There is deliberately no ``include_sensitive_kg`` parameter here. Health
+        predicates are widened by ``recall.include_sensitive_kg`` in settings, a
+        deployment decision, not by an argument the caller supplies per request.
+        Audience already works that way — the agent passes ``context`` and the
+        visible set is *derived* from it — and sensitivity is the same kind of
+        thing: a capability, which the least-trusted caller should not be able to
+        grant itself. The operator surface keeps the explicit parameter, where
+        turning it on is a human act.
         """
         ctx = MemoryActorContext.model_validate(context)
         subjects = tuple(
@@ -262,7 +269,7 @@ def build_control_plane_mcp(
             ctx,
             query,
             plan=RecallPlan(semantic_k=top_k, voice=voice, focus_subjects=subjects),
-            include_sensitive_kg=include_sensitive_kg,
+            include_sensitive_kg=settings.recall.include_sensitive_kg,
             include_kg=include_kg,
         )
         return {
@@ -1043,18 +1050,29 @@ def _register_kg_tools(
     ) -> dict[str, Any]:
         """Bounded triple snapshot for graph visualization.
 
-        One round-trip returning ``stats`` + a capped triple list — wraps
-        :meth:`KnowledgeGraphPort.timeline` (which already runs under the
-        backend lock and filters sensitive predicates).
+        ``stats`` plus a capped triple list — wraps
+        :meth:`KnowledgeGraphPort.timeline`, which runs under the space lock and
+        filters on the ``sensitive`` column. (That column, not predicate names:
+        sensitivity is resolved once on write, so the store never hands back a
+        health statement the caller did not ask for.)
+
+        ``current_only`` is pushed into the query rather than applied to the
+        result. Filtering a ``LIMIT``-ed page in Python returned far fewer than
+        ``max_triples`` current triples on any graph with history, and then
+        reported ``capped`` against the post-filter count — under-reporting while
+        saying it had not.
         """
         limit = max(10, min(max_triples, 5000))
         records = await kg.timeline(
             entity_name=entity if entity else None,
+            # Required and keyword-only, and previously omitted — which made every
+            # invocation of this tool raise TypeError. Operator tools see every
+            # audience; see ``_all_audiences``.
+            audiences=await _all_audiences(kg),
             limit=limit,
+            current_only=current_only,
             include_sensitive=include_sensitive,
         )
-        if current_only:
-            records = [r for r in records if r.valid_to is None]
         s = await kg.stats()
         return {
             "stats": s,
