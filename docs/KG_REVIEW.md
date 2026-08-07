@@ -219,7 +219,7 @@ eidolon_memory_kg_snapshot   ToolError: SqliteKnowledgeGraph.timeline() missing 
 eidolon_memory_kg_timeline   OK
 ```
 
-`mcp_server.py:1051-1055` 没传 `audiences`，而它在 port 和实现里都是**无默认值的 keyword-only**。同一个文件三个函数之上的 `kg_timeline` 传对了。**没有任何单元测试覆盖它**——`test_kg_mcp_gateway.py` 的工具名断言里就没有它。`scripts/bench_mempalace_full_ab.py:479` 同样的错。
+`mcp_server.py:1051-1055` 没传 `audiences`，而它在 port 和实现里都是**无默认值的 keyword-only**。同一个文件三个函数之上的 `kg_timeline` 传对了。**没有任何单元测试覆盖它**——`test_kg_mcp_gateway.py` 的工具名断言里就没有它。`scripts/bench_mempalace_full_ab.py:479` 同样的错——那个脚本已于 2026-08-07 删除，它给 **mempalace 自己的 KG** 做基准（包着 `c90c08b` 一起删掉的 `LockedKnowledgeGraph`），自 2026-08-01 起就 import 不了。我们要的图基准是 `probe_kg_scale` / `probe_wall` / `probe_write`。
 
 顺带：`current_only` 是在 SQL `LIMIT` **之后**用 Python 过滤的，所以已结束陈述多的图会返回远少于 `max_triples` 的当前条目，而 `"capped"` 又是拿过滤后的条数算的。
 

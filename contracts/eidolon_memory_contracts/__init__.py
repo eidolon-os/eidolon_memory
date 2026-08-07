@@ -8,6 +8,33 @@ asynchronously except when the caller must be truthful about what was stored
 Nothing here describes how memory is stored, ranked or fused. A client cannot
 tell from this contract whether the service keeps a knowledge graph, which
 vector backend it uses, or whether it runs locally or in a cluster.
+
+**Not everything exported here is a promise to outside callers, and the
+difference is worth stating because it was misread once.** Seventy symbols
+leave this package; eleven are imported by any other repository, all of them by
+``eidolon_agent`` and all of them about publishing a turn. The rest fall into
+three groups:
+
+* **Reachable from the two Protocols** — every type in a ``MemoryReadContract``
+  or ``MemoryWriteContract`` signature. A client implementing or calling either
+  needs them whether or not one does today. Fifteen of these.
+* **Wire format** — subjects, stream patterns, the envelope, the parsers,
+  ``memory_space_id`` derivation. Anything that publishes to or reads from the
+  bus needs them, in any language.
+* **Service-to-service commands** — ``KgAddTripleCommand``,
+  ``KgInvalidateCommand``, ``PrivacyMutationCommand``,
+  ``ConsolidatorIngestThemeCommand``. These are **built and consumed entirely
+  inside eidolon_memory**: its own MCP tools publish them and its own turn
+  worker applies them. They live here only because they are members of the
+  ``MemoryCommandPayload`` discriminated union that ``parse_memory_command``
+  dispatches on, and pulling them out would split the union rather than clean
+  anything.
+
+  The cost of that is real and was paid during this work: changing
+  ``PrivacyMutationCommand`` looked like a cross-repository event and was
+  hesitated over for exactly as long as it took to check that no other
+  repository has ever referenced it. **Adding a field to one of these four is a
+  local change.** Nothing outside this service sends them.
 """
 
 from .audience import (
