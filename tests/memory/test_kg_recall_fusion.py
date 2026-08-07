@@ -438,23 +438,30 @@ async def test_fusion_kg_timeout_degrades_silently(fusion_setup) -> None:
     assert "vector" in result
 
 
-async def test_explicit_subject_scope_bypasses_query_language_routing(
+async def test_a_caller_hint_adds_to_the_phrase_rather_than_replacing_it(
     fusion_setup,
 ) -> None:
+    """``focus_subjects`` used to discard everything found in the phrase.
+
+    The contract calls it "a hint, not a directive: the service may use it to
+    sharpen retrieval". Overriding is not sharpening — a caller naming one entity
+    silently lost every other entity the person had just mentioned, which is the
+    opposite of what a hint is for.
+
+    Both seeds now reach one query, in both directions, because a caller naming
+    an entity wants what is known about it and half of that is incoming.
+    """
+
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.domain.kg import KgTripleRecord
 
     backend, _, settings = fusion_setup
     kg = MagicMock()
-    kg.match_entities_for_query = AsyncMock(return_value=["wrong-route"])
-    kg.query_subjects = AsyncMock(
+    kg.match_entities_for_query = AsyncMock(return_value=["from-the-phrase"])
+    kg.entities_for_source_turns = AsyncMock(return_value=[])
+    kg.query_entity_combined = AsyncMock(
         return_value=[
-            KgTripleRecord(
-                id="t1",
-                subject="self",
-                predicate="likes",
-                object="tea",
-            )
+            KgTripleRecord(id="t1", subject="self", predicate="likes", object="tea")
         ]
     )
 
@@ -469,15 +476,18 @@ async def test_explicit_subject_scope_bypasses_query_language_routing(
     )
 
     assert [row.id for row in result["kg"]] == ["t1"]
-    kg.match_entities_for_query.assert_not_awaited()
-    kg.query_subjects.assert_awaited_once_with(
-        ["self"],
-        # Both layers: the owner's own facts, plus what this companion was told.
-        audiences=("owner", "companion:default"),
-        as_of=None,
-        include_sensitive=False,
-        limit_per_subject=settings.recall.kg_max_triples_per_entity,
+    kg.match_entities_for_query.assert_awaited(), "the phrase must still be read"
+    seeds = kg.query_entity_combined.await_args_list[0].args[0]
+    assert seeds == ["self", "from-the-phrase"], (
+        "the hint leads, but it does not evict what the phrase found"
     )
+    assert kg.query_entity_combined.await_args_list[0].kwargs == {
+        # Both layers: the owner's own facts, plus what this companion was told.
+        "audiences": ("owner", "companion:default"),
+        "as_of": None,
+        "include_sensitive": False,
+        "limit_per_entity": settings.recall.kg_max_triples_per_entity,
+    }
 
 
 async def test_group_recall_context_appends_kg_section() -> None:
@@ -695,3 +705,97 @@ async def test_recall_with_alias_query_hits_kg_via_mentions(fusion_setup) -> Non
         t.subject == "mother:张丽" and t.object == "insomnia"
         for t in result["kg"]
     ), f"alias 'I妈' failed to route to mother:张丽 in fusion: {result['kg']}"
+
+
+async def test_the_graph_answers_a_question_that_names_nobody(fusion_setup) -> None:
+    """The inversion this whole seeding change exists to fix.
+
+    "她住哪儿" contains no entity, so phrase matching finds nothing and the graph
+    used to contribute nothing — in precisely the turns where it has the most to
+    add, since a question that *does* name someone is one the vector store was
+    going to answer anyway.
+
+    Vector search still finds the right memory. That memory's turn produced
+    statements, and one hop out from their entities is what the graph is for.
+    """
+
+    from eidolon.memory.application.public_recall import recall_with_kg_fusion
+    from eidolon.memory.domain.kg import KgTripleRecord
+
+    from eidolon.memory.domain.wire import MemoryWireRecord
+
+    backend, _, settings = fusion_setup
+    # The memory vector search finds. Its turn is the bridge into the graph.
+    backend._inner.docs[f"{SPACE_FOR_TESTS}::drawer_1"] = MemoryWireRecord(
+        memory_space_id=SPACE_FOR_TESTS,
+        key="drawer_1",
+        # The fake backend matches on containment, so the drawer carries the
+        # phrase. What is being tested is the seeding, not vector search.
+        value="上周妈妈提过她住哪儿这件事",
+        metadata={
+            "memory_space_id": SPACE_FOR_TESTS,
+            "wing": "Wing_Profile",
+            "source_turn_id": "the-turn-about-mother",
+        },
+    )
+
+    kg = MagicMock()
+    kg.match_entities_for_query = AsyncMock(return_value=[])  # the phrase names nobody
+    kg.entities_for_source_turns = AsyncMock(return_value=["mother:张丽"])
+    kg.query_entity_combined = AsyncMock(
+        return_value=[
+            KgTripleRecord(
+                id="t-hop",
+                subject="mother:张丽",
+                predicate="lives_in",
+                object="杭州",
+                source_turn_id="some-other-turn",
+            )
+        ]
+    )
+
+    result = await recall_with_kg_fusion(
+        backend, settings, query="她住哪儿", context=_ctx(), top_k=5, kg=kg
+    )
+
+    assert [row.id for row in result["kg"]] == ["t-hop"]
+    kg.entities_for_source_turns.assert_awaited()
+
+
+async def test_a_restating_triple_loses_the_budget_but_is_not_deleted(
+    fusion_setup,
+) -> None:
+    """Near-redundant, so it sorts last; still present, so a young graph is not silent.
+
+    A statement from a turn already showing as a drawer mostly repeats what the
+    drawer says in the person's own words, and should lose its place to a fact
+    the drawers did not carry. Dropping it outright was the first attempt and it
+    was wrong: on a young palace almost every statement shares a turn with a
+    recalled drawer, so the graph would go quiet exactly where it is being asked
+    to help — the same failure, wearing a different hat.
+    """
+
+    from eidolon.memory.application.public_recall import _merge_triples
+    from eidolon.memory.domain.kg import KgTripleRecord
+
+    def triple(identity: str, turn: str) -> KgTripleRecord:
+        return KgTripleRecord(
+            id=identity, subject="s", predicate="likes", object="o", source_turn_id=turn
+        )
+
+    merged = _merge_triples(
+        [triple("restates", "shown-turn"), triple("novel", "other-turn")],
+        [triple("restates", "shown-turn")],  # the same statement from both seeds
+        already_shown={"shown-turn"},
+        limit=10,
+    )
+
+    assert [row.id for row in merged] == ["novel", "restates"]
+
+    # And when the budget binds, the novel one is what survives.
+    assert [row.id for row in _merge_triples(
+        [triple("restates", "shown-turn"), triple("novel", "other-turn")],
+        [],
+        already_shown={"shown-turn"},
+        limit=1,
+    )] == ["novel"]

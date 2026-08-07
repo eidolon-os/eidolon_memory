@@ -242,6 +242,27 @@ class KnowledgeGraphPort(Protocol):
         """
         ...
 
+    async def entities_for_source_turns(
+        self, turn_ids: Sequence[str], *, cap: int
+    ) -> list[str]:
+        """Which entities the given turns produced statements about.
+
+        The other way into the graph, and the one that works when the phrase
+        names nobody. ``match_entities_for_query`` needs the person to say a name;
+        "她住哪儿" and "我上次说的那个事" say none, and those are the turns where a
+        graph has the most to add — so seeding only from the phrase meant the
+        graph was quietest exactly when it was most useful.
+
+        Seeded from what vector search already decided is relevant, this needs no
+        matching at all: the drawers carry ``source_turn_id``, the statements are
+        indexed by it, and the join is exact. No fuzzy step, no false positives.
+
+        Returns display names, ordered most-connected first, so a caller taking
+        the first few gets the entities the turns were actually about rather than
+        an arbitrary slice.
+        """
+        ...
+
     async def match_entities_for_query(self, query: str, *, cap: int) -> list[str]:
         """Guess which entities a piece of natural language is about.
 

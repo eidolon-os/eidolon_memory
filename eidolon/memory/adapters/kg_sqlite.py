@@ -900,6 +900,55 @@ class SqliteKnowledgeGraph:
         params.append(max(1, limit))
         return [_to_record(row) for row in self._connection().execute(sql, params)]
 
+    async def entities_for_source_turns(
+        self, turn_ids: Sequence[str], *, cap: int
+    ) -> list[str]:
+        wanted = list(dict.fromkeys(t.strip() for t in turn_ids if t and t.strip()))
+        if not wanted or cap <= 0:
+            return []
+        async with self._lock.reader():
+            return await asyncio.to_thread(self._entities_for_turns_sync, wanted, cap)
+
+    def _entities_for_turns_sync(self, turn_ids: list[str], cap: int) -> list[str]:
+        """The entities named by these turns' statements, busiest first.
+
+        Both ends of every statement, because a turn is about its objects as much
+        as its subjects — "妈妈住在杭州" is a turn about 妈妈 *and* about 杭州, and
+        which one the next question is about is not ours to guess.
+
+        Ordered by how many of these turns mention each entity. When several turns
+        come back from one recall they usually share a subject, and that shared one
+        is what the conversation is about; an arbitrary slice of a ``DISTINCT``
+        would drop it as readily as anything else.
+
+        ``idx_kg_statements_source`` covers the predicate, so this is a seek per
+        turn rather than a walk.
+        """
+
+        connection = self._connection()
+        counted: dict[str, int] = {}
+        for start in range(0, len(turn_ids), _LOOKUP_CHUNK):
+            chunk = turn_ids[start : start + _LOOKUP_CHUNK]
+            marks = ", ".join("?" for _ in chunk)
+            rows = connection.execute(
+                f"""
+                SELECT e.name AS name, COUNT(*) AS hits
+                FROM kg_statements s
+                JOIN kg_entities e
+                  ON e.space_id = s.space_id
+                 AND e.entity_id IN (s.subject_id, s.object_id)
+                WHERE s.space_id = ? AND s.source_turn_id IN ({marks})
+                GROUP BY e.name
+                """,
+                (self._space_id, *chunk),
+            )
+            for row in rows:
+                name = row["name"]
+                if name:
+                    counted[name] = counted.get(name, 0) + int(row["hits"])
+        ranked = sorted(counted.items(), key=lambda item: (-item[1], item[0]))
+        return [name for name, _hits in ranked[:cap]]
+
     async def match_entities_for_query(self, query: str, *, cap: int) -> list[str]:
         if cap <= 0:
             return []

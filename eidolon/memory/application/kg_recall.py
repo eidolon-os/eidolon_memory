@@ -39,20 +39,70 @@ async def query_kg_for_recall(
     too narrow (the owner layer only, quietly losing what this companion was
     told) or too wide (everything, showing one companion what another was told) —
     and the wide mistake is invisible until there is a second companion.
+
+    **The seeds are a union, not a choice.** This read ``if subject_names: …``
+    and returned, so a caller passing ``focus_subjects`` silently discarded every
+    entity found in the phrase. A hint is meant to sharpen retrieval, and the
+    contract says so; overriding it is not sharpening.
+
+    Both directions for every seed, via ``query_entity_combined``. A caller
+    naming an entity wants what is known about it, and half of that is incoming —
+    "用户 的母亲是 张丽" is about 张丽 whichever end she is on. ``query_subjects``
+    is the narrower outgoing-only read and is no longer on this path.
     """
 
-    if subject_names:
-        return await kg.query_subjects(
-            subject_names,
-            audiences=audiences,
-            as_of=now_iso,
-            include_sensitive=include_sensitive,
-            limit_per_subject=max_triples_per_entity,
-        )
-    if not entity_names:
+    seeds = list(dict.fromkeys([*(subject_names or []), *entity_names]))
+    if not seeds:
         return []
     return await kg.query_entity_combined(
-        entity_names,
+        seeds,
+        audiences=audiences,
+        as_of=now_iso,
+        include_sensitive=include_sensitive,
+        limit_per_entity=max_triples_per_entity,
+    )
+
+
+async def expand_from_recalled(
+    kg,
+    *,
+    audiences: tuple[str, ...],
+    source_turn_ids: list[str],
+    now_iso: str | None = None,
+    max_entities: int,
+    max_triples_per_entity: int,
+    include_sensitive: bool = False,
+) -> list[KgTripleRecord]:
+    """One hop out from the memories vector search just returned.
+
+    The seed that works when the phrase names nobody. "她住哪儿" and "我上次说的
+    那个事" contain no entity, so phrase matching finds nothing and the graph stays
+    silent — in exactly the turns where it has the most to add, since a phrase that
+    *does* name someone is one the vector store was going to answer anyway.
+
+    Vector search has already decided which memories this turn is about. Those
+    drawers carry ``source_turn_id``, the statements are indexed by it, and the
+    join is exact — no matching step, so nothing to be wrong about.
+
+    **One hop, and the hop is the point.** Zero hops would return the statements
+    those same turns produced, which the recalled drawer text mostly already says.
+    The value is the second step: vector finds "妈妈说她腰不好", the graph adds that
+    妈妈 is 张丽, lives in 杭州, works at a hospital — things the vector store did
+    not return and was not asked for.
+
+    Deeper is deliberately not attempted. Graphiti allows three hops, on cloud
+    Neo4j with no per-turn deadline; one hop here has not been measured against a
+    voice budget on the board yet, and widening before measuring is how a recall
+    path acquires a tail.
+    """
+
+    if not source_turn_ids or max_entities <= 0:
+        return []
+    entities = await kg.entities_for_source_turns(source_turn_ids, cap=max_entities)
+    if not entities:
+        return []
+    return await kg.query_entity_combined(
+        entities,
         audiences=audiences,
         as_of=now_iso,
         include_sensitive=include_sensitive,

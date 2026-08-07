@@ -16,7 +16,7 @@ from eidolon_memory_contracts import (
 )
 
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
-from eidolon.memory.application.kg_recall import query_kg_for_recall
+from eidolon.memory.application.kg_recall import expand_from_recalled, query_kg_for_recall
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
@@ -417,6 +417,34 @@ async def recall_with_kg_fusion(
         top_k=max(top_k, len(vector_records)),
     )
 
+    # The graph's second seed: one hop out from what was actually recalled.
+    #
+    # Here, after ranking, because the seed should be the memories this turn is
+    # about — not the raw hit list, and not the phrase, which for "她住哪儿" names
+    # nobody at all. Serialised behind the vector leg by necessity: it cannot
+    # start until there are results to seed from. That is the cost; what it buys
+    # is a seed that needs no matching, so it is a handful of indexed seeks.
+    kg_records = _merge_triples(
+        kg_records,
+        await _expand_with_timeout(
+            kg,
+            settings,
+            records=vector_records,
+            audiences=readable_audiences(context.companion_id),
+            include_sensitive=include_sensitive_kg,
+            for_voice=for_voice,
+            kind=recall_kind,
+        ),
+        # A statement from a turn already showing as a drawer is not new
+        # information — the drawer text says it, in the person's own words. Drop
+        # it and let the budget go to the hop.
+        already_shown={
+            str((record.metadata or {}).get("source_turn_id") or "")
+            for record in vector_records
+        },
+        limit=settings.recall.kg_max_entities * settings.recall.kg_max_triples_per_entity,
+    )
+
     # Phase 4 — Wing_Theme drawers always surface (when present). They
     # encode cross-time "what's been on your mind" overviews that don't
     # compete on cosine ranking with concrete fragments; they're meant
@@ -539,6 +567,107 @@ async def _fetch_themes(
     return kept
 
 
+def _merge_triples(
+    primary: list,
+    expanded: list,
+    *,
+    already_shown: set[str],
+    limit: int,
+) -> list:
+    """Combine the graph's two seeds into one bounded list.
+
+    ``primary`` (the phrase and the caller's hint) keeps its order ahead of the
+    expansion: those seeds came from what was asked, while the expansion comes
+    from what was found. Which is more useful is not knowable here, and
+    preferring the asked-about entity is the conservative reading.
+
+    **A statement whose turn is already showing as a drawer sorts last, and is
+    not dropped.** It is close to redundant — the drawer carries the person's own
+    sentence for the same turn — so it should lose the budget to a fact the
+    drawers did not carry. But dropping it outright silences the graph entirely
+    on a young palace, where nearly every statement shares a turn with a recalled
+    drawer, and that is the same failure this whole change exists to fix: the
+    graph going quiet exactly where it is being asked to help. It also is not
+    strictly redundant — a triple is resolved ("妈妈" → 张丽) and carries
+    validity, which the raw fragment does not.
+    """
+
+    seen_ids: set[str] = set()
+    novel: list = []
+    restating: list = []
+    for record in (*primary, *expanded):
+        identity = getattr(record, "id", None)
+        if identity in seen_ids:
+            continue
+        seen_ids.add(identity)
+        turn = str(getattr(record, "source_turn_id", "") or "")
+        (restating if turn and turn in already_shown else novel).append(record)
+    return [*novel, *restating][:limit]
+
+
+async def _expand_with_timeout(
+    kg,
+    settings: MemorySettings,
+    *,
+    records: list[MemoryWireRecord],
+    audiences: tuple[str, ...],
+    include_sensitive: bool,
+    for_voice: bool,
+    kind: str,
+) -> list:
+    """The expansion leg, on the same budget and the same silent degradation.
+
+    Separate from ``_kg_path_with_timeout`` because it starts later and can
+    therefore be skipped entirely — if the vector leg found nothing, there is
+    nothing to expand from, and the phrase-seeded leg has already run.
+    """
+
+    if kg is None or not settings.recall.kg_in_recall or not records:
+        return []
+    turn_ids = list(
+        dict.fromkeys(
+            str((record.metadata or {}).get("source_turn_id") or "")
+            for record in records
+        )
+    )
+    turn_ids = [turn for turn in turn_ids if turn]
+    if not turn_ids:
+        return []
+
+    timeout_s = (
+        settings.recall.kg_timeout_seconds
+        if for_voice
+        else settings.recall.kg_timeout_seconds_normal
+    )
+    started = time.monotonic()
+    try:
+        return await asyncio.wait_for(
+            expand_from_recalled(
+                kg,
+                audiences=audiences,
+                source_turn_ids=turn_ids,
+                max_entities=settings.recall.kg_max_entities,
+                max_triples_per_entity=settings.recall.kg_max_triples_per_entity,
+                include_sensitive=include_sensitive,
+            ),
+            timeout=timeout_s,
+        )
+    except TimeoutError:
+        metrics.GRAPH_TIMEOUTS.labels(kind=kind).inc()
+        log.warning(
+            "kg_expand_timeout",
+            timeout_s=timeout_s,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+            turn_count=len(turn_ids),
+        )
+        return []
+    except Exception as exc:  # noqa: BLE001 - the graph is never allowed to break recall
+        log.warning(
+            "kg_expand_failed", error=str(exc), error_type=type(exc).__name__
+        )
+        return []
+
+
 async def _kg_path_with_timeout(
     kg,
     *,
@@ -562,9 +691,20 @@ async def _kg_path_with_timeout(
     try:
 
         async def _inner():
-            candidates = list(dict.fromkeys(subject_names or []))[:max_entities]
-            if not candidates:
-                candidates = await kg.match_entities_for_query(query, cap=max_entities)
+            # Both, always. The hint used to short-circuit the phrase entirely,
+            # so a caller naming one entity discarded every other entity the
+            # person had just mentioned. The hint leads — the caller knows
+            # something this layer does not — and the phrase fills the rest of
+            # the budget behind it.
+            hinted = list(dict.fromkeys(subject_names or []))
+            candidates = hinted[:max_entities]
+            if len(candidates) < max_entities:
+                from_phrase = await kg.match_entities_for_query(
+                    query, cap=max_entities - len(candidates)
+                )
+                candidates.extend(
+                    name for name in from_phrase if name not in set(candidates)
+                )
             if not candidates:
                 log.debug(
                     "kg_recall_result",
@@ -578,7 +718,6 @@ async def _kg_path_with_timeout(
                 kg,
                 audiences=audiences,
                 entity_names=candidates,
-                subject_names=candidates if subject_names else None,
                 max_triples_per_entity=max_triples_per_entity,
                 include_sensitive=include_sensitive,
             )
