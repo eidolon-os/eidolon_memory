@@ -273,7 +273,7 @@ nothing:
 |---|---|---|
 | Vector | 6 + `VectorStorePort` | `VectorStorePort` is a deliberate second name — `MemoryBackend` says where an implementation sits, this says what it does |
 | Capabilities | `WarmableBackend`, `RoomGraphBackend` | Startup and the graph tool, checked with `isinstance` |
-| Graph | `KnowledgeGraphPort` | Two implementations |
+| Graph | `KnowledgeGraphPort` | One implementation, plus an off switch |
 | Ledgers | 6 × Reader/Writer/Store | **Read/write separation is used**: `mcp_server` takes `CanonicalFactReader`/`CommitmentReader`, `turn_processor` takes four `*Writer`. Each consumer declares the smallest surface it needs |
 | Routing | `MemorySpaceRouter` | `LocalPalaceRouter` (the handle pool) and `FixedSpaceRouter` (a wrapper for handles opened elsewhere) |
 

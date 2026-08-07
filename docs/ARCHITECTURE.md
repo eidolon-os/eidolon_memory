@@ -78,12 +78,27 @@ RoomGraphBackend     能力协议——存储自己回答能不能枚举房间
 `MemorySpaceRouter` 是把 space 从进程身份变回参数的那个东西——没有它，一个进程只能服务
 一个 space。
 
-`KnowledgeGraphPort` 存在是因为 mempalace 的图层没有留任何接缝，这一点是读它的代码确认
-的：`knowledge_graph.py:40` 直接 `import sqlite3`，`:49` 把路径写死成
-`~/.mempalace/knowledge_graph.sqlite3` 这个全局默认——没有 backend 概念、没有注入点。它
-**有**时间有效性（`valid_from`/`valid_to`），但**没有** audience 和 sensitive 列，而且
-date-only 的 `valid_to` 是在每次比较时用长度判断加宽的（`:112`），不是写入时归一。我们
-在写入时归一，于是区间判断是普通 SQL。
+`KnowledgeGraphPort` 存在的理由，2026-08-07 按 mempalace 3.6.0 的源码重新核过一遍，
+**结论不变但其中一条当时说错了**：
+
+- **成立**：他们的 schema **没有** `space_id`、`audience`、`sensitive`。我们是多租户加两层
+  可见性，这三列要进每一个 WHERE。**缺列不是依赖注入能解决的问题。**
+- **成立**：他们的图层没有 backend 概念——`import sqlite3` 在模块级，`sqlite3.connect` 在
+  类里直接调，没有 registry、没有 Protocol，而他们的**向量**存储有完整的 backend 体系。
+- **成立**：date-only 的 `valid_to` 是每次比较时用长度判断加宽的，不是写入时归一——那会毁
+  掉索引。我们在写入时归一，于是区间判断是普通 SQL。
+- **不成立，原文写错了**：说他们"把路径写死成 `~/.mempalace/knowledge_graph.sqlite3`"。
+  那是 `db_path=None` 时的默认值，**`db_path` 是构造参数**，两个真实调用方都传了。这句话
+  字面指向了他们那个图里唯一可配置的东西。
+
+还有一条更根本的，当时没写：**他们的图默认是空的。** 抽取管线（`convo_miner` /
+`general_extractor` / `dedup`）一行都不写它，唯一的写入口是 MCP 工具 `kg_add`，
+`searcher.py` 对它零引用——**图不在他们的检索路径上**，`seed_from_entity_facts` 零调用者。
+所以那是一个由 agent 手动维护的旁路设施，不是一个被填充、被使用的图。详见
+`MEMORY_FUSION_PLAN.md` §1。
+
+**这个 port 服务的不是"换 backend"**（`Literal["none","sqlite"]`，只有一个实现），而是
+关闭开关的契约、可测性、以及说清楚图欠召回什么。
 
 每一个都在解决一个当下的问题，不是占位。
 
