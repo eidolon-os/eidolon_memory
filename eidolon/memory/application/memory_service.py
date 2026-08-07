@@ -30,27 +30,41 @@ explicitly named internal method rather than a second contract — see
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from eidolon_memory_contracts import (
     ActiveCommitment,
+    ConversationTurnPayload,
     CommitmentReadResult,
     ForgetCandidate,
+    ForgetOutcome,
     ForgetPreview,
     MemoryActorContext,
     MemorySnippet,
+    PrivacyMutationCommand,
     RecallPlan,
     RecallResult,
     SearchResult,
     ServiceStatus,
     SourceTurnLookup,
+    TurnPublishReceipt,
+    conversation_turn_subject,
     WriteOutcome,
 )
 
+from eidolon.memory.application.explicit_writes import (
+    InvalidWriteRequest,
+    build_confirmed_fact_command,
+    normalise_request_id,
+    publish_with_status,
+)
 from eidolon.memory.application.forget import (
     extract_privacy_target,
     find_forget_candidates,
 )
+from eidolon.memory.application.privacy_confirmation import PrivacyConfirmationSigner
 from eidolon.memory.application.public_recall import (
     recall_with_kg_fusion,
     search_all_wings_mcp_style,
@@ -58,6 +72,7 @@ from eidolon.memory.application.public_recall import (
 )
 from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.ports import CommandStatusStore
 from eidolon.memory.domain.space_runtime import (
     MemorySpaceRouter,
     MemorySpaceRuntime,
@@ -68,6 +83,46 @@ from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _minted(
+    signer: PrivacyConfirmationSigner,
+    *,
+    memory_space_id: str,
+    action: str,
+    target: str,
+    drawer_ids: list[str],
+) -> dict[str, str]:
+    """The token fields for a preview, or none if a token cannot cover it.
+
+    ``issue`` refuses more than a hundred ids, or any that is not a drawer. Both
+    are real answers rather than errors here: the candidates are still worth
+    showing, and a preview that cannot be committed as one batch should say so by
+    carrying no token rather than by failing the whole preview.
+    """
+
+    try:
+        token, proof = signer.issue(
+            memory_space_id=memory_space_id,
+            action=action,  # type: ignore[arg-type]
+            target=target,
+            drawer_ids=drawer_ids,
+        )
+    except ValueError as exc:
+        log.info("forget_preview_not_tokenisable", target=target, reason=str(exc))
+        return {}
+    # ISO-8601, because every other timestamp a caller sees is. The proof keeps
+    # a unix integer internally, which is right for comparing against a clock and
+    # wrong for handing to someone who has to read or log it.
+    expires = datetime.fromtimestamp(proof.expires_at, tz=UTC)
+    return {
+        "confirmation_token": token,
+        "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
 
 
 class FusedRecall(dict):
@@ -100,10 +155,30 @@ class MemoryService:
         settings: MemorySettings,
         *,
         command_publisher: Any = None,
+        command_status: CommandStatusStore | None = None,
+        turn_publisher: Any = None,
+        signer: PrivacyConfirmationSigner | None = None,
     ) -> None:
         self._router = router
         self._settings = settings
         self._command_publisher = command_publisher
+        self._command_status = command_status
+        self._turn_publisher = turn_publisher
+        # One signer, because a proof carries a per-instance secret: a token
+        # minted by ``preview_forget`` is verifiable only by the same object.
+        # Whoever else needs to verify one — the MCP surface does — must be handed
+        # this instance rather than construct its own, or a preview and its
+        # confirmation land on different keys and every commit fails as forged.
+        self._signer = signer or PrivacyConfirmationSigner()
+
+    @property
+    def privacy_signer(self) -> PrivacyConfirmationSigner:
+        """The signer this service mints and verifies forget tokens with.
+
+        Exposed so a second surface can share it. See ``__init__``.
+        """
+
+        return self._signer
 
     # ── resolution ───────────────────────────────────────────────────────────
 
@@ -421,9 +496,196 @@ class MemoryService:
                 )
                 for c in candidates
             ],
-            # Forgetting is irreversible, so the caller must show what will go and
-            # hand the token back. Minting it is a write concern, not this method's.
             requires_explicit_confirmation=True,
+            # Minted here, and this used to be left empty on the reasoning that
+            # "minting is a write concern". It is not: a token describes what
+            # *would* be written and changes nothing. Leaving it blank while
+            # setting ``requires_explicit_confirmation`` meant a caller following
+            # the contract literally could never commit — it was told to hand back
+            # a token it had not been given. Nobody hit it because the MCP surface
+            # mints its own; the read contract's own path was the broken one.
+            **_minted(
+                self._signer,
+                memory_space_id=ctx.memory_realm_id,
+                action=action,
+                target=target,
+                drawer_ids=[str(getattr(c, "key", "") or "") for c in candidates],
+            ),
+        )
+
+    # ── the write contract ───────────────────────────────────────────────────
+    #
+    # Declared since the contracts package existed and implemented by nothing
+    # until 2026-08-07. The three operations were all real — a turn goes out over
+    # NATS, explicit writes and forgets go through MCP tools — but they were
+    # scattered across two transports with no object gathering them, so the rule
+    # the contract is built around had no single place to hold:
+    #
+    #     ``applied`` is the only status that means stored and readable. A caller
+    #     that says "I'll remember that" on ``accepted`` is lying to the user.
+    #
+    # It holds here now, for every explicit write, whichever surface asked.
+
+    async def publish_turn(
+        self,
+        turn: ConversationTurnPayload,
+        *,
+        trace_id: str | None = None,
+    ) -> TurnPublishReceipt:
+        """Hand a completed turn to memory. Fire and forget, and says so.
+
+        The receipt reports whether the *bus* took the message — never whether
+        anything was remembered, which is not knowable yet and is the steward's
+        decision minutes later. Deduplicated by ``turn.turn_id``.
+        """
+
+        memory_space_id = (turn.context.memory_space_id or "").strip()
+        if self._turn_publisher is None:
+            # A deployment with no bus wired is a real configuration, not an
+            # error: in-process callers exist. ``skipped_no_bus`` exists in the
+            # receipt for exactly this, and is not ``published``.
+            return TurnPublishReceipt(
+                turn_id=turn.turn_id,
+                memory_space_id=memory_space_id,
+                state="skipped_no_bus",
+                trace_id=trace_id,
+            )
+        try:
+            await self._turn_publisher.publish_turn(turn)
+        except Exception as exc:  # noqa: BLE001 - the caller gets a receipt, not a raise
+            log.warning(
+                "turn_publish_failed",
+                turn_id=turn.turn_id,
+                memory_space_id=memory_space_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return TurnPublishReceipt(
+                turn_id=turn.turn_id,
+                memory_space_id=memory_space_id,
+                state="publish_failed",
+                error=str(exc),
+                trace_id=trace_id,
+            )
+        return TurnPublishReceipt(
+            turn_id=turn.turn_id,
+            memory_space_id=memory_space_id,
+            state="published",
+            subject=conversation_turn_subject(memory_space_id) if memory_space_id else None,
+            trace_id=trace_id,
+        )
+
+    async def write_confirmed_fact(
+        self,
+        ctx: MemoryActorContext,
+        text: str,
+        *,
+        source_event_id: str,
+        tool_call_id: str,
+        confidence: float = 0.99,
+        tags: tuple[str, ...] = (),
+        wait_applied_seconds: float = 0.75,
+    ) -> WriteOutcome:
+        """Store a fact the user explicitly asked to be remembered.
+
+        Waits for a durable outcome, because the caller is about to speak. On
+        timeout the answer is ``accepted``, never ``applied``.
+
+        Routing is the service's business: a product caller knows the sentence
+        and the turn that asked for it, not which wing it belongs in. The
+        operator tool exposes the overrides.
+        """
+
+        if self._command_publisher is None:
+            return WriteOutcome(
+                status="unknown",
+                request_id="",
+                error="no command publisher configured",
+            )
+        request_id = normalise_request_id(f"{tool_call_id}".strip() or None)
+        try:
+            command, _routing = build_confirmed_fact_command(
+                ctx,
+                text,
+                request_id=request_id,
+                source_event_id=source_event_id,
+                tool_call_id=tool_call_id,
+                confidence=confidence,
+                tags=tags,
+                now_iso=_now_iso(),
+            )
+        except InvalidWriteRequest as exc:
+            return WriteOutcome(status="failed", request_id=request_id, error=str(exc))
+
+        outcome = await publish_with_status(
+            self._command_publisher,
+            self._command_status,
+            command,
+            wait_seconds=wait_applied_seconds,
+        )
+        return WriteOutcome(
+            status=outcome.get("status", "unknown"),
+            request_id=str(outcome.get("request_id") or request_id),
+            resource_id=outcome.get("resource_id"),
+            error=outcome.get("error"),
+        )
+
+    async def confirm_forget(
+        self,
+        ctx: MemoryActorContext,
+        confirmation_token: str,
+        *,
+        wait_applied_seconds: float = 2.0,
+    ) -> ForgetOutcome:
+        """Commit a privacy request previewed earlier.
+
+        The token is scoped to the candidates the user was shown. A token that is
+        expired, forged, or for another space fails — **it never widens into a
+        broader deletion**, which is the one failure mode that would be worse
+        than refusing.
+        """
+
+        try:
+            proof = self._signer.verify(
+                (confirmation_token or "").strip(),
+                expected_memory_space_id=ctx.memory_realm_id,
+            )
+        except ValueError as exc:
+            return ForgetOutcome(status="failed", action="archive", error=str(exc))
+
+        if self._command_publisher is None:
+            return ForgetOutcome(
+                status="unavailable",
+                action=proof.action,
+                error="no command publisher configured",
+            )
+
+        command = PrivacyMutationCommand(
+            request_id=uuid.uuid4().hex,
+            memory_space_id=ctx.memory_realm_id,
+            issued_at=_now_iso(),
+            issuer="agent",
+            action=proof.action,
+            drawer_ids=proof.drawer_ids,
+            preview_id=proof.preview_id,
+            target=proof.target,
+        )
+        outcome = await publish_with_status(
+            self._command_publisher,
+            self._command_status,
+            command,
+            wait_seconds=wait_applied_seconds,
+        )
+        status = outcome.get("status", "accepted")
+        return ForgetOutcome(
+            # ``retrying`` and ``unknown`` are honest here as "not yet", which is
+            # what ``accepted`` means in this narrower vocabulary. Only the
+            # ledger saying ``applied`` earns ``applied``.
+            status=status if status in {"accepted", "applied", "failed"} else "accepted",
+            action=proof.action,
+            request_id=str(outcome.get("request_id") or command.request_id),
+            forgotten_ids=list(proof.drawer_ids) if status == "applied" else [],
+            error=str(outcome.get("error") or ""),
         )
 
     async def command_status(

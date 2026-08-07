@@ -32,6 +32,7 @@ from eidolon_memory_contracts import (
 from eidolon.memory.adapters.fixed_space_router import FixedSpaceRouter
 from eidolon.memory.adapters.kg_sqlite import now_iso as _now_iso
 from eidolon.memory.application.claim_routing import route_explicit_claim
+from eidolon.memory.application.explicit_writes import publish_with_status
 from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     find_forget_candidates,
@@ -505,6 +506,12 @@ def build_control_plane_mcp(
             command_publisher=command_publisher,
             memory_space_id=memory_space_id,
             command_status=command_status,
+            # The service's signer, not a second one. A proof carries a
+            # per-instance secret, so a preview minted by ``preview_forget`` and a
+            # confirm arriving at this tool have to meet on the same key —
+            # otherwise every cross-surface commit fails as forged, and does so
+            # only in the deployment where both surfaces are actually used.
+            signer=service.privacy_signer,
         )
 
     if surface == "all" and kg is not None and command_publisher is not None:
@@ -594,9 +601,9 @@ def _register_privacy_tools(
     command_publisher: Any,
     memory_space_id: str,
     command_status: CommandStatusStore | None,
+    signer: PrivacyConfirmationSigner,
 ) -> None:
     """Read-only preview followed by an exact-ID command on the write stream."""
-    signer = PrivacyConfirmationSigner()
 
     @mcp.tool()
     async def eidolon_memory_forget_preview(
@@ -667,7 +674,7 @@ def _register_privacy_tools(
             preview_id=proof.preview_id,
             target=proof.target,
         )
-        outcome = await _publish_with_status(
+        outcome = await publish_with_status(
             command_publisher,
             command_status,
             command,
@@ -679,60 +686,6 @@ def _register_privacy_tools(
             "action": proof.action,
             "drawer_ids": proof.drawer_ids,
         }
-
-
-async def _publish_with_status(
-    command_publisher: Any,
-    command_status: CommandStatusStore | None,
-    command: Any,
-    *,
-    wait_seconds: float,
-) -> dict[str, Any]:
-    """Durably publish a write, then wait only on the lightweight projection."""
-    try:
-        await command_publisher.publish(command)
-    except Exception as exc:  # noqa: BLE001 - surface a truthful tool outcome
-        if command_status is not None:
-            try:
-                await command_status.record_failed(
-                    command.request_id,
-                    kind=command.kind,
-                    error=f"publish failed: {exc}",
-                )
-            except Exception as status_exc:  # noqa: BLE001 - preserve root error
-                log.error(
-                    "command_status_publish_failure_record_failed",
-                    request_id=command.request_id,
-                    error=str(status_exc),
-                )
-        return {
-            "status": "failed",
-            "request_id": command.request_id,
-            "error": f"publish failed: {exc}",
-        }
-
-    if command_status is None:
-        return {"status": "accepted", "request_id": command.request_id}
-
-    try:
-        # The worker can win this race. Ledger transition rules guarantee a
-        # late accepted update never downgrades applied/failed.
-        await command_status.record_accepted(command.request_id, kind=command.kind)
-        record = await command_status.wait_terminal(
-            command.request_id,
-            timeout_seconds=max(0.0, min(wait_seconds, 10.0)),
-        )
-    except Exception as exc:  # noqa: BLE001 - publish itself is already durable
-        log.error(
-            "command_status_read_failed",
-            request_id=command.request_id,
-            error=str(exc),
-        )
-        return {"status": "accepted", "request_id": command.request_id}
-
-    if record is None:
-        return {"status": "accepted", "request_id": command.request_id}
-    return record.to_dict()
 
 
 def _register_user_confirm_tool(
@@ -851,7 +804,7 @@ def _register_user_confirm_tool(
             issuer="agent",
             intent=intent,
         )
-        outcome = await _publish_with_status(
+        outcome = await publish_with_status(
             command_publisher,
             command_status,
             cmd,
@@ -915,7 +868,7 @@ def _register_kg_tools(
             adapter_name="admin",
         )
         if command_status is not None:
-            outcome = await _publish_with_status(
+            outcome = await publish_with_status(
                 command_publisher,
                 command_status,
                 cmd,
@@ -964,7 +917,7 @@ def _register_kg_tools(
             ended=ended_iso,
         )
         if command_status is not None:
-            return await _publish_with_status(
+            return await publish_with_status(
                 command_publisher,
                 command_status,
                 cmd,

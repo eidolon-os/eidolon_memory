@@ -751,10 +751,24 @@ def _run_service(
     port = args.port if args.port else settings.mcp_http.port
 
     step_started = time.perf_counter()
-    # Read tools go through the service, which resolves a space from the caller's
-    # context rather than from this process. That is what lets one process serve
-    # several spaces; how many it actually holds is the router's decision.
-    service = MemoryService(router, settings, command_publisher=command_publisher)
+    # Both halves of the boundary go through the service, which resolves a space
+    # from the caller's context rather than from this process. That is what lets
+    # one process serve several spaces; how many it actually holds is the router's
+    # decision.
+    #
+    # ``command_status`` is handed over so an explicit write can wait for a real
+    # outcome instead of guessing one — without it every such write answers
+    # ``accepted``, which is honest but never lets a caller say "remembered".
+    #
+    # No turn publisher: this process *consumes* turns off the bus, it does not
+    # produce them. ``publish_turn`` therefore answers ``skipped_no_bus`` here,
+    # which is the truthful answer for a runner rather than a missing feature.
+    service = MemoryService(
+        router,
+        settings,
+        command_publisher=command_publisher,
+        command_status=command_status,
+    )
 
     # Two surfaces, one port, one set of handles. The agent's keeps the path it
     # always had, so neither discovery nor the agent repo changes; the operator

@@ -783,7 +783,8 @@ async def test_a_hard_forget_keeps_appending_to_one_day(graph, tmp_path) -> None
 
     exports = sorted((tmp_path / "forgotten").glob("*.jsonl"))
     assert len(exports) == 1
-    lines = [l for l in exports[0].read_text(encoding="utf-8").splitlines() if l.strip()]
+    written = exports[0].read_text(encoding="utf-8").splitlines()
+    lines = [line for line in written if line.strip()]
     assert len(lines) == 2
     assert (await graph.stats())["triples_total"] == 0
 
