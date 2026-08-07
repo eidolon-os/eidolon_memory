@@ -198,9 +198,31 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         ON kg_entities (space_id, substr(name, instr(name, ':') + 1), name)
     """,
     # Alias lookup, for resolving "my dad" to an entity.
+    #
+    # ``entity_id`` is the third column so this index *covers* the alias query,
+    # and that is the only reason it gets used at all.
+    #
+    # With ``(space_id, alias)`` the planner preferred ``idx_kg_mentions_unique``
+    # — ``(space_id, entity_id, alias)`` — and searched it on ``space_id=?``
+    # alone, scanning every mention in the space, because that index at least
+    # supplied every column ``m`` contributes and this one would have needed a
+    # row fetch per hit to reach ``entity_id`` for the join. A covering scan beat
+    # a non-covering seek, which is the same trap the entity tail index fell into
+    # one commit earlier, in the same file, for the same reason.
+    #
+    # Measured on the board at 65 001 entities: matching cost 0.43 ms with no
+    # mentions and 2.83 ms with 7 500 — the whole difference was this scan, on a
+    # table that grows with the graph.
+    #
+    # Renamed and the old name dropped, because ``CREATE INDEX IF NOT EXISTS``
+    # matches on the name: keeping it would leave every existing graph on the
+    # two-column form, silently, forever.
     """
-    CREATE INDEX IF NOT EXISTS idx_kg_mentions_alias
-        ON kg_entity_mentions (space_id, alias)
+    DROP INDEX IF EXISTS idx_kg_mentions_alias
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_kg_mentions_alias_entity
+        ON kg_entity_mentions (space_id, alias, entity_id)
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_kg_mentions_unique

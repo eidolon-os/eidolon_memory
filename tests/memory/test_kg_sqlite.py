@@ -1048,3 +1048,41 @@ async def test_the_lookup_finds_exactly_what_the_rule_says(graph, phrase: str) -
     actual = set(await graph.match_entities_for_query(phrase, cap=len(present) + 5))
 
     assert actual == expected, f"{phrase!r}: extra={actual - expected} missing={expected - actual}"
+
+
+async def test_the_alias_lookup_is_a_seek_too(graph) -> None:
+    """The same trap, caught twice in one file: covering scan beats non-covering seek.
+
+    ``idx_kg_mentions_alias`` was ``(space_id, alias)`` — seekable on the alias
+    but needing a row fetch to reach ``entity_id`` for the join. So the planner
+    took ``idx_kg_mentions_unique`` instead and searched it on ``space_id`` alone,
+    scanning every mention in the space, because that one happened to supply
+    every column the query wanted. Measured on the board: 0.43 ms with no
+    mentions, 2.83 ms with 7 500, all of it this scan.
+
+    An index is only chosen if it is *both* seekable and covering. Asserting the
+    plan is the only way to notice when it stops being one of them.
+    """
+
+    await graph.add_triple(
+        subject="robert", predicate="likes", object="tea", audience=OWNER
+    )
+    await graph.record_entity_mention(
+        entity_id="robert", alias="my dad", source="steward"
+    )
+
+    plan = " ".join(
+        row[-1]
+        for row in graph._connection().execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT e.name AS name, m.alias AS alias FROM kg_entity_mentions m "
+            "JOIN kg_entities e ON e.space_id = m.space_id AND e.entity_id = m.entity_id "
+            "WHERE m.space_id = ? AND m.alias <> '' AND m.alias IN (?, ?) "
+            "ORDER BY length(m.alias) DESC LIMIT ?",
+            ("alice", "my dad", "x", 3),
+        )
+    )
+
+    assert "idx_kg_mentions_alias_entity" in plan, plan
+    assert "alias=?" in plan, f"the alias lookup fell back to a scan: {plan}"
+    assert "idx_kg_mentions_unique (space_id=?)" not in plan, plan
