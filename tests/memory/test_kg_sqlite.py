@@ -8,6 +8,7 @@ pinning them here is also what makes replacing the storage safe.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -873,3 +874,89 @@ async def test_every_name_shape_reaches_its_entity(graph, name: str) -> None:
     matched = await graph.match_entities_for_query("昵称喜欢什么", cap=3)
 
     assert matched, f"alias written against {name!r} resolved to nothing"
+
+
+async def test_writing_to_a_hot_subject_is_a_lookup_not_a_scan(graph) -> None:
+    """``add_triple``'s idempotency probes must not cost the subject's history.
+
+    Two probes run before every insert, both keyed on the whole triple. Without
+    ``object_id`` in the index SQLite finds every row for the subject and
+    predicate and filters the rest by hand, so writing about "用户" — the subject
+    of most of a companion's graph — grows with everything ever said about them.
+    Measured on a Pi 5 at 15 199 rows under one subject and predicate: 13.4 ms
+    per probe, 28.4 ms per write, on the turn path.
+
+    Asserted as a query plan rather than a duration, because a timing threshold
+    on a shared runner is a flaky test and the plan is the actual claim.
+    """
+
+    await graph.add_triple(
+        subject="用户", predicate="likes", object="绿茶", audience=OWNER
+    )
+
+    plan = " ".join(
+        row[-1]
+        for row in graph._connection().execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT statement_id FROM kg_statements
+            WHERE space_id = ? AND subject_id = ? AND predicate = ? AND object_id = ?
+              AND valid_to IS NULL
+            LIMIT 1
+            """,
+            ("alice", entity_id_for("用户"), "likes", entity_id_for("绿茶")),
+        )
+    )
+
+    assert "object_id=?" in plan, f"the dedup probe is scanning, not looking up: {plan}"
+
+
+async def test_the_old_three_column_index_is_gone(graph) -> None:
+    """Renaming was the migration, so the rename has to actually take effect.
+
+    ``CREATE INDEX IF NOT EXISTS`` matches on name alone. Had the column list
+    changed under the old name, every graph that already existed would have kept
+    the slow index and skipped the new statement without a word.
+    """
+
+    names = {
+        row[0]
+        for row in graph._connection().execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        )
+    }
+
+    assert "idx_kg_statements_triple" in names
+    assert "idx_kg_statements_subject" not in names
+
+
+async def test_an_existing_graph_picks_up_the_new_index(tmp_path) -> None:
+    """The case the rename exists for: a database built before the fix."""
+
+    path = tmp_path / "legacy.sqlite3"
+    legacy = sqlite3.connect(str(path))
+    legacy.execute(
+        "CREATE TABLE kg_statements (space_id TEXT, statement_id TEXT, subject_id TEXT,"
+        " predicate TEXT, object_id TEXT, audience TEXT, sensitive INTEGER,"
+        " valid_from TEXT, valid_to TEXT, recorded_at TEXT, confidence REAL,"
+        " source_turn_id TEXT, adapter_name TEXT, PRIMARY KEY (space_id, statement_id))"
+    )
+    legacy.execute(
+        "CREATE INDEX idx_kg_statements_subject"
+        " ON kg_statements (space_id, subject_id, predicate)"
+    )
+    legacy.commit()
+    legacy.close()
+
+    graph = SqliteKnowledgeGraph(path, space_id="alice", lock=SpaceLock())
+    try:
+        names = {
+            row[0]
+            for row in graph._connection().execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        assert "idx_kg_statements_triple" in names
+        assert "idx_kg_statements_subject" not in names
+    finally:
+        graph.close()

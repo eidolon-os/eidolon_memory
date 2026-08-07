@@ -85,9 +85,46 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     # The recall path's index: subject lookup within a space. Predicate is
     # included because canonical-fact checks ask for a specific one.
+    #
+    # ``object_id`` is here for the *write* path, and it is the difference between
+    # a lookup and a scan. ``add_triple`` runs two idempotency probes before it
+    # inserts, both keyed on the full triple:
+    #
+    #     WHERE space_id=? AND source_turn_id=? AND subject_id=? AND predicate=? AND object_id=?
+    #     WHERE space_id=? AND subject_id=? AND predicate=? AND object_id=? AND valid_to IS NULL
+    #
+    # Without the fourth column SQLite finds every row for that subject and
+    # predicate and then filters, so both probes cost the size of that group.
+    # Measured on a Raspberry Pi 5 against a graph whose hot subject held 100 198
+    # statements, 15 199 of them under one predicate — which is the shape a
+    # companion's graph actually has, since "用户" is the subject of most of it:
+    #
+    #     probe                  before      after
+    #     idempotency by turn    13.65 ms    (a lookup)
+    #     still-valid dedup      13.38 ms    (a lookup)
+    #     one add_triple         28.44 ms
+    #
+    # **This is on the turn path**, so it was the graph's slowest remaining
+    # operation and the only one a user could feel as the companion falling
+    # behind. Reads had all been made flat; the write had not, and nobody had
+    # looked because the probe that was supposed to watch it was measuring
+    # something else (see ``probe_kg_scale``).
+    #
+    # A prefix extension, so every existing reader of the three-column form is
+    # unaffected.
+    #
+    # **Renamed, and the old name dropped, because otherwise no existing palace
+    # would ever get this.** ``CREATE INDEX IF NOT EXISTS`` matches on the name
+    # alone: had the column list changed under the old name, every database that
+    # already had the three-column index would skip the statement and keep the
+    # slow one, silently, forever — the fix would work only on graphs created
+    # after it. The drop is a no-op once it has run.
     """
-    CREATE INDEX IF NOT EXISTS idx_kg_statements_subject
-        ON kg_statements (space_id, subject_id, predicate)
+    DROP INDEX IF EXISTS idx_kg_statements_subject
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_kg_statements_triple
+        ON kg_statements (space_id, subject_id, predicate, object_id)
     """,
     # The recall path's *ordering*, which the index above does not provide.
     #

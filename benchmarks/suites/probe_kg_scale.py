@@ -8,10 +8,14 @@ people re-mention the same subjects — at roughly one entity per eight statemen
 Nothing here needs NATS, an LLM or an embedder; it drives the graph directly, so it
 runs on a board during bring-up.
 
-**Complexity is what transfers, constants are not.** The milliseconds below are a
-12-core laptop's; a Pi 5 is roughly 3–5x slower per core. A read that doubles when
-the graph doubles will keep doubling there, from a slower start — which is the
-thing worth knowing before the board has a year of conversation on it.
+**Complexity is what transfers, constants are not.** A read that doubles when the
+graph doubles will keep doubling on the board, from a slower start — which is the
+thing worth knowing before it has a year of conversation on it.
+
+The board is no longer a guess. Run on a Raspberry Pi 5 (4x Cortex-A76, 8GB, NVMe,
+SQLite 3.46.1) on 2026-08-07 against the same fixture, it is **2.3-2.7x slower than
+an M3 Pro** on these queries, not the 3-5x this file used to assume and that every
+projection built on. ``probe_wall`` finds where that lands against the budget.
 
 The shape matters because recall gives the graph a **50 ms budget on the voice
 path** and silently degrades to vector-only when it is missed. A graph that has
@@ -50,6 +54,9 @@ SPACE = "default.scale.default"
 _PEOPLE = ["妈妈", "爸爸", "张丽", "老王", "铁锤", "小美", "李医生", "房东"]
 _PLACES = ["杭州", "北京", "西湖区", "公司", "健身房", "老家"]
 _VERBS = ["likes", "works_at", "lives_in", "owns", "promised", "friend_of"]
+
+#: Keeps every probed write a genuine insert — see ``measure``.
+_WRITE_SEQ = 0
 
 
 def _p(values: list[float], q: float) -> float:
@@ -105,10 +112,26 @@ async def measure(kg: SqliteKnowledgeGraph, rounds: int = 25) -> dict:
         await kg.query_entity("用户", audiences=(OWNER,), direction="outgoing")
         entity_ms.append((time.perf_counter() - t) * 1000)
 
+        # Unique per call across the whole run, and not just within one round.
+        #
+        # **This column was measuring the wrong thing until 2026-08-07.** The
+        # object and turn were ``新事物{r}`` / ``probe-{r}`` with ``r`` restarting
+        # at zero for every size, so from the second size onward every write hit
+        # ``add_triple``'s first idempotency probe, returned an existing
+        # statement id, and never inserted. The column reported a no-op and the
+        # no-op was flat, which is how "the write path is flat across a 60x
+        # range" got into a commit message.
+        #
+        # The real write at that size is two orders of magnitude slower, and it
+        # is on the turn path. Same failure as the drawer benchmark in an earlier
+        # round — a fixture that reuses keys measures the second write, not the
+        # first — which is why it is written down here rather than quietly fixed.
+        global _WRITE_SEQ
+        _WRITE_SEQ += 1
         t = time.perf_counter()
         await kg.add_triple(
-            subject="用户", predicate="likes", object=f"新事物{r}",
-            audience=OWNER, source_turn_id=f"probe-{r}",
+            subject="用户", predicate="likes", object=f"新事物{_WRITE_SEQ}",
+            audience=OWNER, source_turn_id=f"probe-{_WRITE_SEQ}",
         )
         write_ms.append((time.perf_counter() - t) * 1000)
 
