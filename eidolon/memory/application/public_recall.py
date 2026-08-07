@@ -359,6 +359,7 @@ async def recall_with_kg_fusion(
                 max_triples_per_entity=settings.recall.kg_max_triples_per_entity,
                 timeout_s=kg_timeout,
                 include_sensitive=include_sensitive_kg,
+                kind=recall_kind,
                 subject_names=kg_subjects,
             )
         )
@@ -547,6 +548,7 @@ async def _kg_path_with_timeout(
     max_triples_per_entity: int,
     timeout_s: float,
     include_sensitive: bool,
+    kind: str,
     subject_names: list[str] | None = None,
 ) -> list:
     """Route entity candidates → one combined SQL; degrade silently on timeout.
@@ -591,7 +593,13 @@ async def _kg_path_with_timeout(
 
         return await asyncio.wait_for(_inner(), timeout=timeout_s)
     except TimeoutError:
-        metrics.GRAPH_TIMEOUTS.labels(kind="voice" if timeout_s <= 0.1 else "chat").inc()
+        # ``kind`` is passed in, not inferred. It used to read
+        # ``"voice" if timeout_s <= 0.1 else "chat"`` — deriving the caller's
+        # intent from a number the caller had already decided, three lines after
+        # the caller computed the answer as ``recall_kind``. Any change to the
+        # voice budget silently relabelled the series, and a chat recall
+        # configured below 100 ms would have been counted as voice.
+        metrics.GRAPH_TIMEOUTS.labels(kind=kind).inc()
         log.warning(
             "kg_recall_timeout",
             timeout_s=timeout_s,

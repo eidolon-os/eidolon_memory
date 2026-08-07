@@ -135,3 +135,50 @@ async def test_the_sampler_never_runs_inside_the_space_lock(graph) -> None:
 
     # And outside it, the same call returns immediately.
     await asyncio.wait_for(publish_graph_size(graph, memory_space_id=SPACE), timeout=5)
+
+
+async def test_one_recall_is_counted_once() -> None:
+    """It was counted twice, so every rate built on this was 2x.
+
+    ``recall_with_kg_fusion`` records the recall on its way out;
+    ``memory_service`` recorded it again. The duplicate also carried
+    ``backend="configured"`` — a literal, not the backend's name — so the latency
+    histogram grew a second series that described nothing.
+    """
+
+    import inspect
+
+    from eidolon.memory.application import memory_service, public_recall
+
+    service = inspect.getsource(memory_service)
+    recall = inspect.getsource(public_recall)
+
+    # The degraded path keeps its own increment: an exception means the inner
+    # recorder never ran, and that outcome would otherwise never be counted.
+    assert service.count("RECALL_TOTAL.labels") == 1
+    assert 'outcome="degraded"' in service
+    assert "RECALL_SECONDS.labels" not in service, (
+        "latency belongs to the layer that knows the real backend name"
+    )
+    assert recall.count("RECALL_TOTAL.labels") == 1
+    assert recall.count("RECALL_SECONDS.labels") == 1
+
+
+async def test_a_graph_timeout_is_labelled_by_the_caller_not_by_a_threshold() -> None:
+    """``kind`` was re-derived from the timeout value the caller had just chosen.
+
+    ``recall_kind`` is computed three lines above the call. Inferring it back out
+    of a float meant that changing the voice budget past 100 ms would silently
+    relabel every timeout as chat.
+    """
+
+    import inspect
+
+    from eidolon.memory.application import public_recall
+
+    source = inspect.getsource(public_recall)
+
+    assert "GRAPH_TIMEOUTS.labels(kind=kind)" in source
+    assert "kind=recall_kind" in source
+    # The old form, as code rather than as the comment recording it.
+    assert 'labels(kind="voice" if' not in source

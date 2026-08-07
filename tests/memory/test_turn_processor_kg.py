@@ -457,3 +457,94 @@ async def test_turn_processor_emits_memory_fanout_absorbed(settings, backend, tm
         assert ev.payload_json["should_write"] is True
     finally:
         await store.close()
+
+
+# ─── should_write is fragment-scoped, not turn-scoped ────────────────────
+
+
+async def test_a_triple_survives_a_turn_whose_fragments_were_not_worth_keeping(
+    settings, backend, kg
+):
+    """``should_write=False`` must not silence the graph.
+
+    Read as a global gate it looks like a defect that the graph writes anyway,
+    and it was filed as one. It is not: the LLM steward sets this flag from
+    whether *fragments* survived importance filtering, and fragments and triples
+    have separate thresholds because they are separate judgements. A fact too
+    ordinary to keep as a memory can still be a relation worth knowing, which is
+    the graph's whole reason to exist alongside the vector store.
+    """
+
+    from eidolon.memory.application.turn_processor import process_turn_message
+    from eidolon.memory.domain.kg import KgTripleAction
+    from eidolon.memory.domain.steward import StewardDecision
+
+    decision = StewardDecision(
+        should_write=False,
+        reason="内容信号较弱，低于最小写入重要性阈值。",
+        fragments=[],
+        triples=[KgTripleAction(subject="用户", predicate="likes", object="绿茶", confidence=0.9)],
+    )
+    msg = _stub_msg(_turn_payload(turn_id="low-importance-1"))
+
+    await process_turn_message(
+        msg, steward=_make_steward(decision), backend=backend, kg=kg,
+        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+    )
+
+    assert msg.ack_calls == ["ack"]
+    assert (await kg.stats())["triples_total"] == 1
+
+
+async def test_a_correction_is_applied_even_with_nothing_worth_storing(
+    settings, backend, kg
+):
+    """The reason gating on ``should_write`` would be worse than the bug it looks like.
+
+    Someone saying "不对，我妈搬到北京了" is correcting a fact. Whether the same
+    turn also yields a fragment worth keeping is unrelated — and dropping the
+    correction leaves the superseded fact recallable, silently, which is the
+    failure the whole invalidation path exists to prevent.
+    """
+
+    from eidolon.memory.application.turn_processor import process_turn_message
+    from eidolon.memory.domain.kg import KgInvalidationAction, KgTripleAction
+    from eidolon.memory.domain.steward import StewardDecision
+
+    await process_turn_message(
+        _stub_msg(_turn_payload(turn_id="the-old-fact")),
+        steward=_make_steward(
+            StewardDecision(
+                should_write=True,
+                reason="",
+                triples=[
+                    KgTripleAction(
+                        subject="妈妈", predicate="lives_in", object="杭州", confidence=0.95
+                    )
+                ],
+            )
+        ),
+        backend=backend, kg=kg, settings=settings, max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+    )
+    assert (await kg.stats())["triples_active"] == 1
+
+    await process_turn_message(
+        _stub_msg(_turn_payload(turn_id="the-correction")),
+        steward=_make_steward(
+            StewardDecision(
+                should_write=False,
+                reason="没有值得单独记住的片段。",
+                fragments=[],
+                invalidations=[
+                    KgInvalidationAction(subject="妈妈", predicate="lives_in", object="杭州")
+                ],
+            )
+        ),
+        backend=backend, kg=kg, settings=settings, max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+    )
+
+    stats = await kg.stats()
+    assert stats["triples_active"] == 0, "the correction was ignored"
+    assert stats["triples_invalidated"] == 1

@@ -70,6 +70,28 @@ class StewardDecision(BaseEidolonModel):
     """
 
     should_write: bool
+    """Whether the **fragments** are worth storing. Not the whole turn.
+
+    Read as a global gate it looks like a bug that the graph writes when this is
+    false, and it was filed as one. It is not, and gating on it would be a worse
+    bug than the one it appears to fix:
+
+    * ``invalidations`` would be dropped. A person correcting a fact — "不对，我妈
+      搬到北京了" — produces an invalidation whether or not the same turn yields a
+      fragment worth keeping, and ignoring the correction leaves the old fact
+      recallable. Silently.
+    * ``triples`` would be dropped whenever the turn's fragments fell below
+      ``min_importance_to_write``. A low-importance, high-confidence relational
+      fact is precisely what the graph is for and the vector store is not; the
+      two have separate thresholds because they are separate judgements.
+
+    The LLM steward sets this true exactly when fragments survive filtering
+    (``llm.py``), and privacy actions deliberately run *before* the gate in
+    ``turn_processor`` — both consistent with a fragment-scoped meaning and not
+    with a turn-scoped one. Renaming it would touch the wire contract two other
+    repos read, so the meaning is pinned here and in a test instead.
+    """
+
     reason: str = ""
     #: Empty means "not recorded" — decisions replayed from before this field
     #: existed, and test fixtures that do not care. Readers must treat it as

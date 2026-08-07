@@ -30,7 +30,6 @@ explicitly named internal method rather than a second contract — see
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from eidolon_memory_contracts import (
@@ -228,7 +227,6 @@ class MemoryService:
         """
 
         plan = plan or RecallPlan()
-        started = time.perf_counter()
         kind = "voice" if plan.voice else "chat"
 
         try:
@@ -275,15 +273,18 @@ class MemoryService:
         kg_records = fused["kg"]
         turns = fused.get("working_memory") or []
 
-        metrics.RECALL_SECONDS.labels(
-            kind=kind,
-            backend="configured",
-            graph="on" if want_kg else "off",
-            degraded="false",
-        ).observe(time.perf_counter() - started)
-        metrics.RECALL_TOTAL.labels(
-            kind=kind, outcome="hit" if records or kg_records else "empty"
-        ).inc()
+        # Not recorded here. ``recall_with_kg_fusion`` already called
+        # ``_record_recall`` on its way out, with the labels this layer cannot
+        # supply: the real backend name rather than the literal ``"configured"``,
+        # and the degradation flag rather than a hardcoded ``"false"``.
+        #
+        # Both metrics were being written twice per recall. ``RECALL_TOTAL`` simply
+        # counted double, so every rate built on it was 2x. ``RECALL_SECONDS`` was
+        # worse: the duplicate carried a different ``backend`` label, so one recall
+        # produced two histogram series and neither was the whole picture.
+        #
+        # The degraded path above keeps its own increment — an exception means the
+        # inner recorder never ran, and that outcome would otherwise go unrecorded.
 
         result = FusedRecall()
         result["context"] = group_recall_context(
