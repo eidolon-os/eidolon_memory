@@ -105,8 +105,9 @@ def test_kg_triples_section_appears_before_vector():
         object="跑步", valid_from="2026-01-01T00:00:00Z", valid_to=None,
     )
     out = group_recall_context(records, kg_triples=[triple])
-    assert "知识图谱事实" in out
-    assert out.find("知识图谱事实") < out.find("个人画像与健康:")
+    assert "知识图谱事实" not in out, "the heading named the storage to the model"
+    assert "（推测）" in out
+    assert out.find("（推测）") < out.find("个人画像与健康:")
 
 
 def test_kg_only_no_vector_renders_only_kg_section():
@@ -115,7 +116,7 @@ def test_kg_only_no_vector_renders_only_kg_section():
         object="茶", valid_from=None, valid_to=None,
     )
     out = group_recall_context([], kg_triples=[triple])
-    assert out.startswith("知识图谱事实")
+    assert out.startswith("- （推测）")
     # No vector groups in output
     assert "个人画像与健康:" not in out
 

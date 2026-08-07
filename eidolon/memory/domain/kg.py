@@ -70,3 +70,11 @@ class KgTripleRecord(BaseEidolonModel):
     confidence: float = 1.0
     source_turn_id: str | None = None
     adapter_name: str | None = None
+    recorded_at: str | None = None
+    """When this was written down — not when it became true.
+
+    ``valid_from`` answers "since when is this the case"; this answers "when did
+    we hear it". Rendering shows the second, because a fact whose validity starts
+    in 2015 may have been mentioned last week, and provenance is what lets the
+    reader judge how stale the *knowledge* is rather than the *fact*.
+    """

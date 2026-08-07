@@ -159,31 +159,43 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_kg_statements_source
         ON kg_statements (space_id, source_turn_id)
     """,
-    # Entity-name matching, which is a scan and stays one.
+    # Entity-name matching, which is now a seek.
     #
-    # ``match_entities_for_query`` asks whether a *stored* name occurs in the
-    # query text, so the wildcard is on the stored side and no index can turn it
-    # into a lookup. That was the reason given on 2026-08-06 for leaving it linear
-    # and calling a trigram FTS table the only real fix.
+    # **This comment has been wrong twice and the history is the useful part.**
     #
-    # **That reasoning conflated two things.** The scan cannot be removed; the
-    # *table lookup inside it* can. Without this index SQLite walks the primary
-    # key — ``(space_id, entity_id)`` — and fetches each row to read ``name``.
-    # With it the whole predicate is answered from index pages:
+    # First it said matching could not be indexed at all: the test asks whether a
+    # *stored* name occurs in the query, so the wildcard is on the stored side.
+    # True, and it concluded a trigram FTS table was the only fix.
     #
-    #     without   SEARCH kg_entities USING INDEX sqlite_autoindex_kg_entities_1
-    #     with      SEARCH kg_entities USING COVERING INDEX idx_kg_entities_name
+    # Then it said the scan could not be removed but the row fetch inside it
+    # could, and this index made the walk index-only — measured 2.10 → 0.96 ms at
+    # 6 668 entities, 19.08 → 6.45 at 45 001. Also true, and still linear.
     #
-    # Measured through the adapter, index built and dropped again to rule out a
-    # warm cache: 2.10 → 0.96 ms at 6 668 entities, 8.50 → 3.12 at 25 001,
-    # 19.08 → 6.45 at 45 001. The ratio grows with the table (2.2x, 2.7x, 3.0x)
-    # because the row fetch is what scales and the index-only walk is not.
+    # Both readings missed that the question itself can be turned around:
     #
-    # Still linear, and a trigram table is still the only thing that would change
-    # that. This is the cheaper three-fold that should have been taken first.
+    #     name occurs in phrase  ⟺  name equals some substring of phrase
+    #
+    # Enumerate the phrase's substrings and seek them, and this index answers by
+    # equality. Same results, same order, no threshold — and the cost stops
+    # depending on the size of the graph, which was the entire problem. Measured
+    # at 80 000 entities: 0.09 ms, against 25.69 ms for the scan on the board.
+    #
+    # Worth recording rather than tidying away: the obstacle was never the index,
+    # it was accepting the query's shape as given.
     """
     CREATE INDEX IF NOT EXISTS idx_kg_entities_name
         ON kg_entities (space_id, name)
+    """,
+    # The same lookup for the tail after a type prefix.
+    #
+    # ``match_entities_for_query`` accepts ``pet:铁锤`` when someone says 铁锤, so
+    # the tail needs the same seek the whole name gets. An expression index gives
+    # it one, and ``name`` is carried as a third column deliberately: without it
+    # the planner prefers ``idx_kg_entities_name`` and scans the space, because
+    # that index at least covers the column being selected.
+    """
+    CREATE INDEX IF NOT EXISTS idx_kg_entities_tail
+        ON kg_entities (space_id, substr(name, instr(name, ':') + 1), name)
     """,
     # Alias lookup, for resolving "my dad" to an entity.
     """
@@ -241,7 +253,12 @@ SELECT_COLUMNS = """
     s.valid_to      AS valid_to,
     s.confidence    AS confidence,
     s.source_turn_id AS source_turn_id,
-    s.adapter_name  AS adapter_name
+    s.adapter_name  AS adapter_name,
+    -- Rendering needs to say *when the conversation was*, which is this and not
+    -- ``valid_from``: a fact can start years before it is mentioned ("我 2015 年
+    -- 搬到杭州"), and telling the model a 2015 provenance for something heard
+    -- last week is worse than telling it nothing.
+    s.recorded_at   AS recorded_at
 """
 
 JOIN_ENTITIES = """

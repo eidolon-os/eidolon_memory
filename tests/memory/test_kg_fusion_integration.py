@@ -166,7 +166,8 @@ async def test_turn_to_recall_closed_loop(stack) -> None:
 
     ctx = group_recall_context(fused["vector"], kg_triples=fused["kg"])
     # KG section must be present with Chinese transcription
-    assert "知识图谱事实" in ctx
+    assert "（推测）" in ctx
+    assert "知识图谱事实" not in ctx
     assert "tea" in ctx
     assert "喜欢" in ctx
 

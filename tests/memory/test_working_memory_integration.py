@@ -243,5 +243,9 @@ def test_renderer_working_memory_then_kg_then_vector_order():
     out = group_recall_context(records=vector, kg_triples=[triple], working_memory=turns)
     p_wm  = out.find("[最近对话]")
     p_vec = out.find("生活方式与近况")
-    p_kg  = out.find("知识图谱")
+    # Located by the inference mark, not by a heading: the heading is gone
+    # because it told the model where the fact was stored, and ordering is still
+    # a property worth pinning — recent turns give continuity before anything
+    # retrieved, and a derived fact is cheaper to read than a wall of fragments.
+    p_kg  = out.find("（推测）")
     assert 0 == p_wm < p_kg < p_vec, (p_wm, p_vec, p_kg, out)

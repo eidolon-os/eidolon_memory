@@ -138,7 +138,7 @@ async def test_match_entities_empty_query(tmp_path: Path) -> None:
 
 
 def test_transcribe_triple_promised_with_valid_to() -> None:
-    from eidolon.memory.application.kg_recall import transcribe_triple
+    from eidolon.memory.application.kg_recall import INFERRED_MARK, transcribe_triple
     from eidolon.memory.domain.kg import KgTripleRecord
 
     t = KgTripleRecord(
@@ -151,7 +151,10 @@ def test_transcribe_triple_promised_with_valid_to() -> None:
     )
     out = transcribe_triple(t)
     assert "承诺" in out
-    assert "截至 2026-05-26T23:59:59Z" in out
+    # To the minute, because the deadline was a real time. A date-only value is
+    # widened to midnight on write and renders as the bare day instead.
+    assert "截至 2026-05-26 23:59" in out
+    assert INFERRED_MARK in out, "a derived fact must not read like something said"
 
 
 def test_transcribe_triple_invalidated() -> None:
@@ -490,7 +493,11 @@ async def test_group_recall_context_appends_kg_section() -> None:
         valid_to=None,
     )
     out = group_recall_context([], kg_triples=[triple])
-    assert "知识图谱事实" in out
+    # The heading is gone on purpose — it named the storage in text the model
+    # reads, and it made the graph a removable block. Each line carries its own
+    # mark instead.
+    assert "知识图谱事实" not in out
+    assert "（推测）" in out
     assert "喜欢" in out
     assert "tea" in out
 

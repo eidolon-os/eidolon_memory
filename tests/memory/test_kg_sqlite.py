@@ -960,3 +960,91 @@ async def test_an_existing_graph_picks_up_the_new_index(tmp_path) -> None:
         assert "idx_kg_statements_subject" not in names
     finally:
         graph.close()
+
+
+async def test_matching_is_a_seek_not_a_scan(graph) -> None:
+    """The claim that turned the question around, asserted as a plan.
+
+    A duration would be flaky on a shared runner; the plan is the actual claim —
+    both lookups must be covering-index seeks on an equality, not a walk of the
+    space.
+    """
+
+    await graph.add_triple(
+        subject="pet:铁锤", predicate="holds_role", object="dog", audience=OWNER
+    )
+    connection = graph._connection()
+
+    whole = " ".join(
+        row[-1]
+        for row in connection.execute(
+            "EXPLAIN QUERY PLAN SELECT DISTINCT name FROM kg_entities "
+            "WHERE space_id = ? AND name <> '' AND name IN (?, ?) "
+            "ORDER BY length(name) DESC LIMIT ?",
+            ("alice", "铁锤", "x", 3),
+        )
+    )
+    tail = " ".join(
+        row[-1]
+        for row in connection.execute(
+            "EXPLAIN QUERY PLAN SELECT DISTINCT name FROM kg_entities "
+            "WHERE space_id = ? AND instr(name, ':') > 0 "
+            "  AND substr(name, instr(name, ':') + 1) IN (?, ?) "
+            "ORDER BY length(name) DESC LIMIT ?",
+            ("alice", "铁锤", "x", 3),
+        )
+    )
+
+    assert "COVERING INDEX idx_kg_entities_name" in whole, whole
+    assert "name=?" in whole, whole
+    assert "COVERING INDEX idx_kg_entities_tail" in tail, tail
+    assert "<expr>=?" in tail, tail
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "我妈妈住在哪里",
+        "铁锤是什么品种的狗",
+        "what does My Dad like",
+        "老王和张丽是同事吗",
+        "",
+        "：",
+        "pet:",
+        "a",
+        "重复重复重复重复重复",
+        "混合 mixed 中英 text 铁锤 and My Dad together",
+    ],
+)
+async def test_the_lookup_finds_exactly_what_the_rule_says(graph, phrase: str) -> None:
+    """Equivalence, over a population rather than a handful of examples.
+
+    Enumerating the phrase's substrings and seeking them is only a valid rewrite
+    of "which stored names occur in this phrase" if it returns the same set. The
+    Python rule is the specification; every stored name is checked against it and
+    the two answers must agree exactly — not overlap, not approximate.
+    """
+
+    from eidolon.memory.adapters.kg_sql import name_appears_in
+
+    stored = [
+        "铁锤", "pet:铁锤", "mother:张丽", "张丽", "老王", "My Dad", "my dad",
+        "pet:", "重复", "a", "mixed", "同事", "妈妈", "住在", "：冒号",
+    ]
+    for index, name in enumerate(stored):
+        await graph.add_triple(
+            subject=name, predicate="likes", object=f"o{index}", audience=OWNER
+        )
+
+    # Derived from what the table actually holds, not from the list above:
+    # ``entity_id_for`` slugs "My Dad" and "my dad" to one id, so only the first
+    # spelling becomes a row. Computing the expectation from the input would
+    # assert against entities that do not exist.
+    present = [row["name"] for row in graph._connection().execute(
+        "SELECT name FROM kg_entities WHERE space_id = ?", ("alice",)
+    )]
+    expected = {name for name in present if name_appears_in(name, phrase)}
+    # ``cap`` above the corpus so truncation cannot mask a disagreement.
+    actual = set(await graph.match_entities_for_query(phrase, cap=len(present) + 5))
+
+    assert actual == expected, f"{phrase!r}: extra={actual - expected} missing={expected - actual}"

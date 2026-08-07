@@ -60,16 +60,72 @@ async def query_kg_for_recall(
     )
 
 
+#: What a triple is marked as, so the reader knows it is not something the user said.
+INFERRED_MARK = "（推测）"
+
+
+def _when(value: str | None) -> str:
+    """A validity timestamp as a reader should see it.
+
+    ``canonical_temporal`` widens a date to midnight on write, so a stored
+    ``T00:00:00Z`` means "this was a date" and the time carries nothing — showing
+    it spends attention on precision the statement never had. A time that is not
+    midnight was actually said ("答应明天下午三点前"), and dropping it would lose
+    the deadline, so it survives to the minute.
+    """
+
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if len(text) < 10:
+        return text
+    day, _, rest = text.partition("T")
+    if not rest or rest.startswith("00:00:00"):
+        return day
+    return f"{day} {rest[:5]}"
+
+
+def _heard_at(t: KgTripleRecord) -> str:
+    """When the conversation this came from happened, to the month.
+
+    ``recorded_at`` and deliberately not ``valid_from``: a fact can start years
+    before anyone mentions it — "我 2015 年搬到杭州" said last week — and
+    provenance is about how stale the *knowledge* is, not the fact.
+
+    To the month because a day is precision this does not have. The steward reads
+    a date out of conversation; presenting it to the day would invite the model to
+    reason about an exactness that was never there.
+    """
+
+    stamp = (t.recorded_at or "").strip()
+    return stamp[:7] if len(stamp) >= 7 else ""
+
+
 def transcribe_triple(t: KgTripleRecord) -> str:
     """Render one triple as a single readable Chinese line.
 
     This text goes into the ``[MEMORY]`` block and from there into the model's
     prompt, so a bad rendering is not cosmetic — it is a sentence the model reads
     as a fact about the user.
+
+    **Marked as inferred, and dated, and not labelled by where it is stored.**
+
+    Three things are being balanced and it is worth writing down which won:
+
+    * A caller must not be able to tell whether this deployment keeps a graph.
+      That is why the old ``知识图谱事实：`` header and ``[KG]`` prefix are gone —
+      they named an implementation, in text the model reads.
+    * A triple is *derived*, written at confidence 0.6 and above, while a vector
+      fragment is something the person actually said. Rendering them
+      indistinguishably would let a guess be read as a quote, so the mark stays.
+    * How old the knowledge is changes how much it should be trusted, so the
+      month it was heard travels with it.
+
+    ``（推测）`` and ``（根据 2026-03 的对话）`` say both without saying "graph".
     """
 
-    valid_from = (t.valid_from or "").strip()
-    valid_to = (t.valid_to or "").strip()
+    valid_from = _when(t.valid_from)
+    valid_to = _when(t.valid_to)
     subject = _entity_label(t.subject)
     object_ = _entity_label(t.object)
     if t.predicate == "holds_role":
@@ -79,23 +135,43 @@ def transcribe_triple(t: KgTripleRecord) -> str:
             body = f"{subject} 的角色/身份是 {object_}"
     else:
         body = _predicate_template(t.predicate).format(s=subject, o=object_)
-    qualifier: str
+
+    # Validity first, provenance second, in one bracket. They answer different
+    # questions — "until when is this true" against "when did we hear it" — and a
+    # deadline or an ended interval is product-meaningful in a way the storage
+    # label never was, so those survive verbatim.
+    parts: list[str] = []
     if t.predicate == "promised" and valid_to:
-        qualifier = f"（截至 {valid_to}）"
+        parts.append(f"截至 {valid_to}")
     elif valid_to:
-        qualifier = f"（{valid_from or '？'} → {valid_to}，已结束）"
+        parts.append(f"{valid_from or '？'} → {valid_to}，已结束")
     elif valid_from:
-        qualifier = f"（自 {valid_from}）"
-    else:
-        qualifier = ""
-    return f"[KG] {body}{qualifier}"
+        parts.append(f"自 {valid_from}")
+
+    # Provenance is added only when it says something the validity did not. A
+    # fact that started and was heard in the same month gets one clause, not two
+    # saying 2026-04 twice; a 2015 move mentioned last week gets both, because
+    # that gap is exactly the thing worth showing.
+    heard = _heard_at(t)
+    if heard and heard != valid_from[:7]:
+        parts.append(f"根据 {heard} 的对话")
+    qualifier = f"（{'；'.join(parts)}）" if parts else ""
+    return f"{INFERRED_MARK}{body}{qualifier}"
 
 
 def transcribe_triples(triples: list[KgTripleRecord]) -> str:
+    """The lines, with no heading above them.
+
+    The heading used to be ``知识图谱事实：``. It was doing two jobs and both were
+    wrong: it announced the storage to the model, and it made the graph a *block*
+    — so a graph timeout removed a whole visible category from the prompt rather
+    than making the memory slightly thinner. Each line now carries its own mark
+    and stands on its own.
+    """
+
     if not triples:
         return ""
-    lines = [transcribe_triple(t) for t in triples]
-    return "知识图谱事实：\n" + "\n".join(f"- {x}" for x in lines)
+    return "\n".join(f"- {transcribe_triple(t)}" for t in triples)
 
 
 #: Predicate → sentence template. ``{s}`` is the subject, ``{o}`` the object.

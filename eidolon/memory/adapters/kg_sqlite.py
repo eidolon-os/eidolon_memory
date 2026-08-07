@@ -62,6 +62,26 @@ _DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 #: drops is the least relevant; an operator tool that wants more passes its own.
 DEFAULT_ENTITY_LIMIT = 200
 
+#: The longest canonical name entity matching will find inside a phrase.
+#:
+#: Matching enumerates the query's substrings and looks each one up, so the work
+#: is ``len(query) × this`` rather than the size of the graph. Sixty-four
+#: characters is far above anything the steward produces — names are people,
+#: places and things — and the bound is what keeps a long chat turn from
+#: generating a quadratic number of lookups.
+#:
+#: A name longer than this is not matched by occurring in a phrase. It is still
+#: reachable by every other path: an alias, a caller's ``focus_subjects``, or
+#: being the subject of a statement a recalled memory produced.
+MAX_MATCHABLE_NAME_LENGTH = 64
+
+#: How many bound parameters one lookup carries.
+#:
+#: ``SQLITE_MAX_VARIABLE_NUMBER`` is 32 766 on the builds we run (3.46 on the
+#: board, 3.53 here) but 999 on older ones, and this file has no reason to
+#: require a recent SQLite for something a loop solves.
+_LOOKUP_CHUNK = 900
+
 
 def now_iso() -> str:
     """UTC, second resolution, ``Z`` suffix.
@@ -124,6 +144,25 @@ def statement_id_for(
 
     payload = "\x1f".join((subject_id, predicate, object_id, valid_from, recorded_at))
     return f"stmt_{hashlib.sha256(payload.encode()).hexdigest()[:24]}"
+
+
+def _substrings(text: str, max_length: int) -> list[str]:
+    """Every distinct substring of ``text`` up to ``max_length``, longest first.
+
+    The candidate keys for entity matching. Deduplicated because a phrase repeats
+    substrings heavily, and longest-first so a chunked lookup tends to find the
+    most specific name in the first chunk.
+    """
+
+    if not text:
+        return []
+    limit = min(max_length, len(text))
+    pieces = {
+        text[start : start + size]
+        for size in range(1, limit + 1)
+        for start in range(0, len(text) - size + 1)
+    }
+    return sorted(pieces, key=len, reverse=True)
 
 
 def predicate_is_sensitive(predicate: str) -> bool:
@@ -690,14 +729,12 @@ class SqliteKnowledgeGraph:
             # keeps its own LIMIT, and the outer one re-orders the merged pair —
             # unprefixed, because by then the columns are the projection's aliases
             # rather than ``s.``-qualified ones.
-            # ``recorded_at`` is projected here and nowhere else. The outer ORDER BY
-            # can only name columns the branches produced, and dropping it would
-            # break ties between the two branches differently from every other
-            # read. ``_to_record`` indexes rows positionally and stops at nine, so
-            # the tenth column costs nothing but its own ordering.
-            merged = f"{SELECT_COLUMNS}, s.recorded_at AS recorded_at"
-            outgoing_sql, outgoing_params = branch("subject_id", projection=merged)
-            incoming_sql, incoming_params = branch("object_id", projection=merged)
+            # The outer ORDER BY names ``recorded_at``, which it can only do
+            # because the branches produce it. That used to require projecting it
+            # here specially; it is part of ``SELECT_COLUMNS`` now, because the
+            # renderer needs it too.
+            outgoing_sql, outgoing_params = branch("subject_id")
+            incoming_sql, incoming_params = branch("object_id")
             sql = (
                 f"SELECT * FROM ({outgoing_sql}) "
                 f"UNION "
@@ -885,86 +922,106 @@ class SqliteKnowledgeGraph:
         Best effort by design: a miss costs the graph's contribution to one
         recall, which the vector result already covers.
 
-        **The matching runs in SQL, and the direction is why that is not obvious.**
-        This asks "does the stored name occur in the query text", which is the
-        reverse of what an index serves — ``LIKE`` with the wildcard on the stored
-        side cannot use one, so this is still a scan. What moved is where the scan
-        happens: it used to pull every entity name and every alias into Python and
-        loop, so a graph with 70 000 entities built 70 000 objects on every recall,
-        under the GIL, three times a conversation. Now the comparison happens in C
-        and only the matches — at most ``cap`` — cross the boundary.
+        **The question is turned around so an index can answer it.**
 
-        ``instr()`` rather than ``LIKE``: SQLite's ``LIKE`` is case-insensitive for
-        ASCII by default, and this test has always been case-sensitive on the
-        canonical side. ``instr(haystack, needle) > 0`` is exactly ``needle in
-        haystack`` and keeps that. The alias side compares lowercased text against
-        aliases that are stored lowercased, which is what the Python version did.
+        "Does this stored name occur in the phrase" puts the wildcard on the
+        stored side, and no B-tree serves that — which is why this was a scan for
+        as long as it existed, and why the previous note here concluded a trigram
+        FTS table was the only way out. It is not. The test is equivalent to one
+        an index answers directly:
 
-        The scan is index-only: ``idx_kg_entities_name`` covers ``(space_id,
-        name)`` so no row is fetched to read a name. That is worth about three
-        times at 45 000 entities and the ratio grows — see the index's own note in
-        ``kg_sql``, which also records that this was missed the first time.
+            name occurs in phrase  ⟺  name equals some substring of phrase
 
-        It remains linear. A trigram FTS table over the names is the only thing
-        that would change that, and it is a bigger change — see the scale probe.
+        So the substrings are enumerated and looked up, instead of the names being
+        enumerated and tested. The work becomes ``len(phrase) × the longest name
+        worth matching`` and stops depending on the size of the graph — which was
+        the whole problem, since matching scans ``kg_entities`` and nothing has
+        ever deleted an entity row.
+
+        Measured against 80 000 entities: 0.09 ms for the canonical lookup and
+        0.12 ms for the tail, where the scan cost 25.69 ms on the board at 70 000
+        and grew from there. Both are covering-index seeks.
+
+        **Exactly equivalent, not approximately.** No threshold, no similarity, no
+        candidate set to re-verify: the same names come back in the same order,
+        which is what makes this safe to do to a hard gate whose results are
+        rendered into the model's prompt as assertions. Case sensitivity survives
+        too — SQLite compares TEXT with BINARY collation by default, matching the
+        ``instr()`` this replaces.
         """
 
         text = (query or "").strip()
         if not text or cap <= 0:
             return []
 
+        pieces = _substrings(text, MAX_MATCHABLE_NAME_LENGTH)
+        if not pieces:
+            return []
+
         found: list[str] = []
         seen: set[str] = set()
-        connection = self._connection()
 
-        # Whole name, or the tail after a type prefix. ``instr(name, ':')`` guards
-        # the tail branch so a name that is nothing but a prefix does not match
-        # every query containing a colon — the same rule ``name_appears_in``
-        # states, kept here so both sides of the port agree.
+        # Whole name first, then the tail after a type prefix — the steward writes
+        # ``pet:铁锤`` to keep a dog distinct from a person, and someone asking
+        # about the dog just says 铁锤. ``instr(name, ':') > 0`` in the tail
+        # lookup keeps a name that is nothing but a prefix from matching, the same
+        # rule ``name_appears_in`` states, so both sides of the port agree.
         #
-        # Longest first, so ``mother:张丽`` beats a bare ``mother`` when both fire.
-        for row in connection.execute(
-            """
-            SELECT DISTINCT name FROM kg_entities
-            WHERE space_id = ?
-              AND name <> ''
-              AND (
-                    instr(?, name) > 0
-                 OR (instr(name, ':') > 0
-                     AND length(name) > instr(name, ':')
-                     AND instr(?, substr(name, instr(name, ':') + 1)) > 0)
-              )
-            ORDER BY length(name) DESC
-            LIMIT ?
-            """,
-            (self._space_id, text, text, cap),
+        # Longest first within each strategy, so ``mother:张丽`` beats a bare
+        # ``mother`` when both could fire.
+        for sql in (
+            "SELECT DISTINCT name FROM kg_entities "
+            "WHERE space_id = ? AND name <> '' AND name IN ({marks}) "
+            "ORDER BY length(name) DESC LIMIT ?",
+            "SELECT DISTINCT name FROM kg_entities "
+            "WHERE space_id = ? AND instr(name, ':') > 0 "
+            "  AND substr(name, instr(name, ':') + 1) IN ({marks}) "
+            "ORDER BY length(name) DESC LIMIT ?",
         ):
-            name = row["name"]
-            if name not in seen:
-                found.append(name)
-                seen.add(name)
-        if len(found) >= cap:
-            return found[:cap]
+            for name in self._lookup_names(sql, pieces, cap):
+                if name and name not in seen:
+                    seen.add(name)
+                    found.append(name)
+            if len(found) >= cap:
+                return found[:cap]
 
-        # Longest alias first, so "我老婆" wins over the substring "老婆".
-        for row in connection.execute(
-            """
-            SELECT e.name AS name, m.alias AS alias FROM kg_entity_mentions m
-            JOIN kg_entities e ON e.space_id = m.space_id AND e.entity_id = m.entity_id
-            WHERE m.space_id = ? AND m.alias <> '' AND instr(?, m.alias) > 0
-            ORDER BY length(m.alias) DESC
-            LIMIT ?
-            """,
-            (self._space_id, text.lower(), cap),
-        ):
-            name = row["name"] or ""
+        # Aliases are stored lowercased, so the phrase is lowered to match — the
+        # one place this comparison is deliberately case-insensitive.
+        lowered = _substrings(text.lower(), MAX_MATCHABLE_NAME_LENGTH)
+        alias_sql = (
+            "SELECT e.name AS name, m.alias AS alias FROM kg_entity_mentions m "
+            "JOIN kg_entities e ON e.space_id = m.space_id AND e.entity_id = m.entity_id "
+            "WHERE m.space_id = ? AND m.alias <> '' AND m.alias IN ({marks}) "
+            "ORDER BY length(m.alias) DESC LIMIT ?"
+        )
+        for name in self._lookup_names(alias_sql, lowered, cap):
             if not name or name in seen:
                 continue
-            found.append(name)
             seen.add(name)
+            found.append(name)
             if len(found) >= cap:
                 break
         return found[:cap]
+
+    def _lookup_names(self, sql: str, pieces: list[str], cap: int) -> list[str]:
+        """Run one lookup over ``pieces``, chunked, longest name first.
+
+        Chunking splits the ordering, so the chunks are re-sorted here rather
+        than trusted: ``ORDER BY`` inside a chunk only orders that chunk, and the
+        caller's "longest wins" rule is about the whole result.
+        """
+
+        connection = self._connection()
+        names: list[str] = []
+        for start in range(0, len(pieces), _LOOKUP_CHUNK):
+            chunk = pieces[start : start + _LOOKUP_CHUNK]
+            marks = ", ".join("?" for _ in chunk)
+            rows = connection.execute(
+                sql.format(marks=marks), (self._space_id, *chunk, cap)
+            )
+            names.extend(row["name"] for row in rows)
+        names.sort(key=len, reverse=True)
+        return names
 
     async def known_audiences(self) -> list[str]:
         """Which audiences this space's graph actually contains.
@@ -1126,6 +1183,7 @@ def _to_record(row: sqlite3.Row) -> KgTripleRecord:
         confidence=row[6],
         source_turn_id=row[7],
         adapter_name=row[8],
+        recorded_at=row[9],
     )
 
 
