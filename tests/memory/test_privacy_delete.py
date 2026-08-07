@@ -266,12 +266,20 @@ async def test_a_spoken_archive_ends_the_triple_without_deleting_it(graph) -> No
     assert stats["triples_active"] == 0
 
 
-async def test_an_ambiguous_delete_forgets_nothing_at_all(graph) -> None:
-    """Not the drawers, and therefore not the triples either.
+async def test_an_ambiguous_delete_is_archived_rather_than_abandoned(graph) -> None:
+    """It used to find the memories and then decline, telling nobody.
 
-    A delete matching several drawers stops and asks. The graph mutation sits
-    after that check on purpose: forgetting triples for a deletion that was
-    declined would be the worst of both — irreversible, and not what was asked.
+    A delete matching several drawers recorded ``confirmation_required`` and did
+    nothing. Nobody was ever asked: this runs on the bus about 23 seconds after
+    the companion has already said "好的", so the path has no way to put a
+    question to anyone, and the caller discarded the result object anyway. The
+    person asked to be forgotten, was told yes, and nothing happened.
+
+    Archiving is what "forget this" means to them — it stops being recalled,
+    immediately, on every match — and it is reversible, so an over-broad match
+    costs nothing that cannot be undone. No score margin, no ranking tie-break:
+    those need a constant nobody can calibrate, and getting it wrong deletes
+    something the person wanted.
     """
 
     backend = FakeMemoryBackend()
@@ -295,10 +303,17 @@ async def test_an_ambiguous_delete_forgets_nothing_at_all(graph) -> None:
         kg=graph,
     )
 
-    assert result.confirmation_required
-    assert result.deleted_keys == []
-    assert result.statements_forgotten == 0
-    assert (await graph.stats())["triples_active"] == 2
+    assert result.deleted_keys == [], "nothing irreversible on a guess"
+    assert sorted(result.archived_keys) == ["drawer_tea_1", "drawer_tea_2"]
+    # Recorded distinctly, so an operator can tell "the user asked to archive"
+    # from "the user asked to delete and we chose the reversible half".
+    assert result.downgraded_to_archive["绿茶"] == result.archived_keys
+    assert result.confirmation_required, "the ambiguity is still on the record"
+
+    # The graph half matches: ended, not removed.
+    stats = await graph.stats()
+    assert stats["triples_active"] == 0, "the statements stopped being recalled"
+    assert stats["triples_total"] == 2, "and none of them were deleted"
 
 
 async def test_a_space_without_a_graph_still_forgets_its_drawers() -> None:

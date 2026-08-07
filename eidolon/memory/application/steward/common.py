@@ -32,6 +32,11 @@ class PrivacyActionResult:
     confirmation_required: dict[str, list[dict[str, object]]] = field(
         default_factory=dict
     )
+    #: Targets whose delete was answered with an archive because more than one
+    #: drawer matched, mapped to the keys archived. Distinct from
+    #: ``archived_keys`` so an operator can tell "the user asked to archive" from
+    #: "the user asked to delete and we chose the reversible half".
+    downgraded_to_archive: dict[str, list[str]] = field(default_factory=dict)
     #: Graph statements forgotten alongside the drawers. Separate from the key
     #: lists because they count different things, and because a batch that
     #: touched drawers and no statements on a graph-enabled space is the shape
@@ -199,20 +204,45 @@ async def apply_privacy_actions(
                     keys,
                 )
                 result.archived_keys.extend(archived)
+            elif len(candidates) > 1:
+                # **An ambiguous delete is archived, not abandoned.**
+                #
+                # This used to record ``confirmation_required`` and do nothing.
+                # Nobody was ever asked: this runs on the bus, roughly 23 seconds
+                # after the companion has already replied "好的", so the path has
+                # no way to put a question to anyone. The result object was
+                # discarded by the caller too. So the person asked to be
+                # forgotten, was told yes, and nothing happened — and this branch
+                # is the *worse* half of that, because it found the memories and
+                # then declined.
+                #
+                # Archiving is what "forget this" means to the person: it stops
+                # being recalled, immediately, on every match. It is also
+                # reversible, so an over-broad match costs nothing that cannot be
+                # undone — which is the whole reason not to guess at a delete.
+                #
+                # No threshold, no score margin, no ranking tie-break. Those need
+                # a constant nobody can calibrate, and the failure mode of
+                # getting it wrong is deleting a memory the person wanted.
+                # Choosing the reversible action needs no constant at all.
+                result.statements_forgotten += await forget_graph_for_drawers(
+                    backend, kg, memory_space_id, keys, hard=False
+                )
+                archived = await archive_exact_drawers(backend, memory_space_id, keys)
+                result.archived_keys.extend(archived)
+                result.downgraded_to_archive[action.target] = list(archived)
+                result.confirmation_required[action.target] = [
+                    candidate.to_dict() for candidate in candidates
+                ]
+                log.info(
+                    "privacy_delete_downgraded_to_archive",
+                    target=action.target,
+                    candidate_count=len(candidates),
+                    archived_count=len(archived),
+                )
             else:
-                if len(candidates) > 1:
-                    result.confirmation_required[action.target] = [
-                        candidate.to_dict() for candidate in candidates
-                    ]
-                    log.warning(
-                        "privacy_delete_confirmation_required",
-                        target=action.target,
-                        candidate_count=len(candidates),
-                    )
-                    continue
-                # After the ambiguity check, not before: an unconfirmed delete
-                # must not forget triples it has already declined to forget
-                # drawers for.
+                # Exactly one match, so nothing is being guessed at. The graph
+                # goes first — see ``forget_graph_for_drawers``.
                 result.statements_forgotten += await forget_graph_for_drawers(
                     backend, kg, memory_space_id, keys, hard=True
                 )
