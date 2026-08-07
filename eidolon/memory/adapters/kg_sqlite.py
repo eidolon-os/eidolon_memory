@@ -571,10 +571,43 @@ class SqliteKnowledgeGraph:
     def _record_mention_sync(
         self, entity_id: str, alias: str, source: str, confidence: float
     ) -> None:
+        """Write an alias against the same key every other write uses.
+
+        ``entity_id_for`` here is the fix for a silent one. This was the only
+        write on the port that stored its ``entity_id`` argument raw, while
+        ``add_triple`` slugs both of its entities and the read joins the two
+        tables on that column:
+
+            SELECT e.name, m.alias FROM kg_entity_mentions m
+            JOIN kg_entities e ON e.entity_id = m.entity_id
+
+        So any name that is not already its own slug produced a row that could
+        never be joined to anything — written, counted in ``stats()``, and
+        unreachable, with nothing logged:
+
+            'My Dad'      -> 'my_dad'        orphaned
+            'Dr. Li'      -> 'dr._li'        orphaned
+            'mother:张丽' -> 'mother:张丽'   coincides
+            '铁锤'        -> '铁锤'          coincides
+
+        Which is why nobody noticed: the corpus is Chinese, and Chinese names
+        have no case and no spaces, so they equal their own slugs. The feature
+        worked by coincidence and would have stopped at the first Latin-script
+        name — the failure being not an error but an alias that quietly resolves
+        to nothing.
+
+        Old rows are left alone. Nothing reads them today (that is the bug), a
+        migration would have to guess which raw string produced which slug, and
+        the only graphs that exist are empty. If a populated pre-fix graph ever
+        turns up, the repair is to re-slug ``kg_entity_mentions.entity_id`` and
+        drop whatever still fails to join.
+        """
+
+        canonical = entity_id_for(entity_id)
         normalised = (alias or "").strip().lower()
-        if not normalised or not entity_id:
+        if not normalised or not canonical:
             return
-        mention_id = f"{entity_id}:{normalised}"
+        mention_id = f"{canonical}:{normalised}"
         with self._connection():
             self._connection().execute(
                 """
@@ -582,7 +615,7 @@ class SqliteKnowledgeGraph:
                     space_id, mention_id, entity_id, alias, source, confidence, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (self._space_id, mention_id, entity_id, normalised, source,
+                (self._space_id, mention_id, canonical, normalised, source,
                  confidence, now_iso()),
             )
 

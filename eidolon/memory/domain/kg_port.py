@@ -163,6 +163,13 @@ class KnowledgeGraphPort(Protocol):
         """Note that an entity was referred to by this alias.
 
         What makes "my dad" resolve to the same entity as his name.
+
+        ``entity_id`` is normalised the same way the triple writes normalise
+        their subject and object, so callers may pass either a display name or a
+        slug. That is stated because it was not true until 2026-08-06: this was
+        the one write that stored the argument verbatim, and the read joins
+        mentions to entities on that column, so a caller passing a display name
+        wrote a row nothing could ever reach.
         """
         ...
 

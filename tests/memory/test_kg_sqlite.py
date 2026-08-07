@@ -806,3 +806,70 @@ async def test_a_hard_forget_leaves_the_entities(graph) -> None:
 
     assert (await graph.stats())["triples_total"] == 0
     assert (await graph.stats())["entities"] == before
+
+
+async def test_an_alias_resolves_when_the_caller_passes_a_display_name(graph) -> None:
+    """What production actually passes, which no test passed before.
+
+    ``turn_processor`` hands ``record_entity_mention`` the steward's entity name
+    verbatim; every test here called ``entity_id_for`` first. So the tests agreed
+    with each other and with nothing else, and the one write on the port that did
+    not normalise its key went unnoticed — the row was written, counted, and
+    unreachable, because the read joins mentions to entities on that column.
+    """
+
+    await graph.add_triple(
+        subject="My Dad", predicate="likes", object="tea", audience=OWNER
+    )
+    await graph.record_entity_mention(
+        entity_id="My Dad", alias="老爸", source="steward"
+    )
+
+    assert "My Dad" in await graph.match_entities_for_query("老爸喜欢什么", cap=3)
+
+
+async def test_the_display_name_and_its_slug_are_the_same_mention(graph) -> None:
+    """Two spellings of one entity must not become two rows.
+
+    ``mention_id`` is derived from the id, so normalising it after the fact would
+    quietly split a mention in two if the derivation were left alone.
+    """
+
+    await graph.add_triple(
+        subject="Dr. Li", predicate="works_at", object="clinic", audience=OWNER
+    )
+    await graph.record_entity_mention(entity_id="Dr. Li", alias="医生", source="steward")
+    await graph.record_entity_mention(
+        entity_id=entity_id_for("Dr. Li"), alias="医生", source="steward"
+    )
+
+    assert (await graph.stats())["mentions"] == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "My Dad",          # a space
+        "Dr. Li",          # punctuation
+        "  Mom  ",         # padding
+        "mother:张丽",     # already a slug — the case that hid the bug
+        "铁锤",            # ditto
+    ],
+)
+async def test_every_name_shape_reaches_its_entity(graph, name: str) -> None:
+    """Latin-script names were broken and Chinese ones were not.
+
+    The corpus is Chinese, and a Chinese name has no case and no spaces, so it
+    equals its own slug and the join happened to work. That is the whole reason
+    this shipped: the feature was correct by coincidence for the only inputs
+    anyone tried.
+    """
+
+    await graph.add_triple(
+        subject=name, predicate="likes", object="tea", audience=OWNER
+    )
+    await graph.record_entity_mention(entity_id=name, alias="昵称", source="steward")
+
+    matched = await graph.match_entities_for_query("昵称喜欢什么", cap=3)
+
+    assert matched, f"alias written against {name!r} resolved to nothing"
