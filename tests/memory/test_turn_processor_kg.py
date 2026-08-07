@@ -418,47 +418,6 @@ async def test_steward_output_with_health_predicate_propagates(settings, backend
     assert any(r.predicate == "has_health_condition" for r in opt_in)
 
 
-async def test_turn_processor_emits_memory_fanout_absorbed(settings, backend, tmp_path):
-    """L3 (memory) — successful absorption closes the agent→memory fanout handshake."""
-    from eidolon_data import DataSettings, DataStore
-    from eidolon_data.testing import assert_event
-
-    from eidolon.memory.application.turn_processor import process_turn_message
-    from eidolon.memory.domain.steward import StewardDecision
-    from eidolon.memory.integrations.eidolon_data import (
-        EidolonDataMemoryFanoutAuditSink,
-    )
-
-    store = DataStore.open(DataSettings(sqlite_path=str(tmp_path / "audit.sqlite3")))
-    await store.init_schema()
-    try:
-        await store.owner_service.create_owner(owner_id="alice", display_name="Alice")
-        sink = EidolonDataMemoryFanoutAuditSink(store)
-        decision = StewardDecision(should_write=True, reason="audit test")
-        msg = _stub_msg(_turn_payload(turn_id="turn-abs"))
-
-        await process_turn_message(
-            msg,
-            steward=_make_steward(decision),
-            backend=backend,
-            kg=None,
-            settings=settings,
-            max_deliveries=3,
-            expected_memory_space_id=MEMORY_SPACE_ID,
-            audit_sink=sink,
-        )
-
-        assert msg.ack_calls == ["ack"]
-        events = await store.events.list_for_subject(subject_type="turn", subject_id="turn-abs")
-        ev = assert_event(events, event_type="memory.fanout.absorbed")
-        assert ev.source == "memory"
-        assert ev.owner_id == "alice"
-        assert ev.companion_id == "test"
-        assert ev.payload_json["should_write"] is True
-    finally:
-        await store.close()
-
-
 # ─── should_write is fragment-scoped, not turn-scoped ────────────────────
 
 

@@ -11,7 +11,6 @@ call. Real example:commit ``ecde449`` removed
 Allowed lazy imports:
 - stdlib only (``import asyncio`` / ``from pathlib import Path``)
 - 3rd-party packages (``mempalace.*``, ``litellm``, ``nats``, ``uvicorn`` …)
-- ``eidolon.memory.integrations.*`` — see below
 
 Disallowed lazy imports:
 - anything else whose module path starts with ``eidolon.memory.``
@@ -20,16 +19,12 @@ The guard runs at every PR; adding a new internal lazy fails the build.
 If you have a legitimate circular-dependency reason, add to ``ALLOWLIST``
 below with the rationale.
 
-Why ``integrations`` is exempt:those modules adapt the service to a host
-system and import that host's packages, which ship as extras rather than
-requirements. A module-level import would make a standalone deployment — one
-that installed no extras — fail at startup on a dependency it does not need.
-So the import has to happen inside the function that tries to build the
-integration, where failure is a normal outcome handled by falling back.
-
-The staleness hazard the rest of this guard protects against is much smaller
-here:``integrations`` is a leaf that nothing in the service imports, and these
-imports run once during process startup rather than on a request path.
+There is no per-package exemption. There was one for
+``eidolon.memory.integrations``, whose modules imported a host system's packages
+from inside functions so a standalone deployment would not fail at startup on a
+dependency it did not need. That package was deleted on 2026-08-07 and the
+exemption went with it — an allowlist entry that can never match is a standing
+invitation to put something under it.
 """
 
 from __future__ import annotations
@@ -48,8 +43,7 @@ _PKG_ROOT = _REPO_ROOT / "eidolon" / "memory"
 ALLOWLIST: set[tuple[str, int]] = set()
 
 # Module prefixes whose lazy import is structural rather than accidental.
-# See the "Why ``integrations`` is exempt" section in the module docstring.
-_EXEMPT_PREFIXES = ("eidolon.memory.integrations",)
+_EXEMPT_PREFIXES: tuple[str, ...] = ()
 
 
 def _collect_internal_lazy_imports() -> list[tuple[str, int, str]]:

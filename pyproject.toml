@@ -31,15 +31,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Wiring for deployments embedded in Eidolon OS: the reverse memory-engine port
-# and the turn-absorption audit log. The service runs without it — see
-# eidolon/memory/integrations/.
-eidolon-os = ["eidolon-data"]
+# There is no ``eidolon-os`` extra. ``eidolon/memory/integrations/eidolon_data/``
+# held the wiring it named and was deleted on 2026-08-07: both adapters were
+# written against eidolon_data v1, which ``refactor: complete system data v2
+# boundary`` replaced, and neither was reachable from any production path. The
+# turn-absorption audit hook survives in ``turn_processor`` — see ``audit_sink``.
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.4",
-    "eidolon-data",
     # Validates benchmark manifests against the published schema, so a
     # provenance field cannot be quietly dropped or misspelled.
     "jsonschema>=4.20",
@@ -49,7 +49,6 @@ dev = [
 # The wire contracts ship as their own distribution so that a client which only
 # speaks the protocol does not have to install this service's storage stack.
 eidolon-memory-contracts = { path = "./contracts", editable = true }
-eidolon-data = { path = "../eidolon_data", editable = true }
 
 [project.scripts]
 eidolon-memory-agent = "eidolon.memory.entrypoints.agent_runner:main"

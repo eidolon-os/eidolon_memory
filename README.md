@@ -18,8 +18,10 @@ mcp / litellm 这些第三方包,加上同仓库自持的 `eidolon-memory-contra
 
 - **协议包**:`contracts/`(`eidolon-memory-contracts`)是客户端唯一需要装的东西 —— 只依赖
   pydantic,不会把本服务的存储栈(mempalace、chromadb、onnxruntime)拖进调用方。
-- **OS 集成是可选的**:`eidolon/memory/integrations/` 下放与宿主系统的接线,由
-  `[eidolon-os]` extra 提供。核心不 import 任何 `eidolon_*` 包,由
+- **不依赖任何 `eidolon_*` 包**:核心不 import,`pyproject` 里也没有——连 extra 都没有。
+  曾经有一个 `[eidolon-os]` extra 和 `eidolon/memory/integrations/`,2026-08-07 删除:
+  两个适配器都是照 eidolon_data v1 写的,而那边已经换成 v2,且两者都不在任何生产路径上。
+  由
   `tests/memory/test_os_import_boundary.py` 把守(静态扫描 + 子进程屏蔽 OS 包后加载全部
   entrypoint)。
 - **独立形态**:`registry.source: static` + NATS + 本地 chroma 即可完整服务任何客户端,

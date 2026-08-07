@@ -236,6 +236,21 @@ async def process_turn_message(
     settings: MemorySettings,
     max_deliveries: int,
     expected_memory_space_id: str | None = None,
+    #: Optional observer of turn absorption. Duck-typed on ``record_absorbed`` and
+    #: ``record_rejected``; see the calls below for the arguments.
+    #:
+    #: **Nothing implements it today, and that is deliberate rather than an
+    #: oversight.** The one implementation wrote into eidolon_data's event log so
+    #: an audit view could show the agent→memory handshake closing end to end
+    #: rather than only "we tried"; it was deleted on 2026-08-07 along with the
+    #: rest of that integration, which targeted an interface that repository has
+    #: replaced. It was never active either way — ``agent_runner`` has always
+    #: passed ``None`` here.
+    #:
+    #: The hook stays because the question it answers is a real one and does not
+    #: depend on who answers it. A host that wants the handshake auditable
+    #: supplies an object with those two methods; nothing about this service needs
+    #: to know where the events go.
     audit_sink: Any = None,
     dlq_writer: DlqWriter | None = None,
     decision_store: ExtractionDecisionStore | None = None,

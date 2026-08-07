@@ -444,6 +444,10 @@ async def _nats_subscriber_loop(
                     # telemetry, already represented by Memory metrics and
                     # local ledgers. It must not synchronously write the shared
                     # system-data SQLite database.
+                    # No audit observer. The only implementation lived in the
+                    # deleted eidolon_data integration and this call site has
+                    # always passed None, so nothing changed here — see
+                    # ``process_turn_message`` for what an implementation is.
                     audit_sink=None,
                     dlq_writer=dlq,
                     decision_store=decision_store,
