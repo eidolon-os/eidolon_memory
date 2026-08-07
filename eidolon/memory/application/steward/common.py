@@ -7,10 +7,13 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from eidolon_memory_contracts import readable_audiences
+
 from eidolon.memory.application.forget import (
     archive_exact_drawers,
     delete_exact_drawers,
     find_forget_candidates,
+    find_forget_statements,
     forget_graph_for_drawers,
 )
 from eidolon.memory.domain.errors import MemoryBackendUnsupported
@@ -185,12 +188,40 @@ async def apply_privacy_actions(
                 memory_space_id,
                 action.target,
             )
-            if not candidates:
+            # Both stores are asked, because a fact can live in only one of them.
+            # The write gates are independent — ``min_importance_to_write`` of 3
+            # against ``min_confidence_to_write`` of 0.6 — so an ordinary but
+            # reliable sentence becomes a triple and no drawer, and forgetting it
+            # used to scan drawers, find nothing, and quietly do nothing.
+            statements = await find_forget_statements(
+                kg, action.target, audiences=readable_audiences(None)
+            )
+            if not candidates and not statements:
                 result.unmatched_targets.append(action.target)
                 log.warning(
                     "privacy_action_no_candidate",
                     action=action.action,
                     target=action.target,
+                )
+                continue
+            if statements:
+                # Matched by their own text, so forgotten directly rather than
+                # through whichever turn happened to produce them — a turn can
+                # carry several facts and only one of them was asked about.
+                #
+                # Never hard here, whatever the action. A statement matched by a
+                # rendered sentence is a looser identification than a drawer
+                # matched by its stored text, and the reversible half of the
+                # request is the right answer to a looser match.
+                result.statements_forgotten += await kg.forget_statements(
+                    [statement.id for statement in statements], hard=False
+                )
+            if not candidates:
+                log.info(
+                    "privacy_action_graph_only",
+                    action=action.action,
+                    target=action.target,
+                    statement_count=len(statements),
                 )
                 continue
             keys = [candidate.key for candidate in candidates]

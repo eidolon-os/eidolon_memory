@@ -404,19 +404,47 @@ class SqliteKnowledgeGraph:
         hard: bool = False,
         ended: str | None = None,
     ) -> int:
-        wanted = list(dict.fromkeys(t.strip() for t in turn_ids if t and t.strip()))
+        return await self._forget_by("source_turn_id", turn_ids, hard=hard, ended=ended)
+
+    async def forget_statements(
+        self,
+        statement_ids: Sequence[str],
+        *,
+        hard: bool = False,
+        ended: str | None = None,
+    ) -> int:
+        return await self._forget_by("statement_id", statement_ids, hard=hard, ended=ended)
+
+    async def _forget_by(
+        self,
+        column: str,
+        values: Sequence[str],
+        *,
+        hard: bool,
+        ended: str | None,
+    ) -> int:
+        """Forget by turn or by statement — the same operation, two keys.
+
+        ``column`` is chosen from a fixed pair here and never comes from a caller,
+        so interpolating it into the SQL is safe. It is asserted anyway, because
+        "this identifier is trusted" is the assumption that stops being true when
+        someone adds a third caller.
+        """
+
+        assert column in {"source_turn_id", "statement_id"}, column
+        wanted = list(dict.fromkeys(v.strip() for v in values if v and v.strip()))
         if not wanted:
             return 0
         ended_at = canonical_temporal(ended) or now_iso()
         async with self._lock.writer():
             return await asyncio.to_thread(
-                self._forget_source_turns_sync, wanted, hard, ended_at
+                self._forget_by_sync, column, wanted, hard, ended_at
             )
 
-    def _forget_source_turns_sync(
-        self, turn_ids: list[str], hard: bool, ended_at: str
+    def _forget_by_sync(
+        self, column: str, keys: list[str], hard: bool, ended_at: str
     ) -> int:
-        """Invalidate or remove every statement these turns produced.
+        """Invalidate or remove every statement matching these keys.
 
         One statement rather than the chunked loop a background sweep would need:
         a privacy command carries at most 100 drawers and a turn yields one to
@@ -424,11 +452,11 @@ class SqliteKnowledgeGraph:
         lock hold would cost more in round trips than it saves. A sweep over years
         of statements is a different operation and should not borrow this one.
 
-        ``idx_kg_statements_source`` covers the predicate, so the scan is a lookup
-        per turn rather than a walk of the graph.
+        Both keys are indexed — ``idx_kg_statements_source`` for the turn, the
+        primary key for the statement — so either is a lookup rather than a walk.
         """
 
-        placeholders = ", ".join("?" for _ in turn_ids)
+        placeholders = ", ".join("?" for _ in keys)
         connection = self._connection()
 
         if not hard:
@@ -438,19 +466,19 @@ class SqliteKnowledgeGraph:
                 cursor = connection.execute(
                     f"""
                     UPDATE kg_statements SET valid_to = ?
-                    WHERE space_id = ? AND source_turn_id IN ({placeholders})
+                    WHERE space_id = ? AND {column} IN ({placeholders})
                       AND valid_to IS NULL
                     """,
-                    (ended_at, self._space_id, *turn_ids),
+                    (ended_at, self._space_id, *keys),
                 )
             return cursor.rowcount or 0
 
         doomed = connection.execute(
             f"""
             SELECT * FROM kg_statements
-            WHERE space_id = ? AND source_turn_id IN ({placeholders})
+            WHERE space_id = ? AND {column} IN ({placeholders})
             """,
-            (self._space_id, *turn_ids),
+            (self._space_id, *keys),
         ).fetchall()
         if not doomed:
             return 0
@@ -467,9 +495,9 @@ class SqliteKnowledgeGraph:
             connection.execute(
                 f"""
                 DELETE FROM kg_statements
-                WHERE space_id = ? AND source_turn_id IN ({placeholders})
+                WHERE space_id = ? AND {column} IN ({placeholders})
                 """,
-                (self._space_id, *turn_ids),
+                (self._space_id, *keys),
             )
         # Verified rather than trusted, the way ``delete_many`` verifies on the
         # vector side. A DELETE that silently matched nothing and a DELETE that
@@ -477,13 +505,13 @@ class SqliteKnowledgeGraph:
         remaining = connection.execute(
             f"""
             SELECT COUNT(*) FROM kg_statements
-            WHERE space_id = ? AND source_turn_id IN ({placeholders})
+            WHERE space_id = ? AND {column} IN ({placeholders})
             """,
-            (self._space_id, *turn_ids),
+            (self._space_id, *keys),
         ).fetchone()[0]
         if remaining:
             raise RuntimeError(
-                f"hard forget left {remaining} statement(s) for {len(turn_ids)} turn(s) "
+                f"hard forget left {remaining} statement(s) for {len(keys)} {column}(s) "
                 f"in space {self._space_id}"
             )
 

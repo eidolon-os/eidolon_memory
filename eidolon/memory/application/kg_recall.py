@@ -151,6 +151,24 @@ def _heard_at(t: KgTripleRecord) -> str:
     return stamp[:7] if len(stamp) >= 7 else ""
 
 
+def plain_triple_sentence(t: KgTripleRecord) -> str:
+    """The bare sentence, with no inference mark and no qualifiers.
+
+    What a person would have to say to be talking about this statement. Forgetting
+    matches against it: the decorations exist for the model reading a prompt, and
+    "（推测）" or "（根据 2026-03 的对话）" appearing in the text would stop any
+    literal phrase from ever matching.
+    """
+
+    subject = _entity_label(t.subject)
+    object_ = _entity_label(t.object)
+    if t.predicate == "holds_role":
+        if str(t.subject).startswith("pet:"):
+            return f"{subject} 的品种/身份是 {object_}"
+        return f"{subject} 的角色/身份是 {object_}"
+    return _predicate_template(t.predicate).format(s=subject, o=object_)
+
+
 def transcribe_triple(t: KgTripleRecord) -> str:
     """Render one triple as a single readable Chinese line.
 
@@ -176,15 +194,7 @@ def transcribe_triple(t: KgTripleRecord) -> str:
 
     valid_from = _when(t.valid_from)
     valid_to = _when(t.valid_to)
-    subject = _entity_label(t.subject)
-    object_ = _entity_label(t.object)
-    if t.predicate == "holds_role":
-        if str(t.subject).startswith("pet:"):
-            body = f"{subject} 的品种/身份是 {object_}"
-        else:
-            body = f"{subject} 的角色/身份是 {object_}"
-    else:
-        body = _predicate_template(t.predicate).format(s=subject, o=object_)
+    body = plain_triple_sentence(t)
 
     # Validity first, provenance second, in one bracket. They answer different
     # questions — "until when is this true" against "when did we hear it" — and a

@@ -434,3 +434,80 @@ async def test_a_locked_backend_does_not_hide_the_batch() -> None:
 
     assert hasattr(locked, "get_many")
     assert await source_turns_for_drawers(locked, SPACE, ["drawer_tea"]) == ["turn-tea"]
+
+
+async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(graph) -> None:
+    """The hole the two independent write gates open.
+
+    ``min_importance_to_write`` is 3 and ``min_confidence_to_write`` is 0.6, so an
+    ordinary but reliable sentence — "用户喜欢绿茶", importance 2, confidence 0.9 —
+    becomes a triple and no drawer. Asking to forget it scanned drawers, found
+    nothing, recorded ``unmatched_targets``, and did nothing at all, while the
+    statement went on being rendered into every later prompt.
+    """
+
+    backend = FakeMemoryBackend()  # no drawers at all
+    await graph.add_triple(
+        subject="用户", predicate="likes", object="绿茶",
+        audience="owner", source_turn_id="turn-tea",
+    )
+    await graph.add_triple(
+        subject="用户", predicate="likes", object="咖啡",
+        audience="owner", source_turn_id="turn-coffee",
+    )
+
+    result = await apply_privacy_actions(
+        backend,
+        memory_space_id=SPACE,
+        actions=[
+            PrivacyAction(
+                action="delete_request",
+                target="用户 喜欢 绿茶",
+                reason="explicit user request",
+            )
+        ],
+        kg=graph,
+    )
+
+    assert result.unmatched_targets == [], "it used to report that it found nothing"
+    assert result.statements_forgotten == 1
+
+    remaining = {r.object for r in await graph.query_entity("用户", audiences=("owner",))}
+    assert remaining == {"咖啡"}, "only the statement asked about"
+    # Reversible, whatever the action said: a sentence match is a looser
+    # identification than a stored drawer text, so the reversible half is the
+    # right answer to it.
+    assert (await graph.stats())["triples_total"] == 2
+
+
+async def test_forgetting_a_graph_fact_does_not_take_its_turn_mates(graph) -> None:
+    """One turn can carry several facts and only one of them was asked about.
+
+    Turn-scoped forgetting is right when a drawer is the thing matched — the
+    drawer *is* the turn's fragment. It is wrong when a statement is matched by
+    its own sentence, which is why this path forgets by statement.
+    """
+
+    backend = FakeMemoryBackend()
+    for obj in ("杭州", "北京"):
+        await graph.add_triple(
+            subject="妈妈" if obj == "杭州" else "爸爸",
+            predicate="lives_in", object=obj,
+            audience="owner", source_turn_id="one-turn-two-facts",
+        )
+
+    await apply_privacy_actions(
+        backend,
+        memory_space_id=SPACE,
+        actions=[
+            PrivacyAction(
+                action="delete_request", target="妈妈 住在 杭州", reason="user"
+            )
+        ],
+        kg=graph,
+    )
+
+    assert (await graph.stats())["triples_active"] == 1
+    assert [r.object for r in await graph.query_entity("爸爸", audiences=("owner",))] == [
+        "北京"
+    ]

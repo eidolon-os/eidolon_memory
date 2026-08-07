@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from eidolon.memory.application.kg_recall import plain_triple_sentence
 from eidolon.memory.domain.ports import MemoryAdmin, MemoryPrivacyAdmin
 from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -199,6 +200,82 @@ async def source_turns_for_drawers(
             seen.add(turn_id)
             turn_ids.append(turn_id)
     return turn_ids
+
+
+#: How many entities a forget target is resolved to before its statements are read.
+#:
+#: Higher than recall's three: a recall is shaping a prompt and can afford to miss
+#: an entity, while a forget that misses one leaves a memory the person asked to
+#: be rid of. Still bounded, because the target is a phrase and an unbounded read
+#: on a privacy path is how a graph-sized query gets onto a four-core board.
+FORGET_ENTITY_CAP = 8
+
+#: How many statements per entity are considered. Above the recall budget for the
+#: same reason.
+FORGET_STATEMENTS_PER_ENTITY = 50
+
+
+async def find_forget_statements(
+    kg: Any,
+    target: str,
+    *,
+    audiences: tuple[str, ...],
+) -> list[Any]:
+    """Statements the target refers to, for facts no drawer holds.
+
+    **The hole this closes.** Fragments and triples pass independent gates —
+    ``min_importance_to_write`` of 3 against ``min_confidence_to_write`` of 0.6 —
+    so a sentence that is ordinary but reliable ("用户喜欢绿茶", importance 2,
+    confidence 0.9) becomes a triple and no drawer. Asking to forget it scanned
+    drawers, found nothing, recorded ``unmatched_targets``, and did nothing at
+    all, while the statement went on being rendered into every later prompt.
+
+    Resolved through the same machinery a question goes through: entities named
+    in the phrase, then their statements, then the *same containment rule* the
+    drawer path scores with — applied to the bare sentence, not the rendered
+    line, because "（推测）" and "（根据 2026-03 的对话）" would stop any literal
+    phrase from matching.
+
+    Sensitive statements are included. A person asking to forget a health fact is
+    the one case where the read policy that normally hides them is precisely
+    backwards: refusing to see it would mean refusing to forget it.
+    """
+
+    if kg is None:
+        return []
+    phrase = (target or "").strip()
+    if not phrase:
+        return []
+    names = await kg.match_entities_for_query(phrase, cap=FORGET_ENTITY_CAP)
+    if not names:
+        return []
+    triples = await kg.query_entity_combined(
+        names,
+        audiences=audiences,
+        include_sensitive=True,
+        limit_per_entity=FORGET_STATEMENTS_PER_ENTITY,
+    )
+    return [
+        triple
+        for triple in triples
+        if _refers_to(phrase, plain_triple_sentence(triple))
+    ]
+
+
+def _refers_to(target: str, sentence: str) -> bool:
+    """The drawer path's scoring rule, as a yes or no.
+
+    ``find_forget_candidates`` grades containment 1.0 / 0.9 / 0.85 and keeps
+    anything that scores; the grades only order the list. Reusing the same rule
+    rather than inventing a second one is the point — one way to decide what a
+    forget refers to, whichever store holds it.
+    """
+
+    left = _normalize(target)
+    right = _normalize(sentence)
+    if not left or not right:
+        return False
+    return left == right or left in right or (len(right) >= 4 and right in left)
 
 
 async def forget_graph_for_drawers(
