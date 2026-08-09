@@ -63,56 +63,111 @@ if (( ${#palaces[@]} == 0 )); then
   exit 0
 fi
 
-checkpoint() {
-  # Never creates. A path that is not already a database is not one this script
-  # should bring into being — that is how an empty graph got into a backup.
-  /usr/bin/env python3 -c '
-import sqlite3, sys
+# Stage a consistent copy of one space, then archive the staging directory.
+#
+# Every SQLite file goes through `VACUUM INTO`, which runs inside a read
+# transaction and therefore produces a point-in-time copy of a database that is
+# being written to — no checkpoint, no writer lock, no torn pages. The previous
+# version checkpointed and then tarred the *live* file; tar reads pages over
+# time, so a writer active during that read yields an archive whose
+# chroma.sqlite3 is torn. That is real data loss, because chroma.sqlite3 is the
+# authoritative copy: `mempalace repair --mode from-sqlite` rebuilds a whole
+# palace from it, re-embedding the drawer text it holds.
+#
+# Which is also why the HNSW segment files are copied best-effort and not
+# guarded. They hold vectors only, and vectors are re-derivable — the embedding
+# model is deterministic, so the same text yields the same vector. A stale or
+# torn .bin costs a rebuild, not a memory.
+stage_space() {
+  local palace="$1" ledgers="$2" stage="$3" uid="$4"
+  /usr/bin/env python3 - "$palace" "$ledgers" "$stage" "$uid" <<'PY'
+import shutil
+import sqlite3
+import sys
 from pathlib import Path
 
-for path in sys.argv[1:]:
-    if not Path(path).is_file():
-        continue
-    conn = sqlite3.connect(path, timeout=10.0)
+palace, ledgers, stage, uid = (Path(sys.argv[1]), Path(sys.argv[2]),
+                               Path(sys.argv[3]), sys.argv[4])
+
+
+def snapshot_db(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    # Read-only, so a snapshot can never create or migrate a database. Opening
+    # read-write is how an earlier version manufactured an empty graph inside
+    # the palace and then archived it.
+    conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=30.0)
     try:
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.commit()
+        conn.execute("VACUUM INTO ?", (str(dst),))
     finally:
         conn.close()
-' "$@"
+
+
+def copy_plain(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+
+copied = vacuumed = 0
+for src in sorted(palace.rglob("*")):
+    if not src.is_file():
+        continue
+    rel = src.relative_to(palace)
+    # -wal and -shm belong to the live database and are meaningless beside a
+    # vacuumed copy, which has neither.
+    if src.suffix in (".sqlite3-wal", ".sqlite3-shm") or src.name.endswith(("-wal", "-shm")):
+        continue
+    dst = stage / uid / rel
+    if src.suffix == ".sqlite3":
+        snapshot_db(src, dst)
+        vacuumed += 1
+    else:
+        copy_plain(src, dst)
+        copied += 1
+
+if ledgers.is_dir():
+    for src in sorted(ledgers.glob("*.sqlite3")):
+        snapshot_db(src, stage / f"{uid}.ledgers" / src.name)
+        vacuumed += 1
+
+print(f"{vacuumed} {copied}")
+PY
 }
 
 for palace in "${palaces[@]}"; do
   uid="$(basename "$palace")"
   ledgers="$palace.ledgers"
+  stage="$SNAP_ROOT/.staging/${uid}_${TS}"
 
-  shopt -s nullglob
-  databases=("$palace/chroma.sqlite3" "$ledgers"/*.sqlite3)
-  shopt -u nullglob
-
-  echo "[snapshot] $uid: wal_checkpoint(TRUNCATE) on ${#databases[@]} database(s)"
-  checkpoint "${databases[@]}" || {
-    echo "[snapshot][WARN] $uid: wal_checkpoint failed; snapshot may miss recent writes"
-  }
-
-  # Both directories, named relative to the root so a restore is a plain
-  # extract in place. The ledgers directory is absent on a palace that has
-  # never been written to, which is not an error.
-  members=("$uid")
-  [[ -d "$ledgers" ]] && members+=("$uid.ledgers")
-  if (( ${#members[@]} == 1 )); then
+  if [[ ! -d "$ledgers" ]]; then
     echo "[snapshot][WARN] $uid: no $uid.ledgers beside the palace — graph and ledgers not in this snapshot"
   fi
+
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  if ! counts="$(stage_space "$palace" "$ledgers" "$stage" "$uid")"; then
+    echo "[snapshot][FAIL] $uid: could not stage a consistent copy; skipping"
+    rm -rf "$stage"
+    continue
+  fi
+  echo "[snapshot] $uid: staged ${counts% *} database(s) via VACUUM INTO, ${counts#* } other file(s)"
+
+  # Named members rather than ".", so the archive holds `<uid>/…` exactly as the
+  # palaces root does and a restore is `tar -xf` in place. COPYFILE_DISABLE stops
+  # BSD tar from storing macOS xattrs as sibling ._ entries, which would restore
+  # as junk files inside the palace.
+  members=("$uid")
+  [[ -d "$stage/$uid.ledgers" ]] && members+=("$uid.ledgers")
 
   outfile="$SNAP_ROOT/${uid}_${TS}.tar.zst"
   if ! command -v zstd >/dev/null 2>&1; then
     echo "[snapshot][WARN] zstd not on PATH; falling back to plain tar.gz"
     outfile="$SNAP_ROOT/${uid}_${TS}.tar.gz"
-    tar -czf "$outfile" -C "$PALACES_ROOT" "${members[@]}"
+    COPYFILE_DISABLE=1 tar -czf "$outfile" -C "$stage" "${members[@]}"
   else
-    tar --use-compress-program=zstd -cf "$outfile" -C "$PALACES_ROOT" "${members[@]}"
+    COPYFILE_DISABLE=1 tar --use-compress-program=zstd -cf "$outfile" -C "$stage" "${members[@]}"
   fi
-  echo "[snapshot] $uid: -> $outfile (${#members[@]} director$([[ ${#members[@]} == 1 ]] && echo y || echo ies))"
+  rm -rf "$stage"
+  echo "[snapshot] $uid: -> $outfile"
 done
 
 # Retain the most recent N per user. nullglob is what keeps an unmatched pattern

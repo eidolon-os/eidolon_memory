@@ -16,6 +16,8 @@ import shutil
 import sqlite3
 import subprocess
 import tarfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -166,6 +168,117 @@ def test_a_palace_with_no_ledgers_yet_is_backed_up_and_says_so(
     assert result.returncode == 0, result.stderr
     assert "graph and ledgers not in this snapshot" in result.stdout
     assert _members(next(iter(snaps.glob("b64_new_*.tar.*")))) >= {"b64_new/chroma.sqlite3"}
+
+
+def test_a_snapshot_taken_while_a_writer_runs_is_still_a_valid_database(
+    tree: tuple[Path, Path],
+) -> None:
+    """The reason every SQLite file goes through ``VACUUM INTO``.
+
+    The previous version checkpointed and then tarred the *live* file. tar reads
+    pages over time, so a writer active during that read produces an archive
+    whose chroma.sqlite3 is torn — and that is real data loss, because
+    chroma.sqlite3 is the authoritative copy: ``mempalace repair --mode
+    from-sqlite`` rebuilds a whole palace out of the drawer text it holds, the
+    HNSW binaries carrying only re-derivable vectors.
+
+    The old failure is probabilistic — a small database on a quiet disk often
+    survives a live tar — so this does not try to reproduce a tear. It asserts
+    the property that makes tearing impossible: the copy is internally
+    consistent, and it is a copy of a committed state rather than of a moment
+    part-way through a transaction.
+    """
+
+    palaces, snaps = tree
+    _space(palaces, "b64_alice")
+    db = palaces / "b64_alice" / "chroma.sqlite3"
+
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE drawers(id INTEGER PRIMARY KEY, body TEXT)")
+    conn.commit()
+
+    stop = threading.Event()
+
+    def hammer() -> None:
+        writer = sqlite3.connect(db, timeout=30.0)
+        n = 0
+        while not stop.is_set():
+            # One row per transaction, so at any instant the file is either
+            # before or after a commit — never mid-row.
+            writer.execute("INSERT INTO drawers(body) VALUES (?)", ("x" * 512,))
+            writer.commit()
+            n += 1
+        writer.close()
+
+    thread = threading.Thread(target=hammer, daemon=True)
+    thread.start()
+    try:
+        time.sleep(0.2)  # let some writes land, and a WAL accumulate
+        result = _run(palaces, snaps)
+    finally:
+        stop.set()
+        thread.join(timeout=10)
+    conn.close()
+
+    assert result.returncode == 0, result.stderr
+
+    archive = next(iter(snaps.glob("b64_alice_*.tar.*")))
+    extracted = snaps / "restored"
+    extracted.mkdir()
+    raw = subprocess.run(["zstd", "-dc", str(archive)], capture_output=True, check=True).stdout
+    tar_path = snaps / "restored.tar"
+    tar_path.write_bytes(raw)
+    with tarfile.open(tar_path) as tar:
+        tar.extractall(extracted, filter="data")
+
+    copy = extracted / "b64_alice" / "chroma.sqlite3"
+    assert copy.is_file(), "the archive has no chroma.sqlite3"
+    # No sidecars: a vacuumed copy carries its whole state in one file, so a
+    # restore cannot be missing writes that were still sitting in a -wal.
+    assert not list(copy.parent.glob("chroma.sqlite3-*"))
+
+    restored = sqlite3.connect(f"file:{copy}?mode=ro", uri=True)
+    try:
+        assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        rows = restored.execute("SELECT COUNT(*) FROM drawers").fetchone()[0]
+        bodies = restored.execute("SELECT COUNT(*) FROM drawers WHERE body IS NOT NULL").fetchone()
+        assert rows > 0, "the snapshot caught the database before any write landed"
+        assert bodies[0] == rows, "a row was captured part-way through its own insert"
+    finally:
+        restored.close()
+
+
+def test_the_live_palace_keeps_its_wal_and_is_not_checkpointed_by_a_backup(
+    tree: tuple[Path, Path],
+) -> None:
+    """A backup must not reach into the running service to tidy it up.
+
+    The old script opened every database read-write and ran
+    ``wal_checkpoint(TRUNCATE)`` on it — a write to the live palace, taken by a
+    cron job, purely so that a subsequent tar would see a folded file. Reading
+    through the WAL instead means the backup is a reader, and a reader cannot
+    disturb a writer.
+    """
+
+    palaces, snaps = tree
+    _space(palaces, "b64_alice")
+    db = palaces / "b64_alice" / "chroma.sqlite3"
+
+    live = sqlite3.connect(db)
+    live.execute("PRAGMA journal_mode=WAL")
+    live.execute("CREATE TABLE drawers(id INTEGER PRIMARY KEY)")
+    live.execute("INSERT INTO drawers DEFAULT VALUES")
+    live.commit()
+    wal = db.with_name("chroma.sqlite3-wal")
+    assert wal.is_file() and wal.stat().st_size > 0, "no WAL to protect"
+    before = wal.stat().st_size
+
+    try:
+        assert _run(palaces, snaps).returncode == 0
+        assert wal.stat().st_size == before, "the backup checkpointed the live database"
+    finally:
+        live.close()
 
 
 def test_retention_prunes_instead_of_dying_on_an_unset_array(
