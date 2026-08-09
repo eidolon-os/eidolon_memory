@@ -240,44 +240,94 @@ def _invalidation_query() -> dict:
     }
 
 
-def test_a_superseded_fact_beside_the_current_one_is_not_correct() -> None:
-    """The case the benchmark could not express, and the reason it could not.
+def _kg() -> list[dict]:
+    return [{"subject": "mother", "predicate": "服用", "object": "medication:米氮平"}]
 
-    Forbidden terms were only consulted when a query expected abstention, and a
-    positive query's verdict ignored violations outright. So recall returning
-    both the old drug and the new one scored a clean pass: every evidence group
-    hit. The reply that produces is "she takes 舍曲林 and 米氮平", which is the
-    exact failure bitemporality exists to prevent.
+
+def _records() -> list[dict]:
+    return [{"value": "米氮平晚上吃"}, {"value": "开了舍曲林，先吃三个月"}]
+
+
+def test_an_undated_old_fact_beside_the_current_one_is_ambiguous() -> None:
+    """Two facts offered as equals, which is what the user hears as a mistake.
+
+    Nothing in this context says which is now. A reply built from it says she
+    takes 舍曲林 and 米氮平 — the exact failure bitemporality exists to prevent.
     """
 
     result = _score_query(
         _invalidation_query(),
         {
-            # Subjects and objects are typed entity ids, which is what
-            # ``expected_entities`` is matched against as a substring.
-            "kg_triples": [
-                {"subject": "mother:张丽", "predicate": "服用", "object": "medication:米氮平"}
-            ],
-            "records": [{"value": "吴医生把舍曲林停了，换成米氮平"}],
+            "context": "记忆:\n- 米氮平晚上吃\n- 开了舍曲林，先吃三个月",
+            "kg_triples": _kg(),
+            "records": _records(),
             "working_memory": [],
         },
         12.0,
     )
 
-    assert result.vector_hit, "the current fact did come back"
-    assert result.negative_violation, "the superseded fact came back too"
+    assert "currency:ambiguous" in result.matched_signals
+    assert result.negative_violation
     assert not result.correct
 
 
-def test_remembering_only_the_current_fact_is_correct() -> None:
+def test_the_old_fact_dated_earlier_is_not_a_violation() -> None:
+    """The judgement this scorer was changed to make.
+
+    Asked where her mother lives, a companion answering "她以前住西湖区，三月搬到
+    滨江区" is *better* than one answering "滨江区" — the move is part of the
+    memory, and the old address is not false, only past. The previous rule
+    ("the old fact must not appear") failed that answer.
+
+    ``recall_renderer._time_prefix`` already stamps every drawer line with its
+    date; the scorer simply was not reading the rendered context, only the raw
+    ``records[].value``. It graded the ingredients rather than the dish.
+    """
+
     result = _score_query(
         _invalidation_query(),
         {
-            # Subjects and objects are typed entity ids, which is what
-            # ``expected_entities`` is matched against as a substring.
-            "kg_triples": [
-                {"subject": "mother:张丽", "predicate": "服用", "object": "medication:米氮平"}
-            ],
+            "context": (
+                "记忆:\n"
+                "- [2025-11-28] 开了舍曲林，先吃三个月\n"
+                "- [2026-03-22] 吴医生把舍曲林停了，换成米氮平"
+            ),
+            "kg_triples": _kg(),
+            "records": _records(),
+            "working_memory": [],
+        },
+        12.0,
+    )
+
+    assert "currency:clear" in result.matched_signals
+    assert not result.negative_violation
+    assert result.correct
+
+
+def test_the_old_fact_dated_later_is_still_a_violation() -> None:
+    """Dates only help while they order the two facts the right way round."""
+
+    result = _score_query(
+        _invalidation_query(),
+        {
+            "context": ("记忆:\n- [2025-11-28] 换成米氮平\n- [2026-03-22] 开了舍曲林，先吃三个月"),
+            "kg_triples": _kg(),
+            "records": _records(),
+            "working_memory": [],
+        },
+        12.0,
+    )
+
+    assert result.negative_violation
+    assert not result.correct
+
+
+def test_only_the_current_fact_present_is_correct() -> None:
+    result = _score_query(
+        _invalidation_query(),
+        {
+            "context": "记忆:\n- [2026-03-22] 米氮平晚上吃，现在每天睡六个多小时",
+            "kg_triples": _kg(),
             "records": [{"value": "米氮平晚上吃，现在每天睡六个多小时"}],
             "working_memory": [],
         },
@@ -287,6 +337,29 @@ def test_remembering_only_the_current_fact_is_correct() -> None:
     assert result.kg_hit and result.vector_hit
     assert not result.negative_violation
     assert result.correct
+
+
+def test_a_question_that_is_not_about_currency_keeps_the_plain_test() -> None:
+    """An abstention case has no expected term, so there is no "current" fact to
+    date the forbidden one against — it falls back to "did it surface at all"."""
+
+    result = _score_query(
+        {
+            "id": "abst-1",
+            "category": "abstention",
+            "query": "我妹夫叫什么名字",
+            "negative": True,
+            "forbidden_contains": ["李婷"],
+        },
+        {
+            "context": "记忆:\n- [2026-03-22] 我妹李婷从深圳打电话来",
+            "records": [{"value": "我妹李婷从深圳打电话来"}],
+        },
+        12.0,
+    )
+
+    assert result.negative_violation
+    assert not result.correct
 
 
 @pytest.mark.asyncio

@@ -37,6 +37,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -471,6 +472,13 @@ class QueryResult:
     negative_violation: bool  # negative query but forbidden term/entity surfaced
     matched_signals: list[str] = field(default_factory=list)
     raw_kg_objects: list[str] = field(default_factory=list)
+    #: The rendered ``[MEMORY]`` block, verbatim.
+    #:
+    #: Kept because it is the only thing the model actually reads, and because a
+    #: change to how currency is judged used to mean rerunning the whole
+    #: hour-long ingestion to re-score. With this on disk a scoring rule can be
+    #: re-applied to a past run.
+    context: str = ""
     evidence_groups_hit: int = 0
     evidence_groups_total: int = 0
     omission_count: int = 0
@@ -540,10 +548,68 @@ def _wm_texts(wm: list[Any]) -> list[str]:
     return out
 
 
+_LINE_DATE = re.compile(r"\[(\d{4}-\d{2}-\d{2})\]")
+
+
+def _dates_of_lines_mentioning(context: str, terms: list[str]) -> list[str | None]:
+    """The rendered date of every ``[MEMORY]`` line containing one of ``terms``.
+
+    ``None`` for a line that carries no date, which is the case worth separating:
+    an undated old fact is indistinguishable from a current one.
+    """
+
+    found: list[str | None] = []
+    for line in (context or "").splitlines():
+        if any(term and term in line for term in terms):
+            match = _LINE_DATE.search(line)
+            found.append(match.group(1) if match else None)
+    return found
+
+
+def _superseded_cleanly(context: str, expected: list[str], forbidden: list[str]) -> bool | None:
+    """Whether the recall context presents the old fact *as past*.
+
+    The scorer used to read ``records[].value`` — the raw drawer text — and call
+    any appearance of the old fact a violation. Both halves of that were wrong.
+
+    It graded the ingredients rather than the dish: the string the model actually
+    reads is ``context``, and ``recall_renderer._time_prefix`` already stamps
+    every drawer line with ``[YYYY-MM-DD]``. The scorer never looked at it.
+
+    And "the old fact must not appear" is not what a companion should do. Asked
+    where her mother lives, "她以前住西湖区，2026 年 3 月搬到滨江区" is a better
+    answer than "滨江区" alone — the move is part of the memory. What must not
+    happen is the two being offered as equals, which is what an undated or
+    later-dated old fact does.
+
+    So: clean when the current fact is present and every appearance of the old
+    one is dated strictly earlier. ``None`` when the question is not about
+    currency.
+    """
+
+    if not (expected and forbidden):
+        return None
+    current = [d for d in _dates_of_lines_mentioning(context, expected) if d]
+    if not current:
+        return False
+    old = _dates_of_lines_mentioning(context, forbidden)
+    if not old:
+        return True
+    newest_current = max(current)
+    # ``<=`` and not ``<``: the sentence that announces a change necessarily
+    # names the thing being replaced — "吴医生把舍曲林停了，换成米氮平" carries both
+    # the old and the new fact on one line and therefore one date. Requiring the
+    # old term to be strictly earlier failed the very line that establishes the
+    # supersession. What must not appear is the old fact dated *after* the
+    # current one, which reads as having gone back to it.
+    return all(date is not None and date <= newest_current for date in old)
+
+
 def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
     kg = response.get("kg_triples") or []
     records = response.get("records") or []
     wm = response.get("working_memory") or []
+    context_text = str(response.get("context") or "")
     kg_blobs = _kg_objects(kg)
     kg_blob_lower = " ".join(kg_blobs).lower()
     vector_blob = " ".join(_vector_values(records))
@@ -582,18 +648,27 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
     # 舍曲林 must not come back" needs positive evidence AND a forbidden term at
     # once. Superseding a fact is the single thing bitemporality exists for, and
     # the benchmark could not ask about it.
+    # A question that names both a current fact and a superseded one is asking
+    # about *currency*, and currency is graded on the rendered context — the
+    # string the model actually reads, where the dates live. Everything else
+    # keeps the plain "did a forbidden term surface at all" test.
+    currency = _superseded_cleanly(context_text, expected_contains, forbidden_contains)
     violation = False
-    for ent in forbidden_entities:
-        if ent and ent in kg_blob_lower:
-            violation = True
-            matched.append(f"VIOLATE-kg:{ent}")
-            break
-    if not violation:
-        for s in forbidden_contains:
-            if s and (s in vector_blob or s in kg_blob_lower or s in wm_blob):
+    if currency is not None:
+        violation = not currency
+        matched.append("currency:clear" if currency else "currency:ambiguous")
+    else:
+        for ent in forbidden_entities:
+            if ent and ent in kg_blob_lower:
                 violation = True
-                matched.append(f"VIOLATE-vec:{s}")
+                matched.append(f"VIOLATE-kg:{ent}")
                 break
+        if not violation:
+            for term in forbidden_contains:
+                if term and (term in vector_blob or term in kg_blob_lower or term in wm_blob):
+                    violation = True
+                    matched.append(f"VIOLATE-vec:{term}")
+                    break
 
     evidence_groups = [
         bool(expected_entities),
@@ -629,6 +704,7 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
         negative_violation=violation,
         matched_signals=matched,
         raw_kg_objects=kg_blobs[:8],
+        context=context_text,
         evidence_groups_hit=groups_hit,
         evidence_groups_total=groups_total,
         omission_count=max(0, groups_total - groups_hit),
