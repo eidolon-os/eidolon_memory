@@ -124,9 +124,7 @@ async def _decide_with(monkeypatch, settings, fragments_json: list[str]):
         )
         return {"choices": [{"message": {"content": body}}]}
 
-    monkeypatch.setitem(
-        sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion)
-    )
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
     return await LiteLLMSteward(settings).decide(_turn())
 
 
@@ -252,9 +250,7 @@ def _steward():
     from eidolon.memory.config.memory_settings import MemorySettings
 
     config = pathlib.Path(__file__).resolve().parents[2] / "config/settings.example.yaml"
-    settings = MemorySettings.model_validate(
-        yaml.safe_load(config.read_text(encoding="utf-8"))
-    )
+    settings = MemorySettings.model_validate(yaml.safe_load(config.read_text(encoding="utf-8")))
     return LiteLLMSteward(settings)
 
 
@@ -262,9 +258,7 @@ def _parse(fragment, *, context):
     import json as _json
 
     payload = {"should_write": True, "reason": "t", "fragments": [fragment]}
-    return _steward()._parse_decision(
-        _json.dumps(payload, ensure_ascii=False), context=context
-    )
+    return _steward()._parse_decision(_json.dumps(payload, ensure_ascii=False), context=context)
 
 
 def test_an_omitted_space_id_is_taken_from_the_turn() -> None:
