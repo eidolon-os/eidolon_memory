@@ -1,0 +1,44 @@
+{"id": "hop-001", "category": "multi_hop", "query": "送我铁锤的那个人现在住在哪个区", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽", "place:滨江区", "滨江区"], "expected_vector_contains": ["滨江区"], "bridge": "mother:张丽", "hop_endpoints": ["pet:铁锤", "place:滨江区"]}
+{"id": "hop-002", "category": "multi_hop", "query": "陈昊的爱人送过我什么书", "expected_entities": ["friend:周雅", "周雅", "book:人间失格", "人间失格"], "expected_vector_contains": ["人间失格"], "bridge": "friend:周雅", "hop_endpoints": ["friend:陈昊", "book:人间失格"]}
+{"id": "hop-003", "category": "multi_hop", "query": "小豆家在哪个城市", "expected_entities": ["sister:李婷", "younger_sister:李婷", "sister", "place:深圳", "深圳"], "expected_vector_contains": ["深圳"], "bridge": "sister:李婷", "hop_endpoints": ["nephew:小豆", "place:深圳"]}
+{"id": "hop-004", "category": "multi_hop", "query": "我妹养的猫在哪个城市", "expected_entities": ["pet:小白", "cat:小白", "place:深圳", "深圳"], "expected_vector_contains": ["深圳"], "bridge": "sister:李婷", "hop_endpoints": ["pet:小白", "place:深圳"]}
+{"id": "hop-005", "category": "multi_hop", "query": "寄桂花糖藕来的人住在哪个区", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽", "place:滨江区", "滨江区"], "expected_vector_contains": ["滨江区"], "bridge": "mother:张丽", "hop_endpoints": ["food:桂花糖藕", "place:滨江区"]}
+{"id": "inval-001", "category": "invalidation", "query": "我妈现在住哪个区", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽", "place:滨江区", "滨江区"], "expected_vector_contains": ["滨江区"], "forbidden_contains": ["西湖区"], "superseded": "place:西湖区"}
+{"id": "inval-002", "category": "invalidation", "query": "我妈现在吃的什么药", "expected_entities": ["medication:米氮平", "drug:米氮平", "米氮平"], "expected_vector_contains": ["米氮平"], "forbidden_contains": ["舍曲林"], "superseded": "medication:舍曲林"}
+{"id": "inval-003", "category": "invalidation", "query": "我现在手上是什么项目", "expected_entities": ["project:星槎", "星槎"], "expected_vector_contains": ["星槎"], "forbidden_contains": ["OP-3091"], "superseded": "project:OP-3091"}
+{"id": "canon-001", "category": "canonical_entity", "query": "张丽最近怎么样", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽"], "expected_vector_contains": ["张丽"]}
+{"id": "canon-002", "category": "canonical_entity", "query": "王芳在哪儿上班", "expected_entities": ["partner:王芳", "wife:王芳", "spouse:王芳", "partner", "wife", "org:仁和医院", "hospital:仁和医院", "仁和医院"], "expected_vector_contains": ["仁和医院"]}
+{"id": "canon-003", "category": "canonical_entity", "query": "李婷在哪个城市", "expected_entities": ["sister:李婷", "younger_sister:李婷", "sister", "place:深圳", "深圳"], "expected_vector_contains": ["深圳"]}
+{"id": "canon-004", "category": "canonical_entity", "query": "李国强平时干什么", "expected_entities": ["father:李国强", "father", "dad:李国强"], "expected_vector_contains": ["钓鱼"]}
+{"id": "canon-005", "category": "canonical_entity", "query": "老赵负责哪块", "expected_entities": ["colleague:老赵", "老赵"], "expected_vector_contains": ["数据"]}
+{"id": "canon-006", "category": "canonical_entity", "query": "周雅是做什么工作的", "expected_entities": ["friend:周雅", "周雅"], "expected_vector_contains": ["编辑"]}
+{"id": "kin-001", "category": "kinship_alias", "query": "我妈睡眠怎么样", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽"], "expected_vector_contains": ["失眠", "睡"]}
+{"id": "kin-002", "category": "kinship_alias", "query": "我妹最近说什么了", "expected_entities": ["sister:李婷", "younger_sister:李婷", "sister"], "expected_vector_contains": ["李婷", "深圳"]}
+{"id": "kin-003", "category": "kinship_alias", "query": "我爸最近在忙什么", "expected_entities": ["father:李国强", "father", "dad:李国强"], "expected_vector_contains": ["钓鱼"]}
+{"id": "kin-004", "category": "kinship_alias", "query": "我爱人上什么班", "expected_entities": ["partner:王芳", "wife:王芳", "spouse:王芳", "partner", "wife"], "expected_vector_contains": ["夜班", "急诊"]}
+{"id": "kin-005", "category": "kinship_alias", "query": "我外甥多大了", "expected_entities": ["nephew:小豆", "nephew", "child:小豆"], "expected_vector_contains": ["小学"]}
+{"id": "pron-001", "category": "pronoun", "query": "她后来搬走了吗", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽", "place:滨江区", "滨江区"], "expected_vector_contains": ["滨江区", "搬"]}
+{"id": "pron-002", "category": "pronoun", "query": "他带的是哪个项目", "expected_entities": ["colleague:李总", "boss:李总", "manager:李总", "李总", "project:星槎", "星槎"], "expected_vector_contains": ["星槎", "李总"]}
+{"id": "pron-003", "category": "pronoun", "query": "它会说什么", "expected_entities": ["pet:铁锤", "pet", "bird:铁锤"], "expected_vector_contains": ["早上好"]}
+{"id": "topic-001", "category": "topic", "query": "我妈这一年的身体情况", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽"], "expected_vector_contains": ["失眠", "睡"]}
+{"id": "topic-002", "category": "topic", "query": "我工作上的压力", "expected_entities": ["self", "project:星槎", "星槎"], "expected_vector_contains": ["压力"]}
+{"id": "topic-003", "category": "topic", "query": "家里的宠物情况", "expected_entities": ["pet:铁锤", "pet", "bird:铁锤"], "expected_vector_contains": ["铁锤"]}
+{"id": "topic-004", "category": "topic", "query": "我和朋友的来往", "expected_entities": ["friend:陈昊", "friend"], "expected_vector_contains": ["陈昊"]}
+{"id": "time-001", "category": "time", "query": "我妈是什么时候搬的家", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽", "place:滨江区", "滨江区"], "expected_vector_contains": ["搬"]}
+{"id": "time-002", "category": "time", "query": "我什么时候开始带实习生的", "expected_entities": ["colleague:小林", "intern:小林", "小林"], "expected_vector_contains": ["实习生"]}
+{"id": "time-003", "category": "time", "query": "我妈吃药吃了多久了", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽", "medication:米氮平", "drug:米氮平", "米氮平"], "expected_vector_contains": ["药"]}
+{"id": "pref-001", "category": "preference", "query": "王芳爱吃甜的吗", "expected_entities": ["partner:王芳", "wife:王芳", "spouse:王芳", "partner", "wife"], "expected_vector_contains": ["甜"]}
+{"id": "pref-002", "category": "preference", "query": "我妈为什么送我鸟", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽", "pet:铁锤", "pet", "bird:铁锤"], "expected_vector_contains": ["动静"]}
+{"id": "event-001", "category": "event", "query": "陈昊家有什么喜事", "expected_entities": ["friend:陈昊", "friend"], "expected_vector_contains": ["孩子"]}
+{"id": "event-002", "category": "event", "query": "十月我要去哪", "expected_entities": ["place:京都", "京都", "place:日本", "日本"], "expected_vector_contains": ["京都"]}
+{"id": "event-003", "category": "event", "query": "出去玩的时候铁锤怎么办", "expected_entities": ["pet:铁锤", "pet", "bird:铁锤", "mother:张丽", "mother", "妈妈:张丽"], "expected_vector_contains": ["托"]}
+{"id": "plan-001", "category": "future_plans", "query": "我旅行是跟谁一起", "expected_entities": ["partner:王芳", "wife:王芳", "spouse:王芳", "partner", "wife"], "expected_vector_contains": ["王芳"]}
+{"id": "plan-002", "category": "future_plans", "query": "星槎什么时候要出第一版", "expected_entities": ["project:星槎", "星槎"], "expected_vector_contains": ["六月底"]}
+{"id": "emo-001", "category": "emotion", "query": "我最近状态怎么样", "expected_entities": ["self"], "expected_vector_contains": ["压力", "睡"]}
+{"id": "emo-002", "category": "emotion", "query": "我妈刚开始为什么不肯吃药", "expected_entities": ["mother:张丽", "mother", "妈妈:张丽"], "expected_vector_contains": ["没病"]}
+{"id": "abst-001", "category": "abstention", "query": "我妹夫叫什么名字", "negative": true, "forbidden_entities": ["sister:李婷", "younger_sister:李婷", "sister", "father:李国强", "father", "dad:李国强"], "forbidden_contains": ["李婷", "李国强"]}
+{"id": "abst-002", "category": "abstention", "query": "王芳的父母是做什么的", "negative": true, "forbidden_entities": ["mother:张丽", "mother", "妈妈:张丽", "father:李国强", "father", "dad:李国强"], "forbidden_contains": ["张丽", "李国强"]}
+{"id": "abst-003", "category": "abstention", "query": "我住在哪个小区", "negative": true, "forbidden_contains": ["滨江区", "西湖区", "望京"]}
+{"id": "abst-004", "category": "abstention", "query": "小林是哪个学校毕业的", "negative": true, "forbidden_contains": ["云舟", "星槎"]}
+{"id": "abst-005", "category": "abstention", "query": "吴医生在哪家医院", "negative": true, "forbidden_contains": ["仁和医院"]}
+{"id": "abst-006", "category": "abstention", "query": "我养的鸟今年几岁了", "negative": true, "forbidden_contains": ["六年", "两个月"]}

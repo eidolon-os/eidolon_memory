@@ -108,8 +108,12 @@ def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
             )
             if response.status_code < 500:
                 return True
-        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError,
-                httpx.TimeoutException):
+        except (
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.RemoteProtocolError,
+            httpx.TimeoutException,
+        ):
             pass
         time.sleep(0.5)
     return False
@@ -293,9 +297,7 @@ async def _reset_jetstream(nats_url: str, user_id: str) -> None:
             try:
                 await js.delete_consumer(
                     "MEMORY_TURNS",
-                    memory_consumer_name(
-                        "eidolon-memory-agent", user_id, role=role
-                    ),
+                    memory_consumer_name("eidolon-memory-agent", user_id, role=role),
                 )
             except Exception:
                 pass
@@ -428,7 +430,14 @@ async def _publish_turn(nats_url: str, *, user_id: str, turn: dict) -> None:
     payload = ConversationTurnPayload(
         turn_id=turn["turn_id"],
         context=context,
-        timestamp=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # A corpus turn may carry its own timestamp, and the whole time dimension
+        # depends on it. Stamping every turn with now() puts a forty-turn corpus
+        # inside one second, which collapses three things the graph is built to
+        # do: a fact revised later cannot be told from the fact it revised,
+        # valid_from/valid_to carry no interval, and the rendering layer's day-
+        # versus-minute precision has nothing to choose between. Corpora without
+        # the field keep the old behaviour.
+        timestamp=str(turn.get("timestamp") or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")),
         user_text=turn["user_text"],
         assistant_text=turn["assistant_text"],
         metadata={"source": "memory_retrieve_quality_bench"},
@@ -439,9 +448,7 @@ async def _publish_turn(nats_url: str, *, user_id: str, turn: dict) -> None:
         js = nc.jetstream()
         await js.publish(
             conversation_turn_subject(context.memory_space_id),
-            json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).encode(
-                "utf-8"
-            ),
+            json.dumps(envelope.model_dump(mode="json"), ensure_ascii=False).encode("utf-8"),
         )
     finally:
         await nc.close()
@@ -458,10 +465,10 @@ class QueryResult:
     category: str
     query: str
     elapsed_ms: float
-    kg_hit: bool                  # at least one expected_entities[i] surfaced
-    vector_hit: bool              # at least one expected_vector_contains[i] surfaced
-    working_memory_hit: bool      # if expects_working_memory, did wm contain anything
-    negative_violation: bool      # negative query but forbidden term/entity surfaced
+    kg_hit: bool  # at least one expected_entities[i] surfaced
+    vector_hit: bool  # at least one expected_vector_contains[i] surfaced
+    working_memory_hit: bool  # if expects_working_memory, did wm contain anything
+    negative_violation: bool  # negative query but forbidden term/entity surfaced
     matched_signals: list[str] = field(default_factory=list)
     raw_kg_objects: list[str] = field(default_factory=list)
     evidence_groups_hit: int = 0
@@ -482,6 +489,13 @@ class QueryResult:
         """
         if self.expects_abstention:
             return self.abstention_correct is True
+        if self.negative_violation:
+            # A superseded fact that came back is a wrong answer even when the
+            # current one came back beside it. Recall alone cannot see this:
+            # both facts hit, every evidence group is satisfied, and the reply
+            # says she takes two medications. Only the forbidden term separates
+            # "remembers the change" from "remembers both".
+            return False
         return self.evidence_groups_total > 0 and self.omission_count == 0
 
     @property
@@ -562,20 +576,24 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
         wm_hit = True
         matched.append("wm:present")
 
-    # Negative-query violation: any forbidden term/entity surfaced.
+    # A forbidden term that surfaced is a violation on any query, not only on one
+    # expecting abstention. This used to be gated on ``expects_abstention``, which
+    # made a whole class of question inexpressible: "she takes 米氮平 now, and
+    # 舍曲林 must not come back" needs positive evidence AND a forbidden term at
+    # once. Superseding a fact is the single thing bitemporality exists for, and
+    # the benchmark could not ask about it.
     violation = False
-    if expects_abstention:
-        for ent in forbidden_entities:
-            if ent and ent in kg_blob_lower:
+    for ent in forbidden_entities:
+        if ent and ent in kg_blob_lower:
+            violation = True
+            matched.append(f"VIOLATE-kg:{ent}")
+            break
+    if not violation:
+        for s in forbidden_contains:
+            if s and (s in vector_blob or s in kg_blob_lower or s in wm_blob):
                 violation = True
-                matched.append(f"VIOLATE-kg:{ent}")
+                matched.append(f"VIOLATE-vec:{s}")
                 break
-        if not violation:
-            for s in forbidden_contains:
-                if s and (s in vector_blob or s in kg_blob_lower or s in wm_blob):
-                    violation = True
-                    matched.append(f"VIOLATE-vec:{s}")
-                    break
 
     evidence_groups = [
         bool(expected_entities),
@@ -589,8 +607,7 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
     ]
     groups_total = sum(evidence_groups)
     groups_hit = sum(
-        hit for enabled, hit in zip(evidence_groups, evidence_group_hits, strict=True)
-        if enabled
+        hit for enabled, hit in zip(evidence_groups, evidence_group_hits, strict=True) if enabled
     )
     returned_evidence_count = len(kg) + len(records) + len(wm)
     abstention_correct = None
@@ -634,22 +651,18 @@ def _validate_queries(queries: list[dict[str, Any]]) -> None:
             raise ValueError(f"{label}: duplicate query id")
         seen.add(label)
 
-        expects_abstention = bool(
-            query.get("expect_abstention", query.get("negative"))
-        )
+        expects_abstention = bool(query.get("expect_abstention", query.get("negative")))
         has_positive_label = bool(
             query.get("expected_entities")
             or query.get("expected_vector_contains")
             or query.get("expects_working_memory")
         )
         if expects_abstention and has_positive_label:
-            raise ValueError(
-                f"{label}: abstention case cannot also require positive evidence"
-            )
+            raise ValueError(f"{label}: abstention case cannot also require positive evidence")
         if not expects_abstention and not has_positive_label:
-            raise ValueError(
-                f"{label}: answerable case must label at least one evidence group"
-            )
+            raise ValueError(f"{label}: answerable case must label at least one evidence group")
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Aggregation + markdown rendering
 # ───────────────────────────────────────────────────────────────────────────
@@ -668,51 +681,45 @@ def _aggregate(results: list[QueryResult]) -> dict[str, Any]:
         vec_hits = sum(1 for x in items if x.vector_hit)
         omissions = sum(x.omission_count for x in items)
         abstention_total = sum(1 for x in items if x.expects_abstention)
-        abstention_correct = sum(
-            1 for x in items if x.expects_abstention and x.abstention_correct
-        )
+        abstention_correct = sum(1 for x in items if x.expects_abstention and x.abstention_correct)
         latencies = [x.elapsed_ms for x in items]
-        cat_rows.append({
-            "category": cat,
-            "n": n,
-            "correct": correct,
-            "correct_pct": round(correct / n * 100, 1),
-            "kg_hits": kg_hits,
-            "vec_hits": vec_hits,
-            "evidence_recall": round(
-                sum(x.evidence_groups_hit for x in items)
-                / max(1, sum(x.evidence_groups_total for x in items)),
-                3,
-            ),
-            "omissions": omissions,
-            "abstention_correct": abstention_correct,
-            "abstention_total": abstention_total,
-            "p50_ms": round(statistics.median(latencies), 1),
-            "p95_ms": round(_p95(latencies), 1),
-            "mean_ms": round(statistics.mean(latencies), 1),
-        })
+        cat_rows.append(
+            {
+                "category": cat,
+                "n": n,
+                "correct": correct,
+                "correct_pct": round(correct / n * 100, 1),
+                "kg_hits": kg_hits,
+                "vec_hits": vec_hits,
+                "evidence_recall": round(
+                    sum(x.evidence_groups_hit for x in items)
+                    / max(1, sum(x.evidence_groups_total for x in items)),
+                    3,
+                ),
+                "omissions": omissions,
+                "abstention_correct": abstention_correct,
+                "abstention_total": abstention_total,
+                "p50_ms": round(statistics.median(latencies), 1),
+                "p95_ms": round(_p95(latencies), 1),
+                "mean_ms": round(statistics.mean(latencies), 1),
+            }
+        )
 
     overall_lat = [r.elapsed_ms for r in results]
     overall_correct = sum(1 for r in results if r.correct)
     evidence_groups_total = sum(r.evidence_groups_total for r in results)
     evidence_groups_hit = sum(r.evidence_groups_hit for r in results)
     abstention_total = sum(1 for r in results if r.expects_abstention)
-    abstention_correct = sum(
-        1 for r in results if r.expects_abstention and r.abstention_correct
-    )
+    abstention_correct = sum(1 for r in results if r.expects_abstention and r.abstention_correct)
     overall = {
         "n": len(results),
         "correct": overall_correct,
         "correct_pct": round(overall_correct / len(results) * 100, 1) if results else 0,
-        "evidence_recall": round(
-            evidence_groups_hit / max(1, evidence_groups_total), 3
-        ),
+        "evidence_recall": round(evidence_groups_hit / max(1, evidence_groups_total), 3),
         "omissions": sum(r.omission_count for r in results),
         "abstention_correct": abstention_correct,
         "abstention_total": abstention_total,
-        "abstention_rate": round(
-            abstention_correct / max(1, abstention_total), 3
-        ),
+        "abstention_rate": round(abstention_correct / max(1, abstention_total), 3),
         "p50_ms": round(statistics.median(overall_lat), 1) if overall_lat else 0,
         "p95_ms": round(_p95(overall_lat), 1) if overall_lat else 0,
         "mean_ms": round(statistics.mean(overall_lat), 1) if overall_lat else 0,
@@ -779,7 +786,9 @@ def _render_markdown(
         "| Category | n | correct | rate | evidence recall | omissions | "
         "abstain | p50 ms | p95 ms |"
     )
-    lines.append("|----------|--:|--------:|-----:|----------------:|----------:|--------:|-------:|-------:|")
+    lines.append(
+        "|----------|--:|--------:|-----:|----------------:|----------:|--------:|-------:|-------:|"
+    )
     for row in agg["per_category"]:
         lines.append(
             f"| {row['category']} | {row['n']} | "
@@ -793,10 +802,11 @@ def _render_markdown(
     lines.append("## Per-query detail")
     lines.append("")
     lines.append(
-        "| id | category | query | ms | evidence | omitted | returned | "
-        "abstain | matched |"
+        "| id | category | query | ms | evidence | omitted | returned | abstain | matched |"
     )
-    lines.append("|----|----------|-------|---:|---------:|--------:|---------:|:-------:|---------|")
+    lines.append(
+        "|----|----------|-------|---:|---------:|--------:|---------:|:-------:|---------|"
+    )
     for r in results:
         abstain = "✓" if r.abstention_correct else ("✗" if r.expects_abstention else "·")
         matched = ", ".join(r.matched_signals[:3]) if r.matched_signals else ""
@@ -817,8 +827,7 @@ def _render_markdown(
         for r in misses:
             kg_obj_str = ", ".join(r.raw_kg_objects[:4]) if r.raw_kg_objects else "—"
             lines.append(
-                f"- `{r.id}` ({r.category}): \"{r.query}\" — "
-                f"kg objects returned: {kg_obj_str}"
+                f'- `{r.id}` ({r.category}): "{r.query}" — kg objects returned: {kg_obj_str}'
             )
         lines.append("")
 
@@ -874,7 +883,8 @@ def _render_ab_comparison(
 async def _list_fragment_count(session: ClientSession) -> int:
     """Total fragments in the palace via the MCP listing tool."""
     result = await session.call_tool(
-        "eidolon_memory_list", {"limit": 5000, "include_private": True},
+        "eidolon_memory_list",
+        {"limit": 5000, "include_private": True},
     )
     payload = _unwrap(result)
     if not isinstance(payload, dict):
@@ -885,21 +895,26 @@ async def _list_fragment_count(session: ClientSession) -> int:
 async def _count_wing_theme_drawers(session: ClientSession) -> int:
     """Count Wing_Theme drawers via the MCP listing tool."""
     result = await session.call_tool(
-        "eidolon_memory_list", {"limit": 5000, "include_private": False},
+        "eidolon_memory_list",
+        {"limit": 5000, "include_private": False},
     )
     payload = _unwrap(result)
     if not isinstance(payload, dict):
         return 0
     rows = payload.get("records") or []
     return sum(
-        1 for r in rows
-        if isinstance(r, dict)
-        and (r.get("metadata") or {}).get("wing") == "Wing_Theme"
+        1
+        for r in rows
+        if isinstance(r, dict) and (r.get("metadata") or {}).get("wing") == "Wing_Theme"
     )
 
 
 async def _run_consolidator_inline(
-    *, user_id: str, mcp_url: str, settings_yaml: Any, log_path: Any,
+    *,
+    user_id: str,
+    mcp_url: str,
+    settings_yaml: Any,
+    log_path: Any,
 ) -> int:
     """Spawn the consolidator subprocess, wait for it, return exit code.
 
@@ -908,9 +923,11 @@ async def _run_consolidator_inline(
     """
     import subprocess
     from pathlib import Path
+
     cli = Path(sys.executable).parent / "eidolon-memory-consolidator"
     if not cli.is_file():
         from shutil import which
+
         cli_str = which("eidolon-memory-consolidator")
         if cli_str is None:
             raise RuntimeError("eidolon-memory-consolidator not on PATH")
@@ -925,9 +942,22 @@ async def _run_consolidator_inline(
                     env[k] = v.strip()
     with open(log_path, "ab") as log_fp:
         proc = subprocess.run(
-            [str(cli), "--memory-space-id", user_id, "--mcp-url", mcp_url,
-             "--once", "--min-drawers", "2", "--min-confidence", "0.5"],
-            stdout=log_fp, stderr=subprocess.STDOUT, env=env, timeout=240,
+            [
+                str(cli),
+                "--memory-space-id",
+                user_id,
+                "--mcp-url",
+                mcp_url,
+                "--once",
+                "--min-drawers",
+                "2",
+                "--min-confidence",
+                "0.5",
+            ],
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
+            env=env,
+            timeout=240,
         )
     return proc.returncode
 
@@ -1200,8 +1230,10 @@ async def amain(args: argparse.Namespace) -> int:
                 cons_t0 = time.monotonic()
                 consolidator_log = out_dir / "consolidator.log"
                 rc = await _run_consolidator_inline(
-                    user_id=args.user_id, mcp_url=mcp_url,
-                    settings_yaml=settings_path, log_path=consolidator_log,
+                    user_id=args.user_id,
+                    mcp_url=mcp_url,
+                    settings_yaml=settings_path,
+                    log_path=consolidator_log,
                 )
                 consolidator_seconds = time.monotonic() - cons_t0
                 if rc != 0:
@@ -1229,7 +1261,7 @@ async def amain(args: argparse.Namespace) -> int:
                     label="themed",
                 )
                 themed_agg = _aggregate(themed_results)
-                results = themed_results   # report the themed pass as primary
+                results = themed_results  # report the themed pass as primary
                 agg = themed_agg
 
         # 5) Render summary.
@@ -1322,14 +1354,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Companion-corpus quality bench for memory retrieve path."
     )
-    parser.add_argument("--corpus", default=str(_DEFAULT_CORPUS),
-                        help="JSONL companion corpus (default: companion_corpus.jsonl)")
-    parser.add_argument("--queries", default=str(_DEFAULT_QUERIES),
-                        help="JSONL labeled query battery")
-    parser.add_argument("--user-id", default="quality_bench",
-                        help="Isolated user_id for this run")
-    parser.add_argument("--port", type=int, default=19200,
-                        help="MCP port for spawned agent_runner")
+    parser.add_argument(
+        "--corpus",
+        default=str(_DEFAULT_CORPUS),
+        help="JSONL companion corpus (default: companion_corpus.jsonl; "
+        "pass fusion_corpus.jsonl with fusion_queries.jsonl to "
+        "exercise multi-hop and invalidation)",
+    )
+    parser.add_argument(
+        "--queries", default=str(_DEFAULT_QUERIES), help="JSONL labeled query battery"
+    )
+    parser.add_argument("--user-id", default="quality_bench", help="Isolated user_id for this run")
+    parser.add_argument("--port", type=int, default=19200, help="MCP port for spawned agent_runner")
     parser.add_argument("--nats-url", default="nats://127.0.0.1:4222")
     parser.add_argument(
         "--steward-mode",
@@ -1337,10 +1373,15 @@ def main() -> int:
         default="llm",
         help="llm for quality evaluation; rules for deterministic pipeline smoke",
     )
-    parser.add_argument("--min-triples", type=int, default=18,
-                        help="Wait until kg_stats.triples_total reaches this")
-    parser.add_argument("--min-fragments", type=int, default=25,
-                        help="Wait until eidolon_memory_list returns at least this many fragments")
+    parser.add_argument(
+        "--min-triples", type=int, default=18, help="Wait until kg_stats.triples_total reaches this"
+    )
+    parser.add_argument(
+        "--min-fragments",
+        type=int,
+        default=25,
+        help="Wait until eidolon_memory_list returns at least this many fragments",
+    )
     parser.add_argument(
         "--allow-partial-ingestion",
         action="store_true",
@@ -1355,11 +1396,18 @@ def main() -> int:
     # seconds of margin, i.e. the next run would have failed on variance alone.
     # 1800 gives roughly half again, which is the margin this should have started
     # with rather than one derived from a single observation.
-    parser.add_argument("--ingest-timeout", type=float, default=1800.0,
-                        help="Max seconds to wait for ingestion (LLM steward is slow)")
-    parser.add_argument("--with-consolidator", action="store_true",
-                        help="Run eidolon-memory-consolidator after ingestion so the "
-                             "[主题] section is populated for the query battery")
+    parser.add_argument(
+        "--ingest-timeout",
+        type=float,
+        default=1800.0,
+        help="Max seconds to wait for ingestion (LLM steward is slow)",
+    )
+    parser.add_argument(
+        "--with-consolidator",
+        action="store_true",
+        help="Run eidolon-memory-consolidator after ingestion so the "
+        "[主题] section is populated for the query battery",
+    )
     args = parser.parse_args()
     try:
         return asyncio.run(amain(args))

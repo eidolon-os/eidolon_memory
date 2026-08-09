@@ -38,9 +38,7 @@ def test_answerable_case_requires_every_labelled_evidence_group() -> None:
     result = _score_query(
         _answerable_query(),
         {
-            "kg_triples": [
-                {"subject": "subject:alpha", "predicate": "related_to", "object": "x"}
-            ],
+            "kg_triples": [{"subject": "subject:alpha", "predicate": "related_to", "object": "x"}],
             "records": [{"value": "unrelated record"}],
         },
         12.5,
@@ -94,9 +92,7 @@ def test_abstention_requires_an_empty_retrieval_boundary() -> None:
 
 def test_query_label_validation_rejects_vacuous_and_conflicting_cases() -> None:
     with pytest.raises(ValueError, match="at least one evidence group"):
-        _validate_queries(
-            [{"id": "empty", "category": "recall", "query": "anything"}]
-        )
+        _validate_queries([{"id": "empty", "category": "recall", "query": "anything"}])
 
     with pytest.raises(ValueError, match="cannot also require positive evidence"):
         _validate_queries(
@@ -113,12 +109,7 @@ def test_query_label_validation_rejects_vacuous_and_conflicting_cases() -> None:
 
 
 def test_quality_fixture_has_no_vacuous_cases() -> None:
-    fixture = (
-        Path(__file__).parent
-        / "e2e"
-        / "fixtures"
-        / "quality_queries.jsonl"
-    )
+    fixture = Path(__file__).parent / "e2e" / "fixtures" / "quality_queries.jsonl"
     queries = [json.loads(line) for line in fixture.read_text().splitlines() if line]
 
     _validate_queries(queries)
@@ -127,11 +118,7 @@ def test_quality_fixture_has_no_vacuous_cases() -> None:
 def test_aggregate_reports_omission_and_abstention_separately() -> None:
     partial = _score_query(
         _answerable_query(),
-        {
-            "kg_triples": [
-                {"subject": "subject:alpha", "predicate": "related_to", "object": "x"}
-            ]
-        },
+        {"kg_triples": [{"subject": "subject:alpha", "predicate": "related_to", "object": "x"}]},
         10.0,
     )
     abstained = _score_query(
@@ -190,15 +177,126 @@ async def test_publish_turn_uses_current_envelope_and_encoded_subject(
 
 
 @pytest.mark.asyncio
+async def test_a_corpus_turn_keeps_its_own_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Otherwise a corpus cannot say when anything happened.
+
+    Every turn used to be stamped ``now()``, which puts a whole corpus inside one
+    second. Three things collapse at once: a fact revised in a later turn is
+    indistinguishable from the fact it revised, ``valid_from``/``valid_to`` span
+    nothing, and the recall renderer's day-versus-minute precision has no
+    interval to choose between. So a graph benchmark could not pose a single
+    question about time.
+    """
+
+    captured: dict = {}
+
+    class _JetStream:
+        async def publish(self, subject, body):
+            captured.update(subject=subject, body=body)
+
+    class _Nats:
+        def jetstream(self):
+            return _JetStream()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(quality_bench.nats, "connect", lambda _url: _ok(_Nats()))
+
+    await _publish_turn(
+        "nats://test",
+        user_id="r:quality:bench",
+        turn={
+            "turn_id": "t-1",
+            "user_text": "u",
+            "assistant_text": "a",
+            "timestamp": "2026-03-14T09:30:00Z",
+        },
+    )
+
+    payload = unwrap_memory_payload(json.loads(captured["body"]))
+    assert payload["timestamp"] == "2026-03-14T09:30:00Z"
+
+
+async def _ok(value):
+    return value
+
+
+# ── superseded facts ──────────────────────────────────────────────────────────
+
+
+def _invalidation_query() -> dict:
+    """She takes 米氮平 now. 舍曲林 is what she used to take."""
+
+    return {
+        "id": "inval-1",
+        "category": "invalidation",
+        "query": "我妈现在吃的什么药",
+        "expected_entities": ["medication:米氮平"],
+        "expected_vector_contains": ["米氮平"],
+        "forbidden_contains": ["舍曲林"],
+    }
+
+
+def test_a_superseded_fact_beside_the_current_one_is_not_correct() -> None:
+    """The case the benchmark could not express, and the reason it could not.
+
+    Forbidden terms were only consulted when a query expected abstention, and a
+    positive query's verdict ignored violations outright. So recall returning
+    both the old drug and the new one scored a clean pass: every evidence group
+    hit. The reply that produces is "she takes 舍曲林 and 米氮平", which is the
+    exact failure bitemporality exists to prevent.
+    """
+
+    result = _score_query(
+        _invalidation_query(),
+        {
+            # Subjects and objects are typed entity ids, which is what
+            # ``expected_entities`` is matched against as a substring.
+            "kg_triples": [
+                {"subject": "mother:张丽", "predicate": "服用", "object": "medication:米氮平"}
+            ],
+            "records": [{"value": "吴医生把舍曲林停了，换成米氮平"}],
+            "working_memory": [],
+        },
+        12.0,
+    )
+
+    assert result.vector_hit, "the current fact did come back"
+    assert result.negative_violation, "the superseded fact came back too"
+    assert not result.correct
+
+
+def test_remembering_only_the_current_fact_is_correct() -> None:
+    result = _score_query(
+        _invalidation_query(),
+        {
+            # Subjects and objects are typed entity ids, which is what
+            # ``expected_entities`` is matched against as a substring.
+            "kg_triples": [
+                {"subject": "mother:张丽", "predicate": "服用", "object": "medication:米氮平"}
+            ],
+            "records": [{"value": "米氮平晚上吃，现在每天睡六个多小时"}],
+            "working_memory": [],
+        },
+        12.0,
+    )
+
+    assert result.kg_hit and result.vector_hit
+    assert not result.negative_violation
+    assert result.correct
+
+
+@pytest.mark.asyncio
 async def test_query_passes_actor_context_to_current_mcp_contract() -> None:
     class _Session:
         args = None
 
         async def call_tool(self, name, args):
             self.args = (name, args)
-            return SimpleNamespace(
-                content=[SimpleNamespace(text=json.dumps({"records": []}))]
-            )
+            return SimpleNamespace(content=[SimpleNamespace(text=json.dumps({"records": []}))])
 
     session = _Session()
     context = {
@@ -252,9 +350,7 @@ def test_spawn_uses_current_memory_space_cli(
     )
 
     assert captured["argv"][1:3] == ["--memory-space-id", "r:quality:bench"]
-    settings = quality_bench.yaml.safe_load(
-        (tmp_path / "settings.yaml").read_text()
-    )
+    settings = quality_bench.yaml.safe_load((tmp_path / "settings.yaml").read_text())
     assert settings["steward"]["mode"] == "rules"
 
 
