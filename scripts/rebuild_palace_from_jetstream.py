@@ -3,7 +3,7 @@
 
 Approach:
   1. Ensure no agent_runner is running for the target user (operator's job).
-  2. ``mv ~/eidolon/palaces/<user_id>/  ~/eidolon/palaces/<user_id>.corrupted.<ts>``
+  2. Move ``$EIDOLON_STATE_ROOT/memory/mempalaces/<memory_space_id>`` aside.
   3. ``mempalace init`` a fresh palace at the original path.
   4. Subscribe to JetStream from the head of the stream (one-shot, ``deliver_policy=all``).
   5. For each turn whose ``payload.user_id`` matches the target, run the configured
@@ -31,8 +31,8 @@ from pathlib import Path
 from typing import Any
 
 import nats
-from nats.js.api import ConsumerConfig, DeliverPolicy
 from eidolon_memory_contracts import conversation_turn_subject
+from nats.js.api import ConsumerConfig, DeliverPolicy
 
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
@@ -73,14 +73,14 @@ async def _replay(
     ``process_command_message`` paths the live agent_runner uses.
     """
 
+    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
+    from eidolon_memory_contracts import memory_command_subject
     from mempalace.knowledge_graph import KnowledgeGraph
 
-    from eidolon.memory.adapters.locked_kg import LockedKnowledgeGraph
     from eidolon.memory.application.turn_processor import (
         process_command_message,
         process_turn_message,
     )
-    from eidolon_memory_contracts import memory_command_subject
 
     backend = LockedBackend(MemPalacePythonBackend(settings, str(palace_path)))
     kg = LockedKnowledgeGraph(
@@ -197,10 +197,7 @@ async def _replay(
         except Exception:
             pass
 
-    print(
-        f"[rebuild] done: replayed={processed} skipped_other_user={skipped} "
-        f"invalid={invalid}"
-    )
+    print(f"[rebuild] done: replayed={processed} skipped_other_user={skipped} invalid={invalid}")
     return processed
 
 
@@ -251,8 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[rebuild] fresh palace ready: {palace_path}")
 
     consumer_name = (
-        args.consumer_name
-        or f"rebuild-{user_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        args.consumer_name or f"rebuild-{user_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
     )
     try:
         asyncio.run(

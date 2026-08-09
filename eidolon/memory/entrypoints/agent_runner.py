@@ -127,9 +127,7 @@ async def publish_graph_size(kg: Any, *, memory_space_id: str) -> None:
         )
         return
     metrics.GRAPH_ENTITIES.set(int(stats.get("entities") or 0))
-    metrics.GRAPH_STATEMENTS.labels(state="active").set(
-        int(stats.get("triples_active") or 0)
-    )
+    metrics.GRAPH_STATEMENTS.labels(state="active").set(int(stats.get("triples_active") or 0))
     metrics.GRAPH_STATEMENTS.labels(state="invalidated").set(
         int(stats.get("triples_invalidated") or 0)
     )
@@ -646,7 +644,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--palace-path",
         default="",
-        help="Override palace directory (default ~/eidolon/memory/mempalaces/<memory_space_id>)",
+        help=(
+            "Override palace directory "
+            "(default $EIDOLON_STATE_ROOT/memory/mempalaces/<memory_space_id>)"
+        ),
     )
     return parser.parse_args(argv)
 

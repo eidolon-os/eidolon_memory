@@ -1,5 +1,5 @@
 runtime:
-  palaces_root: ~/eidolon/memory/mempalaces
+  palaces_root: $EIDOLON_STATE_ROOT/memory/mempalaces
   log_dir: ''
   run_dir: ''
 mempalace:

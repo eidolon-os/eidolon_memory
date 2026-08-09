@@ -21,6 +21,7 @@ Why a separate module (not put it in supervisor.py):
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import time
 import uuid
@@ -254,15 +255,16 @@ class UserAdmin:
         # Putting trash in a sibling of the palaces root keeps it on the same
         # filesystem (so ``shutil.move`` stays atomic via ``os.rename``).
         if trash_root is None:
-            # Default: ~/.eidolon-trash — discoverable, not under ~/eidolon/
-            # so a wipe-all-palaces command never accidentally erases trash.
-            trash_root = Path.home() / ".eidolon-trash"
+            state_root = Path(os.environ.get("EIDOLON_STATE_ROOT", "~/eidolon/data")).expanduser()
+            trash_root = state_root / "memory/trash"
         self._trash_root = trash_root
         if maintenance_log_root is None:
-            maintenance_log_root = Path.home() / "eidolon" / "logs" / "memory" / "maintenance"
+            log_root = Path(os.environ.get("EIDOLON_LOG_ROOT", "~/eidolon/logs")).expanduser()
+            maintenance_log_root = log_root / "memory/maintenance"
         self._maintenance_log_root = maintenance_log_root
         if user_log_root is None:
-            user_log_root = Path.home() / "eidolon" / "logs" / "memory"
+            log_root = Path(os.environ.get("EIDOLON_LOG_ROOT", "~/eidolon/logs")).expanduser()
+            user_log_root = log_root / "memory"
         self._user_log_root = user_log_root
 
     # -------------------- list / get --------------------

@@ -9,7 +9,7 @@ Resolution order for :func:`resolve_palace_for_user`:
 2. ``settings.runtime.palaces_root`` joined with encoded ``memory_space_id``
 
 ``palaces_root`` priority: ``EIDOLON_MEMORY_PALACES_ROOT`` env > config field
-> ``~/eidolon/memory/mempalaces`` fallback.
+> ``$EIDOLON_STATE_ROOT/memory/mempalaces`` fallback.
 """
 
 from __future__ import annotations
@@ -33,14 +33,15 @@ __all__ = [
 
 
 def resolve_palaces_root(settings: MemorySettings) -> Path:
-    """Env > config > ``~/eidolon/memory/mempalaces`` default."""
+    """Component override > config > host state-root default."""
     env = os.environ.get("EIDOLON_MEMORY_PALACES_ROOT", "").strip()
     if env:
-        return Path(env).expanduser().resolve()
+        return Path(os.path.expandvars(env)).expanduser().resolve()
     configured = (settings.runtime.palaces_root or "").strip()
     if configured:
-        return Path(configured).expanduser().resolve()
-    return (Path.home() / "eidolon" / "memory" / "mempalaces").resolve()
+        return Path(os.path.expandvars(configured)).expanduser().resolve()
+    state_root = Path(os.environ.get("EIDOLON_STATE_ROOT", "~/eidolon/data")).expanduser()
+    return (state_root / "memory/mempalaces").resolve()
 
 
 def resolve_palace_for_memory_space(
@@ -108,7 +109,5 @@ def resolve_ledgers_for_memory_space(
     does to its own directory can reach a path it was never given.
     """
 
-    palace = resolve_palace_for_memory_space(
-        settings, memory_space_id, path_override=path_override
-    )
+    palace = resolve_palace_for_memory_space(settings, memory_space_id, path_override=path_override)
     return palace.with_name(palace.name + LEDGERS_DIR_SUFFIX)

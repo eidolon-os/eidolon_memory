@@ -74,10 +74,12 @@ def test_empty_inline_secrets_are_silently_dropped(tmp_path: Path):
     """Backward compat: empty secret fields still load."""
     p = tmp_path / "ok.yaml"
     p.write_text(
-        yaml.safe_dump({
-            "llm": {"api_key": "", "model": "m"},
-            "mcp_http": {"bearer_token": "", "port": 8030},
-        }),
+        yaml.safe_dump(
+            {
+                "llm": {"api_key": "", "model": "m"},
+                "mcp_http": {"bearer_token": "", "port": 8030},
+            }
+        ),
         encoding="utf-8",
     )
     settings = load_memory_settings(p)
@@ -88,18 +90,20 @@ def test_empty_inline_secrets_are_silently_dropped(tmp_path: Path):
 def test_env_name_placeholders_load(tmp_path: Path):
     p = tmp_path / "ph.yaml"
     p.write_text(
-        yaml.safe_dump({
-            "llm": {
-                "api_key": "EIDOLON_MEMORY_LLM_API_KEY",
-                "api_key_env": "EIDOLON_MEMORY_LLM_API_KEY",
-                "model": "m",
-            },
-            "mcp_http": {
-                "bearer_token": "EIDOLON_MEMORY_MCP_TOKEN",
-                "bearer_token_env": "EIDOLON_MEMORY_MCP_TOKEN",
-                "port": 8030,
-            },
-        }),
+        yaml.safe_dump(
+            {
+                "llm": {
+                    "api_key": "EIDOLON_MEMORY_LLM_API_KEY",
+                    "api_key_env": "EIDOLON_MEMORY_LLM_API_KEY",
+                    "model": "m",
+                },
+                "mcp_http": {
+                    "bearer_token": "EIDOLON_MEMORY_MCP_TOKEN",
+                    "bearer_token_env": "EIDOLON_MEMORY_MCP_TOKEN",
+                    "port": 8030,
+                },
+            }
+        ),
         encoding="utf-8",
     )
     settings = load_memory_settings(p)
@@ -120,18 +124,21 @@ def test_resolve_log_dir_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         resolve_log_dir,
         resolve_run_dir,
     )
+
     monkeypatch.delenv("EIDOLON_MEMORY_LOG_DIR", raising=False)
     monkeypatch.delenv("EIDOLON_MEMORY_RUN_DIR", raising=False)
     settings = load_memory_settings()
     assert resolve_log_dir(settings) == (Path.home() / "eidolon" / "logs" / "memory").resolve()
-    assert resolve_dlq_log_path(settings) == (
-        Path.home() / "eidolon" / "logs" / "memory" / "memory_dlq.jsonl"
-    ).resolve()
-    assert resolve_run_dir(settings) == (Path.home() / "eidolon" / "run").resolve()
+    assert (
+        resolve_dlq_log_path(settings)
+        == (Path.home() / "eidolon" / "logs" / "memory" / "memory_dlq.jsonl").resolve()
+    )
+    assert resolve_run_dir(settings) == (Path.home() / "eidolon" / "run" / "memory").resolve()
 
 
 def test_resolve_log_dir_env_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from eidolon.memory.config.memory_settings import resolve_log_dir, resolve_run_dir
+
     p = _write_yaml(
         tmp_path,
         {

@@ -152,13 +152,13 @@ class RuntimeConfig(BaseModel):
     so the repo only ships code.
     """
 
-    palaces_root: str = ""  # default ~/eidolon/memory/mempalaces; env EIDOLON_MEMORY_PALACES_ROOT
+    palaces_root: str = ""  # default $EIDOLON_STATE_ROOT/memory/mempalaces
     # Per-Realm SQLite/Chroma temporary files. Empty keeps them beside the
     # Palace root under ``.process-tmp``; env EIDOLON_MEMORY_PROCESS_TMP_ROOT
     # wins. The supervisor activates this before the child imports Chroma.
     process_tmp_root: str = ""
-    log_dir: str = ""  # default ~/eidolon/logs/memory; env EIDOLON_MEMORY_LOG_DIR
-    run_dir: str = ""  # default ~/eidolon/run;    env EIDOLON_MEMORY_RUN_DIR
+    log_dir: str = ""  # default $EIDOLON_LOG_ROOT/memory
+    run_dir: str = ""  # default $EIDOLON_RUNTIME_ROOT/memory
     read: ReadRuntimeConfig = Field(default_factory=ReadRuntimeConfig)
     # Phase 2 — in-memory short-term continuity ring. 0 disables; reasonable
     # values are 5-20. Each turn is ~1-2KB so even maxlen=20 is <40KB per user.
@@ -355,9 +355,8 @@ class EmbeddingConfig(BaseModel):
             )
         if provider == "http":
             return EmbedderIdentity(
-                name=self.http.collection_name.strip() or hosted_collection_name(
-                    self.endpoint_model()
-                ),
+                name=self.http.collection_name.strip()
+                or hosted_collection_name(self.endpoint_model()),
                 dimension=self.http.dimension,
             )
         return mempalace_model_identity(self.model)
@@ -374,9 +373,7 @@ def hosted_collection_name(endpoint_model: str) -> str:
     underscore.
     """
 
-    cleaned = "".join(
-        c if c.isalnum() else "_" for c in endpoint_model.strip().lower()
-    ).strip("_")
+    cleaned = "".join(c if c.isalnum() else "_" for c in endpoint_model.strip().lower()).strip("_")
     while "__" in cleaned:
         cleaned = cleaned.replace("__", "_")
     return f"http_{cleaned or 'embeddings'}"
@@ -747,14 +744,15 @@ class MemorySettings(BaseModel):
 
 
 def resolve_log_dir(settings: MemorySettings) -> Path:
-    """Resolve runtime log directory. Env > config > ``~/eidolon/logs/memory``."""
+    """Resolve runtime log directory from component or host profile."""
     env = os.environ.get("EIDOLON_MEMORY_LOG_DIR", "").strip()
     if env:
-        return Path(env).expanduser().resolve()
+        return Path(os.path.expandvars(env)).expanduser().resolve()
     configured = (settings.runtime.log_dir or "").strip()
     if configured:
-        return Path(configured).expanduser().resolve()
-    return (Path.home() / "eidolon" / "logs" / "memory").resolve()
+        return Path(os.path.expandvars(configured)).expanduser().resolve()
+    root = Path(os.environ.get("EIDOLON_LOG_ROOT", "~/eidolon/logs")).expanduser()
+    return (root / "memory").resolve()
 
 
 def resolve_dlq_log_path(settings: MemorySettings) -> Path:
@@ -767,14 +765,15 @@ def resolve_dlq_log_path(settings: MemorySettings) -> Path:
 
 
 def resolve_run_dir(settings: MemorySettings) -> Path:
-    """Resolve PID / lockfile directory. Env > config > ``~/eidolon/run``."""
+    """Resolve PID / lockfile directory from component or host profile."""
     env = os.environ.get("EIDOLON_MEMORY_RUN_DIR", "").strip()
     if env:
-        return Path(env).expanduser().resolve()
+        return Path(os.path.expandvars(env)).expanduser().resolve()
     configured = (settings.runtime.run_dir or "").strip()
     if configured:
-        return Path(configured).expanduser().resolve()
-    return (Path.home() / "eidolon" / "run").resolve()
+        return Path(os.path.expandvars(configured)).expanduser().resolve()
+    root = Path(os.environ.get("EIDOLON_RUNTIME_ROOT", "~/eidolon/run")).expanduser()
+    return (root / "memory").resolve()
 
 
 def _bootstrap_dotenv() -> None:

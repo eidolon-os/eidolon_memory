@@ -30,7 +30,7 @@ def test_resolve_palaces_root_default(tmp_path: Path, monkeypatch: pytest.Monkey
     settings = load_memory_settings(_write_settings(tmp_path))
     assert (
         resolve_palaces_root(settings)
-        == (Path.home() / "eidolon" / "memory" / "mempalaces").resolve()
+        == (Path.home() / "eidolon" / "data" / "memory" / "mempalaces").resolve()
     )
 
 

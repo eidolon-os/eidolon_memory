@@ -29,7 +29,7 @@ import onnxruntime as ort  # noqa: E402
 from huggingface_hub import hf_hub_download  # noqa: E402
 from tokenizers import Tokenizer  # noqa: E402
 
-REPO = Path("/Users/manson/ai/eidolon/eidolon_memory")
+REPO = Path(__file__).resolve().parents[2]
 QUERIES = REPO / "tests/memory/e2e/fixtures/quality_queries.jsonl"
 REPO_ID = "onnx-community/Qwen3-Embedding-0.6B-ONNX"
 
@@ -104,14 +104,14 @@ def main() -> None:
     docs = documents(palace)
     with QUERIES.open(encoding="utf-8") as handle:
         queries = [json.loads(line) for line in handle if line.strip()]
-    positives = [
-        q for q in queries if not q.get("negative") and q.get("expected_vector_contains")
-    ]
+    positives = [q for q in queries if not q.get("negative") and q.get("expected_vector_contains")]
 
     before = rss_mb()
     embedder = Qwen3Embedder()
     doc_vectors = embedder.encode(docs)
-    print(f"{len(docs)} documents · {len(positives)} answerable queries · dim={doc_vectors.shape[1]}")
+    print(
+        f"{len(docs)} documents · {len(positives)} answerable queries · dim={doc_vectors.shape[1]}"
+    )
     print(f"RSS after documents: {rss_mb()} MB (+{rss_mb() - before})")
 
     for label, prefix in (("no instruction", ""), ("with instruction", INSTRUCT)):

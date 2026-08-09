@@ -4,7 +4,8 @@
 Stop MCP, Worker, and LiveKit before running.
 
   uv run python scripts/repair_chroma_sqlite.py
-  uv run python scripts/repair_chroma_sqlite.py --palace ~/eidolon/memory/mempalace
+  uv run python scripts/repair_chroma_sqlite.py \
+    --palace "$EIDOLON_STATE_ROOT/memory/mempalaces/<memory_space_id>"
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import argparse
 import shutil
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +23,7 @@ if str(_ROOT) not in sys.path:
 
 
 def _backup_db(palace: Path) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     dest = palace / "backups" / f"chroma_pre_repair_{stamp}"
     dest.mkdir(parents=True, exist_ok=True)
     for name in ("chroma.sqlite3", "chroma.sqlite3-wal", "chroma.sqlite3-shm"):
