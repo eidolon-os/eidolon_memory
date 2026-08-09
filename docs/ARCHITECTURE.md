@@ -425,10 +425,44 @@ owner 层就失败，并在失败信息里说明为什么现在不该写。同�
 | 向量 | chroma，palace 内文件 |
 | 图 | `<space>.ledgers/` 内 SQLite |
 | ledger | `<space>.ledgers/` 内 SQLite，6 个 |
-| embedder | 进程内 ONNX 会话，多 palace 共享一份（`embedding.provider: http` 可换成远端端点，palace 仍在本地） |
+| embedder | 进程内 ONNX 会话，多 palace 共享一份；或 `provider: http` 指向板上的 `eidolon-memory-embedder`（见下），palace 仍在本地 |
 | router | `LocalPalaceRouter`——每 space 一把 flock |
 | turn ring | 进程内 |
 | 进程 : space | **今天 1 : 1**，最后几步落地后 1 : N |
+
+### embedder 是否要单独一个进程
+
+树莓派 5 实测。一个 memory 进程 244.4 MB，其中 **156.4 MB 是 ONNX 会话**；supervisor 每
+用户开一个 `agent_runner`（`--memory-space-id` 是单数），所以同一份权重每个用户付一遍。改成
+`provider: http` 指向板上一个 `eidolon-memory-embedder` 后，同样的进程 **91 MB**，服务端
+216 MB 一次性——**两个用户就回本**，十个用户 2.44 GB → 1.12 GB。
+
+延迟侧的结论和直觉相反。`benchmarks/suites/probe_shared_embedder.py` 在板上跑出的并发一轮
+p50 wall：
+
+| 并发 | 每用户私有会话 | 一个共享服务 | 比值 |
+|---|---|---|---|
+| 1 | 14.1 ms | 16.7 ms | 1.18x |
+| 2 | 58.5 ms | 35.7 ms | 0.61x |
+| 4 | 116.0 ms | 70.4 ms | 0.61x |
+| 8 | 218.5 ms | 136.6 ms | 0.63x |
+| 16 | 474.2 ms | 260.7 ms | 0.55x |
+
+绝对值跑一次差 10% 上下，比值不差。回环那一跳只值约 2.6 ms，而且只在**一个**用户时是净亏。
+从两个用户起共享服务快约 1.6 倍，负载越高差距越大——四个核上跑 N 个各开 4 线程的会话，输给
+一个会话加一条队列。
+
+服务端的并发闸门默认 8，这个数是量出来的，而且**推错了一次**：最初按"会话自己已经把一次
+encode 铺到多线程，放进来更多只会把看得见的队列变成看不见的线程争抢"设成 2，实测 8 并发下
+闸门 1/2/4/8 分别是 135.7 / 135.8 / 126.4 / 119.7 ms——越大越快。原因是 ONNX Runtime 在
+Run 期间放开 GIL，重叠的请求是把 JSON 解析和 HTTP 组帧铺在别人的计算**旁边**而不是后面。
+16 并发下 8 之后就平了（233 → 226），再高只多攒住在途请求体，板子省不出这个内存。
+
+迁移不需要重建 palace，但需要显式写一行 `collection_name`：远端 embedder 的集合名是带前缀
+的（`http_bge_base_zh`），这是刻意的守卫，防止两个实现共用一个集合——远端的 "bge-base-zh"
+不是任何人对同一份权重的承诺。本地服务这一种情况权重确实同一份（实测最大分量差 2.9e-08，
+余弦 1.000000），所以把名字改回 `bge_base_zh_v15`，既有集合直接打开。漏写这行 chroma 会
+拒绝——那是守卫在起作用，不是 bug。
 
 嵌入式存储有一个硬后果：**一份 palace 只能被一个进程持有**（chroma 没有服务端并发控制，
 SQLite ledger 是单写者）。所以第二个持有者被拒绝，这条由测试断言。注意它约束的是

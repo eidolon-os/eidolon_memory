@@ -132,7 +132,11 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 │   ├─ eidolon-memory-agent --user-id=bob --port=8031   …            │
 │   └─ eidolon-memory-agent --user-id=charlie --port=8032 …          │
 │                                                                    │
-│  palace 物理隔离: ~/eidolon/palaces/<user_id>/                    │
+│ eidolon-memory-embedder @ 127.0.0.1:8760  (可选,独立起,非 supervisor 管) │
+│   一份 ONNX 会话给整块板,上面每个 agent 用 provider: http 指过来       │
+│   两个用户起就比每进程各带一份权重更省,并发下也更快                     │
+│                                                                    │
+│  palace 物理隔离: $EIDOLON_STATE_ROOT/memory/mempalaces/<id>/    │
 └────────────────────────────────────────────────────────────────────┘
                               ▲             ▲
                               │             │
@@ -305,6 +309,12 @@ eidolon-memory-supervisor &
 eidolon-memory-discovery &
 # 配置改动后 SIGHUP supervisor: kill -HUP $(pgrep -f eidolon-memory-supervisor)
 
+# 3a'. 板子上两个以上用户时,再起一个共享 embedder(可选,但强烈建议)
+#      每用户一个进程 = 每用户一份 156 MB 权重。指到一个服务上后每进程 91 MB,
+#      两个用户就回本;并发下还快约 1.6 倍(见 docs/ARCHITECTURE.md 的实测表)。
+#      要在 agent 之前起来,并把 embedding.provider 改成 http。
+eidolon-memory-embedder --model bge-base-zh --model-dir /opt/eidolon/models/bge-base-zh &
+
 # 3b. 开发形态 — 单 space ad-hoc(不走 supervisor)
 eidolon-memory-agent --memory-space-id default --port 10030 &
 eidolon-memory-discovery &
@@ -315,7 +325,7 @@ eidolon-memory-discovery &
 独立形态下不需要 admin 服务在场。
 
 首次启动会自动 `mempalace init` 对应 palace(lazy)。配置文件见第 8 节。
-本仓库**不再提供**启动脚本——三个 console-scripts (`eidolon-memory-{supervisor,agent,discovery}`)
+本仓库**不再提供**启动脚本——console-scripts (`eidolon-memory-{supervisor,agent,discovery,embedder,consolidator}`)
 就是全部对外契约,直接 nohup / launchd / systemd / docker / pm2 任选。
 
 > ⚠ **代码改动后必须重启 `eidolon-memory-agent`**(`pkill -f eidolon-memory-agent` 后再起,
@@ -564,7 +574,7 @@ await ingest_memory_fragment(locked_backend, MemoryFragment(
 ### 7.1 用户 / 主权数据入口
 
 用户、companion、设备授权等主权数据由 `eidolon_data` 统一管理。默认本地
-SQLite 路径为 `~/eidolon/data/eidolon.sqlite3`，可通过
+SQLite 路径为 `$EIDOLON_STATE_ROOT/eidolon-system.sqlite3`，可通过
 `EIDOLON_DATA_SQLITE_PATH` 覆盖。
 
 Memory 作为记忆引擎不拥有用户注册表。跨进程读取时消费 admin / data 的只读
@@ -701,7 +711,7 @@ supervisor:
 ### 8.3 Palace 目录布局
 
 ```
-~/eidolon/memory/mempalaces/<user_id>/
+$EIDOLON_STATE_ROOT/memory/mempalaces/<memory_space_id>/
   ├─ chroma.sqlite3              # 向量 + 元数据 (chromadb, WAL)
   ├─ chroma.sqlite3-wal
   ├─ knowledge_graph.sqlite3     # bi-temporal KG (mempalace.KnowledgeGraph)
@@ -734,7 +744,7 @@ agent_runner 启动时跑 `PRAGMA integrity_check` on 两个 SQLite,失败则**�
 
 ```bash
 scripts/snapshot_palaces.sh
-# 每 6h 跑(launchd / cron),tar.zst 全部 palace 到 ~/eidolon/snapshots/
+# 每 6h 跑(launchd / cron)，tar.zst 到 $EIDOLON_STATE_ROOT/memory/snapshots/
 # 保留 24 份(6 天)
 ```
 

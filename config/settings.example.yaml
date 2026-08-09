@@ -94,14 +94,44 @@ embedding:
   # count), which a background mine will happily use all of.
   threads: 0
 
-  # Read only when provider is http. Moving the encoder off the box is the one
-  # way to run the model that retrieves best of everything measured on hardware
-  # that cannot hold it — embeddinggemma needs 3GB on a 4GB Pi — at the cost of a
-  # network hop inside the recall path.
+  # Read only when provider is http. Two different deployments use this, and the
+  # second is the one that matters on a board:
   #
-  # Nothing is stored off this machine by this. The endpoint sees the text of a
+  # 1. A hosted endpoint. The one way to run the model that retrieves best of
+  #    everything measured on hardware that cannot hold it — embeddinggemma needs
+  #    3GB on a 4GB Pi — at the cost of a network hop inside the recall path.
+  #
+  # 2. `eidolon-memory-embedder` on this same machine, over loopback. The
+  #    supervisor spawns one agent_runner per user, and on the Pi 5 each one is
+  #    244.4 MB resident of which 156.4 MB is the ONNX session — the same weights,
+  #    once per user. Pointing them at one local server measured 88 MB each, so
+  #    ten users go from 2.44 GB to 1.12 GB. It also collapses N sessions each
+  #    running `threads` threads on four cores down to one.
+  #
+  # Nothing is stored off this machine by either. The endpoint sees the text of a
   # query or a fragment and answers with a vector; the palace stays local. This
   # is not the cloud storage that was deliberately removed from this project.
+  #
+  # For deployment 2 on this board:
+  #
+  #   eidolon-memory-embedder --model bge-base-zh --model-dir /opt/eidolon/models/bge-base-zh
+  #
+  #   embedding:
+  #     provider: http
+  #     http:
+  #       base_url: http://127.0.0.1:8760/v1
+  #       model: bge-base-zh
+  #       dimension: 768
+  #       collection_name: bge_base_zh_v15
+  #
+  # That last line is not optional and not cosmetic. A hosted endpoint's name is
+  # prefixed (`http_bge_base_zh`) precisely so a palace built by one
+  # implementation cannot be read by another claiming the same model id — a
+  # hosted "bge-base-zh" is nobody's promise of the same weights. Moving an
+  # existing palace to a *local* server running our own encoder is the one case
+  # where the weights really are identical, so the name is overridden back to
+  # what the collection was created with. Without it Chroma refuses to open the
+  # collection, which is the guard working, not a bug.
   http:
     # The API root, ending in /v1. `/embeddings` is appended.
     base_url: ""
