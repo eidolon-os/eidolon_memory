@@ -155,30 +155,55 @@ def test_every_multi_hop_question_has_a_bridge_that_reaches_both_ends(
 # ── the invalidation questions have something to get wrong ────────────────────
 
 
-def test_a_superseded_fact_is_present_and_stated_first(
+def _first_turn_saying(corpus: list[dict[str, Any]], terms: list[str]) -> int | None:
+    """Index of the earliest turn whose text contains any of ``terms``."""
+
+    for index, turn in enumerate(corpus):
+        text = turn["user_text"] + turn["assistant_text"]
+        if any(term in text for term in terms):
+            return index
+    return None
+
+
+def test_the_old_fact_is_said_before_the_one_that_replaces_it(
     queries: list[dict[str, Any]], corpus: list[dict[str, Any]]
 ) -> None:
-    """Otherwise the case passes because nothing could have come back."""
+    """Checked on text, because text is what the scorer forbids.
+
+    A first version of this asserted over entity ids, on the assumption that a
+    superseded fact is always a distinct entity — true for 西湖区 → 滨江区 and
+    false for everything else. A department, a job title and a delivery date have
+    no entity of their own; what changes is an attribute, and what recall must
+    not return is a *string*. Asserting over ids rejected three valid cases and
+    would have accepted an invalid one whose forbidden term was never said.
+
+    So: the forbidden term must appear in the corpus strictly before the term the
+    answer is supposed to contain. Earlier is what makes it superseded; present is
+    what makes the case non-vacuous.
+    """
 
     invalidations = [q for q in queries if q["category"] == "invalidation"]
     assert invalidations, "the fusion query set has no invalidation cases"
 
-    first_seen = {}
-    for turn in corpus:
-        for entity in turn.get("expected_entities") or []:
-            first_seen.setdefault(entity, turn["timestamp"])
-
     for query in invalidations:
-        old = query.get("superseded")
-        assert old, f"{query['id']}: no superseded entity declared"
-        assert old in first_seen, (
-            f"{query['id']}: {old} is never stated in the corpus, so there is "
-            f"nothing for recall to wrongly return and the case is vacuous"
+        forbidden = query.get("forbidden_contains") or []
+        expected = query.get("expected_vector_contains") or []
+        assert forbidden, f"{query['id']}: nothing forbidden, so nothing is tested"
+        assert expected, f"{query['id']}: no current fact to expect"
+
+        old = _first_turn_saying(corpus, forbidden)
+        new = _first_turn_saying(corpus, expected)
+        assert old is not None, (
+            f"{query['id']}: none of {forbidden} is ever said in the corpus, so "
+            f"there is nothing for recall to wrongly return"
         )
-        new = [e for e in query["expected_entities"] if e in first_seen and e != old]
-        assert new, f"{query['id']}: none of its expected entities are in the corpus"
-        assert first_seen[old] < max(first_seen[e] for e in new), (
-            f"{query['id']}: {old} is not stated before what replaces it"
+        assert new is not None, (
+            f"{query['id']}: none of {expected} is ever said, so the case cannot pass"
+        )
+        assert old < new, (
+            f"{query['id']}: {corpus[old]['turn_id']} says the forbidden term and "
+            f"{corpus[new]['turn_id']} says the expected one — the old fact must "
+            f"come first or nothing was superseded"
         )
 
 
