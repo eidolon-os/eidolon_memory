@@ -302,3 +302,75 @@ def test_without_a_turn_context_a_blank_is_still_refused() -> None:
 
     with pytest.raises(StewardOutputError):
         _parse(_fragment(memory_space_id=""), context=None)
+
+
+# ── extensions the model wrote as prose ───────────────────────────────────────
+#
+# The second time the same lesson has been learned in _parse_decision: a field
+# that is not the substance of a memory decided whether the memory existed. The
+# first was an omitted memory_space_id; this is an annotation slot the model
+# filled with a sentence.
+
+
+def test_a_prose_extension_does_not_discard_the_whole_turn() -> None:
+    """The exact payload that killed a 90-turn benchmark run at turn 24.
+
+    ``extensions`` is a namespace → dict map. The model read it as a free-form
+    annotation slot and wrote a sentence, which failed validation — and because
+    validation is all-or-nothing, that one string discarded every fragment and
+    every triple it had extracted for the turn, dropping it to rule-based
+    extraction. Once in 90 turns, so in production roughly one turn in a hundred
+    silently degrades and the ledger records the degraded decision as durable.
+    """
+
+    decision = _parse(
+        _fragment(extensions={"note": "原话中「她」指向上一轮的张丽，未强绑定实体。"}),
+        context=_ctx(),
+    )
+
+    assert decision.fragments, "the turn was discarded over an annotation"
+    assert decision.fragments[0].content
+    assert decision.fragments[0].extensions == {}, "the unusable entry was kept"
+
+
+def test_a_usable_extension_beside_a_broken_one_survives() -> None:
+    """Dropping is per entry. Losing the good annotation too would be the same
+    all-or-nothing failure at a smaller scale."""
+
+    decision = _parse(
+        _fragment(
+            extensions={
+                "note": "一句散文",
+                "kg_hint": {"entity_id": "mother:张丽"},
+            }
+        ),
+        context=_ctx(),
+    )
+
+    assert decision.fragments[0].extensions == {"kg_hint": {"entity_id": "mother:张丽"}}
+
+
+def test_an_uppercase_namespace_is_dropped_by_the_same_rule_the_domain_applies() -> None:
+    """The steward strips what it cannot store, so its rule and the domain's must
+    be one rule — otherwise it forwards entries that still fail the decision."""
+
+    decision = _parse(_fragment(extensions={"KG_Hint": {"entity_id": "x"}}), context=_ctx())
+
+    assert decision.fragments[0].extensions == {}
+
+
+def test_extensions_written_as_a_list_are_dropped_not_fatal() -> None:
+    decision = _parse(_fragment(extensions=["note"]), context=_ctx())
+
+    assert decision.fragments, "the turn was discarded over an annotation"
+    assert decision.fragments[0].extensions == {}
+
+
+def test_a_broken_content_field_still_fails_the_decision() -> None:
+    """Leniency stops at annotation. Content, wing and importance are the memory
+    itself — repairing those would be inventing one."""
+
+    from eidolon.memory.domain.errors import StewardOutputError
+
+    with pytest.raises(StewardOutputError):
+        _parse(_fragment(content="   "), context=_ctx())

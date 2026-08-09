@@ -19,6 +19,19 @@ MemoryVisibility = Literal["all_devices", "current_device", "private"]
 _EXTENSION_NAMESPACE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
+def is_usable_extension(namespace: object, payload: object) -> bool:
+    """Whether this namespace/payload pair can be held by ``extensions``.
+
+    Public because the LLM steward strips what it cannot store before handing
+    the decision to validation, and the two must agree on the rule. If they
+    drifted, the steward would either discard entries the domain accepts or
+    forward entries that still fail the whole decision — which is the failure it
+    exists to prevent.
+    """
+
+    return bool(isinstance(payload, dict) and _EXTENSION_NAMESPACE_RE.fullmatch(str(namespace)))
+
+
 class MemoryFragment(BaseEidolonModel):
     """A single durable memory unit ready to be written to MemPalace."""
 
@@ -105,10 +118,10 @@ class MemoryFragment(BaseEidolonModel):
         value: dict[str, dict[str, Any]],
     ) -> dict[str, dict[str, Any]]:
         for namespace, payload in value.items():
-            if not _EXTENSION_NAMESPACE_RE.fullmatch(namespace):
-                msg = f"invalid extension namespace {namespace!r}"
-                raise ValueError(msg)
-            if not isinstance(payload, dict):
-                msg = f"extension {namespace!r} payload must be a dict"
+            if not is_usable_extension(namespace, payload):
+                msg = (
+                    f"extension {namespace!r} must be a lowercase namespace with a "
+                    f"dict payload, got {type(payload).__name__}"
+                )
                 raise ValueError(msg)
         return value

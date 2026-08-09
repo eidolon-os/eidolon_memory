@@ -15,6 +15,7 @@ from eidolon.memory.application.steward.common import apply_privacy_actions, fin
 from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import StewardOutputError
+from eidolon.memory.domain.fragments import is_usable_extension
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
@@ -75,18 +76,14 @@ class LiteLLMSteward:
             proposed = decision.fragments
             capped = proposed[: self._settings.steward.max_fragments_per_turn]
             kept = [
-                f
-                for f in capped
-                if f.importance >= self._settings.steward.min_importance_to_write
+                f for f in capped if f.importance >= self._settings.steward.min_importance_to_write
             ]
             # Count where material is lost. Without this a corpus that yields few
             # memories looks the same whether the model proposed little or these
             # two thresholds discarded most of what it proposed — and the fix
             # differs completely.
             metrics.FRAGMENTS_EXTRACTED.labels(stage="proposed").inc(len(proposed))
-            metrics.FRAGMENTS_EXTRACTED.labels(stage="dropped_cap").inc(
-                len(proposed) - len(capped)
-            )
+            metrics.FRAGMENTS_EXTRACTED.labels(stage="dropped_cap").inc(len(proposed) - len(capped))
             metrics.FRAGMENTS_EXTRACTED.labels(stage="dropped_importance").inc(
                 len(capped) - len(kept)
             )
@@ -225,11 +222,56 @@ class LiteLLMSteward:
                 if isinstance(fragment, dict):
                     fragment["memory_space_id"] = space_id
 
+        for dropped in _drop_unusable_extensions(data):
+            log.warning("steward_extension_dropped", field=dropped)
+
         try:
             return StewardDecision.model_validate(data)
         except ValidationError as exc:
             msg = f"invalid LLM steward output: {exc}"
             raise StewardOutputError(msg) from exc
+
+
+def _drop_unusable_extensions(data: Any) -> list[str]:
+    """Remove extension entries the schema cannot hold, and name what went.
+
+    ``extensions`` is a namespace → dict map. A model reading it as a free-form
+    annotation slot writes ``{"note": "原话中「她」指向…"}``, which is a string
+    where a dict belongs — and because validation is all-or-nothing, that one
+    annotation discarded every fragment and every triple the model had extracted
+    for the turn. Observed once in 90 turns, so in production roughly one turn in
+    a hundred silently degrades to rule-based extraction, and the ledger records
+    the degraded decision as durable.
+
+    This is the second time the same lesson has been learned in this function —
+    the docstring above it records a model omitting ``memory_space_id`` and
+    failing the whole decision over a field we were about to overwrite anyway.
+    Both are the same shape: a field that is not the substance of a memory
+    deciding whether the memory exists.
+
+    Dropping is right *because* extensions are annotation. Content, wing,
+    importance and memory_type are the memory itself, and repairing those would
+    be inventing one; they are still allowed to fail the decision.
+    """
+
+    dropped: list[str] = []
+    if not isinstance(data, dict):
+        return dropped
+
+    for index, fragment in enumerate(data.get("fragments") or []):
+        if not isinstance(fragment, dict) or "extensions" not in fragment:
+            continue
+        extensions = fragment["extensions"]
+        if not isinstance(extensions, dict):
+            fragment.pop("extensions")
+            dropped.append(f"fragments[{index}].extensions")
+            continue
+        for namespace in list(extensions):
+            payload = extensions[namespace]
+            if not is_usable_extension(namespace, payload):
+                extensions.pop(namespace)
+                dropped.append(f"fragments[{index}].extensions.{namespace}")
+    return dropped
 
 
 def _extract_content(response: Any) -> str:
