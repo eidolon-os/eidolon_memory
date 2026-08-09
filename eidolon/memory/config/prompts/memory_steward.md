@@ -76,18 +76,42 @@
 
 ## 实体规范化（canonical 名约定）
 
+**这一节的最高原则：同一个人或同一件事物，在任何一轮都必须得到同一个 id——
+无论这一轮是否恰好提到了他的名字。**
+
+一个 id 只依赖"他是谁"，不依赖"这轮说了多少"。做不到这一点，同一个人会散成两个实体，
+关于他的事实被劈成两半，而每一半单独看都是对的。
+
 - 第一人称"我/自己" → `self`
-- 父母："妈妈/我妈/老妈" → `mother`（若用户提到名字如"张丽"，用 `mother:张丽`）；"爸爸/我爸/老爸" → `father` 同理
-- 其他亲属："姐姐/姐"→`sister:<名>`、"哥哥/哥"→`brother:<名>`、"老婆/妻子/媳妇"→`wife:<名>`、"老公/丈夫"→`husband:<名>`
-- 朋友/同事：第一次出现用 `person:<原称呼>`；同对话内重复用同一名字
+- **亲属：角色即 id，永远不附名字。**「妈妈/我妈/老妈」→ `mother`；「爸爸/我爸」→
+  `father`；「妹妹/我妹」→ `sister`；「老婆/妻子」→ `wife`；「哥哥」→ `brother`。
+  即使这一轮提到了"张丽"，仍然写 `mother`。**名字要写进 `mentions`**
+  （`{entity_id:"mother", alias:"张丽", confidence:0.95}`），这样"张丽最近怎么样"
+  照样能找到她——名字是她的一个别名，不是她的 id 的一部分。
+  （一个 memory space 只服务一个 owner，所以这里的"妈妈"没有歧义。）
+- 朋友/同事/其他人：`person:<最常用的那个称呼>`，全程用同一个，不因为后来知道了全名而改。
 - 工作项目：`project:<项目代号或简称>`
+- 组织：`org:<名称>`
 - 地点：`place:<地名>`
-- 抽象概念（非实体）：直接用字符串字面值（如 `coffee`、`insomnia`、`anxiety`）
+- 抽象概念（非实体）：直接用字符串字面值（如 `coffee`、`insomnia`）
+
+**用户原话是什么语言，实体名和对象名就用什么语言。** 不要把「米氮平」写成
+`mirtazapine`、把「合唱团」写成 `choir`——同一个东西被翻译一次就多出一个实体。
 
 绝对禁止：
 - 用代词作 subject 或 object（"她/他/它"）
 - 把猜测或助手的说法当成用户事实；不受用户原文支持的内容一律不写
 - 把"我打算"或"我想"作为 add_triple（这是计划，写 fragment 即可；除非用户明确"决定了"）
+- **把一个句子、从句或事件描述当成 subject 或 object。** subject 和 object 是**东西**，
+  不是**发生的事**。`送铁锤到妈妈那`、`每天早上过一遍进度`、`入住祇园附近的旅馆`
+  都不是东西——这类内容写 fragment，不写 triple。
+
+  **唯一的例外是承诺**：`promised` 与 `attended` 的 object 允许是一句话（见下一节），
+  因为一个承诺的内容就是那句话，而两个对同一个人的不同承诺必须是两条不同的记录。
+  这条豁免**不要外推到别的谓词**。
+- **把泛化裸名词当实体**：`事情`、`工作`、`东西`、`时间`、`活动`、`会议`。
+  除非它被限定成可区分的那一个（`project:星槎` 可以，`项目` 不行）。
+- **把形容词或描述性短语当实体**：`很累`、`新发色`、`不一样的感觉`。
 
 ## 改变心意 / 承诺兑现的处理流程（核心）
 
@@ -174,7 +198,7 @@
   ],
   "mentions": [
     {
-      "entity_id": "mother:张丽",
+      "entity_id": "mother",
       "alias": "我妈",
       "confidence": 0.95
     }
@@ -199,22 +223,26 @@
 - `entity_id` —— 必须与本 turn 的某条 triple 的 `subject` 或 `object` **完全一致**（不在 triples 里的 entity_id 会被 worker 拒绝)
 - `alias` —— 用户**verbatim**用的词，**不要规范化、不要翻译、不要补全**
 - `confidence` 取值规则：
-  - **0.95** — 明确亲属/伴侣称谓："我妈"、"我老婆"、"我老公"、"我儿子"
+  - **0.95** — 明确亲属/伴侣称谓（"我妈"、"我老婆"、"我儿子"），
+    以及**该实体的专有名字**（`mother` 的 "张丽"、`person:李总` 的 "李伟"）。
+    亲属的 id 里不含名字，所以名字必须走这里，否则用名字提问就找不到人。
   - **0.85** — 类别 / 通用所有格："我家狗"、"公司"、"我们公司"、"老板"
   - **0.70** — 代词 / 弱指代："她"、"他"、"它"、"我们"、"那个人"
 
 示例：
 
 turn user_text：「我妈张丽这一周又失眠了」
-→ `triples`: `[{subject:"mother:张丽", predicate:"has_state", object:"insomnia", ...}]`
-→ `mentions`: `[{entity_id:"mother:张丽", alias:"我妈", confidence:0.95}]`
+→ `triples`: `[{subject:"mother", predicate:"has_state", object:"insomnia", ...}]`
+→ `mentions`: `[{entity_id:"mother", alias:"我妈", confidence:0.95},
+     {entity_id:"mother", alias:"张丽", confidence:0.95}]`
+  —— 两条都要：「我妈」让称谓能找到她，「张丽」让名字能找到她。
 
 turn user_text：「我家狗铁锤是边境牧羊犬」
 → `triples`: `[{subject:"pet:铁锤", predicate:"holds_role", object:"边境牧羊犬", ...}]`
 → `mentions`: `[{entity_id:"pet:铁锤", alias:"我家狗", confidence:0.85}]`
 
-turn user_text：「她说想换工作」(上下文里"她"= mother:张丽,且本 turn 有 triple 涉及 mother:张丽)
-→ `mentions`: `[{entity_id:"mother:张丽", alias:"她", confidence:0.70}]`
+turn user_text：「她说想换工作」(上下文里"她"= mother,且本 turn 有 triple 涉及 mother)
+→ `mentions`: `[{entity_id:"mother", alias:"她", confidence:0.70}]`
 
 **不要输出的情况**：
 - 用户用的就是 canonical 名字 ("张丽 又失眠了" — "张丽" 等于 entity_id 的 tail,无需 alias)
