@@ -548,7 +548,17 @@ def _wm_texts(wm: list[Any]) -> list[str]:
     return out
 
 
-_LINE_DATE = re.compile(r"\[(\d{4}-\d{2}-\d{2})\]")
+#: Any ISO date on a rendered line, in either shape the renderer produces.
+#:
+#: Drawers carry one bracketed date — ``- [2026-03-22] …``. Triples carry their
+#: validity inside full-width parentheses instead, and may carry two:
+#: ``（推测）小林 的角色/身份是 实习生（2026-04-10 → 2026-08-25，已结束）``.
+#:
+#: A first version matched only the bracketed form, so the triple line — the one
+#: place the graph says 已结束 *and gives the date it ended* — read as undated and
+#: therefore as a fact with no time at all. That is the strongest currency signal
+#: in the whole context and the scorer was blind to exactly it.
+_LINE_DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
 def _dates_of_lines_mentioning(context: str, terms: list[str]) -> list[str | None]:
@@ -561,8 +571,11 @@ def _dates_of_lines_mentioning(context: str, terms: list[str]) -> list[str | Non
     found: list[str | None] = []
     for line in (context or "").splitlines():
         if any(term and term in line for term in terms):
-            match = _LINE_DATE.search(line)
-            found.append(match.group(1) if match else None)
+            # The latest date on the line. An ended interval renders as
+            # "start → end", and the end is when the fact stopped being true —
+            # which is the date that decides whether it is past.
+            dates = _LINE_DATE.findall(line)
+            found.append(max(dates) if dates else None)
     return found
 
 
