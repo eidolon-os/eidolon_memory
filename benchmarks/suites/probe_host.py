@@ -69,12 +69,17 @@ _QUERIES = [
 ]
 
 
-def _settings_yaml(root: Path, model: str, threads: int) -> Path:
+def _settings_yaml(root: Path, model: str, threads: int, model_dir: str) -> Path:
     """A throwaway configuration, so the probe never touches config/settings.yaml.
 
     ``steward.mode: rules`` and no NATS section that matters: nothing here publishes
     a turn or calls an LLM, which is what makes this runnable on a board with no
     broker and no API key.
+
+    ``model_dir`` is the other half of that: with it empty the encoder resolves its
+    weights through ``hf_hub_download``, which on the Pi means either a slow mirror
+    or no network at all. Pointing at weights already on the board is what makes the
+    probe runnable there, and the board is the host we actually want measured.
     """
 
     path = root / "probe-settings.yaml"
@@ -88,6 +93,7 @@ def _settings_yaml(root: Path, model: str, threads: int) -> Path:
                 "embedding:",
                 "  provider: local",
                 f"  model: {model}",
+                f"  model_dir: {model_dir}",
                 "  device: cpu",
                 f"  threads: {threads}",
                 "llm:",
@@ -144,6 +150,11 @@ async def _measure(fragments: int, fanout: int, rounds: int) -> dict:
     embedder = active_embedder()
 
     # ── the model, loaded ────────────────────────────────────────────────────
+    # Read before the warm-up: the palace is open and the weights are not, which
+    # is exactly the footprint of a process configured with ``provider: http``.
+    # The gap between this and process_fixed is what an out-of-process embedder
+    # would buy per user, and that is the whole capacity question on a board.
+    out["rss_palace_open_model_cold_mb"] = rss_mb()
     embedder.embed_documents(["预热"])
     out["process_fixed_rss_mb"] = rss_mb()
     out["import_only_rss_mb"] = baseline_rss
@@ -211,9 +222,7 @@ async def _measure(fragments: int, fanout: int, rounds: int) -> dict:
     # recall_with_kg_fusion does, on a 50 ms voice budget. Under the exclusive mutex
     # this replaced, the graph waited out the whole vector search.
     if kg is not None:
-        for i, (s, p, o) in enumerate(
-            [("用户", "likes", "乌龙茶"), ("用户", "owns", "铁锤")]
-        ):
+        for i, (s, p, o) in enumerate([("用户", "likes", "乌龙茶"), ("用户", "owns", "铁锤")]):
             await kg.add_triple(
                 subject=s, predicate=p, object=o, audience=OWNER, source_turn_id=f"probe-t{i}"
             )
@@ -259,6 +268,7 @@ _ROWS = [
     ("ledger_semaphore", "ledger semaphore", "{}"),
     ("default_executor_threads", "executor threads", "{}"),
     ("import_only_rss_mb", "RSS: imports only", "{} MB"),
+    ("rss_palace_open_model_cold_mb", "RSS: + palace open", "{} MB"),
     ("process_fixed_rss_mb", "RSS: + model loaded", "{} MB"),
     ("rss_per_extra_space_mb", "RSS: per extra space", "{} MB"),
     ("peak_rss_mb", "RSS: peak", "{} MB"),
@@ -317,6 +327,11 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="", help="override embedding.model")
     parser.add_argument(
+        "--model-dir",
+        default="",
+        help="weights already on this host, so the probe needs no network",
+    )
+    parser.add_argument(
         "--threads", type=int, default=0, help="embedding.threads (0 = ORT default)"
     )
     parser.add_argument("--fragments", type=int, default=6, help="fragments per simulated turn")
@@ -334,7 +349,10 @@ async def main() -> int:
     root = args.palaces_root or Path(tempfile.mkdtemp(prefix="eidolon-probe-host-"))
     root.mkdir(parents=True, exist_ok=True)
     model = args.model or "bge-small-zh"
-    os.environ["EIDOLON_MEMORY_SETTINGS_YAML"] = str(_settings_yaml(root, model, args.threads))
+    model_dir = str(Path(args.model_dir).expanduser()) if args.model_dir else ""
+    os.environ["EIDOLON_MEMORY_SETTINGS_YAML"] = str(
+        _settings_yaml(root, model, args.threads, model_dir)
+    )
     os.environ.setdefault("EIDOLON_MEMORY_RUN_DIR", str(root / "run"))
 
     profile = await _measure(args.fragments, args.fanout, args.rounds)
