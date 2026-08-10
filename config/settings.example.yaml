@@ -153,9 +153,12 @@ ledgers:
   backend: palace
 
 registry:
-  # Which memory spaces to serve. eidolon-admin asks an Eidolon OS admin service;
-  # static reads a roster file, which is what a standalone deployment uses.
-  source: eidolon-admin
+  # Which memory spaces to serve. system-data consumes the authenticated,
+  # versioned System Data runtime roster; static is standalone-only.
+  source: system-data
+  system_data_url: http://127.0.0.1:8084
+  system_data_token_env: EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_TOKEN
+  request_timeout_seconds: 5.0
   static_path: ""
 
 nats:
@@ -198,4 +201,4 @@ recall:
   livekit_timeout_seconds: 0.3
 
 supervisor:
-  admin_api_url: http://127.0.0.1:9000
+  eager_init: true

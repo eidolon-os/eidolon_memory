@@ -1,9 +1,9 @@
 """The roster of memory spaces this deployment serves.
 
 Holds the shapes (:class:`UserEntry`, :class:`UsersConfig`) plus the Eidolon OS
-source for them: an admin service that owns owner and companion lifecycle. The
-service consumes only active owners, active companions and active realms — it
-never derives routes from identifiers itself.
+source for them: the System Data authority's versioned Memory runtime roster.
+The service consumes one bounded projection of active Owner, Companion and
+Realm facts and never opens System Data storage itself.
 
 Deployments outside the OS get their roster from
 :mod:`eidolon.memory.config.registry_static` instead. Callers reach either one
@@ -17,7 +17,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from urllib.parse import quote, urljoin
+from urllib.parse import urljoin, urlparse
 
 from eidolon_memory_contracts import stable_memory_realm_port
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -103,22 +103,20 @@ class UsersConfig(BaseModel):
         return next((u for u in self.users if u.id == user_id), None)
 
 
-def resolve_admin_api_url(settings: MemorySettings | None = None) -> str:
-    env_url = os.environ.get("EIDOLON_ADMIN_API_URL", "").strip()
-    if env_url:
-        return env_url.rstrip("/")
-
+def resolve_system_data_roster_url(settings: MemorySettings | None = None) -> str:
     cfg = settings or get_memory_settings()
-    configured = (cfg.supervisor.admin_api_url or "").strip()
-    if configured:
-        return configured.rstrip("/")
+    override = os.environ.get("EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_URL", "").strip()
+    base_url = override or urljoin(
+        cfg.registry.system_data_url.rstrip("/") + "/",
+        "api/companion-authority/v1/memory-runtime-roster",
+    )
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RegistrySourceUnavailable("System Data Memory roster URL is invalid")
+    return base_url
 
-    host = os.environ.get("EIDOLON_ADMIN_API_HOST", "127.0.0.1").strip() or "127.0.0.1"
-    port = os.environ.get("EIDOLON_ADMIN_API_PORT", "9000").strip() or "9000"
-    return f"http://{host}:{port}"
 
-
-def _consolidator_from_admin(raw: dict) -> ConsolidatorUserConfig | None:
+def _consolidator_from_engine_config(raw: dict) -> ConsolidatorUserConfig | None:
     if not isinstance(raw, dict):
         return None
     return ConsolidatorUserConfig(
@@ -130,8 +128,13 @@ def _consolidator_from_admin(raw: dict) -> ConsolidatorUserConfig | None:
     )
 
 
-def _load_json(url: str, *, timeout: float) -> dict:
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
+def _load_json(url: str, *, timeout: float, token: str) -> dict:
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
         raw = json.loads(resp.read().decode("utf-8"))
     return raw if isinstance(raw, dict) else {}
 
@@ -153,119 +156,73 @@ def stable_realm_port(realm_id: str, *, base_port: int, used_ports: set[int]) ->
 def _entry_from_memory_realm(
     realm: dict,
     *,
-    owner: dict,
-    companion: dict,
     port: int,
-) -> UserEntry | None:
+) -> UserEntry:
     realm_id = str(realm.get("realm_id") or "").strip()
-    owner_id = str(realm.get("owner_id") or owner.get("owner_id") or "").strip()
-    companion_id = str(realm.get("companion_id") or companion.get("companion_id") or "").strip()
+    owner_id = str(realm.get("owner_id") or "").strip()
+    companion_id = str(realm.get("companion_id") or "").strip()
     if not realm_id or not owner_id or not companion_id:
-        return None
-    config = realm.get("engine_config_json") or {}
+        raise RegistrySourceUnavailable("System Data Memory roster entry is incomplete")
+    config = realm.get("engine_config") or {}
+    if not isinstance(config, dict):
+        raise RegistrySourceUnavailable("System Data Memory roster engine_config is invalid")
     return UserEntry(
         id=realm_id,
         owner_id=owner_id,
         companion_id=companion_id,
         port=port,
-        enabled=(
-            str(owner.get("status") or "").lower() == "active"
-            and str(companion.get("status") or "").lower() == "active"
-            and str(realm.get("status") or "").lower() == "active"
-        ),
-        consolidator=_consolidator_from_admin(config.get("consolidator") or {}),
+        enabled=True,
+        consolidator=_consolidator_from_engine_config(config.get("consolidator") or {}),
     )
 
 
-class EidolonAdminRegistry:
-    """Roster from an Eidolon OS admin service.
-
-    Walks three endpoints — owners, then each owner's companions and memory
-    realms — and keeps only entries active at every level. It speaks HTTP rather
-    than importing anything, so the service still builds without the OS
-    installed; what it does assume is the admin service's URL shape.
-    """
+class SystemDataRegistry:
+    """Roster from the versioned System Data Memory authority contract."""
 
     def __init__(self, settings: MemorySettings) -> None:
         self._settings = settings
 
     def load(self) -> UsersConfig:
-        return _load_memory_realms_from_admin_api(self._settings)
+        return _load_memory_realms_from_system_data(self._settings)
 
 
-def _load_memory_realms_from_admin_api(settings: MemorySettings | None = None) -> UsersConfig:
+def _load_memory_realms_from_system_data(
+    settings: MemorySettings | None = None,
+) -> UsersConfig:
     cfg = settings or get_memory_settings()
-    base_url = resolve_admin_api_url(cfg)
-    timeout = cfg.supervisor.admin_api_timeout_seconds
-    owners_url = urljoin(base_url.rstrip("/") + "/", "api/owners")
+    url = resolve_system_data_roster_url(cfg)
+    token_env = cfg.registry.system_data_token_env.strip()
+    token = os.environ.get(token_env, "").strip() if token_env else ""
+    if len(token) < 24:
+        raise RegistrySourceUnavailable(
+            "System Data Memory roster service credential is unavailable"
+        )
     try:
-        owners_payload = _load_json(owners_url, timeout=timeout)
+        payload = _load_json(
+            url,
+            timeout=cfg.registry.request_timeout_seconds,
+            token=token,
+        )
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise RegistrySourceUnavailable(
-            f"admin owner registry unavailable at {owners_url}: {exc}"
+            f"System Data Memory roster unavailable at {url}: {exc}"
         ) from exc
+    if payload.get("contract_version") != "1" or payload.get("operation") != (
+        "memory.runtime-roster"
+    ):
+        raise RegistrySourceUnavailable("System Data Memory roster contract identity is invalid")
+    raw_realms = payload.get("realms")
+    if not isinstance(raw_realms, list) or any(not isinstance(item, dict) for item in raw_realms):
+        raise RegistrySourceUnavailable("System Data Memory roster payload is invalid")
 
     entries: list[UserEntry] = []
     used_ports: set[int] = set()
-    owners = sorted(
-        [owner for owner in owners_payload.get("owners", []) or [] if isinstance(owner, dict)],
-        key=lambda item: str(item.get("owner_id") or ""),
-    )
-    for owner in owners:
-        if str(owner.get("status") or "").lower() != "active":
-            continue
-        owner_id = str(owner.get("owner_id") or "").strip()
-        if not owner_id:
-            continue
-        quoted_owner_id = quote(owner_id, safe="")
-        companions_url = urljoin(
-            base_url.rstrip("/") + "/",
-            f"api/owners/{quoted_owner_id}/companions",
+    for realm in sorted(raw_realms, key=lambda item: str(item.get("realm_id") or "")):
+        port = stable_realm_port(
+            str(realm.get("realm_id") or ""),
+            base_port=cfg.mcp_http.port,
+            used_ports=used_ports,
         )
-        realms_url = urljoin(
-            base_url.rstrip("/") + "/",
-            f"api/owners/{quoted_owner_id}/memory-realms",
-        )
-        try:
-            companions_payload = _load_json(companions_url, timeout=timeout)
-            realms_payload = _load_json(realms_url, timeout=timeout)
-        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise RegistrySourceUnavailable(
-                f"admin owner workspace unavailable for {owner_id!r}: {exc}"
-            ) from exc
-
-        companions = {
-            str(companion.get("companion_id") or ""): companion
-            for companion in companions_payload.get("companions", []) or []
-            if isinstance(companion, dict)
-        }
-        realms = sorted(
-            [
-                realm
-                for realm in realms_payload.get("memory_realms", []) or []
-                if isinstance(realm, dict)
-            ],
-            key=lambda item: str(item.get("realm_id") or ""),
-        )
-        for realm in realms:
-            companion_id = str(realm.get("companion_id") or "").strip()
-            companion = companions.get(companion_id)
-            if companion is None:
-                continue
-            port = stable_realm_port(
-                str(realm.get("realm_id") or ""),
-                base_port=cfg.mcp_http.port,
-                used_ports=used_ports,
-            )
-            used_ports.add(port)
-            entry = _entry_from_memory_realm(
-                realm,
-                owner=owner,
-                companion=companion,
-                port=port,
-            )
-            if entry is not None:
-                entries.append(entry)
+        used_ports.add(port)
+        entries.append(_entry_from_memory_realm(realm, port=port))
     return UsersConfig(users=entries)
-
-

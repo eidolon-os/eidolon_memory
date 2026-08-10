@@ -489,10 +489,6 @@ class KgConfig(BaseModel):
 class SupervisorConfig(BaseModel):
     """Multi-user agent_runner process supervisor."""
 
-    # Admin owns the user registry. Memory reads /api/users and only executes
-    # the enabled/runtime state.
-    admin_api_url: str = ""
-    admin_api_timeout_seconds: float = 5.0
     eager_init: bool = True  # on startup, mempalace init each enabled user (parallel<=4)
     restart_backoff_seconds: list[int] = Field(default_factory=lambda: [1, 2, 4, 8, 30])
     max_failures_per_minute: int = 5  # disable user beyond this rate
@@ -506,8 +502,9 @@ class SupervisorConfig(BaseModel):
 class RegistryConfig(BaseModel):
     """Where the list of memory spaces to serve comes from.
 
-    ``eidolon-admin`` asks an Eidolon OS admin service over HTTP, which is right
-    when the service runs inside the OS and realms are created there.
+    ``system-data`` consumes the versioned, read-only Memory runtime roster
+    published by the System Data authority. It does not read Admin or a sibling
+    database.
 
     ``static`` reads a roster from a YAML file. This is what makes a standalone
     deployment possible: no admin service to stand up, and the operator declares
@@ -515,7 +512,10 @@ class RegistryConfig(BaseModel):
     without a config change.
     """
 
-    source: Literal["eidolon-admin", "static"] = "eidolon-admin"
+    source: Literal["system-data", "static"] = "system-data"
+    system_data_url: str = "http://127.0.0.1:8084"
+    system_data_token_env: str = "EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_TOKEN"
+    request_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     # Path to the roster for source="static". Relative paths resolve against the
     # settings file's directory.
     static_path: str = ""

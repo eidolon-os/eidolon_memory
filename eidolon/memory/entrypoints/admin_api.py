@@ -16,7 +16,7 @@ Routes:
     GET    /api/admin/realms                 list all (with health)
     GET    /api/admin/realms/{memory_realm_id}
                                                 single detail
-    POST   /api/admin/reconcile              re-read admin registry
+    POST   /api/admin/reconcile              re-read the authority roster
     DELETE /api/admin/realms/{memory_realm_id}/orphan
                                                 cleanup removed realm palace
     POST   /api/admin/realms/{memory_realm_id}/memory/rebuild-index

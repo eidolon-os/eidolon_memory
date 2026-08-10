@@ -152,7 +152,7 @@ def test_cleanup_orphaned_realm_rejects_enabled_registry_entry(client: TestClien
 
 
 def test_list_with_consolidator_config(client: TestClient) -> None:
-    """Consolidator config is read from the admin-owned registry."""
+    """Consolidator config is read from the System Data authority roster."""
     _set_users(
         client,
         UserEntry(

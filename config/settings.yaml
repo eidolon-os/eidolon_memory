@@ -47,5 +47,8 @@ steward:
 recall:
   top_k: 5
   livekit_timeout_seconds: 0.3
-supervisor:
-  admin_api_url: http://127.0.0.1:9000
+registry:
+  source: system-data
+  system_data_url: http://127.0.0.1:8084
+  system_data_token_env: EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_TOKEN
+  request_timeout_seconds: 5.0
