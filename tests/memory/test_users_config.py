@@ -1,4 +1,4 @@
-"""Admin owner workspace memory realm config parsing."""
+"""System Data Memory runtime roster contract parsing."""
 
 from __future__ import annotations
 
@@ -38,66 +38,46 @@ def _settings() -> MemorySettings:
     )
 
 
-def _urlopen_routes(monkeypatch: pytest.MonkeyPatch, routes: dict[str, dict]) -> None:
-    def fake_urlopen(url, timeout=0):  # noqa: ANN001
+def _urlopen_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict,
+    *,
+    expected_token: str = "memory-roster-token-00000001",
+) -> None:
+    def fake_urlopen(request, timeout=0):  # noqa: ANN001
         del timeout
-        payload = routes.get(str(url))
-        if payload is None:
-            raise AssertionError(f"unexpected url: {url}")
+        assert request.full_url == (
+            "http://127.0.0.1:8084/api/companion-authority/v1/memory-runtime-roster"
+        )
+        assert request.get_header("Authorization") == f"Bearer {expected_token}"
         return _Response(json.dumps(payload).encode("utf-8"))
 
     monkeypatch.setattr("eidolon.memory.config.users.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setenv("EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_TOKEN", expected_token)
 
 
-def test_load_memory_realms_from_owner_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
-    base = "http://127.0.0.1:9000"
-    _urlopen_routes(
+def test_load_memory_realms_from_system_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    _urlopen_payload(
         monkeypatch,
         {
-            f"{base}/api/owners": {
-                "owners": [
-                    {"owner_id": "benchmark", "status": "active"},
-                    {"owner_id": "archived", "status": "archived"},
-                ]
-            },
-            f"{base}/api/owners/benchmark/companions": {
-                "companions": [
-                    {"companion_id": "test", "status": "active"},
-                    {"companion_id": "old", "status": "archived"},
-                ]
-            },
-            f"{base}/api/owners/benchmark/memory-realms": {
-                "memory_realms": [
-                    {
-                        "realm_id": "r:benchmark:default",
-                        "owner_id": "benchmark",
-                        "companion_id": "test",
-                        "status": "active",
-                        "engine_config_json": {
-                            "consolidator": {"enabled": True, "interval_hours": 8},
-                        },
+            "contract_version": "1",
+            "operation": "memory.runtime-roster",
+            "realms": [
+                {
+                    "realm_id": "r:benchmark:default",
+                    "owner_id": "benchmark",
+                    "companion_id": "test",
+                    "engine": "mempalace",
+                    "engine_config": {
+                        "consolidator": {"enabled": True, "interval_hours": 8},
                     },
-                    {
-                        "realm_id": "r:benchmark:old",
-                        "owner_id": "benchmark",
-                        "companion_id": "old",
-                        "status": "active",
-                        "engine_config_json": {},
-                    },
-                    {
-                        "realm_id": "r:benchmark:orphan",
-                        "owner_id": "benchmark",
-                        "companion_id": "missing",
-                        "status": "active",
-                        "engine_config_json": {},
-                    },
-                ]
-            },
+                }
+            ],
         },
     )
 
     cfg = load_users_config(_settings())
-    assert [u.id for u in cfg.users] == ["r:benchmark:default", "r:benchmark:old"]
+    assert [u.id for u in cfg.users] == ["r:benchmark:default"]
     default = cfg.find("r:benchmark:default")
     assert default is not None
     assert default.owner_id == "benchmark"
@@ -112,39 +92,30 @@ def test_load_memory_realms_from_owner_workspace(monkeypatch: pytest.MonkeyPatch
     assert default.consolidator.enabled is True
     assert default.consolidator.interval_hours == 8
     assert {u.id for u in cfg.enabled_users()} == {"r:benchmark:default"}
-    assert cfg.find("r:benchmark:old").enabled is False
 
 
 def test_load_memory_realms_assigns_stable_ports(monkeypatch: pytest.MonkeyPatch) -> None:
-    base = "http://127.0.0.1:9000"
-    payloads = {
-        f"{base}/api/owners": {"owners": [{"owner_id": "benchmark", "status": "active"}]},
-        f"{base}/api/owners/benchmark/companions": {
-            "companions": [
-                {"companion_id": "one", "status": "active"},
-                {"companion_id": "two", "status": "active"},
-            ]
-        },
-        f"{base}/api/owners/benchmark/memory-realms": {
-            "memory_realms": [
+    payload = {
+        "contract_version": "1",
+        "operation": "memory.runtime-roster",
+        "realms": [
                 {
                     "realm_id": "r:benchmark:one",
                     "owner_id": "benchmark",
                     "companion_id": "one",
-                    "status": "active",
-                    "engine_config_json": {},
+                    "engine": "mempalace",
+                    "engine_config": {},
                 },
                 {
                     "realm_id": "r:benchmark:two",
                     "owner_id": "benchmark",
                     "companion_id": "two",
-                    "status": "active",
-                    "engine_config_json": {},
+                    "engine": "mempalace",
+                    "engine_config": {},
                 },
-            ]
-        },
+            ],
     }
-    _urlopen_routes(monkeypatch, payloads)
+    _urlopen_payload(monkeypatch, payload)
 
     first = load_users_config(_settings())
     second = load_users_config(_settings())
@@ -161,28 +132,23 @@ def test_load_memory_realms_assigns_stable_ports(monkeypatch: pytest.MonkeyPatch
 def test_load_memory_realms_ignores_runtime_route_in_engine_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    base = "http://127.0.0.1:9000"
-    _urlopen_routes(
+    _urlopen_payload(
         monkeypatch,
         {
-            f"{base}/api/owners": {"owners": [{"owner_id": "benchmark", "status": "active"}]},
-            f"{base}/api/owners/benchmark/companions": {
-                "companions": [{"companion_id": "test", "status": "active"}]
-            },
-            f"{base}/api/owners/benchmark/memory-realms": {
-                "memory_realms": [
-                    {
-                        "realm_id": "r:benchmark:default",
-                        "owner_id": "benchmark",
-                        "companion_id": "test",
-                        "status": "active",
-                        "engine_config_json": {
-                            "mcp_http_url": "http://127.0.0.1:8041/mcp",
-                            "palace_path": "/tmp/legacy-palace",
-                        },
+            "contract_version": "1",
+            "operation": "memory.runtime-roster",
+            "realms": [
+                {
+                    "realm_id": "r:benchmark:default",
+                    "owner_id": "benchmark",
+                    "companion_id": "test",
+                    "engine": "mempalace",
+                    "engine_config": {
+                        "mcp_http_url": "http://127.0.0.1:8041/mcp",
+                        "palace_path": "/tmp/legacy-palace",
                     }
-                ]
-            },
+                }
+            ],
         },
     )
 
@@ -192,6 +158,39 @@ def test_load_memory_realms_ignores_runtime_route_in_engine_config(
         base_port=DEFAULT_MEMORY_MCP_BASE_PORT,
         used_ports=set(),
     )
+
+
+def test_system_data_registry_requires_its_service_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_TOKEN", raising=False)
+
+    with pytest.raises(RuntimeError, match="service credential is unavailable"):
+        load_users_config(_settings())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"contract_version": "2", "operation": "memory.runtime-roster", "realms": []},
+        {"contract_version": "1", "operation": "wrong", "realms": []},
+        {"contract_version": "1", "operation": "memory.runtime-roster", "realms": {}},
+        {
+            "contract_version": "1",
+            "operation": "memory.runtime-roster",
+            "realms": [{"realm_id": "incomplete"}],
+        },
+    ],
+)
+def test_system_data_registry_rejects_contract_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict,
+) -> None:
+    _urlopen_payload(monkeypatch, payload)
+
+    with pytest.raises(RuntimeError, match="System Data Memory roster"):
+        load_users_config(_settings())
 
 
 def test_duplicate_user_id_rejected() -> None:

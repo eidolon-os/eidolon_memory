@@ -7,7 +7,7 @@ Scope (in-process, no real subprocess):
     ``user.consolidator_enabled() is True``.
   * ``Supervisor.start`` does NOT spawn a consolidator when the block is
     absent or ``enabled=False``.
-  * Port change in admin registry cascades a consolidator restart because the
+  * Port change in the authority roster cascades a consolidator restart because the
     consolidator depends on the per-user agent child being ready.
   * Reconcile flips: disable → terminate; enable → spawn.
 
@@ -87,7 +87,7 @@ def test_consolidator_cli_argv_has_all_knobs():
 
     The supervisor cannot communicate runtime config to the subprocess any
     other way (no shared filesystem state, no env vars per-user) — argv is
-    the contract. Drift between admin registry and what the worker actually sees
+    the contract. Drift between the authority roster and what the worker actually sees
     is the single biggest footgun this test guards against.
     """
     user = UserEntry(

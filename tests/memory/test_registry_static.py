@@ -12,7 +12,7 @@ from eidolon.memory.config.registry import (
     resolve_static_registry_path,
 )
 from eidolon.memory.config.registry_static import StaticFileRegistry
-from eidolon.memory.config.users import EidolonAdminRegistry, RegistrySourceUnavailable
+from eidolon.memory.config.users import RegistrySourceUnavailable, SystemDataRegistry
 
 
 def _settings(**registry) -> MemorySettings:
@@ -154,12 +154,12 @@ def test_two_enabled_spaces_may_not_share_an_explicit_port(tmp_path) -> None:
 
 
 def test_source_selection_follows_configuration(tmp_path) -> None:
-    admin = build_registry(_settings())
+    system_data = build_registry(_settings())
     static = build_registry(
         _settings(source="static", static_path=str(_write(tmp_path, "memory_spaces: []")))
     )
 
-    assert isinstance(admin, EidolonAdminRegistry)
+    assert isinstance(system_data, SystemDataRegistry)
     assert isinstance(static, StaticFileRegistry)
     assert isinstance(static, RegistryPort)
 

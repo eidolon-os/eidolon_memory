@@ -3,15 +3,16 @@
 
 from __future__ import annotations
 
+from eidolon_memory_contracts import conversation_turn_stream_pattern
+
 from eidolon.memory.config.memory_settings import (
     get_memory_settings,
     resolve_log_dir,
     resolve_run_dir,
 )
 from eidolon.memory.config.palace_directory import resolve_palaces_root
-from eidolon.memory.config.users import resolve_admin_api_url
 from eidolon.memory.config.registry import load_users_config
-from eidolon_memory_contracts import conversation_turn_stream_pattern
+from eidolon.memory.config.users import resolve_system_data_roster_url
 
 
 def main() -> None:
@@ -19,13 +20,13 @@ def main() -> None:
     print("palaces_root:", resolve_palaces_root(settings))
     print("log_dir:", resolve_log_dir(settings))
     print("run_dir:", resolve_run_dir(settings))
-    print("admin_registry:", f"{resolve_admin_api_url(settings)}/api/users/registry")
+    print("system_data_registry:", resolve_system_data_roster_url(settings))
     try:
         ucfg = load_users_config(settings)
         for u in ucfg.users:
             print(f"  {u.id:14s} enabled={u.enabled} port={u.port}")
     except Exception as exc:
-        print(f"  (admin registry read failed: {exc})")
+        print(f"  (System Data registry read failed: {exc})")
     print("backend:", "mempalace-python")
     print("nats.url:", settings.nats.url)
     print("nats.stream:", settings.nats.stream)

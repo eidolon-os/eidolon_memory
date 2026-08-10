@@ -114,7 +114,7 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 ```
 ┌───────────────────────────────────────────────────────────────────┐
 │ eidolon-memory-supervisor  (Python,纯进程经理,subprocess.Popen)  │
-│   │  读 eidolon_admin registry,per-user fan-out;SIGHUP reconcile │
+│   │  读 System Data runtime roster;per-realm fan-out;SIGHUP reconcile│
 │   ├─ eidolon-memory-agent --user-id=alice --port=8030 ────────────┤
 │   │     ├─ LiveKit pipeline (in-process recall)                    │
 │   │     ├─ MCP Streamable HTTP @ 127.0.0.1:8030/mcp               │
@@ -320,9 +320,10 @@ eidolon-memory-agent --memory-space-id default --port 10030 &
 eidolon-memory-discovery &
 ```
 
-名册来源由 `registry.source` 决定:`eidolon-admin`(向 admin 服务要,OS 内的形态)或
+名册来源由 `registry.source` 决定:`system-data`(消费带独立凭证的版本化 Data
+runtime roster,OS 内的形态)或
 `static`(读 YAML,独立部署的形态,模板见 `config/registry.example.yaml`)。
-独立形态下不需要 admin 服务在场。
+独立形态下不需要 System Data 服务在场。
 
 首次启动会自动 `mempalace init` 对应 palace(lazy)。配置文件见第 8 节。
 本仓库**不再提供**启动脚本——console-scripts (`eidolon-memory-{supervisor,agent,discovery,embedder,consolidator}`)
@@ -345,7 +346,7 @@ eidolon-memory-discovery &
 from mcp.client.streamable_http import streamable_http_client
 from mcp.client.session import ClientSession
 
-URL = "http://127.0.0.1:8030/mcp"   # admin registry 里 alice 的 memory_port
+URL = "http://127.0.0.1:8030/mcp"   # runtime roster 条目派生的 Realm 端口
 
 async with streamable_http_client(URL) as (read, write, _):
     async with ClientSession(read, write) as s:
@@ -577,16 +578,16 @@ await ingest_memory_fragment(locked_backend, MemoryFragment(
 SQLite 路径为 `$EIDOLON_STATE_ROOT/eidolon-system.sqlite3`，可通过
 `EIDOLON_DATA_SQLITE_PATH` 覆盖。
 
-Memory 作为记忆引擎不拥有用户注册表。跨进程读取时消费 admin / data 的只读
-视图；同进程组合时由运行时注入 `DataStore(memory_engine=...)`。
+Memory 作为记忆引擎不拥有用户注册表。跨进程读取时消费 System Data 的只读、
+版本化 runtime roster；它不读取 Admin，也不直接打开 Data 数据库。
 
 ```text
-GET http://127.0.0.1:9000/api/users/registry
+GET http://127.0.0.1:8084/api/companion-authority/v1/memory-runtime-roster
 ```
 
-每个 user 的运行态字段包括 `user_id`、`enabled`、`memory_port`、`palace_path`
-和 consolidator 配置。新增、启停、端口与 consolidator 配置变更都通过
-`eidolon_admin /api/users` 完成。
+每个条目只包含 active Realm 所需的 `realm_id`、`owner_id`、`companion_id`、
+engine 和 engine config。端口由 Memory 稳定派生；Owner/Companion/Realm 生命周期
+仍由 System Data 的正式应用契约管理。
 
 ### 7.2 Supervisor(纯 Python,不是 supervisord)
 
@@ -595,9 +596,9 @@ eidolon-memory-supervisor       # 前台
 ```
 
 行为:
-- 读 admin registry,对每个 enabled user `subprocess.Popen` 起 `eidolon-memory-agent`
+- 读 System Data runtime roster,对每个 active Realm `subprocess.Popen` 起 `eidolon-memory-agent`
 - 5s poll 检查死掉的子进程,按 `[1, 2, 4, 8, 30]` s 退避重启,60s 内连续 5 次失败标记 degraded
-- `SIGHUP` → 重读 admin registry,新增 user spawn / 删除 SIGTERM
+- `SIGHUP` → 重读 authority roster,新增 Realm spawn / 删除 Realm SIGTERM
 - `SIGTERM` → 给每个子进程 30s grace,超时 SIGKILL
 
 **不依赖 launchd / systemd / supervisord** — 自己一份 ~400 行 Python。
@@ -612,16 +613,15 @@ eidolon-memory-agent --user-id default --port 8030
 
 ### 7.4 用户增删改
 
-通过 `eidolon_admin /api/users` 管理用户。Admin 写入统一 registry DB 后会触发
-memory supervisor reconcile；也可以手动发送:
+Owner workspace 变更通过 System Data 的正式应用契约完成。Memory supervisor
+轮询/重载 runtime roster；也可以手动发送:
 
 ```bash
 kill -HUP $(pgrep -f eidolon-memory-supervisor)
 ```
 
-supervisor 收到 SIGHUP 会重读 admin registry:新增 `enabled=true` 的用户 →
-自动 init palace + spawn agent;现有 user 切到 `enabled=false` → SIGTERM 该
-agent(palace 数据保留)。
+supervisor 收到 SIGHUP 会重读 authority roster:新增 active Realm → 自动 init
+palace + spawn agent;Realm 从 roster 消失 → SIGTERM 该 agent(palace 数据保留)。
 
 ---
 
@@ -654,7 +654,10 @@ discovery_http:
   path: "/api/discovery/agent-routing"
 
 registry:
-  source: eidolon-admin          # eidolon-admin | static
+  source: system-data            # system-data | static
+  system_data_url: http://127.0.0.1:8084
+  system_data_token_env: EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_TOKEN
+  request_timeout_seconds: 5.0
   static_path: ""                # source=static 时的名册路径(相对于 settings.yaml)
 
 steward:
@@ -692,7 +695,6 @@ chromadb:
   synchronous: FULL              # D3 hard-kill 持久性
 
 supervisor:
-  admin_api_url: "http://127.0.0.1:9000"
   eager_init: true
 ```
 
@@ -701,7 +703,8 @@ supervisor:
 | 变量 | 用途 |
 |------|------|
 | `EIDOLON_MEMORY_SETTINGS_YAML` | 主配置文件路径 |
-| `EIDOLON_ADMIN_API_URL` | admin registry API base URL(`registry.source=eidolon-admin` 时) |
+| `EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_URL` | 可选的完整 System Data roster URL 覆盖 |
+| `EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_TOKEN` | Memory 专用 Data roster service credential |
 | `EIDOLON_MEMORY_PALACES_ROOT` | palace 目录的父根 |
 | `EIDOLON_MEMORY_MCP_TOKEN` | MCP HTTP bearer token |
 | `EIDOLON_MEMORY_LLM_API_KEY` | steward LLM 密钥 |
@@ -729,7 +732,7 @@ $EIDOLON_STATE_ROOT/memory/mempalaces/<memory_space_id>/
 列 MCP 工具 / memory routing discovery)都通过 **MCP 工具**(§4)和 **NATS subject**(§5)
 直接暴露,任何外部 gateway / 网关 / CLI 都可以照样消费,**不需要中间层**。
 
-需要自定义网关的话,从 admin registry API + MCP HTTP + `JetStreamTurnPublisher`
+需要自定义网关的话,从 System Data runtime roster + MCP HTTP + `JetStreamTurnPublisher`
 几块乐高直接拼,参考 `tests/memory/test_kg_*.py` 的用法。
 
 ---

@@ -194,7 +194,7 @@ def user_to_view(
             "worker_running": worker_alive and user.enabled,
             "mcp_reachable": worker_alive and user.enabled,  # liveness conflates the two for now
             "palace_initialized": palace_initialized,
-            "note": "" if user.enabled else "memory realm disabled by admin registry",
+            "note": "" if user.enabled else "memory realm disabled by authority roster",
         },
         "companion_ids": [user.companion_id] if user.companion_id else [],
         "mcp_http_url": f"http://127.0.0.1:{user.port}/mcp",
@@ -406,7 +406,7 @@ class UserAdmin:
 
         Step 1 — Reconcile
             Admin has already flipped enabled=false or deleted the registry
-            row. Re-read the admin registry and wait for the worker to stop.
+            row. Re-read the authority roster and wait for the worker to stop.
 
         Step 2 — Clean palace
             Move the user's palace directory under
@@ -449,7 +449,7 @@ class UserAdmin:
             entry = config.find(user_id)
             if entry is not None and entry.enabled:
                 raise UserStillRegistered(
-                    f"user {user_id!r} is still enabled in admin registry; "
+                    f"user {user_id!r} is still enabled in the authority roster; "
                     "disable or delete it before orphan cleanup"
                 )
             cleanup_entry = entry or UserEntry(id=user_id, port=1, enabled=False)

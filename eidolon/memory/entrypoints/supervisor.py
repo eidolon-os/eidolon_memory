@@ -324,7 +324,7 @@ class Supervisor:
 
         The supervisor owns child lifecycles, so maintenance runs here:
         stop the user's agent/consolidator, execute the MemPalace CLI in a
-        subprocess, then reconcile back to the admin registry.
+        subprocess, then reconcile back to the authority roster.
         """
         user_id = user.id
         palace_path = self._palace_for(user)

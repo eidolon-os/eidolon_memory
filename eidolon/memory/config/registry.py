@@ -1,9 +1,9 @@
 """Where the roster of memory spaces to serve comes from.
 
 The service does not decide which spaces exist — it serves the ones it is told
-about. Who does the telling differs by deployment: inside Eidolon OS an admin
-service owns owner and companion lifecycle, while a standalone deployment has an
-operator and a file.
+about. Who does the telling differs by deployment: inside Eidolon OS the System
+Data authority publishes a versioned runtime roster, while a standalone
+deployment has an operator and a file.
 
 Both answer the same question, so both go behind one port and callers do not
 branch on deployment shape. This module knows about the sources; the sources do
@@ -26,8 +26,8 @@ from eidolon.memory.config.memory_settings import (
 )
 from eidolon.memory.config.registry_static import StaticFileRegistry
 from eidolon.memory.config.users import (
-    EidolonAdminRegistry,
     RegistrySourceUnavailable,
+    SystemDataRegistry,
     UsersConfig,
 )
 
@@ -61,7 +61,7 @@ def build_registry(settings: MemorySettings | None = None) -> RegistryPort:
     cfg = settings or get_memory_settings()
     if cfg.registry.source == "static":
         return StaticFileRegistry(cfg, path=resolve_static_registry_path(cfg))
-    return EidolonAdminRegistry(cfg)
+    return SystemDataRegistry(cfg)
 
 
 def load_users_config(settings: MemorySettings | None = None) -> UsersConfig:
