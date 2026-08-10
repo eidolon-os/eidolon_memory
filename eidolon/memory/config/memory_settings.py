@@ -778,6 +778,11 @@ def resolve_run_dir(settings: MemorySettings) -> Path:
 
 
 def _bootstrap_dotenv() -> None:
+    mode = os.environ.get("EIDOLON_MEMORY_DOTENV_MODE", "file").strip().lower() or "file"
+    if mode == "environment":
+        return
+    if mode != "file":
+        raise ValueError("EIDOLON_MEMORY_DOTENV_MODE must be file or environment")
     env_file = os.environ.get("EIDOLON_MEMORY_ENV_FILE", "").strip()
     if env_file:
         path = Path(env_file).expanduser()

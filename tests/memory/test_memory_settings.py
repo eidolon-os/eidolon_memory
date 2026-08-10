@@ -10,6 +10,7 @@ import yaml
 from eidolon.memory.config.memory_settings import (
     get_memory_settings,
     load_memory_settings,
+    reset_memory_settings_cache,
 )
 
 
@@ -35,6 +36,33 @@ def test_get_memory_settings_is_cached(tmp_path: Path, monkeypatch: pytest.Monke
     a = get_memory_settings()
     b = get_memory_settings()
     assert a is b
+
+
+def test_process_managed_environment_does_not_reopen_root_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_path = _write_yaml(tmp_path, {})
+    monkeypatch.setenv("EIDOLON_MEMORY_SETTINGS_YAML", str(settings_path))
+    monkeypatch.setenv("EIDOLON_MEMORY_DOTENV_MODE", "environment")
+    monkeypatch.setenv("EIDOLON_MEMORY_ENV_FILE", str(tmp_path / "root-only.env"))
+    reset_memory_settings_cache()
+    try:
+        assert get_memory_settings() is not None
+    finally:
+        reset_memory_settings_cache()
+
+
+def test_unknown_dotenv_mode_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EIDOLON_MEMORY_SETTINGS_YAML", str(_write_yaml(tmp_path, {})))
+    monkeypatch.setenv("EIDOLON_MEMORY_DOTENV_MODE", "implicit")
+    reset_memory_settings_cache()
+    try:
+        with pytest.raises(ValueError, match="must be file or environment"):
+            get_memory_settings()
+    finally:
+        reset_memory_settings_cache()
 
 
 def test_yaml_wings_rejected(tmp_path: Path):
