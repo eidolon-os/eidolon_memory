@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from eidolon.memory.config.memory_settings import (
     get_memory_settings,
@@ -206,3 +207,50 @@ def _write_yaml(tmp_path: Path, data: dict) -> Path:
     p = tmp_path / "cfg.yaml"
     p.write_text(yaml.safe_dump(data), encoding="utf-8")
     return p
+
+
+def test_the_host_may_choose_the_encoder_without_editing_the_checkout(
+    tmp_path, monkeypatch
+) -> None:
+    """A laptop and a Pi 5 run different encoders; that is a Host property.
+
+    Before this, a deployer rewrote the shipped settings file by string
+    substitution, which broke the moment the file changed at all.
+    """
+
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text(
+        "embedding:\n  provider: local\n  model: bge-large-zh\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("EIDOLON_MEMORY_EMBEDDING_MODEL", "bge-base-zh")
+
+    settings = load_memory_settings(settings_file)
+
+    assert settings.embedding.model == "bge-base-zh"
+
+
+def test_an_override_cannot_name_an_encoder_nobody_implements(tmp_path, monkeypatch) -> None:
+    """The override is applied before validation, so it earns the same refusal.
+
+    MemPalace answers an unknown name with an English-only model rather than an
+    error, so a typo would quietly build the palace with the worst retriever.
+    """
+
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text(
+        "embedding:\n  provider: local\n  model: bge-large-zh\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("EIDOLON_MEMORY_EMBEDDING_MODEL", "not-a-real-encoder")
+
+    with pytest.raises(ValidationError):
+        load_memory_settings(settings_file)
+
+
+def test_settings_are_unchanged_when_no_override_is_present(tmp_path, monkeypatch) -> None:
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text(
+        "embedding:\n  provider: local\n  model: bge-large-zh\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("EIDOLON_MEMORY_EMBEDDING_MODEL", raising=False)
+
+    assert load_memory_settings(settings_file).embedding.model == "bge-large-zh"

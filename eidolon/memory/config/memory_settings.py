@@ -827,9 +827,35 @@ def _effective_default_settings_file() -> Path:
     return default_memory_settings_path()
 
 
+#: Deployment-time overrides, applied before validation so that a Host cannot
+#: name an encoder nobody implements any more than a config file can. Keyed by
+#: environment variable, valued by the path into the settings document.
+_ENVIRONMENT_OVERRIDES = {
+    # A laptop and a Pi 5 do not run the same encoder — see the measured
+    # comparison in config/settings.yaml — and which one runs is a property of
+    # the Host, not of this repository's checkout.
+    "EIDOLON_MEMORY_EMBEDDING_MODEL": ("embedding", "model"),
+    "EIDOLON_MEMORY_EMBEDDING_DEVICE": ("embedding", "device"),
+}
+
+
+def _apply_environment_overrides(raw: dict) -> dict:
+    for variable, (section, key) in _ENVIRONMENT_OVERRIDES.items():
+        value = os.environ.get(variable, "").strip()
+        if not value:
+            continue
+        branch = raw.setdefault(section, {})
+        if not isinstance(branch, dict):
+            raise ValueError(f"{section} settings must be a mapping to accept {variable}")
+        branch[key] = value
+    return raw
+
+
 def _read_settings_file(p: Path) -> MemorySettings:
     raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    return MemorySettings.model_validate(raw)
+    if not isinstance(raw, dict):
+        raise ValueError(f"memory settings must be a mapping: {p}")
+    return MemorySettings.model_validate(_apply_environment_overrides(raw))
 
 
 def get_memory_settings() -> MemorySettings:

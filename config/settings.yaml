@@ -15,6 +15,8 @@ embedding:
   # large scores MRR 0.813 against base's 0.787, for 626 MB on disk against 198
   # and 104 ms/doc against 32. A laptop can pay that and the board cannot, which
   # is the whole reason the two differ.
+  # EIDOLON_MEMORY_EMBEDDING_MODEL overrides this, so a Host chooses its
+  # encoder without anyone rewriting this file.
   provider: local
   model: bge-large-zh
   device: cpu
