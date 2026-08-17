@@ -836,6 +836,13 @@ _ENVIRONMENT_OVERRIDES = {
     # the Host, not of this repository's checkout.
     "EIDOLON_MEMORY_EMBEDDING_MODEL": ("embedding", "model"),
     "EIDOLON_MEMORY_EMBEDDING_DEVICE": ("embedding", "device"),
+    # Where that encoder's weights are, which is a property of the Host by the
+    # same argument and was the one missing from this table. A deployment set
+    # the variable, the Host env carried it, and it stopped here: settings kept
+    # ``model_dir`` empty, the embedder asked the model hub for weights already
+    # on disk, and on a Host with no route out every query spent seventy
+    # seconds retrying and then reported finding nothing.
+    "EIDOLON_MEMORY_EMBEDDING_MODEL_DIR": ("embedding", "model_dir"),
 }
 
 

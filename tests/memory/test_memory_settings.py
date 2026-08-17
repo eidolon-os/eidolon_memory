@@ -229,6 +229,36 @@ def test_the_host_may_choose_the_encoder_without_editing_the_checkout(
     assert settings.embedding.model == "bge-base-zh"
 
 
+def test_the_host_may_say_where_that_encoder_lives(tmp_path, monkeypatch) -> None:
+    """Naming the encoder is not enough if its weights cannot be found.
+
+    A deployment carried the files to the Host and set this variable; the Host
+    env carried it; and it stopped here, because the table above did not list
+    it. ``model_dir`` stayed empty, so the embedder asked the model hub for
+    weights already on disk — and a Host with no route out spent seventy
+    seconds per query retrying before reporting that it had found nothing.
+    """
+
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text(
+        "embedding:\n  provider: local\n  model: bge-base-zh\n", encoding="utf-8"
+    )
+    monkeypatch.setenv(
+        "EIDOLON_MEMORY_EMBEDDING_MODEL_DIR", "/var/lib/eidolon/models/bge-base-zh"
+    )
+
+    settings = load_memory_settings(settings_file)
+
+    assert settings.embedding.model_dir == "/var/lib/eidolon/models/bge-base-zh"
+    # And it reaches the children, which read a different name entirely.
+    from eidolon.memory.infrastructure.mempalace_backend import mempalace_backend_env
+
+    environment = mempalace_backend_env(settings, base={})
+    assert environment["MEMPALACE_EMBEDDING_MODEL_DIR"] == (
+        "/var/lib/eidolon/models/bge-base-zh"
+    )
+
+
 def test_an_override_cannot_name_an_encoder_nobody_implements(tmp_path, monkeypatch) -> None:
     """The override is applied before validation, so it earns the same refusal.
 
