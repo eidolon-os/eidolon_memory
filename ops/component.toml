@@ -1,0 +1,103 @@
+# How Memory is operated, stated by Memory.
+#
+# Memory is the component with the largest gap between what a release contains
+# and what a Host needs: its encoder is model weights, and weights are not in
+# git. That gap is declared under [[artifacts]] rather than left for an
+# operator to discover on a board with no network.
+#
+# The schema is eidolon_ops's contracts/component-ops/v1.schema.json;
+# tests/test_operations_contract.py checks these claims against this
+# repository's own configuration.
+
+schema_version = 1
+component_id = "eidolon_memory"
+contract_version = "1"
+
+[[units]]
+id = "eidolon-memory-supervisor"
+kind = "service"
+exec = ".venv/bin/eidolon-memory-supervisor"
+user = "eidolon"
+serves = ["memory_admin"]
+requires = ["eidolon-nats", "eidolon-admin"]
+after = ["local-fs.target"]
+
+[[units]]
+id = "eidolon-memory-discovery"
+kind = "service"
+exec = ".venv/bin/eidolon-memory-discovery"
+user = "eidolon"
+serves = ["memory_discovery"]
+requires = ["eidolon-memory-supervisor"]
+after = ["local-fs.target"]
+
+[ports.memory_admin]
+default = 8019
+bind = "loopback"
+purpose = "supervisor administration"
+
+[ports.memory_discovery]
+default = 8020
+bind = "loopback"
+purpose = "where the palace for a memory space is, asked by Agent"
+
+[[inputs]]
+name = "memory_env"
+install_path = "/etc/eidolon/memory.env"
+kind = "secret"
+source = "operator"
+owner = "root"
+group = "root"
+mode = "0600"
+required_by = ["eidolon-memory-supervisor", "eidolon-memory-discovery"]
+
+[[inputs]]
+name = "memory_settings"
+install_path = "/etc/eidolon/memory.yaml"
+kind = "settings"
+source = "operator"
+owner = "root"
+group = "eidolon"
+mode = "0640"
+required_by = ["eidolon-memory-supervisor", "eidolon-memory-discovery"]
+
+[[artifacts]]
+id = "bge-base-zh"
+kind = "model"
+install_root = "/var/lib/eidolon/models/bge-base-zh"
+# The board's encoder. A Pi runs bge-base-zh where a laptop runs bge-large-zh:
+# measured on a Pi 5, large scores better and costs 626 MB and 104 ms/doc
+# against base's 198 MB and 32 ms/doc, which a board cannot pay.
+#
+# Declared here because a release is exact git commits and these files are in
+# neither. Without this, the first query on a fresh Host either downloads on
+# demand or falls back to something slow, and the difference is not visible
+# from anything a release reports.
+
+[[artifacts.files]]
+path = "onnx/model_quantized.onnx"
+sha256 = "b665f3bba56c3119bc76ba131ebcc544d720a7408cb11581bdf354aaa0198d43"
+
+[[artifacts.files]]
+path = "tokenizer.json"
+sha256 = "7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
+
+[[state.authority]]
+path = "/var/lib/eidolon/memory"
+owner = "eidolon"
+group = "eidolon"
+backup = "none"
+uncovered_reason = """\
+the palace, its vector index and its knowledge graph have no declared \
+snapshot; Chroma persists the embedder on the collection, so a palace cannot \
+be reopened under a different encoder and a restore would have to carry the \
+model identity with it\
+"""
+# This is everything an Eidolon remembers. It is the least acceptable gap in
+# the backup, and saying so here is what keeps it from reading as covered.
+
+[state]
+runtime = ["/run/eidolon/memory"]
+
+[reset]
+factory = ["/var/lib/eidolon/memory"]
