@@ -12,6 +12,7 @@ regardless of the launching shell's ``PATH``), with a fallback to plain
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -68,6 +69,32 @@ def _resolve_mempalace_cli() -> str:
     raise PalaceInitError(msg)
 
 
+def _palace_environment(
+    env: dict[str, str] | None,
+    palace_path: Path,
+) -> dict[str, str]:
+    """Say where the palace is by the means the CLI actually reads.
+
+    ``mempalace init`` takes a *project directory* as its positional argument
+    and resolves the palace itself, from ``MEMPALACE_PALACE_PATH`` or, failing
+    that, from ``~/.mempalace``. Passing the palace as that positional argument
+    therefore never told it where the palace was — it happened to work wherever
+    the home directory was writable, and on a Host it is not: the service user
+    has ``/nonexistent`` for a home, so every palace on that machine failed to
+    initialise, the runner never started, and the Eidolon ran with no memory at
+    all while everything else looked healthy.
+
+    ``HOME`` is set alongside it for the same reason, one level down: a child
+    that reaches for a home directory should land somewhere that exists rather
+    than crash, whether or not it is this variable it reaches for.
+    """
+
+    resolved = dict(os.environ if env is None else env)
+    resolved["MEMPALACE_PALACE_PATH"] = str(palace_path)
+    resolved.setdefault("HOME", str(palace_path))
+    return resolved
+
+
 def ensure_palace_initialized(
     user_id: str,
     palace_path: Path,
@@ -102,6 +129,7 @@ def ensure_palace_initialized(
         timeout_seconds=timeout_seconds,
     )
     cli = _resolve_mempalace_cli()
+    env = _palace_environment(env, palace_path)
     cmd = [
         cli,
         "--backend",
