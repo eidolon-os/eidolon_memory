@@ -74,7 +74,7 @@ def test_the_palace_is_named_by_the_variable_the_cli_reads(
     assert env["PATH"] == "/usr/bin"
 
 
-def test_an_inherited_home_is_left_alone(
+def test_an_inherited_home_does_not_win(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from eidolon.memory.infrastructure import palace_init
@@ -98,7 +98,11 @@ def test_an_inherited_home_is_left_alone(
     palace_init.ensure_palace_initialized(
         "r_1",
         tmp_path / "palace",
-        env={"HOME": "/home/someone"},
+        env={"HOME": "/nonexistent"},
     )
 
-    assert seen["env"]["HOME"] == "/home/someone"
+    # Deferring to the inherited value was the first version of this fix, and
+    # on a Host it changed nothing: /nonexistent is precisely what systemd
+    # hands the service. The palace is the only place this subprocess has any
+    # business in.
+    assert seen["env"]["HOME"] == str(tmp_path / "palace")

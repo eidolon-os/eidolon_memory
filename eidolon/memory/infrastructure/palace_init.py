@@ -84,14 +84,19 @@ def _palace_environment(
     initialise, the runner never started, and the Eidolon ran with no memory at
     all while everything else looked healthy.
 
-    ``HOME`` is set alongside it for the same reason, one level down: a child
-    that reaches for a home directory should land somewhere that exists rather
-    than crash, whether or not it is this variable it reaches for.
+    ``HOME`` is pointed at the palace too, and unconditionally. Deferring to an
+    inherited one was the first version of this fix and it changed nothing on a
+    Host: systemd hands the service the home from its passwd entry, and that
+    home is ``/nonexistent`` — the value being defended against was the value
+    being inherited. This subprocess has no business anywhere but the palace,
+    so nothing it reaches for should resolve outside it, and pinning that here
+    removes the machine-dependent behaviour that hid the fault in the first
+    place: it worked wherever a home happened to be writable.
     """
 
     resolved = dict(os.environ if env is None else env)
     resolved["MEMPALACE_PALACE_PATH"] = str(palace_path)
-    resolved.setdefault("HOME", str(palace_path))
+    resolved["HOME"] = str(palace_path)
     return resolved
 
 
