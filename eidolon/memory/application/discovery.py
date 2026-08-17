@@ -19,6 +19,7 @@ from eidolon_memory_contracts import (
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from eidolon.memory.entrypoints.recollections_http import RECOLLECTIONS_PATH
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.config.registry import load_users_config
 from eidolon.memory.config.users import UserEntry
@@ -62,6 +63,14 @@ def discovery_memory_realms(settings: MemorySettings) -> list[UserEntry]:
     ]
 
 
+def recollections_url(settings: MemorySettings, *, port: int) -> str:
+    """The plain-HTTP read surface on a runner, beside its MCP transport."""
+
+    base = settings.mcp_http.base_url(port=port)
+    root = base[: -len(settings.mcp_http.path)] if base.endswith(settings.mcp_http.path) else base
+    return f"{root.rstrip('/')}{RECOLLECTIONS_PATH}"
+
+
 async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, Any]:
     """Build the stable discovery response consumed by eidolon-agent."""
     realms = discovery_memory_realms(settings)
@@ -92,6 +101,11 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
                 "companion_id": realm.companion_id,
                 "enabled": realm.enabled,
                 "mcp_http_url": settings.mcp_http.base_url(port=realm.port),
+                # Where a person's own Host reads this space from. Published
+                # rather than derived: a consumer that had to cut the MCP path
+                # off the URL above would be guessing at this one, and would
+                # keep guessing correctly right up until either path moved.
+                "recollections_url": recollections_url(settings, port=realm.port),
                 "mcp_auth": {"type": "none"},
                 "agent_reachable": reachable,
             }

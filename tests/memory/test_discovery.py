@@ -79,6 +79,9 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
             "companion_id": "test",
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:8030/mcp",
+            # Published, so a consumer never has to cut the MCP path off the
+            # line above and hope both stay where they are.
+            "recollections_url": "http://127.0.0.1:8030/api/memory/v1/recollections",
             "mcp_auth": {"type": "none"},
             "agent_reachable": True,
         }
@@ -120,6 +123,7 @@ async def test_discovery_uses_default_user_when_registry_empty(
             "companion_id": None,
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:10030/mcp",
+            "recollections_url": "http://127.0.0.1:10030/api/memory/v1/recollections",
             "mcp_auth": {"type": "none"},
             "agent_reachable": False,
         }
