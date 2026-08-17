@@ -81,6 +81,15 @@ def recollections_route(
                 room=None,
                 for_voice=False,
                 palace_path=runtime.palace_path,
+                # A search that could not run must not come back as a search
+                # that found nothing. The default here is to degrade quietly,
+                # which is right for a conversation — an Eidolon that cannot
+                # reach its memory should still answer the person in front of
+                # it. It is wrong for someone who asked, in as many words,
+                # what their Eidolon remembers: the honest answer to that is
+                # "I could not look", and it is a different answer from "there
+                # is nothing".
+                raise_on_degraded=True,
             )
         except Exception as exc:  # noqa: BLE001 - a read must not take the process down
             log.exception(

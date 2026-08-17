@@ -434,6 +434,30 @@ class Supervisor:
     def _read_users(self) -> UsersConfig:
         return load_users_config(self._settings)
 
+    def _child_environment(self, palace: Path, memory_space_id: str) -> dict[str, str]:
+        """The environment a child needs to embed, plus its own temp isolation.
+
+        Both halves, and the embedding half is the one that was missing. A
+        runner is the process that actually encodes text, and it was the only
+        child spawned without the encoder environment — palace init and the
+        rest got it. Nothing failed loudly: the embedder fell back to asking
+        the model hub for weights already on disk, a Host with no route out
+        retried for seventy seconds per query, and the search then reported
+        that it had found nothing.
+
+        The name mismatch is why it went unseen. Settings carry
+        ``embedding.model_dir``; the factory a child calls reads
+        ``EIDOLON_EMBEDDING_CONFIG`` or ``MEMPALACE_EMBEDDING_*``, and
+        ``mempalace_backend_env`` is what turns one into the other.
+        """
+
+        return process_temp_subprocess_env(
+            self._settings,
+            palace,
+            memory_space_id,
+            base_env=mempalace_backend_env(self._settings),
+        )
+
     def _palace_for(self, user: UserEntry) -> Path:
         return resolve_palace_for_memory_space(
             self._settings,
@@ -579,7 +603,7 @@ class Supervisor:
                 user,
                 palace,
                 self._log_root,
-                env=process_temp_subprocess_env(self._settings, palace, user.id),
+                env=self._child_environment(palace, user.id),
             )
             child.spawn()
             self._children[user.id] = child
@@ -849,7 +873,7 @@ class Supervisor:
             user_def,
             palace,
             self._log_root,
-            env=process_temp_subprocess_env(self._settings, palace, user_def.id),
+            env=self._child_environment(palace, user_def.id),
         )
         try:
             started = time.perf_counter()

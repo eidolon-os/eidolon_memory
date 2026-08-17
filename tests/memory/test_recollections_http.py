@@ -100,6 +100,9 @@ def test_answers_with_what_the_space_holds(client) -> None:
     assert calls[0]["wing"] is None
     assert calls[0]["room"] is None
     assert calls[0]["for_voice"] is False
+    # "Could not look" and "there is nothing" are different answers, and this
+    # is the surface where a person asked the question that distinguishes them.
+    assert calls[0]["raise_on_degraded"] is True
 
 
 def test_a_limit_is_bounded_rather_than_believed(client) -> None:
@@ -133,3 +136,39 @@ def test_memory_being_unavailable_is_said_rather_than_answered_as_empty(
 
     assert response.status_code == 503
     assert "recollections" not in response.json()
+
+
+def test_a_runner_is_spawned_with_the_environment_it_needs_to_embed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one child that encodes text was the one child without the encoder.
+
+    Palace init and every other subprocess were given the MemPalace embedding
+    environment; the runner was given temp isolation only. Nothing failed
+    loudly — the embedder asked the model hub for weights that were already on
+    disk, a Host with no route out retried for seventy seconds a query, and the
+    search reported that it had found nothing.
+    """
+
+    from pathlib import Path
+
+    from eidolon.memory.config.memory_settings import MemorySettings
+    from eidolon.memory.entrypoints import supervisor as supervisor_module
+
+    settings = MemorySettings()
+    settings.embedding.provider = "local"
+    settings.embedding.model = "bge-base-zh"
+    settings.embedding.model_dir = "/var/lib/eidolon/models/bge-base-zh"
+
+    subject = supervisor_module.Supervisor.__new__(supervisor_module.Supervisor)
+    subject._settings = settings
+
+    environment = subject._child_environment(Path("/tmp/palace"), "r_1")
+
+    # The names the child's own factory reads, not the ones settings use.
+    assert environment["MEMPALACE_EMBEDDING_MODEL_DIR"] == (
+        "/var/lib/eidolon/models/bge-base-zh"
+    )
+    assert environment["MEMPALACE_EMBEDDING_MODEL"] == "bge-base-zh"
+    # And still its own temp isolation, which is what it used to have alone.
+    assert environment["TMPDIR"] == environment["SQLITE_TMPDIR"]
