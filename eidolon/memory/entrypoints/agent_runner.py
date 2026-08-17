@@ -56,6 +56,7 @@ from eidolon.memory.config.palace_directory import (
     resolve_palaces_root,
     validate_memory_space_id,
 )
+from eidolon.memory.entrypoints.recollections_http import recollections_route
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
@@ -838,6 +839,15 @@ def _run_service(
 
     starlette_app = mcp.streamable_http_app()
     _mount_metrics(starlette_app)
+    # Before the ops surface, which is mounted at "" and would otherwise answer
+    # for every path beneath it.
+    starlette_app.router.routes.append(
+        recollections_route(
+            service=service,
+            settings=settings,
+            memory_space_id=memory_space_id,
+        )
+    )
     _mount_ops_surface(starlette_app, ops_mcp, path=settings.mcp_http.ops_path)
     starlette_app.router.lifespan_context = _compose_starlette_lifespan(
         mcp,
