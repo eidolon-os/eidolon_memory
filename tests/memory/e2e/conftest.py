@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import shutil
 import socket
 import subprocess
@@ -225,30 +226,44 @@ async def _delete_e2e_durables(nats_url: str, user_id: str) -> None:
 #: suite that spawns thirty agents should not be relying on that.
 _ISSUED_PORTS: set[int] = set()
 
+#: Deliberately below the ephemeral range. Asking the kernel for a port with
+#: bind(0) returns one from 49152-65535 on macOS, which is exactly the range it
+#: draws from for outgoing connections — so between our close() and the child's
+#: bind(), any outbound socket in the suite can take it. That is not
+#: theoretical: it produced an agent that never bound and never logged, which
+#: reads identically to a slow start.
+_PORT_BAND = (20000, 29999)
+
 
 def _free_port() -> int:
-    """A port nobody is listening on, chosen by the kernel rather than by hand.
+    """A port nobody is listening on, verified rather than assumed.
 
     The e2e tests used to name their own: thirty-three literals for thirty
     distinct values, so three pairs shared one. Two agents that share a port
-    only collide when both run — which is to say, never when you run the file
-    on its own and sometimes when you run the suite, and that is the shape of
-    a failure nobody can reproduce.
+    only collide when both run — never when you run the file on its own,
+    sometimes when you run the suite, which is the shape of a failure nobody
+    can reproduce.
 
-    Between the bind and the child's own bind there is a window in which
-    something else could take the port. It is small, it is the same window
-    every test harness that does this lives with, and it replaces a collision
-    that was certain with one that is not.
+    Chosen from a band the kernel will not hand to an outbound connection, and
+    proved free by binding it. Between that bind and the child's there is still
+    a window, but nothing else on this machine is being assigned ports here, so
+    the only thing that could take it is another agent — and those are tracked.
     """
 
-    for _ in range(64):
+    for _ in range(200):
+        candidate = random.randint(*_PORT_BAND)
+        if candidate in _ISSUED_PORTS:
+            continue
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-        if port not in _ISSUED_PORTS:
-            _ISSUED_PORTS.add(port)
-            return port
-    raise RuntimeError("could not find a free port for an e2e agent")
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+        _ISSUED_PORTS.add(candidate)
+        return candidate
+    raise RuntimeError(
+        f"no free port in {_PORT_BAND[0]}-{_PORT_BAND[1]} for an e2e agent"
+    )
 
 
 @pytest.fixture
@@ -441,15 +456,23 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                 start_new_session=True,
             )
         if not _wait_mcp_ready(port):
+            # Ask before killing: a process that exited has told us something,
+            # and a process still running has told us something else. Reporting
+            # only "did not bind" with an empty log leaves those two — a child
+            # that died on startup and a child that is merely slow — looking
+            # exactly alike, which is the whole reason this was unexplainable.
+            exited = proc.poll()
+            alive = "still running" if exited is None else f"exited with {exited}"
             proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+            log_tail = tail_file(log_path) or "(the agent wrote nothing at all)"
             pytest.fail(
                 f"agent_runner --memory-space-id {memory_space_id} --port {port} failed to "
-                f"bind healthy MCP within 45s.\n"
-                f"agent log ({log_path}) tail:\n{tail_file(log_path)}"
+                f"bind healthy MCP within 45s; the process was {alive}.\n"
+                f"agent log ({log_path}) tail:\n{log_tail}"
             )
 
         handle = _AgentHandle(
