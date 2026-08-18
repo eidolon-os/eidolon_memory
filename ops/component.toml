@@ -100,4 +100,12 @@ model identity with it\
 runtime = ["/run/eidolon/memory"]
 
 [reset]
-factory = ["/var/lib/eidolon/memory"]
+factory = [
+  "/var/lib/eidolon/memory",
+  # The weights go too, and that is fine: they are not anyone's data, and the
+  # next install carries them back — the Host is asked for the digest it
+  # recorded, so a removed model reads as absent rather than as held. Declared
+  # rather than left unclaimed, because a reset report where this appears with
+  # nobody's name on it reads like something was overlooked.
+  "/var/lib/eidolon/models",
+]
