@@ -76,6 +76,21 @@ select = ["E", "F", "I", "W", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# The llm mark is a gate, and this is what makes it one. Those tests declared
+# themselves gated in their own docstrings ("run via -m e2e") and were run by
+# every default invocation anyway, because nothing here honoured it.
+#
+# What they measure is not this repository. They send forty turns through a
+# real LLM endpoint and wait for the steward to drain them, so their verdict
+# is that service's throughput on the day — and a full run came back red
+# whenever it was slow. A suite that is red for reasons outside the code is
+# not a regression signal, and the cost of that is not the two failures, it is
+# that nobody can use the other 1108 results.
+#
+# Deselected, not deleted: `pytest -m llm` runs them, and a command-line -m
+# overrides this one. Deselection is also counted in the summary, so what did
+# not run stays visible rather than quietly absent.
+addopts = "-m 'not llm'"
 markers = [
     "mempalace: needs real MemPalace Python package",
     "e2e: needs nats-server + eidolon-memory-agent subprocess",
