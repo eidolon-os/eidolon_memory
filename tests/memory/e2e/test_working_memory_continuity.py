@@ -50,7 +50,7 @@ async def test_working_memory_returns_latest_10_verbatim(
     assert len(corpus) >= PUBLISH_N
 
     handle = live_agent_runner(
-        user_id="e2e_wm", port=19070, steward_mode="noop",
+        user_id="e2e_wm", steward_mode="noop",
     )
     # Recall context must match the write side (device_id + session_id) so the
     # working-memory ring snapshot for this device/session surfaces.
@@ -128,7 +128,7 @@ async def test_working_memory_cleared_after_agent_restart(
     persist. Verifies the design choice: short-term continuity is process-local.
     """
     h1 = live_agent_runner(
-        user_id="e2e_wm_restart_a", port=19071, steward_mode="noop",
+        user_id="e2e_wm_restart_a", steward_mode="noop",
     )
     ctx1 = e2e_actor_context(h1.user_id)
     # Publish a few turns.
@@ -157,7 +157,7 @@ async def test_working_memory_cleared_after_agent_restart(
     # Spawn a fresh agent — NEW palace (fixture wipes by user_id), no shared
     # state with h1. The ring MUST be empty.
     h2 = live_agent_runner(
-        user_id="e2e_wm_restart_b", port=19072, steward_mode="noop",
+        user_id="e2e_wm_restart_b", steward_mode="noop",
     )
     ctx2 = e2e_actor_context(h2.user_id)
     async with mcp_session(h2.mcp_url) as s:

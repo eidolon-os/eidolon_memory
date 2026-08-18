@@ -44,7 +44,7 @@ async def test_second_agent_for_same_realm_is_rejected_before_serving(
 ) -> None:
     owner = live_agent_runner(
         user_id="e2e_single_owner",
-        port=19110,
+        
         steward_mode="noop",
     )
     duplicate_log = owner.log_path.with_name("duplicate-agent.log")
@@ -93,12 +93,12 @@ async def test_parallel_realms_keep_ports_palaces_and_records_isolated(
 ) -> None:
     realm_a = live_agent_runner(
         user_id="e2e_parallel_realm_a",
-        port=19112,
+        
         steward_mode="noop",
     )
     realm_b = live_agent_runner(
         user_id="e2e_parallel_realm_b",
-        port=19113,
+        
         steward_mode="noop",
     )
     marker_a = f"realm-a-{uuid.uuid4().hex}"
@@ -147,7 +147,7 @@ async def test_concurrent_redelivery_is_idempotent_and_unique_writes_remain_visi
 ) -> None:
     handle = live_agent_runner(
         user_id="e2e_concurrent_replay",
-        port=19114,
+        
         steward_mode="noop",
     )
     replay_marker = f"replay-{uuid.uuid4().hex}"

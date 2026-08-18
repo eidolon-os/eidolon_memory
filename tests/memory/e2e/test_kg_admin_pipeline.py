@@ -102,7 +102,7 @@ async def test_kg_admin_cmd_pipeline_full_roundtrip(live_agent_runner, mcp_sessi
        written objects (R4 wire-up: KG → recall envelope).
     """
     handle = live_agent_runner(
-        user_id="e2e_kg_admin", port=19050, steward_mode="noop",
+        user_id="e2e_kg_admin", steward_mode="noop",
     )
     ctx = e2e_actor_context(handle.user_id)
 
@@ -177,7 +177,7 @@ async def test_kg_invalidate_cmd_closes_triple(live_agent_runner, mcp_session):
     while leaving ``triples_total`` unchanged.
     """
     handle = live_agent_runner(
-        user_id="e2e_kg_invalidate", port=19051, steward_mode="noop",
+        user_id="e2e_kg_invalidate", steward_mode="noop",
     )
     # Seed one triple via the add channel first.
     await nats_publish_kg_add_triple(

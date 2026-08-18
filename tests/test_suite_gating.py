@@ -13,6 +13,7 @@ that stays a decision rather than something that drifts back.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -60,3 +61,25 @@ def test_only_the_third_party_dependency_is_deselected() -> None:
 
     assert "e2e" not in addopts
     assert "mempalace" not in addopts
+
+
+def test_no_e2e_test_names_the_port_its_agent_listens_on() -> None:
+    """Where an agent listens is the fixture's business, not a test's.
+
+    There were thirty-three port literals across these files for thirty
+    distinct values, so three pairs shared one — 19090, 19091 and 19030. Two
+    agents on one port only collide when both run, which means never when you
+    run the file alone and sometimes when you run the suite. That is the shape
+    of a failure nobody can reproduce, and it is worth ruling out by
+    construction rather than by everyone remembering to pick a fresh number.
+    """
+
+    offenders = [
+        f"{path.name}:{number}"
+        for path in sorted((_REPOSITORY / "tests/memory/e2e").glob("*.py"))
+        if path.name != "conftest.py"
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if re.search(r"\bport\s*=\s*\d+", line)
+    ]
+
+    assert offenders == []

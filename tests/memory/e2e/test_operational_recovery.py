@@ -19,7 +19,7 @@ async def test_terminal_command_failure_can_be_inspected_replayed_and_resolved(
 ) -> None:
     handle = live_agent_runner(
         user_id="e2e_dlq_recovery",
-        port=19121,
+        
         steward_mode="noop",
         extra_settings={"nats": {"worker_max_deliveries": 1}},
     )

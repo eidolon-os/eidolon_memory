@@ -131,7 +131,7 @@ async def test_llm_extracts_mentions_and_alias_query_routes_via_kg(
     """
     corpus = load_companion_corpus()
     handle = live_agent_runner(
-        user_id="e2e_p3_mention", port=19080, steward_mode="llm",
+        user_id="e2e_p3_mention", steward_mode="llm",
     )
     ctx = e2e_actor_context(handle.user_id)
 

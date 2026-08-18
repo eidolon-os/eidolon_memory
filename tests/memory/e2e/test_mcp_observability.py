@@ -48,7 +48,7 @@ async def _list(session, *, limit: int = 1000, include_private: bool = False) ->
 async def test_status_returns_identity_and_config(live_agent_runner, mcp_session):
     """R9: status surfaces memory_space_id, palace_path, steward_mode, wings."""
     handle = live_agent_runner(
-        user_id="e2e_status", port=19060, steward_mode="rules",
+        user_id="e2e_status", steward_mode="rules",
     )
     async with mcp_session(handle.mcp_url) as session:
         s = await _status(session)
@@ -85,7 +85,7 @@ async def test_list_paginates_and_filters_private(live_agent_runner, mcp_session
          False ≤ True, which is the structural invariant we assert.
     """
     handle = live_agent_runner(
-        user_id="e2e_list", port=19061, steward_mode="rules",
+        user_id="e2e_list", steward_mode="rules",
     )
     corpus = load_companion_corpus()
     for entry in corpus[:10]:

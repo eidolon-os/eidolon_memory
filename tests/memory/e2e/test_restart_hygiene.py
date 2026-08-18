@@ -70,7 +70,7 @@ async def test_lazy_import_no_longer_breaks_after_source_touch(
     Whether the *new* version drifts on disk or not, the *running* process
     binds an internally consistent module set.
     """
-    handle = live_agent_runner(user_id="e2e_p0_a", port=19030, steward_mode="noop")
+    handle = live_agent_runner(user_id="e2e_p0_a", steward_mode="noop")
     corpus = load_companion_corpus()
     ctx = e2e_actor_context(handle.user_id)
 
@@ -119,7 +119,7 @@ async def test_lazy_import_no_longer_breaks_after_source_touch(
 async def test_recall_survives_agent_restart(live_agent_runner, mcp_session):
     """Same palace, fresh process — vector + KG must persist across SIGTERM."""
     # First spawn: publish some turns, then kill.
-    h1 = live_agent_runner(user_id="e2e_p0_b", port=19031, steward_mode="noop")
+    h1 = live_agent_runner(user_id="e2e_p0_b", steward_mode="noop")
     ctx1 = e2e_actor_context(h1.user_id)
     async with mcp_session(h1.mcp_url) as session:
         for entry in load_companion_corpus()[:10]:
@@ -150,7 +150,7 @@ async def test_recall_survives_agent_restart(live_agent_runner, mcp_session):
     backup = h1.palace_dir.with_suffix(".backup")
     shutil.copytree(h1.palace_dir, backup, dirs_exist_ok=True)
 
-    h2 = live_agent_runner(user_id="e2e_p0_b_restart", port=19032, steward_mode="noop")
+    h2 = live_agent_runner(user_id="e2e_p0_b_restart", steward_mode="noop")
     ctx2 = e2e_actor_context(h2.user_id)
     # Copy the backed-up palace contents into the new spawn's palace dir
     # so we test "same data, different process".

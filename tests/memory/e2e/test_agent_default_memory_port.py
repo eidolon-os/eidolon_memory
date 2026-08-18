@@ -189,7 +189,7 @@ def _active_commitment_section(system_prompt: str) -> str:
 async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runner) -> None:
     handle = live_agent_runner(
         user_id=MEMORY_SPACE_ID,
-        port=19130,
+        
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(
@@ -249,7 +249,7 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
     """Real NATS + Realm MCP: active is injected; fulfilled disappears."""
     handle = live_agent_runner(
         user_id="e2e_agent_commitment_context",
-        port=19133,
+        
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(
@@ -449,7 +449,7 @@ async def test_agent_memory_port_delete_is_previewed_and_terminally_applied(
 ) -> None:
     handle = live_agent_runner(
         user_id="e2e_agent_privacy_terminal",
-        port=19131,
+        
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(
@@ -561,7 +561,7 @@ async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_stat
 ) -> None:
     handle = live_agent_runner(
         user_id="e2e_agent_structured_intent",
-        port=19132,
+        
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(

@@ -220,6 +220,37 @@ async def _delete_e2e_durables(nats_url: str, user_id: str) -> None:
         await nc.close()
 
 
+#: Ports this session has already handed out. The kernel does not immediately
+#: reuse a port it just released, but it is under no obligation not to, and a
+#: suite that spawns thirty agents should not be relying on that.
+_ISSUED_PORTS: set[int] = set()
+
+
+def _free_port() -> int:
+    """A port nobody is listening on, chosen by the kernel rather than by hand.
+
+    The e2e tests used to name their own: thirty-three literals for thirty
+    distinct values, so three pairs shared one. Two agents that share a port
+    only collide when both run — which is to say, never when you run the file
+    on its own and sometimes when you run the suite, and that is the shape of
+    a failure nobody can reproduce.
+
+    Between the bind and the child's own bind there is a window in which
+    something else could take the port. It is small, it is the same window
+    every test harness that does this lives with, and it replaces a collision
+    that was certain with one that is not.
+    """
+
+    for _ in range(64):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        if port not in _ISSUED_PORTS:
+            _ISSUED_PORTS.add(port)
+            return port
+    raise RuntimeError("could not find a free port for an e2e agent")
+
+
 @pytest.fixture
 def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
     """Factory for spawning isolated agent_runner subprocesses.
@@ -227,9 +258,10 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
     Usage:
 
         def test_x(live_agent_runner):
-            handle = live_agent_runner(user_id="e2e_p0", port=19030)
-            assert handle.mcp_url == "http://127.0.0.1:19030/ops/mcp"
-            # ... talk to it via mcp_session / nats_publish_turn ...
+            handle = live_agent_runner(user_id="e2e_p0")
+            # The port is the fixture's; ask the handle where it went.
+            async with mcp_session(handle.mcp_url) as session:
+                ...
 
     Cleanup: every spawned process is SIGTERM'd (then SIGKILL) at fixture
     teardown. Each user_id gets a fresh palace (any pre-existing palace at
@@ -260,13 +292,16 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
     def _spawn(
         *,
         user_id: str,
-        port: int,
         steward_mode: str = "noop",
         env_overrides: dict[str, str] | None = None,
         palace_root_override: Path | None = None,
         extra_settings: dict[str, Any] | None = None,
     ) -> _AgentHandle:
         memory_space_id = _e2e_memory_space_id(user_id)
+        # Not a parameter. Where an agent listens is a fact about running two
+        # processes on one machine, not something a test has an opinion about,
+        # and every caller that named one was naming it wrong eventually.
+        port = _free_port()
         palace_root = palace_root_override or palaces_root
         # The agent_runner stores each palace at
         # ``<palaces_root>/<memory_space_storage_name(id)>`` (a reversible

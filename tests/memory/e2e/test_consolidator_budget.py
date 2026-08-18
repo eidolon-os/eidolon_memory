@@ -110,7 +110,7 @@ async def test_consolidator_exits_on_budget_and_publishes_completed_wing(
     with _slow_completion_server() as (api_base, completion_server):
         handle = live_agent_runner(
             user_id="e2e_consolidator_budget",
-            port=19122,
+            
             steward_mode="noop",
             extra_settings={
                 "llm": {

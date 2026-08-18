@@ -43,7 +43,7 @@ async def test_archive_then_delete_respects_read_write_protocols(
 ) -> None:
     handle = live_agent_runner(
         user_id="e2e_privacy_lifecycle",
-        port=19092,
+        
         steward_mode="rules",
     )
     context = e2e_actor_context(handle.user_id)
@@ -105,7 +105,7 @@ async def test_ambiguous_delete_requires_preview_then_exact_id_command(
 ) -> None:
     handle = live_agent_runner(
         user_id="e2e_privacy_confirm",
-        port=19120,
+        
         steward_mode="noop",
     )
     marker = "ambiguous-green-tea-marker"

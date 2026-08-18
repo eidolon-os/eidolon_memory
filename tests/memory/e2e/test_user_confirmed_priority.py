@@ -69,7 +69,7 @@ async def test_user_confirmed_lands_verbatim_and_pins_top(
     """A user-confirmed fact survives verbatim and outranks chat-derived
     drawers about the same topic."""
     handle = live_agent_runner(
-        user_id="e2e_userconfirm", port=19090, steward_mode="noop",
+        user_id="e2e_userconfirm", steward_mode="noop",
     )
     ctx = e2e_actor_context(handle.user_id)
 
@@ -131,7 +131,7 @@ async def test_user_confirmed_outranks_chat_drawer_same_topic(
     """With rules steward producing a chat-derived drawer AND a user-confirmed
     drawer in the same wing, the user-confirmed one pins ahead."""
     handle = live_agent_runner(
-        user_id="e2e_userconfirm_rank", port=19091, steward_mode="rules",
+        user_id="e2e_userconfirm_rank", steward_mode="rules",
     )
     ctx = e2e_actor_context(handle.user_id)
 

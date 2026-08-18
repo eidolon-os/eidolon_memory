@@ -182,7 +182,7 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
     and ``recall_context`` renders a [主题] section."""
     corpus = load_companion_corpus()
     handle = live_agent_runner(
-        user_id="e2e_p4_consol", port=19090, steward_mode="llm",
+        user_id="e2e_p4_consol", steward_mode="llm",
         # Lower the theme relevance floor for recall. This test verifies the
         # consolidator → Wing_Theme drawer → [主题] render *pipeline*, not the
         # production ``theme_min_similarity`` tuning. A generic reflection query
@@ -317,7 +317,7 @@ async def test_consolidator_idempotent_on_rerun(
     themes — the idempotency hash is the contract."""
     corpus = load_companion_corpus()
     handle = live_agent_runner(
-        user_id="e2e_p4_idemp", port=19091, steward_mode="llm",
+        user_id="e2e_p4_idemp", steward_mode="llm",
     )
     # Publish the FULL corpus — matches the timing budget that works in the
     # sibling test. LLM steward is slow (~5-8s/turn); 30 was too tight.

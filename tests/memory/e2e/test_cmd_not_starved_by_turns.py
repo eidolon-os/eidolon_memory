@@ -43,7 +43,7 @@ async def test_command_applied_promptly_while_turn_backlog_churns(
     live_agent_runner, mcp_session
 ):
     handle = live_agent_runner(
-        user_id="e2e_cmd_starve", port=19095, steward_mode="noop",
+        user_id="e2e_cmd_starve", steward_mode="noop",
         env_overrides={"EIDOLON_MEMORY_TEST_TURN_DELAY_S": str(_TURN_DELAY_S)},
     )
 

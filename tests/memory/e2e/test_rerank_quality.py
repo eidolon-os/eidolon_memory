@@ -122,7 +122,7 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
     )
 
     h_on = live_agent_runner(
-        user_id="e2e_p1_on", port=19040, steward_mode="rules",
+        user_id="e2e_p1_on", steward_mode="rules",
     )
     ctx_on = e2e_actor_context(h_on.user_id)
 
@@ -145,7 +145,7 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
         n_on = await _wait_for_fragments(s_on, "rerank_on")
 
     h_off = live_agent_runner(
-        user_id="e2e_p1_off", port=19041, steward_mode="rules",
+        user_id="e2e_p1_off", steward_mode="rules",
         extra_settings={"recall": {"rerank_enabled": False}},
     )
     ctx_off = e2e_actor_context(h_off.user_id)
@@ -230,7 +230,7 @@ async def test_normal_shared_embedding_preserves_realistic_top3_quality(
 
     legacy = live_agent_runner(
         user_id="e2e_normal_legacy",
-        port=19042,
+        
         steward_mode="rules",
         extra_settings={
             "runtime": {"read": {"normal_shared_query_embedding": False}},
@@ -238,7 +238,7 @@ async def test_normal_shared_embedding_preserves_realistic_top3_quality(
     )
     shared = live_agent_runner(
         user_id="e2e_normal_shared",
-        port=19043,
+        
         steward_mode="rules",
         extra_settings={
             "runtime": {"read": {"normal_shared_query_embedding": True}},
