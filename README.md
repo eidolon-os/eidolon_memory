@@ -875,4 +875,10 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
 
 ## 14. License
 
-MIT(见 `pyproject.toml`)。
+Copyright © 2026 Li Jinsong.
+
+本项目允许依据 [PolyForm Noncommercial License 1.0.0](LICENSE) 进行许可范围内的
+非商业使用。商业使用需要另行取得书面授权，请联系
+[lijinsong@aimanthor.com](mailto:lijinsong@aimanthor.com)。
+
+许可范围、第三方例外和必要声明见 [LICENSING.md](LICENSING.md) 与 [NOTICE](NOTICE)。
