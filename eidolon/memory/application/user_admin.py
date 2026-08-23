@@ -177,7 +177,6 @@ def user_to_view(
             "memory_realm_id": user.id,
             "memory_space_id": user.id,
             "owner_id": user.owner_id,
-            "companion_id": user.companion_id,
             "display_name": user.id,  # memory has no display name field today
             "enabled": user.enabled,
             "palace_path": str(palace_path),
@@ -196,7 +195,9 @@ def user_to_view(
             "palace_initialized": palace_initialized,
             "note": "" if user.enabled else "memory realm disabled by authority roster",
         },
-        "companion_ids": [user.companion_id] if user.companion_id else [],
+        # Deliberately absent: which Companions read this realm. The realm
+        # belongs to the Owner and Memory does not hold the Companion roster —
+        # Data does. Answering with an empty list would look like "none".
         "mcp_http_url": f"http://127.0.0.1:{user.port}/mcp",
     }
 

@@ -66,7 +66,6 @@ def test_load_memory_realms_from_system_data(monkeypatch: pytest.MonkeyPatch) ->
                 {
                     "realm_id": "r:benchmark:default",
                     "owner_id": "benchmark",
-                    "companion_id": "test",
                     "engine": "mempalace",
                     "engine_config": {
                         "consolidator": {"enabled": True, "interval_hours": 8},
@@ -81,7 +80,6 @@ def test_load_memory_realms_from_system_data(monkeypatch: pytest.MonkeyPatch) ->
     default = cfg.find("r:benchmark:default")
     assert default is not None
     assert default.owner_id == "benchmark"
-    assert default.companion_id == "test"
     assert default.port == stable_memory_realm_port(
         "r:benchmark:default",
         base_port=DEFAULT_MEMORY_MCP_BASE_PORT,
@@ -102,14 +100,12 @@ def test_load_memory_realms_assigns_stable_ports(monkeypatch: pytest.MonkeyPatch
                 {
                     "realm_id": "r:benchmark:one",
                     "owner_id": "benchmark",
-                    "companion_id": "one",
                     "engine": "mempalace",
                     "engine_config": {},
                 },
                 {
                     "realm_id": "r:benchmark:two",
                     "owner_id": "benchmark",
-                    "companion_id": "two",
                     "engine": "mempalace",
                     "engine_config": {},
                 },
@@ -141,7 +137,6 @@ def test_load_memory_realms_ignores_runtime_route_in_engine_config(
                 {
                     "realm_id": "r:benchmark:default",
                     "owner_id": "benchmark",
-                    "companion_id": "test",
                     "engine": "mempalace",
                     "engine_config": {
                         "mcp_http_url": "http://127.0.0.1:8041/mcp",

@@ -75,20 +75,18 @@ def _elapsed_ms(start: float) -> float:
 
 
 def _agent_cli_argv(user: UserEntry, palace_path: Path) -> list[str]:
-    """The argv a runner needs, including who it serves.
+    """The argv a runner needs, including whose memory it serves.
 
-    The roster already says which Owner and Companion a space belongs to, and
-    dropping that here left the runner unable to tell them apart: the audience
-    filter on the read path needs a companion to compare against, so with no
-    companion it could only ever answer with the owner layer. The filter was
-    built and tested; it was simply never given the identity to apply.
+    The Owner is a property of the space and belongs here. The Companion is
+    not: one space serves every Companion that Owner has, so which Companion is
+    asking is a property of the *request*, and the read path takes it from
+    there. Passing a Companion at startup would silently pin the audience
+    filter to whichever one happened to be named.
     """
     del palace_path
     argv = [_AGENT_CLI, "--memory-space-id", user.id, "--port", str(user.port)]
     if user.owner_id:
         argv += ["--owner-id", user.owner_id]
-    if user.companion_id:
-        argv += ["--companion-id", user.companion_id]
     return argv
 
 

@@ -65,7 +65,6 @@ def client(monkeypatch: pytest.MonkeyPatch):
                 settings=object(),  # type: ignore[arg-type]
                 memory_space_id="realm_primary",
                 owner_id="owner-1",
-                companion_id="companion-1",
             )
         ]
     )

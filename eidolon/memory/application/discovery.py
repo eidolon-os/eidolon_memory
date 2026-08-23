@@ -98,7 +98,6 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
                 "memory_space_id": validate_memory_space_id(realm.id),
                 "memory_realm_id": validate_memory_space_id(realm.id),
                 "owner_id": realm.owner_id,
-                "companion_id": realm.companion_id,
                 "enabled": realm.enabled,
                 "mcp_http_url": settings.mcp_http.base_url(port=realm.port),
                 # Where a person's own Host reads this space from. Published

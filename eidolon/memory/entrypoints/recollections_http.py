@@ -47,12 +47,20 @@ def recollections_route(
     settings: MemorySettings,
     memory_space_id: str,
     owner_id: str | None = None,
-    companion_id: str | None = None,
 ) -> Route:
-    """A GET returning what this space holds about a query."""
+    """A GET returning what this space holds about a query.
+
+    ``companion_id`` is a query parameter rather than an argument here, because
+    the space belongs to the Owner and serves every Companion that Owner has.
+    It selects an *audience*, not a scope: without it the answer is the owner
+    layer, with it the owner layer plus that Companion's own. It cannot widen
+    what this space can see, so the caller naming it is not naming a scope it
+    was not routed to.
+    """
 
     async def handle(request: Request) -> JSONResponse:
         query = (request.query_params.get("q") or "").strip()
+        companion_id = (request.query_params.get("companion_id") or "").strip() or None
         if not query:
             return JSONResponse(
                 {"detail": "q is required"},

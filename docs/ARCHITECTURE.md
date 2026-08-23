@@ -518,7 +518,7 @@ e2e 待重跑——换 embedder 会重建索引。
 | NATS 一个 consumer 服务所有 space | 通配 subject 辅助函数已存在；`turn_processor` 本来就从 payload 取 space | 同样是那 47 个调用点 |
 | 单端点 / discovery | | supervisor 掌管进程拓扑——**按你的指示暂缓** |
 | 收窄 MCP 响应 | `RecallResult` 按设计不含 `kg_triples` | agent 的 `port_adapter.py:201` 在读它——需要两个仓库同批 |
-| space 变成 per-owner | 读侧全就绪：audience 是列、SQL 过滤、无通配、空集合失败关闭 | **产品决定已裁决（2026-08-23）**：`docs/跨系统/多Companion记忆隔离机制裁决.md` 裁决 space 为 per-owner，理由是产品蓝图 §8 的「一份 memory」、§8.1 小忆=记忆 Agent 的分工、§10.1 记忆资产界面全是 owner 视角。**剩下的阻塞只有迁移**：`memory_realms` 加 `scope`、`companion_id` 放宽、现存单 companion 库前向迁为 owner 库（不动记忆数据）。写侧默认仍是 owner 层——那本来就是目标行为。读侧的身份**已接上**（`_agent_cli_argv` 传 `--owner-id`/`--companion-id`，`agent_runner` 传给 `recollections_route`，见 `tests/memory/test_realm_identity_wiring.py`）；迁移落地时再把 `test_kg_audience_layering.py` 的意图从"钉住不许写"翻转为"可写且必须被 gate 挡住" |
+| space 变成 per-owner | 读侧全就绪：audience 是列、SQL 过滤、无通配、空集合失败关闭 | **产品决定已裁决（2026-08-23）**：`docs/跨系统/多Companion记忆隔离机制裁决.md` 裁决 space 为 per-owner，理由是产品蓝图 §8 的「一份 memory」、§8.1 小忆=记忆 Agent 的分工、§10.1 记忆资产界面全是 owner 视角。**剩下的阻塞连迁移都不是**：产品未发布、无兼容义务（见方案 §1.3），所以 `memory_realms` 直接**删掉 `companion_id` 列**——现存每个 owner 只有一个 companion、因而只有一个库，删列即完成，realm_id 不变、palace 不动。也不需要 `scope` 列：那是为"两种 realm 并存"准备的，而并存本身没有必要。写侧默认仍是 owner 层——那本来就是目标行为。读侧的身份**已接上**（`_agent_cli_argv` 传 `--owner-id`/`--companion-id`，`agent_runner` 传给 `recollections_route`，见 `tests/memory/test_realm_identity_wiring.py`）；迁移落地时再把 `test_kg_audience_layering.py` 的意图从"钉住不许写"翻转为"可写且必须被 gate 挡住" |
 | 四个公开 benchmark | 口径已对齐、探针已跑两次、超时已按实测调正 | **抽取质量目前仍是未知数** —— 前两次探针的准确率测的是等待预算而非记忆，见下 |
 
 ## 目前最重要的一件事：召回，不是抽取

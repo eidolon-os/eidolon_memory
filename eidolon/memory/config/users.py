@@ -57,7 +57,6 @@ class ConsolidatorUserConfig(BaseModel):
 class UserEntry(BaseModel):
     id: str
     owner_id: str | None = None
-    companion_id: str | None = None
     port: int = Field(ge=1, le=65535)
     enabled: bool = True
     # Phase 4 — optional. ``None`` (the default) means "no consolidator for
@@ -160,8 +159,7 @@ def _entry_from_memory_realm(
 ) -> UserEntry:
     realm_id = str(realm.get("realm_id") or "").strip()
     owner_id = str(realm.get("owner_id") or "").strip()
-    companion_id = str(realm.get("companion_id") or "").strip()
-    if not realm_id or not owner_id or not companion_id:
+    if not realm_id or not owner_id:
         raise RegistrySourceUnavailable("System Data Memory roster entry is incomplete")
     config = realm.get("engine_config") or {}
     if not isinstance(config, dict):
@@ -169,7 +167,6 @@ def _entry_from_memory_realm(
     return UserEntry(
         id=realm_id,
         owner_id=owner_id,
-        companion_id=companion_id,
         port=port,
         enabled=True,
         consolidator=_consolidator_from_engine_config(config.get("consolidator") or {}),
