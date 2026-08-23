@@ -385,6 +385,17 @@ space 就是 `(tenant, owner, companion)`，每个 companion 一个独立的库�
 它在 **space 变成 per-owner**、一个库里装下多个 companion 的语句之后才真正生效。那是一次
 数据模型变更加迁移。
 
+**产品决定已裁决（2026-08-23，Owner 确认）**：`docs/跨系统/多Companion记忆隔离机制裁决.md`
+裁决 space 为 per-owner。所以这条轴要从惰性转为**承重**——多 Companion 之后，companion
+之间唯一的隔离手段就是它，不再有"一个 companion 一个库"兜着。两件事随之变成硬要求：写侧
+通路必须真正接上（今天 `_agent_cli_argv` 只传 `--memory-space-id` 和 `--port`，roster 里
+已有的 owner/companion 丢在了半路，所以 gate 在生产里是空转的），以及 gate 的正确性要有
+端到端断言而不只是单测。
+
+**读侧身份已接上**（2026-08-24）：`_agent_cli_argv` 过去只传 space id 和端口，于是生产里
+每个 runner 都是 `companion_id=None`，过滤器建好了却没有可比对的东西——只能永远答 owner
+层。roster 本来就带 owner/companion，现在传到了 runner。写侧未动。
+
 **更正**：这里原先写着"那正是下面 1:N 那项工作所解锁的"。不对，那是两条轴——
 `进程 : space = 1:N` 讲的是一个进程持有几个库，`space 变成 per-owner` 讲的是一个库里装
 什么。1:N 不会让 space 变成 per-owner；两者反而是同一个内存问题的两种解法，取舍不同
@@ -507,7 +518,7 @@ e2e 待重跑——换 embedder 会重建索引。
 | NATS 一个 consumer 服务所有 space | 通配 subject 辅助函数已存在；`turn_processor` 本来就从 payload 取 space | 同样是那 47 个调用点 |
 | 单端点 / discovery | | supervisor 掌管进程拓扑——**按你的指示暂缓** |
 | 收窄 MCP 响应 | `RecallResult` 按设计不含 `kg_triples` | agent 的 `port_adapter.py:201` 在读它——需要两个仓库同批 |
-| space 变成 per-owner | 读侧全就绪：audience 是列、SQL 过滤、无通配、空集合失败关闭 | **产品决定 + 迁移**。写侧全是 owner 层是当前数据模型下的正确值，不是欠账——见"两层可见性"。做了它才让那条轴有意义 |
+| space 变成 per-owner | 读侧全就绪：audience 是列、SQL 过滤、无通配、空集合失败关闭 | **产品决定已裁决（2026-08-23）**：`docs/跨系统/多Companion记忆隔离机制裁决.md` 裁决 space 为 per-owner，理由是产品蓝图 §8 的「一份 memory」、§8.1 小忆=记忆 Agent 的分工、§10.1 记忆资产界面全是 owner 视角。**剩下的阻塞只有迁移**：`memory_realms` 加 `scope`、`companion_id` 放宽、现存单 companion 库前向迁为 owner 库（不动记忆数据）。写侧默认仍是 owner 层——那本来就是目标行为。读侧的身份**已接上**（`_agent_cli_argv` 传 `--owner-id`/`--companion-id`，`agent_runner` 传给 `recollections_route`，见 `tests/memory/test_realm_identity_wiring.py`）；迁移落地时再把 `test_kg_audience_layering.py` 的意图从"钉住不许写"翻转为"可写且必须被 gate 挡住" |
 | 四个公开 benchmark | 口径已对齐、探针已跑两次、超时已按实测调正 | **抽取质量目前仍是未知数** —— 前两次探针的准确率测的是等待预算而非记忆，见下 |
 
 ## 目前最重要的一件事：召回，不是抽取

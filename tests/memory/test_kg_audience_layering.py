@@ -13,8 +13,16 @@ to leak between companions and nothing to share, and writing
 behaviour while adding a judgement the steward has to get right on every statement.
 
 The axis becomes real when a space is per-*owner* and one palace holds several
-companions' statements. That is a data-model change with a migration, and it is a
-separate decision from anything the graph does today.
+companions' statements. That is a data-model change with a migration.
+
+**That decision has since been made** (2026-08-23,
+``docs/跨系统/多Companion记忆隔离机制裁决.md``): a space becomes per-owner, and the
+audience axis becomes the *only* thing separating one Companion's private
+statements from another's. The read path now receives the identity it needs to
+apply the filter (``--owner-id`` / ``--companion-id`` reach the runner). What has
+not changed is the write side, which still puts every statement in the owner
+layer — so this file still holds, and still fails loudly if someone finishes the
+write side ahead of the migration.
 
 So this file pins the current state as deliberate. Its job is to fail loudly when
 someone decides to "finish" the write side, so that the change is made together

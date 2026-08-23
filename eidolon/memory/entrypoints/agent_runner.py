@@ -650,6 +650,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(default $EIDOLON_STATE_ROOT/memory/mempalaces/<memory_space_id>)"
         ),
     )
+    # Who this space serves. Not a scope check — the space is already the
+    # scope — but the read path's audience filter needs a companion to compare
+    # against, and without one it can only ever answer with the owner layer.
+    parser.add_argument("--owner-id", default="", help="Owner this space belongs to")
+    parser.add_argument(
+        "--companion-id",
+        default="",
+        help="Companion this space serves, when the space is companion-scoped",
+    )
     return parser.parse_args(argv)
 
 
@@ -846,6 +855,8 @@ def _run_service(
             service=service,
             settings=settings,
             memory_space_id=memory_space_id,
+            owner_id=args.owner_id or None,
+            companion_id=args.companion_id or None,
         )
     )
     _mount_ops_surface(starlette_app, ops_mcp, path=settings.mcp_http.ops_path)
