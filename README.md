@@ -114,7 +114,7 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 ```
 ┌───────────────────────────────────────────────────────────────────┐
 │ eidolon-memory-supervisor  (Python,纯进程经理,subprocess.Popen)  │
-│   │  读 System Data runtime roster;per-realm fan-out;SIGHUP reconcile│
+│   │  读 System Data runtime roster;per-realm fan-out;周期+SIGHUP reconcile│
 │   ├─ eidolon-memory-agent --user-id=alice --port=8030 ────────────┤
 │   │     ├─ LiveKit pipeline (in-process recall)                    │
 │   │     ├─ MCP Streamable HTTP @ 127.0.0.1:8030/mcp               │
@@ -598,7 +598,8 @@ eidolon-memory-supervisor       # 前台
 行为:
 - 读 System Data runtime roster,对每个 active Realm `subprocess.Popen` 起 `eidolon-memory-agent`
 - 5s poll 检查死掉的子进程,按 `[1, 2, 4, 8, 30]` s 退避重启,60s 内连续 5 次失败标记 degraded
-- `SIGHUP` → 重读 authority roster,新增 Realm spawn / 删除 Realm SIGTERM
+- 每 `supervisor.roster_refresh_seconds`(默认 60s)重读一次 authority roster 并向其收敛——roster 是 desired state,不需要谁来通知
+- `SIGHUP` / `POST /api/admin/reconcile` → 立即重读,是幂等的加速信号而非唯一路径(信号丢失不会让 Realm 永久没有运行时)
 - `SIGTERM` → 给每个子进程 30s grace,超时 SIGKILL
 
 **不依赖 launchd / systemd / supervisord** — 自己一份 ~400 行 Python。
@@ -620,8 +621,10 @@ Owner workspace 变更通过 System Data 的正式应用契约完成。Memory su
 kill -HUP $(pgrep -f eidolon-memory-supervisor)
 ```
 
-supervisor 收到 SIGHUP 会重读 authority roster:新增 active Realm → 自动 init
-palace + spawn agent;Realm 从 roster 消失 → SIGTERM 该 agent(palace 数据保留)。
+supervisor 重读 authority roster 时:新增 active Realm → 自动 init palace + spawn
+agent;Realm 从 roster 消失 → SIGTERM 该 agent(palace 数据保留)。这件事默认每 60s
+自己发生一次(`supervisor.roster_refresh_seconds`);SIGHUP 与上面的 admin 端点只是
+让它立刻发生。
 
 ---
 

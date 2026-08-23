@@ -285,6 +285,10 @@ class Supervisor:
         self._init_failures: dict[str, _InitFailure] = {}
         self._reload_event = asyncio.Event()
         self._stop_event = asyncio.Event()
+        #: When the roster was last read, for the periodic convergence pass.
+        #: Stamped by every reconcile, whoever asked for it, so an explicit
+        #: SIGHUP or admin call also defers the next periodic one.
+        self._last_roster_read_at: float | None = None
         self._init_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="supervisor-init")
 
     # -------------------- public surface for the admin HTTP layer --------------------
@@ -579,6 +583,7 @@ class Supervisor:
     # -------------------- lifecycle --------------------
 
     async def start(self) -> None:
+        self._last_roster_read_at = time.monotonic()
         users = self._read_users()
         enabled = users.enabled_users()
         log.info(
@@ -665,6 +670,12 @@ class Supervisor:
                     await self._reconcile()
                 elif self._init_retry_due():
                     await self._reconcile()
+                elif self._roster_refresh_due():
+                    # Nobody has to tell us. A Realm added to the roster while
+                    # this process was already running used to wait for a
+                    # human, because the only paths in were SIGHUP and the
+                    # admin call, and nothing sends either on create.
+                    await self._reconcile(periodic=True)
                 self._check_children()
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=5.0)
@@ -720,13 +731,35 @@ class Supervisor:
                     )
                     child.record_failure(max_fail)
 
-    async def _reconcile(self) -> None:
-        """Re-read admin's registry and align running set."""
+    def _roster_refresh_due(self) -> bool:
+        """Whether the periodic convergence pass is due.
+
+        Stamped per attempt rather than per success, so a roster source that
+        keeps failing is retried on this interval instead of on every tick of
+        the loop.
+        """
+        interval = self._settings.supervisor.roster_refresh_seconds
+        if interval <= 0:
+            return False
+        if self._last_roster_read_at is None:
+            return True
+        return time.monotonic() - self._last_roster_read_at >= interval
+
+    async def _reconcile(self, *, periodic: bool = False) -> None:
+        """Re-read admin's registry and align running set.
+
+        ``periodic`` marks the convergence pass that runs on a timer with
+        nothing to report most of the time. It only lowers the volume of the
+        read log — a pass that finds work to do says so at info either way, and
+        a failure to read is an error either way.
+        """
+        self._last_roster_read_at = time.monotonic()
         reconcile_started = time.perf_counter()
         try:
             read_started = time.perf_counter()
             users = self._read_users()
-            log.info(
+            emit = log.debug if periodic else log.info
+            emit(
                 "supervisor_reconcile_registry_loaded",
                 users=len(users.users),
                 elapsed_ms=_elapsed_ms(read_started),

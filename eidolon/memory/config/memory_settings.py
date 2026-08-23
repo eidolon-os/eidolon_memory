@@ -494,6 +494,12 @@ class SupervisorConfig(BaseModel):
     # surface is admin-only, never exposed to agent_runner or end users.
     admin_http_host: str = "127.0.0.1"
     admin_http_port: int = 8019
+    # The authority roster is desired state, so the supervisor converges on it
+    # instead of waiting to be told. SIGHUP and POST /api/admin/reconcile stay
+    # as idempotent accelerators: losing one of those signals — or the process
+    # that would have sent it — must not leave a Realm stranded with no
+    # runtime. 0 disables the periodic pass (tests, manual control).
+    roster_refresh_seconds: int = 60
 
 
 class RegistryConfig(BaseModel):
