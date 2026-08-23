@@ -38,7 +38,7 @@ def memory_space_id_from_storage_name(storage_name: str) -> str | None:
     return value if canonical == token else None
 
 
-def file_sha256(path: Path) -> str:
+def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
@@ -107,7 +107,7 @@ def build_palace_manifest(palace_path: Path, *, deep: bool = False) -> dict[str,
             {
                 "path": str(path.relative_to(palace_path)),
                 "size": path.stat().st_size,
-                "sha256": file_sha256(path),
+                "sha256": _sha256(path),
             }
             for path in files
         ]
