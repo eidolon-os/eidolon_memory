@@ -58,20 +58,57 @@ def test_the_declared_palace_root_is_under_the_declared_authority(
     assert any(palaces.is_relative_to(path) for path in authority)
 
 
-def test_everything_an_eidolon_remembers_is_declared_as_not_carried(
+def test_everything_an_eidolon_remembers_is_carried_by_the_component_that_owns_it(
     contract: dict,
 ) -> None:
+    """It used to be declared as not carried, and the reason is why it is now.
+
+    Chroma stores the embedder on the collection and refuses to open it under
+    another encoder, so a copy of a palace is only restorable alongside the
+    identity it was built with — which an operator tool copying files has no way
+    to know. The declaration that took memory off the uncovered list is
+    therefore this one: the supervisor produces the copy and the manifest, and
+    the operator tool asks for it.
+    """
+
     entry = next(
         item
         for item in contract["state"]["authority"]
         if item["path"] == f"{_STATE_ROOT}/memory"
     )
 
-    assert entry["backup"] == "none"
-    # The reason has to name the thing that makes this hard rather than just
-    # saying it is hard: Chroma stores the embedder on the collection, so a
-    # restore is only meaningful alongside the model identity.
-    assert "encoder" in entry["uncovered_reason"]
+    assert entry["backup"] == "component-action"
+    assert "uncovered_reason" not in entry
+    # The routes an operator tool calls. Declared rather than left for it to
+    # know, so renaming one here is a failing test rather than a backup that
+    # stops being taken.
+    assert entry["snapshot_action"] == "POST /api/admin/realms/{memory_realm_id}/snapshot"
+    assert entry["restore_action"] == "POST /api/admin/realms/{memory_realm_id}/restore"
+
+
+def test_the_declared_actions_are_routes_the_admin_api_serves(contract: dict) -> None:
+    """A declaration nothing serves would be worse than none: a backup would ask
+    and get a 404 that reads like memory is down."""
+
+    from fastapi.routing import APIRoute
+
+    from eidolon.memory.application.user_admin import UserAdmin
+    from eidolon.memory.entrypoints.admin_api import build_admin_api
+
+    entry = next(
+        item
+        for item in contract["state"]["authority"]
+        if item["path"] == f"{_STATE_ROOT}/memory"
+    )
+    served = {
+        f"{method} {route.path}"
+        for route in build_admin_api(UserAdmin.__new__(UserAdmin)).routes
+        if isinstance(route, APIRoute)
+        for method in route.methods
+    }
+
+    assert entry["snapshot_action"] in served
+    assert entry["restore_action"] in served
 
 
 def test_the_encoder_a_host_needs_is_declared_as_an_artifact(contract: dict) -> None:

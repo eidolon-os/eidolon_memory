@@ -86,15 +86,26 @@ sha256 = "7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
 path = "/var/lib/eidolon/memory"
 owner = "eidolon"
 group = "eidolon"
-backup = "none"
-uncovered_reason = """\
-the palace, its vector index and its knowledge graph have no declared \
-snapshot; Chroma persists the embedder on the collection, so a palace cannot \
-be reopened under a different encoder and a restore would have to carry the \
-model identity with it\
-"""
-# This is everything an Eidolon remembers. It is the least acceptable gap in
-# the backup, and saying so here is what keeps it from reading as covered.
+backup = "component-action"
+snapshot_action = "POST /api/admin/realms/{memory_realm_id}/snapshot"
+restore_action = "POST /api/admin/realms/{memory_realm_id}/restore"
+# This is everything an Eidolon remembers, and it was the least acceptable gap
+# in the backup. It is carried now, but not by an operator tool copying files:
+# a space is MemPalace's palace directory, our sibling ledgers directory, and
+# the embedder identity the vectors were produced under. Chroma persists that
+# identity on the collection and refuses to open it under another encoder, so
+# a copy that did not record it could only be restored by guessing.
+#
+# So the supervisor produces the copy — it owns realm lifecycle and knows where
+# palaces live — and writes a manifest naming every file, its digest, and that
+# identity. Ops names the destination, collects the directory and checks the
+# manifest against it.
+#
+# The two actions are not symmetric. A snapshot needs no downtime: every file
+# is SQLite and VACUUM INTO copies a live database consistently. A restore
+# cannot happen under a live runner at all — one process holds a palace — so
+# the supervisor takes that realm's runner off it, which is why putting a copy
+# back is an action here rather than a file the operator tool writes.
 
 [state]
 runtime = ["/run/eidolon/memory"]
