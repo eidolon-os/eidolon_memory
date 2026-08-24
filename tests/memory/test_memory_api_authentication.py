@@ -146,7 +146,14 @@ def test_every_real_owner_route_is_mounted_through_the_factory() -> None:
     app = Starlette(routes=routes)
     with TestClient(app) as http:
         for route in routes:
-            path = route.path
-            anonymous = http.get(path)
-            wrong = http.get(path, headers={"Authorization": "Bearer other"})
-            assert (anonymous.status_code, wrong.status_code) == (401, 401), path
+            # Each route's own methods, not GET for all of them: the family has
+            # POST members now, and asking with the wrong verb would answer 405
+            # and prove nothing about the credential.
+            for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
+                anonymous = http.request(method, route.path)
+                wrong = http.request(
+                    method, route.path, headers={"Authorization": "Bearer other"}
+                )
+                assert (anonymous.status_code, wrong.status_code) == (401, 401), (
+                    f"{method} {route.path}"
+                )

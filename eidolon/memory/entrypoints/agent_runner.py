@@ -856,6 +856,11 @@ def _run_service(
             # credential provisioned fails closed at the boundary instead of
             # somewhere deeper with a less useful message.
             service_token=settings.mcp_http.resolve_api_service_token(),
+            # The forget confirm publishes through the same JetStream stream
+            # every other write uses; this surface is another client of it, not
+            # a second path into memory.
+            command_publisher=command_publisher,
+            command_status=command_status,
         )
     )
     _mount_ops_surface(starlette_app, ops_mcp, path=settings.mcp_http.ops_path)
