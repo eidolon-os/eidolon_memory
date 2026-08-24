@@ -5,33 +5,37 @@ filter is an ``IN`` clause in SQL rather than a pass over the results, there is 
 wildcard token, and an empty audience set returns nothing instead of everything.
 The write side always supplies one value.
 
-That reads like a half-finished feature and is not. **Today a memory space *is*
-``(tenant, owner, companion)``** — ``subjects.py`` derives it that way and each one
-gets its own palace — so a space contains exactly one companion. There is nothing
-to leak between companions and nothing to share, and writing
-``companion:<id>`` into a single-companion palace would change no observable
-behaviour while adding a judgement the steward has to get right on every statement.
+That reads like a half-finished feature and is not — but **the reason has
+changed, and the old one is no longer true**.
 
-The axis becomes real when a space is per-*owner* and one palace holds several
-companions' statements. That is a data-model change with a migration.
+*It used to be:* a memory space was ``(tenant, owner, companion)``, so a space
+held exactly one companion, there was nothing to leak and nothing to share, and
+writing ``companion:<id>`` into a single-companion palace would change no
+observable behaviour.
 
-**That decision has since been made** (2026-08-23,
-``docs/跨系统/多Companion记忆隔离机制裁决.md``): a space becomes per-owner, and the
-audience axis becomes the *only* thing separating one Companion's private
-statements from another's. The read path now receives the identity it needs to
-apply the filter (``--owner-id`` / ``--companion-id`` reach the runner). What has
-not changed is the write side, which still puts every statement in the owner
-layer — so this file still holds, and still fails loudly if someone finishes the
-write side ahead of the migration.
+*It is now:* a space is per-**owner** (ratified 2026-08-23,
+``docs/跨系统/多Companion记忆隔离机制裁决.md``; the schema change landed in
+``eidolon_data@13d7858``). One palace holds every Companion's statements, and the
+audience axis is the only thing that could separate them. The read side applies
+it on both production paths — see ``test_companion_audience_isolation.py``, which
+proves a companion-layer statement is invisible to another Companion through the
+recall code rather than only through the storage adapter.
 
-So this file pins the current state as deliberate. Its job is to fail loudly when
-someone decides to "finish" the write side, so that the change is made together
-with the data-model change rather than ahead of it — and to be deleted, with the
-production writes, when that day comes.
+So the blocker today is **nothing marks a statement as private**. There is no
+intent, no field, and no product surface where a person says "keep this between
+us"; the memory-governance UI that would offer it is Phase 4. Finishing the write
+side before that exists would create a private layer that nothing can put
+anything into, and a steward judgement with no signal to judge on.
+
+This file therefore still pins the write side as owner-only — for the new reason.
+Delete it, with the production writes it guards, on the day a marking path lands:
+not when the space became per-owner (that has already happened), but when
+something can say which statements are private.
 
 ``docs/ARCHITECTURE.md`` lists 写入侧 audience 归层 under 未完成 with the blocker
 "需要 steward 逐条判断". That is the right blocker for the wrong reason: the cost is
-not the judgement, it is that the judgement has nothing to distinguish yet.
+not the judgement, it is that the judgement has no signal to act on — nobody can
+yet tell the Host that something is private.
 """
 
 from __future__ import annotations
@@ -72,7 +76,7 @@ def _audience_arguments(path: Path) -> list[str]:
 
 
 def test_no_production_path_writes_a_companion_audience() -> None:
-    """The pin. A space is one companion, so owner is the only correct layer."""
+    """The pin. Nothing marks a statement private yet, so owner is the only layer."""
 
     offenders: list[str] = []
     for relative in _WRITE_SITES:
@@ -84,9 +88,10 @@ def test_no_production_path_writes_a_companion_audience() -> None:
     assert not offenders, (
         "a production path now writes a non-owner audience:\n  "
         + "\n  ".join(offenders)
-        + "\n\nThat is only correct once a memory space is per-owner rather than "
-        "per-companion. If that change has landed, delete this test with the "
-        "single-companion assumption it records."
+        + "\n\nThe space is already per-owner, so the axis is real — but nothing "
+        "marks a statement private yet. If a marking path has landed (an intent, "
+        "a field, a person saying 'keep this between us'), delete this test "
+        "together with the assumption it records."
     )
 
 
@@ -104,9 +109,9 @@ def test_the_write_sites_are_all_still_here() -> None:
 async def test_the_read_side_already_separates_the_two_layers(tmp_path) -> None:
     """Built, tested, and currently fed one value.
 
-    Worth asserting alongside the pin: the reason not to write companion
-    audiences today is the data model, not a missing mechanism. When a space
-    becomes per-owner this already works.
+    Worth asserting alongside the pin: what is missing is a *marking path*, not
+    a mechanism. The end-to-end version of this — through the recall code rather
+    than the adapter — is in ``test_companion_audience_isolation.py``.
     """
 
     graph = SqliteKnowledgeGraph(
