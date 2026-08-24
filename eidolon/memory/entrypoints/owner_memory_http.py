@@ -15,7 +15,7 @@ of them hands out filesystem paths.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from starlette.requests import Request
@@ -40,6 +40,7 @@ from eidolon.memory.entrypoints.memory_api import (
     actor_context,
     memory_api_routes,
 )
+from eidolon.memory.application.owner_export import build_owner_export
 from eidolon.memory.entrypoints.recollections_http import (
     RECOLLECTIONS_PATH,
     recollections_handler,
@@ -49,6 +50,7 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 BROWSE_PATH = "/api/memory/v1/browse"
+EXPORT_PATH = "/api/memory/v1/export"
 ENTRIES_PATH = "/api/memory/v1/entries"
 FORGET_PREVIEW_PATH = "/api/memory/v1/forget/preview"
 FORGET_CONFIRM_PATH = "/api/memory/v1/forget/confirm"
@@ -60,8 +62,13 @@ FORGET_CONFIRM_PATH = "/api/memory/v1/forget/confirm"
 DEFAULT_SCAN = 4000
 MAXIMUM_SCAN = 20000
 #: Titles listed per room. Enough to recognise a room's contents, not enough to
-#: turn a browse into a bulk export — that is what ``export`` will be for.
+#: turn a browse into a bulk export — that is what ``export`` is for.
 TITLES_PER_ROOM = 12
+#: How much of the palace one export reads. The same bound as a browse, because
+#: it is the same full enumeration, but taken by default rather than on request:
+#: a browse is a page someone is looking at, and a partial export is the failure
+#: mode rather than a cheaper answer.
+DEFAULT_EXPORT_SCAN = MAXIMUM_SCAN
 #: Entries returned in one answer. A day's worth of memory is short; a client
 #: asking for more than this is asking for the library, which has its own read.
 DEFAULT_ENTRIES = 50
@@ -133,6 +140,68 @@ def browse_handler(
                 "operation": "memory.browse",
                 "memory_space_id": memory_space_id,
                 **browse,
+            }
+        )
+
+    return handle
+
+
+def export_handler(
+    *,
+    service: MemoryService,
+    settings: MemorySettings,
+    memory_space_id: str,
+    owner_id: str | None = None,
+) -> Handler:
+    """A copy of this memory the person can read and keep.
+
+    The other three reads are pages: they shorten, roll up, and page, because
+    someone is looking at them. This one is a file, so it carries statements
+    whole and puts the ones it cannot date at the end instead of leaving them
+    out — an export that omitted something would be a copy that quietly is not
+    one.
+
+    Deliberately not the Host backup. That copy is the palace itself and exists
+    so a lost disk is survivable; this one exists so a person is not locked in,
+    and the two have almost nothing in common but the word.
+
+    ``companion_id`` selects an audience exactly as the browse does, for the same
+    reason: an export must not be able to see what recall cannot.
+    """
+
+    policy = RecallPolicyRegistry.default()
+
+    async def handle(request: Request) -> Response:
+        companion_id = (request.query_params.get("companion_id") or "").strip() or None
+        context = actor_context(
+            memory_space_id=memory_space_id,
+            owner_id=owner_id,
+            companion_id=companion_id,
+        )
+        try:
+            runtime = await service.runtime_for(context)
+            export = await build_owner_export(
+                runtime.backend,
+                visible=lambda record: policy.visible(record, context=context),
+                max_records=DEFAULT_EXPORT_SCAN,
+            )
+        except Exception as exc:  # noqa: BLE001 - a read must not take the process down
+            log.exception(
+                "owner_export_failed",
+                memory_space_id=memory_space_id,
+                error=str(exc),
+            )
+            # Not an empty file: a person who saved one would believe their
+            # Eidolon remembers nothing.
+            return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
+
+        return JSONResponse(
+            {
+                "contract_version": "1",
+                "operation": "memory.export",
+                "memory_space_id": memory_space_id,
+                "taken_at": datetime.now(UTC).isoformat(),
+                **export,
             }
         )
 
@@ -432,6 +501,7 @@ def owner_memory_routes(
     routes: dict[str, tuple[Handler, list[str]]] = {
         RECOLLECTIONS_PATH: (recollections_handler(**shared), ["GET"]),
         BROWSE_PATH: (browse_handler(**shared), ["GET"]),
+        EXPORT_PATH: (export_handler(**shared), ["GET"]),
         ENTRIES_PATH: (entries_handler(**shared), ["GET"]),
         FORGET_PREVIEW_PATH: (
             forget_preview_handler(
