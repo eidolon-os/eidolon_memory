@@ -311,6 +311,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         env_overrides: dict[str, str] | None = None,
         palace_root_override: Path | None = None,
         extra_settings: dict[str, Any] | None = None,
+        keep_palace: bool = False,
     ) -> _AgentHandle:
         memory_space_id = _e2e_memory_space_id(user_id)
         # Not a parameter. Where an agent listens is a fact about running two
@@ -326,7 +327,12 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         # tests that read the palace (restart handoff copytree, KG sqlite
         # probes) hit a non-existent path.
         palace_dir = palace_root / memory_space_storage_name(memory_space_id)
-        if palace_dir.exists():
+        # A fresh palace per spawn, unless the test's subject is data that
+        # outlived a process: durability across restart, or a realm restored
+        # from a copy. Those cannot be written as a spawn with a different
+        # ``user_id`` — the palace directory is named after the space id, and
+        # copying files between two of them is a test of copytree.
+        if palace_dir.exists() and not keep_palace:
             shutil.rmtree(palace_dir)
         # Keep SQLite/Chroma temporary files isolated per agent process as
         # well as the persistent Palace itself.  On macOS, leaving child

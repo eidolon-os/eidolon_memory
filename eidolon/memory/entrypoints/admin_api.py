@@ -19,6 +19,10 @@ Routes:
     POST   /api/admin/reconcile              re-read the authority roster
     DELETE /api/admin/realms/{memory_realm_id}/orphan
                                                 cleanup removed realm palace
+    POST   /api/admin/realms/{memory_realm_id}/snapshot
+                                                copy one realm for a backup
+    POST   /api/admin/realms/{memory_realm_id}/restore
+                                                put such a copy back
     POST   /api/admin/realms/{memory_realm_id}/memory/rebuild-index
                                                 async rebuild vector index
     GET    /api/admin/memory/rebuild-index/{job_id}
@@ -82,6 +86,26 @@ class SnapshotRequest(BaseModel):
     def _absolute(cls, value: str) -> str:
         if not Path(value).is_absolute():
             raise ValueError("destination must be an absolute path")
+        return value
+
+
+class RestoreRequest(BaseModel):
+    """Which copy to put back.
+
+    Absolute for the same reason a destination is, and a directory rather than a
+    manifest path: the manifest describes the files beside it, so naming one
+    without the other is a way to ask for half a restore.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(..., min_length=1, max_length=4096)
+
+    @field_validator("source")
+    @classmethod
+    def _absolute(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("source must be an absolute path")
         return value
 
 
@@ -163,6 +187,28 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
         try:
             return await user_admin.snapshot_realm(
                 memory_realm_id, destination=Path(body.destination)
+            )
+        except UserAdminError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @app.post("/api/admin/realms/{memory_realm_id}/restore")
+    async def restore_realm(memory_realm_id: str, body: RestoreRequest) -> dict:
+        """Put a copy of this realm back, replacing what it holds now.
+
+        The destructive half of the pair, and the one that has to be ordered
+        rather than offered: the caller holds the backup and decides that this
+        realm should become it. Everything that could make that wrong — a
+        directory that is not a snapshot, files that do not match their digests,
+        a snapshot of a different realm, a different embedder — is refused here
+        before anything is written, so a refusal leaves the realm exactly as it
+        was.
+
+        200 rather than 201: nothing new exists afterwards, and the body says
+        whether the realm's runner came back.
+        """
+        try:
+            return await user_admin.restore_realm(
+                memory_realm_id, source=Path(body.source)
             )
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

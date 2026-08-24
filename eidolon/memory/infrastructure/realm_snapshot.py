@@ -12,15 +12,18 @@ to exist if a load-bearing file is missing (see
 ``eidolon_memory_contracts.snapshot``). An incomplete copy that sits in a backup
 directory looking valid is worse than a failure at the moment of taking it.
 
-Restore is deliberately not here. It cannot be done under a live runner — one
-process holds a palace, enforced by a lock — so it belongs with the component
-that can stop one.
+Restore is here too, but it does not decide *when*. Putting a copy back cannot
+be done under a live runner — one process holds a palace, enforced by a lock —
+so the caller stops the realm's runner first and this refuses to write unless
+that actually happened. The refusal is not a comment: it takes the same lock
+the runner holds, so "the caller says it stopped it" is never taken on trust.
 """
 
 from __future__ import annotations
 
 import shutil
 import sqlite3
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -51,6 +54,15 @@ class SnapshotError(RuntimeError):
     """The copy was not taken, and nothing incomplete was left behind."""
 
 
+class RestoreError(RuntimeError):
+    """The copy was not put back, and the realm was left as it was.
+
+    Every check a restore can make happens before the first byte is written,
+    because a realm that is half of two copies is the one state nothing on the
+    Host knows how to describe.
+    """
+
+
 def _vacuum_into(source: Path, destination: Path) -> None:
     connection = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
     try:
@@ -70,7 +82,7 @@ def write_realm_snapshot(
     destination: Path,
     memory_space_id: str,
     embedder_identity: str,
-    embedder_dimension: int,
+    embedder_dimension: int | None,
     owner_id: str | None = None,
 ) -> RealmSnapshot:
     """Copy one space into ``destination`` and return the manifest written there.
@@ -169,3 +181,129 @@ def verify_realm_snapshot(destination: Path) -> RealmSnapshot:
         if file_sha256(path) != entry.sha256:
             raise SnapshotError(f"snapshot file does not match its digest: {entry.path}")
     return snapshot
+
+
+def read_realm_snapshot(source: Path) -> RealmSnapshot:
+    """Parse the manifest in ``source``, or refuse.
+
+    The manifest is what decides whether a directory is a snapshot: a copy
+    missing a load-bearing file cannot even be described, because the contract
+    refuses to build. So this is also the check that a directory found in a
+    backup is one of ours rather than something that happens to sit there.
+    """
+
+    manifest_path = Path(source) / MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise RestoreError(f"not a realm snapshot: no {MANIFEST_NAME} in {source}")
+    try:
+        return RealmSnapshot.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RestoreError(f"snapshot manifest is not readable: {exc}") from exc
+
+
+def verify_realm_snapshot(source: Path, snapshot: RealmSnapshot) -> None:
+    """Check every file against the digest the manifest recorded.
+
+    Before anything is written, and over the whole set rather than file by file
+    as they are copied: a restore that stops halfway through because the sixth
+    ledger was truncated has already replaced five, and there is no copy of what
+    it replaced.
+    """
+
+    source = Path(source)
+    for entry in snapshot.entries:
+        path = source / entry.path
+        if not path.is_file():
+            raise RestoreError(f"snapshot file is missing: {entry.path}")
+        if path.stat().st_size != entry.bytes:
+            raise RestoreError(f"snapshot file is the wrong size: {entry.path}")
+        if file_sha256(path) != entry.sha256:
+            raise RestoreError(f"snapshot file does not match its digest: {entry.path}")
+
+
+def restore_realm_snapshot(
+    *,
+    source: Path,
+    palace_path: Path,
+    ledgers_path: Path,
+    snapshot: RealmSnapshot | None = None,
+) -> dict:
+    """Put a verified copy back, replacing whatever the realm holds now.
+
+    Whole directories are replaced rather than files written into the live ones.
+    A file-by-file write would leave the palace holding a mixture — its vectors
+    from the copy and a stray segment file from before — and MemPalace has no way
+    to notice that. Replacing the directory means the only two outcomes are the
+    copy and what was there before.
+
+    What was there before is moved aside rather than deleted, and only removed
+    once both directories are in place. That is what makes an interrupted
+    restore recoverable by hand instead of a realm that no longer exists.
+    """
+
+    source = Path(source)
+    palace_path = Path(palace_path)
+    ledgers_path = Path(ledgers_path)
+    snapshot = snapshot or read_realm_snapshot(source)
+    verify_realm_snapshot(source, snapshot)
+
+    staged_palace = _stage(source / PALACE_PREFIX, palace_path)
+    staged_ledgers = _stage(source / LEDGERS_PREFIX, ledgers_path)
+    moved_aside: list[tuple[Path, Path]] = []
+    replaced: list[Path] = []
+    try:
+        for staged, live in ((staged_palace, palace_path), (staged_ledgers, ledgers_path)):
+            if live.exists():
+                aside = live.with_name(f".{live.name}.replaced-{uuid.uuid4().hex}")
+                live.rename(aside)
+                moved_aside.append((aside, live))
+            staged.rename(live)
+            replaced.append(live)
+    except OSError as exc:
+        # Back out in reverse: drop whatever of the copy was already in place,
+        # then put back what was moved aside. A failure on the ledgers must not
+        # leave the palace holding a copy the ledgers disagree with.
+        for live in reversed(replaced):
+            shutil.rmtree(live, ignore_errors=True)
+        for aside, live in reversed(moved_aside):
+            if not live.exists():
+                aside.rename(live)
+        raise RestoreError(f"restore could not replace the realm directories: {exc}") from exc
+    finally:
+        # Only ever the staging directories: after a successful rename they no
+        # longer exist, and after a rollback they hold the copy rather than
+        # anything of the realm's.
+        for staged in (staged_palace, staged_ledgers):
+            if staged.exists():
+                shutil.rmtree(staged, ignore_errors=True)
+    for aside, _live in moved_aside:
+        shutil.rmtree(aside, ignore_errors=True)
+
+    return {
+        "memory_space_id": snapshot.memory_space_id,
+        "taken_at": snapshot.taken_at,
+        "embedder_identity": snapshot.embedder_identity,
+        "file_count": len(snapshot.entries),
+        "total_bytes": snapshot.total_bytes,
+        "palace_path": str(palace_path),
+        "ledgers_path": str(ledgers_path),
+    }
+
+
+def _stage(copied: Path, live: Path) -> Path:
+    """Build the replacement beside where it will land.
+
+    Beside it so the swap is a rename: a rename across filesystems is a copy
+    with a window in which the realm is neither state, and this is the one
+    moment that window would matter.
+    """
+
+    if not copied.is_dir():
+        raise RestoreError(f"snapshot is missing its {copied.name} directory")
+    staging = live.with_name(f".{live.name}.restoring-{uuid.uuid4().hex}")
+    try:
+        shutil.copytree(copied, staging)
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RestoreError(f"restore could not stage {copied.name}: {exc}") from exc
+    return staging

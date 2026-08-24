@@ -23,6 +23,8 @@ import signal
 import subprocess
 import time
 from collections import deque
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -334,6 +336,32 @@ class Supervisor:
         """
         await self._reconcile()
 
+    @asynccontextmanager
+    async def realm_paused(self, user: UserEntry) -> AsyncIterator[None]:
+        """Hold one realm's processes off its palace for the duration.
+
+        Maintenance that rewrites a palace cannot run while a runner owns it —
+        one process holds a palace, enforced by a lock — and only the supervisor
+        can take that runner away, which is why this is here rather than in the
+        control plane that decides what the maintenance is.
+
+        Putting the realm back is a reconcile rather than a start. The roster is
+        desired state: the supervisor brings the child back if the realm is still
+        meant to be running, and does not if the roster has since said otherwise.
+        The reconcile happens even when the body failed, because a realm left
+        stopped by a failed operation is a person whose Eidolon stopped answering.
+        """
+
+        user_id = user.id
+        await asyncio.to_thread(self._terminate_consolidator, user_id)
+        child = self._children.pop(user_id, None)
+        if child is not None:
+            await asyncio.to_thread(child.terminate, grace_seconds=30.0)
+        try:
+            yield
+        finally:
+            await self._reconcile()
+
     async def rebuild_memory_index(self, user: UserEntry, *, log_path: Path) -> dict:
         """Rebuild one user's MemPalace vector index without opening Chroma here.
 
@@ -346,85 +374,83 @@ class Supervisor:
         backend = selected_mempalace_backend(self._settings)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        await asyncio.to_thread(self._terminate_consolidator, user_id)
-        child = self._children.pop(user_id, None)
-        if child is not None:
-            await asyncio.to_thread(child.terminate, grace_seconds=30.0)
-
-        cli = _resolve_mempalace_cli()
-        cmd = [
-            cli,
-            "--backend",
-            backend,
-            "--palace",
-            str(palace_path),
-            "repair",
-            "--mode",
-            "from-sqlite",
-            "--archive-existing",
-            "--yes",
-        ]
-        log.info(
-            "supervisor_rebuild_index_start",
-            user_id=user_id,
-            palace=str(palace_path),
-            backend=backend,
-            log_path=str(log_path),
-        )
-        with log_path.open("ab", buffering=0) as fh:
-            fh.write(
-                (
-                    f"\n[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
-                    f"running: {' '.join(cmd)}\n"
-                ).encode()
+        # The runner has to be off the palace for a repair that rewrites the
+        # index; the supervisor is what can take it off, and the reconcile on
+        # the way out is what brings it back.
+        async with self.realm_paused(user):
+            cli = _resolve_mempalace_cli()
+            cmd = [
+                cli,
+                "--backend",
+                backend,
+                "--palace",
+                str(palace_path),
+                "repair",
+                "--mode",
+                "from-sqlite",
+                "--archive-existing",
+                "--yes",
+            ]
+            log.info(
+                "supervisor_rebuild_index_start",
+                user_id=user_id,
+                palace=str(palace_path),
+                backend=backend,
+                log_path=str(log_path),
             )
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=fh,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                env=mempalace_backend_env(self._settings),
-            )
-            repair_returncode = await proc.wait()
-            returncode = repair_returncode
-            embedder_identity_recorded = False
-            embedding_model = self._settings.mempalace.embedding_model.strip()
-            if returncode == 0 and embedding_model:
-                identity_cmd = [
-                    cli,
-                    "--backend",
-                    backend,
-                    "--palace",
-                    str(palace_path),
-                    "palace",
-                    "set-embedder",
-                    "--model",
-                    embedding_model,
-                ]
+            with log_path.open("ab", buffering=0) as fh:
                 fh.write(
                     (
-                        f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
-                        f"running: {' '.join(identity_cmd)}\n"
+                        f"\n[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
+                        f"running: {' '.join(cmd)}\n"
                     ).encode()
                 )
-                identity_proc = await asyncio.create_subprocess_exec(
-                    *identity_cmd,
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
                     stdout=fh,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
                     env=mempalace_backend_env(self._settings),
                 )
-                identity_returncode = await identity_proc.wait()
-                embedder_identity_recorded = identity_returncode == 0
-                if identity_returncode != 0:
-                    returncode = identity_returncode
-            fh.write(
-                (
-                    f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] exit: {returncode}\n"
-                ).encode()
-            )
+                repair_returncode = await proc.wait()
+                returncode = repair_returncode
+                embedder_identity_recorded = False
+                embedding_model = self._settings.mempalace.embedding_model.strip()
+                if returncode == 0 and embedding_model:
+                    identity_cmd = [
+                        cli,
+                        "--backend",
+                        backend,
+                        "--palace",
+                        str(palace_path),
+                        "palace",
+                        "set-embedder",
+                        "--model",
+                        embedding_model,
+                    ]
+                    fh.write(
+                        (
+                            f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
+                            f"running: {' '.join(identity_cmd)}\n"
+                        ).encode()
+                    )
+                    identity_proc = await asyncio.create_subprocess_exec(
+                        *identity_cmd,
+                        stdout=fh,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL,
+                        env=mempalace_backend_env(self._settings),
+                    )
+                    identity_returncode = await identity_proc.wait()
+                    embedder_identity_recorded = identity_returncode == 0
+                    if identity_returncode != 0:
+                        returncode = identity_returncode
+                fh.write(
+                    (
+                        f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] exit: {returncode}\n"
+                    ).encode()
+                )
 
-        await self._reconcile()
         log.info(
             "supervisor_rebuild_index_done",
             user_id=user_id,

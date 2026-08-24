@@ -93,8 +93,8 @@ class PalaceEmbedder(NamedTuple):
 def palace_embedder(palace_path: Path) -> PalaceEmbedder:
     """The embedder a palace was built with, and how confidently we know it.
 
-    Returns ``(name, source)``. ``palace`` means MemPalace's own record, which is
-    authoritative — vectors only mean anything under the embedder that produced
+    ``source`` is how the answer was obtained. ``palace`` means MemPalace's own
+    record, which is authoritative — vectors only mean anything under the embedder that produced
     them, and configuration records *intent*, which can have moved on. That
     distinction is not academic: it is what made an earlier quality benchmark
     measure minilm while production ran embeddinggemma.

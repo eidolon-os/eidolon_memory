@@ -26,6 +26,7 @@ import shutil
 import time
 import uuid
 from collections.abc import Iterable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,8 +35,16 @@ from typing import Protocol, runtime_checkable
 from eidolon.memory.config.palace_directory import LEDGERS_DIR_SUFFIX
 from eidolon.memory.config.registry import load_users_config
 from eidolon.memory.infrastructure.palace_inventory import palace_embedder
+from eidolon.memory.config.memory_settings import get_memory_settings, resolve_run_dir
+from eidolon.memory.infrastructure.history_reset import (
+    HistoryResetSafetyError,
+    acquire_realm_reset_locks,
+)
 from eidolon.memory.infrastructure.realm_snapshot import (
+    RestoreError,
     SnapshotError,
+    read_realm_snapshot,
+    restore_realm_snapshot,
     write_realm_snapshot,
 )
 from eidolon.memory.config.users import (
@@ -95,6 +104,19 @@ class SnapshotNotPossible(UserAdminError):
     status_code = 409
 
 
+class RestoreNotPossible(UserAdminError):
+    """This copy was not put back, and the realm was left as it was.
+
+    Separate from :class:`SnapshotNotPossible` because the two are answered
+    differently: a realm that cannot be copied is a realm to look at, while a
+    copy that cannot be restored is a *backup* to look at — and an operator
+    holding a directory that will not restore needs to know which of the two
+    they have before they break anything else trying.
+    """
+
+    status_code = 409
+
+
 class UserRegistryReadOnly(UserAdminError):
     status_code = 409
 
@@ -145,6 +167,14 @@ class _SupervisorProtocol(Protocol):
     async def rebuild_memory_index(self, user: UserEntry, *, log_path: Path) -> dict:
         """Stop this user's runtime, rebuild its MemPalace vector index, then
         reconcile the runtime back to the registry's desired state.
+        """
+        ...
+
+    def realm_paused(self, user: UserEntry) -> AbstractAsyncContextManager[None]:
+        """Hold this realm's processes off its palace for the duration.
+
+        An async context manager: the child is stopped on the way in and the
+        roster is reconciled on the way out, including when the body failed.
         """
         ...
 
@@ -505,6 +535,131 @@ class UserAdmin:
             "destination": str(destination),
             "manifest": snapshot.model_dump(mode="json"),
         }
+
+    async def restore_realm(
+        self,
+        user_id: str,
+        *,
+        source: Path,
+        worker_return_timeout_s: float = 30.0,
+    ) -> dict:
+        """Put a snapshot back into a realm, or refuse and leave it alone.
+
+        The mirror of :meth:`snapshot_realm`, and deliberately not its
+        equal: taking a copy is free and putting one back is not. A palace can
+        only be held by one process, so this stops the realm's runner, and the
+        restore itself takes the same lock that runner holds — the stop is
+        proven rather than trusted.
+
+        Every refusal happens before a byte is written. Three of them:
+
+        - the directory is not a snapshot, or its files do not match the digests
+          the manifest recorded;
+        - the snapshot is of a different realm, which is the mistake that would
+          otherwise write one person's memory into another's;
+        - the palace on disk was built under a different embedder. Vectors mean
+          nothing under another encoder — the vector store refuses to open such a
+          collection — so restoring across that line produces a realm that starts
+          and then cannot answer.
+
+        Afterwards the realm is *not* started by this. The roster is desired
+        state and the supervisor reconciles to it; what this does is say whether
+        that actually happened, because "restored" with a runner that never came
+        back is the report an operator would act on wrongly.
+        """
+
+        async with self._lock:
+            entry = load_users_config().find(user_id)
+            if entry is None:
+                raise UserNotFound(f"unknown memory realm: {user_id!r}")
+
+            source = Path(source)
+            try:
+                snapshot = read_realm_snapshot(source)
+            except RestoreError as exc:
+                raise RestoreNotPossible(str(exc)) from exc
+            if snapshot.memory_space_id != user_id:
+                raise RestoreNotPossible(
+                    f"snapshot is of realm {snapshot.memory_space_id!r}, "
+                    f"not {user_id!r}"
+                )
+
+            palace_path = self._sup.palace_path_for(entry)
+            ledgers_path = palace_path.with_name(palace_path.name + LEDGERS_DIR_SUFFIX)
+            live = palace_embedder(palace_path)
+            if live.source == "palace" and live.name != snapshot.embedder_identity:
+                # Compared marker to marker rather than snapshot to
+                # configuration: both sides are then the same vocabulary —
+                # MemPalace's own record of what built a palace — and no mapping
+                # from a settings key has to be right for the refusal to be.
+                raise RestoreNotPossible(
+                    f"realm {user_id!r} was built with embedder {live.name!r} and "
+                    f"the snapshot was taken under {snapshot.embedder_identity!r}; "
+                    "restoring across that would produce vectors nothing can read"
+                )
+
+            run_dir = resolve_run_dir(get_memory_settings())
+
+            def _restore() -> dict:
+                with acquire_realm_reset_locks(run_dir, [user_id]):
+                    return restore_realm_snapshot(
+                        source=source,
+                        palace_path=palace_path,
+                        ledgers_path=ledgers_path,
+                        snapshot=snapshot,
+                    )
+
+            async with self._sup.realm_paused(entry):
+                try:
+                    result = await asyncio.to_thread(_restore)
+                except HistoryResetSafetyError as exc:
+                    # The runner was asked to stop and something still holds the
+                    # palace. Writing anyway is how two processes come to
+                    # disagree about what a realm contains.
+                    raise WorkerNotTerminated(str(exc)) from exc
+                except RestoreError as exc:
+                    raise RestoreNotPossible(str(exc)) from exc
+
+            running = await self._await_worker_return(
+                user_id,
+                expected=entry.enabled,
+                timeout_s=worker_return_timeout_s,
+            )
+            log.info(
+                "user_admin_realm_restored",
+                user_id=user_id,
+                taken_at=result.get("taken_at"),
+                file_count=result.get("file_count"),
+                worker_running=running,
+            )
+            return {
+                "memory_realm_id": user_id,
+                "restored": result,
+                # §9.4 of the isolation decision asks for an assertion that the
+                # realm reconverged rather than an assumption that it did.
+                "worker_running": running,
+                "roster_enabled": entry.enabled,
+            }
+
+    async def _await_worker_return(
+        self, user_id: str, *, expected: bool, timeout_s: float
+    ) -> bool:
+        """Whether the runner is back, waited for only when it should be.
+
+        A disabled realm has no runner to wait for, and waiting anyway would
+        report a timeout as if something were wrong.
+        """
+
+        if not expected:
+            return self._sup.is_worker_alive(user_id)
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if self._sup.is_worker_alive(user_id):
+                return True
+            if time.monotonic() >= deadline:
+                log.error("user_admin_worker_did_not_return", user_id=user_id)
+                return False
+            await asyncio.sleep(0.1)
 
     async def cleanup_orphaned_user(
         self,
