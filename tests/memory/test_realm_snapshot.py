@@ -24,6 +24,7 @@ from eidolon_memory_contracts.snapshot import (
 from eidolon.memory.config.palace_directory import LEDGER_FILENAMES
 from eidolon.memory.infrastructure.realm_snapshot import (
     MANIFEST_NAME,
+    RestoreError,
     SnapshotError,
     verify_realm_snapshot,
     write_realm_snapshot,
@@ -134,7 +135,10 @@ def test_verify_notices_a_changed_file(
     _take(space, tmp_path / "copy")
     graph = tmp_path / "copy" / LEDGERS_PREFIX / "knowledge_graph.sqlite3"
     graph.write_bytes(graph.read_bytes() + b"tampered")
-    with pytest.raises(SnapshotError, match="knowledge_graph"):
+    # ``RestoreError``: the two moments that verify a copy ask the same question,
+    # and the answer that matters is "do not rely on this", not which caller
+    # asked.
+    with pytest.raises(RestoreError, match="knowledge_graph"):
         verify_realm_snapshot(tmp_path / "copy")
 
 
@@ -143,7 +147,7 @@ def test_verify_notices_a_missing_file(
 ) -> None:
     _take(space, tmp_path / "copy")
     (tmp_path / "copy" / LEDGERS_PREFIX / "commitments.sqlite3").unlink()
-    with pytest.raises(SnapshotError, match="commitments"):
+    with pytest.raises(RestoreError, match="commitments"):
         verify_realm_snapshot(tmp_path / "copy")
 
 

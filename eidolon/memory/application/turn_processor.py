@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from eidolon_memory_contracts import (
+    AudienceMutationCommand,
     OWNER_AUDIENCE,
     ConsolidatorIngestThemeCommand,
     ConversationTurnPayload,
@@ -38,6 +39,8 @@ from eidolon.memory.application.explicit_intents import (
 )
 from eidolon.memory.application.forget import (
     archive_exact_drawers,
+    assign_audience_to_exact_drawers,
+    assign_graph_audience_for_drawers,
     delete_exact_drawers,
     forget_graph_for_drawers,
 )
@@ -880,6 +883,32 @@ async def process_command_message(
                 # triples are ordinary, but a forget that touched drawers and no
                 # statements on a graph-enabled space is worth looking at.
                 kg_statements_forgotten=forgotten,
+            )
+        elif isinstance(cmd, AudienceMutationCommand):
+            # Both stores, for the same reason a forget reaches both: the drawer
+            # is what a person sees and the triples are what the next prompt is
+            # built from. Moving only the drawer would make the product agree to
+            # keep something between two people and then tell the third.
+            #
+            # Unlike a forget, nothing becomes unrecallable — the statement stays
+            # valid and is recalled in full by the Companion it now belongs to.
+            moved_statements = await assign_graph_audience_for_drawers(
+                backend, kg, cmd.memory_space_id, cmd.drawer_ids, cmd.audience
+            )
+            changed = await assign_audience_to_exact_drawers(
+                backend, cmd.memory_space_id, cmd.drawer_ids, cmd.audience
+            )
+            resource_id = f"audience:{cmd.audience}:{len(changed)}"
+            log.info(
+                "cmd_audience_mutation_ok",
+                request_id=cmd.request_id,
+                audience=cmd.audience,
+                drawer_count=len(changed),
+                # Asked for and moved, separately. They differ when a drawer was
+                # forgotten between the page being read and the button being
+                # pressed, which is ordinary and not a failure.
+                asked_for=len(cmd.drawer_ids),
+                kg_statements_moved=moved_statements,
             )
         elif isinstance(cmd, DeviceSyncBatchPayload):
             log.info(

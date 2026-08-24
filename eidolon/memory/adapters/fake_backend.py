@@ -8,6 +8,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from eidolon_memory_contracts import validate_audience
+
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -193,6 +195,20 @@ class FakeMemoryBackend:
         for key in unique:
             self.docs.pop(self._doc_id(memory_space_id, key), None)
         return unique
+
+    async def assign_audience(
+        self, memory_space_id: str, keys: list[str], audience: str
+    ) -> list[str]:
+        target = validate_audience(audience)
+        moved: list[str] = []
+        for key in dict.fromkeys(keys):
+            did = self._doc_id(memory_space_id, key)
+            record = self.docs.get(did)
+            if record is None:
+                continue
+            record.metadata = {**record.metadata, "audience": target}
+            moved.append(key)
+        return moved
 
     async def archive_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
         archived: list[str] = []

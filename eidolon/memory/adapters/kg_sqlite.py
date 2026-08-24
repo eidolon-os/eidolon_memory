@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from eidolon_memory_contracts import SENSITIVE_PREDICATES
+from eidolon_memory_contracts import SENSITIVE_PREDICATES, validate_audience
 
 from eidolon.memory.adapters.kg_sql import (
     JOIN_ENTITIES,
@@ -405,6 +405,46 @@ class SqliteKnowledgeGraph:
         ended: str | None = None,
     ) -> int:
         return await self._forget_by("source_turn_id", turn_ids, hard=hard, ended=ended)
+
+    async def move_source_turns_to_audience(
+        self, turn_ids: Sequence[str], *, audience: str
+    ) -> int:
+        """Move every statement from these turns to another audience.
+
+        The graph half of "只让它记得". Without it the drawer moves and the
+        triples extracted from it stay in the owner layer, so the memory would
+        disappear from one Eidolon's browse and still be handed to it in the next
+        prompt — the product agreeing to keep something between two people and
+        then telling the third.
+
+        Keyed on the source turn for the same reason the forget is: the turn is
+        the only pointer a drawer carries to what was extracted from it.
+
+        Unlike a forget this ends no interval and removes nothing. Statements
+        stay valid, keep their history, and are still recalled — by the Eidolon
+        they now belong to. So there is no ``hard`` variant and nothing to write
+        into the forgotten-statements record: nothing was forgotten.
+        """
+
+        wanted = list(dict.fromkeys(v.strip() for v in turn_ids if v and v.strip()))
+        if not wanted:
+            return 0
+        target = validate_audience(audience)
+        async with self._lock.writer():
+            return await asyncio.to_thread(self._move_audience_sync, wanted, target)
+
+    def _move_audience_sync(self, turn_ids: list[str], audience: str) -> int:
+        placeholders = ", ".join("?" for _ in turn_ids)
+        connection = self._connection()
+        with connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE kg_statements SET audience = ?
+                WHERE space_id = ? AND source_turn_id IN ({placeholders})
+                """,
+                (audience, self._space_id, *turn_ids),
+            )
+        return cursor.rowcount or 0
 
     async def forget_statements(
         self,

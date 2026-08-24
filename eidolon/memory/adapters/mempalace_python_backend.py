@@ -11,6 +11,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from eidolon_memory_contracts import validate_audience
+
 from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
 from eidolon.memory.adapters.search_payload import parse_search_tool_payload
 from eidolon.memory.config.memory_settings import MemorySettings
@@ -708,6 +710,68 @@ class MemPalacePythonBackend(MemoryBackend):
             ]
             if failed:
                 msg = f"drawers remain recallable after archive: {failed!r}"
+                raise MemoryBackendWriteFailed(msg)
+            return existing_ids
+        except ImportError as exc:
+            raise MemoryBackendUnavailable("mempalace package is not installed") from exc
+        except MemoryBackendWriteFailed:
+            raise
+        except Exception as exc:
+            raise MemoryBackendWriteFailed(str(exc)) from exc
+
+
+    async def assign_audience(
+        self, memory_space_id: str, keys: list[str], audience: str
+    ) -> list[str]:
+        """Move exact drawers to another audience, and check that it took.
+
+        The same shape as ``archive_many`` — read, merge, update, verify —
+        because the failure it guards against is the same: a metadata write that
+        Chroma accepted and did not store leaves a memory that looks moved on
+        the page that asked for it and is still recalled by everyone.
+
+        ``audience`` is validated by the contract that defines the axis rather
+        than by a pattern here, so "what an audience is" has one author.
+        """
+
+        unique_ids = _validated_privacy_drawer_ids(keys)
+        target = validate_audience(audience)
+        try:
+            collection = _get_collection(self._palace, create=False)
+            existing = collection.get(ids=unique_ids, include=["documents", "metadatas"])
+            _assert_privacy_batch_tenant(
+                existing,
+                memory_space_id=memory_space_id,
+                authoritative_space_id=self._memory_space_id,
+            )
+            existing_ids = _ids(existing)
+            if not existing_ids:
+                return []
+            metadata_by_id = dict(zip(existing_ids, _metadatas(existing), strict=False))
+            moved_at = _now_iso()
+            updated = [
+                _metadata_for_chroma(
+                    {
+                        **metadata_by_id.get(drawer_id, {}),
+                        "audience": target,
+                        "updated_at": moved_at,
+                    }
+                )
+                for drawer_id in existing_ids
+            ]
+            collection.update(ids=existing_ids, metadatas=updated)
+
+            verified = collection.get(ids=existing_ids, include=["metadatas"])
+            verified_by_id = dict(
+                zip(_ids(verified), _metadatas(verified), strict=False)
+            )
+            failed = [
+                drawer_id
+                for drawer_id in existing_ids
+                if str(verified_by_id.get(drawer_id, {}).get("audience")) != target
+            ]
+            if failed:
+                msg = f"drawers did not move to {target}: {failed!r}"
                 raise MemoryBackendWriteFailed(msg)
             return existing_ids
         except ImportError as exc:

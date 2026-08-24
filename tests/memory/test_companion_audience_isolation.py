@@ -13,12 +13,17 @@ There are two of them, and a leak in either would be invisible in the other:
 - the vector/drawer leg, where each recalled record is checked one at a time by
   ``RecallPolicyRegistry.visible``.
 
-What this file does **not** test is a Companion writing something private,
-because no production path writes a companion audience yet — see
-``test_kg_audience_layering.py`` for why that is deliberate. The statements here
-are written directly, which is the honest way to test a filter whose input does
-not exist yet: it proves the mechanism is ready, and it will keep proving it on
-the day something starts marking statements.
+The statements here are written directly rather than through a write path. That
+was once because no path wrote a companion audience at all; now one does — the
+Owner can say "只让它记得" about an exact memory (``test_audience_marking.py``
+covers that end to end, marking through the same function the command worker
+calls and then checking both Companions' recall) — and writing directly is still
+the right shape here, because what these tests are about is the *filter*, and a
+filter tested through a writer fails for two reasons at once.
+
+The graph leg is still filter-only: nothing marks a *triple* as one Companion's,
+so a statement's audience there comes from how it was written. See
+``test_kg_audience_layering.py`` for why that is deliberate.
 """
 
 from __future__ import annotations

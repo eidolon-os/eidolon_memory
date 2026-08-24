@@ -157,32 +157,6 @@ def write_realm_snapshot(
     return snapshot
 
 
-def verify_realm_snapshot(destination: Path) -> RealmSnapshot:
-    """Read a copy's manifest and check the files still match it.
-
-    Separate from taking the copy, because the question "is this backup still
-    good" is asked long after, by whoever is about to rely on it — and because a
-    digest recorded but never re-checked is a digest nobody is using.
-    """
-
-    destination = Path(destination)
-    manifest_path = destination / MANIFEST_NAME
-    if not manifest_path.is_file():
-        raise SnapshotError(f"snapshot manifest is missing: {manifest_path}")
-    snapshot = RealmSnapshot.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    for entry in snapshot.entries:
-        path = destination / entry.path
-        if not path.is_file():
-            raise SnapshotError(f"snapshot file is missing: {entry.path}")
-        if path.stat().st_size != entry.bytes:
-            raise SnapshotError(f"snapshot file changed size: {entry.path}")
-        if file_sha256(path) != entry.sha256:
-            raise SnapshotError(f"snapshot file does not match its digest: {entry.path}")
-    return snapshot
-
-
 def read_realm_snapshot(source: Path) -> RealmSnapshot:
     """Parse the manifest in ``source``, or refuse.
 
@@ -201,16 +175,24 @@ def read_realm_snapshot(source: Path) -> RealmSnapshot:
         raise RestoreError(f"snapshot manifest is not readable: {exc}") from exc
 
 
-def verify_realm_snapshot(source: Path, snapshot: RealmSnapshot) -> None:
+def verify_realm_snapshot(
+    source: Path, snapshot: RealmSnapshot | None = None
+) -> RealmSnapshot:
     """Check every file against the digest the manifest recorded.
 
-    Before anything is written, and over the whole set rather than file by file
-    as they are copied: a restore that stops halfway through because the sixth
-    ledger was truncated has already replaced five, and there is no copy of what
-    it replaced.
+    One function for two moments that ask the same question. Before a restore
+    writes anything — over the whole set rather than file by file, because a
+    restore that stops at the sixth ledger has already replaced five and nothing
+    holds what those five were. And long afterwards, by whoever is about to rely
+    on a backup: a digest recorded and never re-checked is a digest nobody is
+    using.
+
+    ``snapshot`` is the manifest when the caller already has it; otherwise it is
+    read from the directory, which also answers "is this a snapshot at all".
     """
 
     source = Path(source)
+    snapshot = snapshot or read_realm_snapshot(source)
     for entry in snapshot.entries:
         path = source / entry.path
         if not path.is_file():
@@ -219,6 +201,7 @@ def verify_realm_snapshot(source: Path, snapshot: RealmSnapshot) -> None:
             raise RestoreError(f"snapshot file is the wrong size: {entry.path}")
         if file_sha256(path) != entry.sha256:
             raise RestoreError(f"snapshot file does not match its digest: {entry.path}")
+    return snapshot
 
 
 def restore_realm_snapshot(
@@ -244,8 +227,7 @@ def restore_realm_snapshot(
     source = Path(source)
     palace_path = Path(palace_path)
     ledgers_path = Path(ledgers_path)
-    snapshot = snapshot or read_realm_snapshot(source)
-    verify_realm_snapshot(source, snapshot)
+    snapshot = verify_realm_snapshot(source, snapshot)
 
     staged_palace = _stage(source / PALACE_PREFIX, palace_path)
     staged_ledgers = _stage(source / LEDGERS_PREFIX, ledgers_path)

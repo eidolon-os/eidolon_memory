@@ -61,6 +61,7 @@ from .intent import (
     MemoryIntentType,
 )
 from .kg import (
+    AudienceMutationCommand,
     KG_PREDICATE_VALUES,
     SENSITIVE_PREDICATES,
     USER_CONFIRMED_ROOM_PREFIX,
@@ -186,6 +187,7 @@ __all__ = [
     "WriteOutcome",
     "WriteStatus",
     "all_memory_stream_patterns",
+    "AudienceMutationCommand",
     "audience_companion_id",
     "build_memory_actor_context",
     "companion_audience",

@@ -185,8 +185,30 @@ class MemoryPrivacyAdmin(Protocol):
         """Mark a tenant-scoped batch do-not-recall and verify stored policy."""
 
 
+class MemoryAudienceAdmin(Protocol):
+    """Tenant-scoped audience reassignment with a verified outcome.
+
+    Separate from :class:`MemoryPrivacyAdmin` because the two change different
+    facts about a memory: privacy is whether it may be recalled, audience is by
+    which of the Owner's Eidolons. A memory moved to one Companion's audience is
+    still recalled in full — by that one.
+    """
+
+    async def assign_audience(
+        self, memory_space_id: str, keys: list[str], audience: str
+    ) -> list[str]:
+        """Move a tenant-scoped batch to ``audience`` and verify it stored."""
+
+
 @runtime_checkable
-class MemoryBackend(MemoryReader, MemoryWriter, MemoryAdmin, MemoryPrivacyAdmin, Protocol):
+class MemoryBackend(
+    MemoryReader,
+    MemoryWriter,
+    MemoryAdmin,
+    MemoryPrivacyAdmin,
+    MemoryAudienceAdmin,
+    Protocol,
+):
     """Combined backend surface kept for compatibility with existing callers."""
 
 
