@@ -27,6 +27,7 @@ from eidolon.memory.application.public_recall import (
     wire_record_to_public_dict,
 )
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.entrypoints.memory_api import Handler, memory_api_routes
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -41,13 +42,13 @@ MAXIMUM_RESULTS = 50
 DEFAULT_RESULTS = 10
 
 
-def recollections_route(
+def recollections_handler(
     *,
     service: MemoryService,
     settings: MemorySettings,
     memory_space_id: str,
     owner_id: str | None = None,
-) -> Route:
+) -> Handler:
     """A GET returning what this space holds about a query.
 
     ``companion_id`` is a query parameter rather than an argument here, because
@@ -121,7 +122,35 @@ def recollections_route(
             }
         )
 
-    return Route(RECOLLECTIONS_PATH, handle, methods=["GET"])
+    return handle
+
+
+def recollections_route(
+    *,
+    service: MemoryService,
+    settings: MemorySettings,
+    memory_space_id: str,
+    owner_id: str | None = None,
+    service_token: str,
+) -> Route:
+    """The route, credential-gated by the one factory that mounts this family.
+
+    ``service_token`` is required rather than defaulted: a default would make
+    "nobody passed one" indistinguishable from "this Host has none", and the
+    first is a wiring mistake while the second is a Host that cannot answer.
+    """
+
+    handler = recollections_handler(
+        service=service,
+        settings=settings,
+        memory_space_id=memory_space_id,
+        owner_id=owner_id,
+    )
+    (route,) = memory_api_routes(
+        service_token=service_token,
+        routes={RECOLLECTIONS_PATH: (handler, ["GET"])},
+    )
+    return route
 
 
 def _context(

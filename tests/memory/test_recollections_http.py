@@ -43,6 +43,14 @@ class _Record:
         self.text = text
 
 
+#: This surface requires the Host's own service credential (see
+#: memory_api.py). These tests are about what the route *answers*, so they
+#: present it; that it is required at all is asserted in
+#: test_memory_api_authentication.py.
+SERVICE_TOKEN = "memory-api-token"
+AUTH = {"Authorization": f"Bearer {SERVICE_TOKEN}"}
+
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch):
     service = _Service()
@@ -65,6 +73,7 @@ def client(monkeypatch: pytest.MonkeyPatch):
                 settings=object(),  # type: ignore[arg-type]
                 memory_space_id="realm_primary",
                 owner_id="owner-1",
+                service_token=SERVICE_TOKEN,
             )
         ]
     )
@@ -75,8 +84,8 @@ def client(monkeypatch: pytest.MonkeyPatch):
 def test_a_question_is_required(client) -> None:
     http, _service, calls = client
 
-    assert http.get("/api/memory/v1/recollections").status_code == 422
-    assert http.get("/api/memory/v1/recollections?q=%20%20").status_code == 422
+    assert http.get("/api/memory/v1/recollections", headers=AUTH).status_code == 422
+    assert http.get("/api/memory/v1/recollections?q=%20%20", headers=AUTH).status_code == 422
     # Nothing was searched for, so nothing was searched.
     assert calls == []
 
@@ -84,7 +93,7 @@ def test_a_question_is_required(client) -> None:
 def test_answers_with_what_the_space_holds(client) -> None:
     http, service, calls = client
 
-    response = http.get("/api/memory/v1/recollections?q=散步")
+    response = http.get("/api/memory/v1/recollections?q=散步", headers=AUTH)
 
     assert response.status_code == 200
     body = response.json()
@@ -107,12 +116,12 @@ def test_answers_with_what_the_space_holds(client) -> None:
 def test_a_limit_is_bounded_rather_than_believed(client) -> None:
     http, _service, calls = client
 
-    http.get("/api/memory/v1/recollections?q=x&limit=9999")
-    http.get("/api/memory/v1/recollections?q=x&limit=0")
+    http.get("/api/memory/v1/recollections?q=x&limit=9999", headers=AUTH)
+    http.get("/api/memory/v1/recollections?q=x&limit=0", headers=AUTH)
     assert [call["top_k"] for call in calls] == [MAXIMUM_RESULTS, 1]
 
     assert (
-        http.get("/api/memory/v1/recollections?q=x&limit=many").status_code == 422
+        http.get("/api/memory/v1/recollections?q=x&limit=many", headers=AUTH).status_code == 422
     )
 
 
@@ -127,11 +136,12 @@ def test_memory_being_unavailable_is_said_rather_than_answered_as_empty(
                 service=_Service(fails=True),  # type: ignore[arg-type]
                 settings=object(),  # type: ignore[arg-type]
                 memory_space_id="realm_primary",
+                service_token=SERVICE_TOKEN,
             )
         ]
     )
     with TestClient(app) as http:
-        response = http.get("/api/memory/v1/recollections?q=散步")
+        response = http.get("/api/memory/v1/recollections?q=散步", headers=AUTH)
 
     assert response.status_code == 503
     assert "recollections" not in response.json()

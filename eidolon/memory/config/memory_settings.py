@@ -564,6 +564,17 @@ class McpHttpConfig(BaseModel):
     json_response: bool = True
     bearer_token: str = ""
     bearer_token_env: str = "EIDOLON_MEMORY_MCP_TOKEN"
+    #: The credential the Owner-facing ``/api/memory/v1`` family requires.
+    #:
+    #: Separate from ``bearer_token`` above, which belongs to the MCP transports
+    #: and is (still) enforced nowhere. Sharing one value would mean the agent's
+    #: credential and the Host's are the same secret, so a leak of either is a
+    #: leak of both — and it would make turning one of them on turn the other on.
+    #:
+    #: Empty means this surface cannot answer: it fails closed with 503 rather
+    #: than serving a person's memory to whatever else is on the machine.
+    api_service_token: str = ""
+    api_service_token_env: str = "EIDOLON_MEMORY_API_TOKEN"
 
     @model_validator(mode="before")
     @classmethod
@@ -580,6 +591,23 @@ class McpHttpConfig(BaseModel):
         if val == env_name:
             data.setdefault("bearer_token_env", env_name)
         data.pop("bearer_token", None)
+
+        # The same placeholder discipline for the Owner-facing surface's
+        # credential: yaml names the env var, the value comes from the
+        # environment. A real secret committed in yaml is the thing this
+        # prevents, and it prevents it the same way for both.
+        api_val = (data.get("api_service_token") or "").strip()
+        api_env = (
+            data.get("api_service_token_env") or "EIDOLON_MEMORY_API_TOKEN"
+        ).strip()
+        if api_val and api_val != api_env:
+            raise ValueError(
+                "mcp_http.api_service_token must be empty or the placeholder "
+                f"{api_env}; set that env var in config/.env"
+            )
+        if api_val == api_env:
+            data.setdefault("api_service_token_env", api_env)
+        data.pop("api_service_token", None)
         return data
 
     def base_url(self, *, port: int | None = None) -> str:
@@ -608,6 +636,20 @@ class McpHttpConfig(BaseModel):
         if not token:
             return {}
         return {"Authorization": f"Bearer {token}"}
+
+    def resolve_api_service_token(self) -> str:
+        """The credential the ``/api/memory/v1`` family checks.
+
+        Empty is a real answer and the surface treats it as "cannot answer"
+        rather than "everyone may": a Host that has not been given this secret
+        should refuse to serve a person's memory, not serve it to anything on
+        the machine.
+        """
+
+        env = (self.api_service_token_env or "").strip()
+        if not env:
+            return ""
+        return os.environ.get(env, "").strip()
 
 
 class DiscoveryHttpConfig(BaseModel):

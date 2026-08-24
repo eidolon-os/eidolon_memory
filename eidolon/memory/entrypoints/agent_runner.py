@@ -852,6 +852,10 @@ def _run_service(
             settings=settings,
             memory_space_id=memory_space_id,
             owner_id=args.owner_id or None,
+            # Resolved here rather than inside the route, so a Host with no
+            # credential provisioned fails closed at the boundary instead of
+            # somewhere deeper with a less useful message.
+            service_token=settings.mcp_http.resolve_api_service_token(),
         )
     )
     _mount_ops_surface(starlette_app, ops_mcp, path=settings.mcp_http.ops_path)
