@@ -121,35 +121,32 @@ def test_the_factory_refuses_to_mount_outside_its_prefix() -> None:
         )
 
 
-def test_the_real_recollections_route_is_mounted_through_the_factory() -> None:
-    """The one route that exists today, checked at the real call site.
+def test_every_real_owner_route_is_mounted_through_the_factory() -> None:
+    """The routes the process actually serves, at the real call site.
 
     The tests above use stand-ins so they keep working as routes are added; this
-    one asserts the actual surface is not the exception.
+    one walks what ``owner_memory_routes`` produces — the same function the
+    runner calls — and asserts none of them is the exception. There is one
+    mounting path, so this is the whole surface rather than a sample of it.
     """
-    from eidolon.memory.entrypoints.recollections_http import (
-        RECOLLECTIONS_PATH,
-        recollections_route,
-    )
+    from eidolon.memory.entrypoints.owner_memory_http import owner_memory_routes
 
     class _Service:
         async def runtime_for(self, _context):
             raise AssertionError("authentication must fail before any lookup")
 
-    app = Starlette(
-        routes=[
-            recollections_route(
-                service=_Service(),  # type: ignore[arg-type]
-                settings=object(),  # type: ignore[arg-type]
-                memory_space_id="realm_primary",
-                service_token=TOKEN,
-            )
-        ]
+    routes = owner_memory_routes(
+        service=_Service(),  # type: ignore[arg-type]
+        settings=object(),  # type: ignore[arg-type]
+        memory_space_id="realm_primary",
+        service_token=TOKEN,
     )
-    with TestClient(app) as http:
-        anonymous = http.get(f"{RECOLLECTIONS_PATH}?q=x")
-        wrong = http.get(
-            f"{RECOLLECTIONS_PATH}?q=x", headers={"Authorization": "Bearer other"}
-        )
+    assert routes, "no Owner-facing routes found; this gate would pass vacuously"
 
-    assert (anonymous.status_code, wrong.status_code) == (401, 401)
+    app = Starlette(routes=routes)
+    with TestClient(app) as http:
+        for route in routes:
+            path = route.path
+            anonymous = http.get(path)
+            wrong = http.get(path, headers={"Authorization": "Bearer other"})
+            assert (anonymous.status_code, wrong.status_code) == (401, 401), path

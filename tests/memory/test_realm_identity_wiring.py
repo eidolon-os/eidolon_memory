@@ -25,7 +25,10 @@ from pathlib import Path
 
 from eidolon.memory.config.users import UserEntry
 from eidolon.memory.entrypoints.agent_runner import _parse_args
-from eidolon.memory.entrypoints.recollections_http import _context
+# The actor context moved to memory_api, which owns this route family's
+# mechanics — every Owner-facing route needs it and none of them should build it
+# differently.
+from eidolon.memory.entrypoints.memory_api import actor_context as _context
 from eidolon.memory.entrypoints.supervisor import _agent_cli_argv
 
 

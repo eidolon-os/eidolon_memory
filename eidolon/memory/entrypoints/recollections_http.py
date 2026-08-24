@@ -15,11 +15,8 @@ what a person is shown can never be more than what the agent could have seen.
 
 from __future__ import annotations
 
-from typing import Any
-
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
 
 from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.public_recall import (
@@ -27,7 +24,7 @@ from eidolon.memory.application.public_recall import (
     wire_record_to_public_dict,
 )
 from eidolon.memory.config.memory_settings import MemorySettings
-from eidolon.memory.entrypoints.memory_api import Handler, memory_api_routes
+from eidolon.memory.entrypoints.memory_api import Handler, actor_context
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -73,7 +70,7 @@ def recollections_handler(
             return JSONResponse({"detail": "limit must be a number"}, status_code=422)
         limit = max(1, min(limit, MAXIMUM_RESULTS))
 
-        context = _context(
+        context = actor_context(
             memory_space_id=memory_space_id,
             owner_id=owner_id,
             companion_id=companion_id,
@@ -123,47 +120,3 @@ def recollections_handler(
         )
 
     return handle
-
-
-def recollections_route(
-    *,
-    service: MemoryService,
-    settings: MemorySettings,
-    memory_space_id: str,
-    owner_id: str | None = None,
-    service_token: str,
-) -> Route:
-    """The route, credential-gated by the one factory that mounts this family.
-
-    ``service_token`` is required rather than defaulted: a default would make
-    "nobody passed one" indistinguishable from "this Host has none", and the
-    first is a wiring mistake while the second is a Host that cannot answer.
-    """
-
-    handler = recollections_handler(
-        service=service,
-        settings=settings,
-        memory_space_id=memory_space_id,
-        owner_id=owner_id,
-    )
-    (route,) = memory_api_routes(
-        service_token=service_token,
-        routes={RECOLLECTIONS_PATH: (handler, ["GET"])},
-    )
-    return route
-
-
-def _context(
-    *,
-    memory_space_id: str,
-    owner_id: str | None,
-    companion_id: str | None,
-) -> Any:
-    from eidolon_memory_contracts import MemoryActorContext
-
-    return MemoryActorContext(
-        owner_id=owner_id,
-        companion_id=companion_id,
-        memory_realm_id=memory_space_id,
-        memory_space_id=memory_space_id,
-    )

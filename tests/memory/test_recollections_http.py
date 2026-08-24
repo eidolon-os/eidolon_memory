@@ -14,10 +14,10 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from eidolon.memory.entrypoints import recollections_http
+from eidolon.memory.entrypoints.owner_memory_http import owner_memory_routes
 from eidolon.memory.entrypoints.recollections_http import (
     DEFAULT_RESULTS,
     MAXIMUM_RESULTS,
-    recollections_route,
 )
 
 
@@ -68,7 +68,7 @@ def client(monkeypatch: pytest.MonkeyPatch):
     )
     app = Starlette(
         routes=[
-            recollections_route(
+            *owner_memory_routes(
                 service=service,  # type: ignore[arg-type]
                 settings=object(),  # type: ignore[arg-type]
                 memory_space_id="realm_primary",
@@ -132,7 +132,7 @@ def test_memory_being_unavailable_is_said_rather_than_answered_as_empty(
 
     app = Starlette(
         routes=[
-            recollections_route(
+            *owner_memory_routes(
                 service=_Service(fails=True),  # type: ignore[arg-type]
                 settings=object(),  # type: ignore[arg-type]
                 memory_space_id="realm_primary",

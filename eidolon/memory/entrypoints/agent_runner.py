@@ -56,7 +56,7 @@ from eidolon.memory.config.palace_directory import (
     resolve_palaces_root,
     validate_memory_space_id,
 )
-from eidolon.memory.entrypoints.recollections_http import recollections_route
+from eidolon.memory.entrypoints.owner_memory_http import owner_memory_routes
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
@@ -846,13 +846,13 @@ def _run_service(
     _mount_metrics(starlette_app)
     # Before the ops surface, which is mounted at "" and would otherwise answer
     # for every path beneath it.
-    starlette_app.router.routes.append(
-        recollections_route(
+    starlette_app.router.routes.extend(
+        owner_memory_routes(
             service=service,
             settings=settings,
             memory_space_id=memory_space_id,
             owner_id=args.owner_id or None,
-            # Resolved here rather than inside the route, so a Host with no
+            # Resolved here rather than inside the routes, so a Host with no
             # credential provisioned fails closed at the boundary instead of
             # somewhere deeper with a less useful message.
             service_token=settings.mcp_http.resolve_api_service_token(),

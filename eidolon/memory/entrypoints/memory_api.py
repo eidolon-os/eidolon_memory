@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hmac
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -92,3 +93,30 @@ def memory_api_routes(
             Route(path, _guarded(handler, expected_token=service_token), methods=methods)
         )
     return mounted
+
+
+def actor_context(
+    *,
+    memory_space_id: str,
+    owner_id: str | None,
+    companion_id: str | None,
+) -> Any:
+    """Who is asking, for a space this process already serves.
+
+    Lives here because every route in this family needs it and none of them
+    should build it differently. ``memory_space_id`` is this process's, never a
+    caller's — the route carries no realm, and letting a query name one would
+    make this surface answer for a space its caller was never routed to.
+
+    ``companion_id`` selects an *audience*: absent is the Owner layer, present
+    adds that Companion's own. It cannot widen what the space can see.
+    """
+
+    from eidolon_memory_contracts import MemoryActorContext
+
+    return MemoryActorContext(
+        owner_id=owner_id,
+        companion_id=companion_id,
+        memory_realm_id=memory_space_id,
+        memory_space_id=memory_space_id,
+    )

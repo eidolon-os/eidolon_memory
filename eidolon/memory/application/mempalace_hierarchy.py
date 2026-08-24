@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from typing import Any
 
 from eidolon.memory.config.memory_settings import MemorySettings, WingDefinition
@@ -134,6 +135,82 @@ def _bucket_wing(
         "room_count": len(rooms_out),
         "drawer_count": drawer_total,
         "rooms": rooms_out,
+    }
+
+
+async def build_owner_browse(
+    backend: MemoryBackend,
+    settings: MemorySettings,
+    *,
+    visible: Callable[[MemoryWireRecord], bool],
+    max_records: int,
+    max_titles_per_room: int,
+) -> dict[str, Any]:
+    """The palace as its Owner may see it: wings, rooms, and what is in them.
+
+    Shares the roll-up below rather than repeating it — how records become
+    wings and rooms is one question and this module owns it. What differs is the
+    audience, and that arrives as ``visible``:
+
+    - the operator snapshot passes nothing and sees the whole palace, which is
+      right for someone debugging it;
+    - this one passes the same policy recall uses, so a person can never be
+      shown something their Eidolon could not have recalled. That includes the
+      privacy wing and, once anything is marked companion-private, another
+      Companion's statements.
+
+    The predicate is injected rather than imported so this module keeps knowing
+    nothing about recall policy; the dependency points inward, not sideways.
+
+    Withheld records are *counted*, not hidden. "There are 3 things here you
+    asked me not to bring up" is true and useful; a total that quietly differs
+    from the number of things listed is neither.
+    """
+
+    scanned, capped = await scan_records(backend, max_records=max_records)
+    allowed = [record for record in scanned if visible(record)]
+    tree = _rollup(allowed)
+    remaining = {
+        wing: {room: list(pairs) for room, pairs in rooms.items()}
+        for wing, rooms in tree.items()
+    }
+
+    wings: list[dict[str, Any]] = []
+    for definition in sorted(settings.wings, key=lambda w: (w.sort_order, w.id)):
+        rooms_blob = remaining.pop(definition.id, {})
+        if not rooms_blob:
+            # A wing with nothing in it is not shown. An Owner reading nine
+            # empty categories learns nothing about what their Eidolon
+            # remembers, and the empty ones are an implementation detail of the
+            # fixed wing schema.
+            continue
+        wings.append(
+            _bucket_wing(
+                definition.id,
+                cfg=definition,
+                rooms_blob=rooms_blob,
+                max_drawers_preview=max_titles_per_room,
+            )
+        )
+    wings.extend(
+        _bucket_wing(
+            wing_id,
+            cfg=None,
+            rooms_blob=rooms_blob,
+            max_drawers_preview=max_titles_per_room,
+        )
+        for wing_id, rooms_blob in sorted(remaining.items(), key=lambda item: item[0])
+    )
+
+    return {
+        "wings": wings,
+        "entry_count": len(allowed),
+        #: Present and not listed. The Owner's own privacy wing is the common
+        #: case, so this is a fact about their memory rather than a refusal.
+        "withheld_count": len(scanned) - len(allowed),
+        #: The scan is bounded, so "this is everything" is a claim this read
+        #: cannot always make. Saying so beats a total that is quietly partial.
+        "truncated": capped,
     }
 
 
