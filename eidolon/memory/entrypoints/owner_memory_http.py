@@ -15,6 +15,7 @@ of them hands out filesystem paths.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from starlette.requests import Request
@@ -30,6 +31,7 @@ from eidolon.memory.application.forget import (
     find_forget_candidates,
 )
 from eidolon.memory.application.mempalace_hierarchy import build_owner_browse
+from eidolon.memory.application.owner_entries import build_owner_entries
 from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.config.memory_settings import MemorySettings
@@ -47,6 +49,7 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 BROWSE_PATH = "/api/memory/v1/browse"
+ENTRIES_PATH = "/api/memory/v1/entries"
 FORGET_PREVIEW_PATH = "/api/memory/v1/forget/preview"
 FORGET_CONFIRM_PATH = "/api/memory/v1/forget/confirm"
 
@@ -59,6 +62,10 @@ MAXIMUM_SCAN = 20000
 #: Titles listed per room. Enough to recognise a room's contents, not enough to
 #: turn a browse into a bulk export — that is what ``export`` will be for.
 TITLES_PER_ROOM = 12
+#: Entries returned in one answer. A day's worth of memory is short; a client
+#: asking for more than this is asking for the library, which has its own read.
+DEFAULT_ENTRIES = 50
+MAXIMUM_ENTRIES = 200
 #: How long a confirm waits on the applied-projection before answering. Short:
 #: the command is durably published either way, and a person watching a spinner
 #: is worse served by a long wait than by "已受理，正在生效".
@@ -126,6 +133,91 @@ def browse_handler(
                 "operation": "memory.browse",
                 "memory_space_id": memory_space_id,
                 **browse,
+            }
+        )
+
+    return handle
+
+
+def entries_handler(
+    *,
+    service: MemoryService,
+    settings: MemorySettings,
+    memory_space_id: str,
+    owner_id: str | None = None,
+) -> Handler:
+    """What was recorded at or after ``since``, newest first.
+
+    ``since`` is required and has no default. A day depends on where the person
+    is, and this process does not know; inventing a timezone here would make
+    "今日" mean something different from what their phone shows them.
+    """
+
+    policy = RecallPolicyRegistry.default()
+
+    async def handle(request: Request) -> Response:
+        raw_since = (request.query_params.get("since") or "").strip()
+        if not raw_since:
+            return JSONResponse({"detail": "since is required"}, status_code=422)
+        try:
+            since = datetime.fromisoformat(raw_since)
+        except ValueError:
+            # A "+" in a query string means a space, so an unencoded offset
+            # arrives here mangled. Saying so turns a confusing afternoon into
+            # a one-line fix; the alternative — repairing it — would be this
+            # boundary guessing at a caller's encoding.
+            hint = (
+                " (an unencoded + in the offset arrives as a space)"
+                if " " in raw_since
+                else ""
+            )
+            return JSONResponse(
+                {"detail": f"since must be an ISO 8601 instant{hint}"},
+                status_code=422,
+            )
+        if since.tzinfo is None:
+            # A naive instant would be compared against timezone-aware record
+            # times and raise; asking for the offset is better than guessing UTC
+            # and answering for the wrong day.
+            return JSONResponse(
+                {"detail": "since must carry a timezone offset"}, status_code=422
+            )
+        try:
+            limit = int(request.query_params.get("limit", DEFAULT_ENTRIES))
+        except ValueError:
+            return JSONResponse({"detail": "limit must be a number"}, status_code=422)
+        limit = max(1, min(limit, MAXIMUM_ENTRIES))
+        companion_id = (request.query_params.get("companion_id") or "").strip() or None
+
+        context = actor_context(
+            memory_space_id=memory_space_id,
+            owner_id=owner_id,
+            companion_id=companion_id,
+        )
+        try:
+            runtime = await service.runtime_for(context)
+            entries = await build_owner_entries(
+                runtime.backend,
+                visible=lambda record: policy.visible(record, context=context),
+                since=since,
+                limit=limit,
+                max_records=DEFAULT_SCAN,
+            )
+        except Exception as exc:  # noqa: BLE001 - a read must not take the process down
+            log.exception(
+                "owner_entries_failed",
+                memory_space_id=memory_space_id,
+                error=str(exc),
+            )
+            return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
+
+        return JSONResponse(
+            {
+                "contract_version": "1",
+                "operation": "memory.entries",
+                "memory_space_id": memory_space_id,
+                "since": since.isoformat(),
+                **entries,
             }
         )
 
@@ -340,6 +432,7 @@ def owner_memory_routes(
     routes: dict[str, tuple[Handler, list[str]]] = {
         RECOLLECTIONS_PATH: (recollections_handler(**shared), ["GET"]),
         BROWSE_PATH: (browse_handler(**shared), ["GET"]),
+        ENTRIES_PATH: (entries_handler(**shared), ["GET"]),
         FORGET_PREVIEW_PATH: (
             forget_preview_handler(
                 service=service, memory_space_id=memory_space_id, owner_id=owner_id
