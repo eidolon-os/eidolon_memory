@@ -106,6 +106,14 @@ from .runtime_route import (
     memory_runtime_route_for_realm,
     stable_memory_realm_port,
 )
+from .snapshot import (
+    LEDGERS_PREFIX,
+    PALACE_PREFIX,
+    REQUIRED_ENTRIES,
+    SNAPSHOT_CONTRACT_VERSION,
+    RealmSnapshot,
+    SnapshotEntry,
+)
 from .subjects import (
     MEMORY_COMMAND_BASE,
     MEMORY_CONVERSATION_TURN_BASE,
@@ -153,6 +161,12 @@ __all__ = [
     "MemoryActorContext",
     "MemoryReadContract",
     "MemoryRuntimeRoute",
+    "LEDGERS_PREFIX",
+    "PALACE_PREFIX",
+    "REQUIRED_ENTRIES",
+    "SNAPSHOT_CONTRACT_VERSION",
+    "RealmSnapshot",
+    "SnapshotEntry",
     "MemorySnippet",
     "MemoryWriteContract",
     "KgPredicate",
