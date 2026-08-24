@@ -31,7 +31,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from eidolon.memory.config.palace_directory import LEDGERS_DIR_SUFFIX
 from eidolon.memory.config.registry import load_users_config
+from eidolon.memory.infrastructure.palace_inventory import palace_embedder
+from eidolon.memory.infrastructure.realm_snapshot import (
+    SnapshotError,
+    write_realm_snapshot,
+)
 from eidolon.memory.config.users import (
     ConsolidatorUserConfig,
     UserEntry,
@@ -76,6 +82,17 @@ class PalaceCleanupFailed(UserAdminError):
     """File-system error while moving the palace to trash."""
 
     status_code = 503
+
+
+class SnapshotNotPossible(UserAdminError):
+    """This realm cannot be copied in a way that could be restored.
+
+    A refusal rather than a partial copy: a snapshot that restores into
+    something subtly wrong is worse than no snapshot, because the operator tool
+    that collects it says out loud what it does not cover.
+    """
+
+    status_code = 409
 
 
 class UserRegistryReadOnly(UserAdminError):
@@ -429,6 +446,65 @@ class UserAdmin:
                 worker_stop_timeout_s=worker_stop_timeout_s,
                 purge_palace=purge_palace,
             )
+
+    async def snapshot_realm(self, user_id: str, *, destination: Path) -> dict:
+        """Copy one realm's whole state into ``destination`` and describe it.
+
+        Here rather than in the per-realm runner because this owns realm
+        lifecycle and knows where a palace lives; the runner knows one space and
+        would have to be running to be asked, which is the opposite of what a
+        backup needs.
+
+        The realm keeps serving. Every file in a space is SQLite, and
+        ``VACUUM INTO`` takes a consistent copy of a live database without
+        stopping its writer — so this does not reconcile, stop a child, or take
+        the lock. A backup that required downtime would be a backup nobody
+        takes.
+
+        The embedder identity comes from the palace's own marker rather than
+        from configuration, and the manifest says which. Vectors mean nothing
+        under a different embedder, and configuration records intent that may
+        have moved on — recording the intent as if it were the fact is how a
+        restore succeeds and then quietly stops finding things.
+        """
+
+        entry = load_users_config().find(user_id)
+        if entry is None:
+            raise UserNotFound(f"unknown memory realm: {user_id!r}")
+
+        palace_path = self._sup.palace_path_for(entry)
+        ledgers_path = palace_path.with_name(palace_path.name + LEDGERS_DIR_SUFFIX)
+        embedder = palace_embedder(palace_path)
+        if embedder.source != "palace":
+            # No marker means the palace has never been built, or its record is
+            # unreadable. Either way there is nothing trustworthy to restore
+            # *into*, and a snapshot stamped with a configured guess would
+            # restore under an embedder the vectors were never written with.
+            raise SnapshotNotPossible(
+                f"realm {user_id!r} has no recorded embedder identity; "
+                "a snapshot without it cannot be restored safely"
+            )
+
+        try:
+            snapshot = write_realm_snapshot(
+                palace_path=palace_path,
+                ledgers_path=ledgers_path,
+                destination=Path(destination),
+                memory_space_id=user_id,
+                embedder_identity=embedder.name,
+                #: ``None`` when the palace recorded no width. Left absent
+                #: rather than defaulted so a restore can tell "not recorded"
+                #: from a width it could compare.
+                embedder_dimension=embedder.dimension,
+            )
+        except SnapshotError as exc:
+            raise SnapshotNotPossible(str(exc)) from exc
+
+        return {
+            "memory_realm_id": user_id,
+            "destination": str(destination),
+            "manifest": snapshot.model_dump(mode="json"),
+        }
 
     async def cleanup_orphaned_user(
         self,

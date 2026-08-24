@@ -29,8 +29,10 @@ All admin endpoints are namespaced under ``/api/admin`` and bound to
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from eidolon.memory.application.user_admin import (
     UserAdmin,
@@ -61,6 +63,26 @@ class _ConsolidatorIn(BaseModel):
             min_drawers=self.min_drawers,
             min_confidence=self.min_confidence,
         )
+
+
+class SnapshotRequest(BaseModel):
+    """Where to put the copy.
+
+    An absolute path, and required: this process must not decide where a Host's
+    backups live, and a relative path would resolve against whatever directory
+    the supervisor happens to have been started in.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    destination: str = Field(..., min_length=1, max_length=4096)
+
+    @field_validator("destination")
+    @classmethod
+    def _absolute(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("destination must be an absolute path")
+        return value
 
 
 class CreateUserRequest(BaseModel):
@@ -126,6 +148,22 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
         try:
             await user_admin.reconcile()
             return {"ok": True}
+        except UserAdminError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @app.post("/api/admin/realms/{memory_realm_id}/snapshot", status_code=201)
+    async def snapshot_realm(memory_realm_id: str, body: SnapshotRequest) -> dict:
+        """Copy this realm's whole state to a path the caller names.
+
+        The caller is the operator backup tool, which collects the directory and
+        checks the manifest. It is told *where* and answers *what* — this
+        boundary does not choose the destination, because where a Host's backups
+        live is that Host's operator's business and not this process's.
+        """
+        try:
+            return await user_admin.snapshot_realm(
+                memory_realm_id, destination=Path(body.destination)
+            )
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 

@@ -5,10 +5,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.metadata
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 #: Which tables to count in each database an inventory walks past.
 #:
@@ -75,6 +76,59 @@ def _sqlite_summary(path: Path) -> dict[str, Any]:
     except (OSError, sqlite3.Error) as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     return result
+
+
+class PalaceEmbedder(NamedTuple):
+    """What a palace says it was built with.
+
+    ``dimension`` is ``None`` when the marker recorded no usable width — real
+    markers write ``0``, which means unset rather than zero-width.
+    """
+
+    name: str
+    dimension: int | None
+    source: str
+
+
+def palace_embedder(palace_path: Path) -> PalaceEmbedder:
+    """The embedder a palace was built with, and how confidently we know it.
+
+    Returns ``(name, source)``. ``palace`` means MemPalace's own record, which is
+    authoritative — vectors only mean anything under the embedder that produced
+    them, and configuration records *intent*, which can have moved on. That
+    distinction is not academic: it is what made an earlier quality benchmark
+    measure minilm while production ran embeddinggemma.
+
+    ``unknown`` means the palace has not been built yet, or its marker is
+    unreadable. A caller may fall back to configuration, but must say that it
+    did rather than reporting a guess as fact.
+
+    Lives here rather than beside either caller: the benchmark manifest and the
+    realm snapshot both need it, and a second copy is how the two would come to
+    disagree about what a palace was built with.
+    """
+
+    marker = Path(palace_path) / "mempalace_embedder.json"
+    if not marker.is_file():
+        return PalaceEmbedder("", None, "unknown")
+    try:
+        recorded = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return PalaceEmbedder("", None, "unknown")
+    if not isinstance(recorded, dict):
+        return PalaceEmbedder("", None, "unknown")
+
+    # Keyed by collection; every collection in one palace shares an embedder, so
+    # any entry answers the question.
+    for entry in recorded.values():
+        if isinstance(entry, dict) and entry.get("model_name"):
+            width = entry.get("dimension")
+            return PalaceEmbedder(
+                str(entry["model_name"]),
+                int(width) if isinstance(width, int) and width > 0 else None,
+                "palace",
+            )
+    return PalaceEmbedder("", None, "unknown")
 
 
 def build_palace_manifest(palace_path: Path, *, deep: bool = False) -> dict[str, Any]:

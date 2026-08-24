@@ -104,12 +104,14 @@ def test_a_repeated_path_is_refused() -> None:
 def test_the_embedder_it_was_taken_under_is_not_optional() -> None:
     """Vectors mean nothing without it, and the vector store already enforces it.
 
-    A collection is stamped with an embedder name and refuses to open under a
-    different one, so a snapshot that did not record its embedder could only be
-    restored by guessing. The width is recorded too: a same-named encoder at a
-    different width produces a store that cannot be read either.
+    A collection is stamped with an embedder *name* and refuses to open under a
+    different one, so a snapshot that did not record it could only be restored by
+    guessing. The width is different: real MemPalace markers record
+    ``dimension: 0``, meaning unset, so requiring a width would make an actual
+    palace unsnapshottable. It is recorded when known and absent when not —
+    absent is checkable, and zero is a lie that validates.
     """
-    for omitted in ("embedder_identity", "embedder_dimension"):
+    for omitted in ("embedder_identity",):
         fields = {
             "memory_space_id": "r_a",
             "taken_at": "2026-08-24T04:00:00Z",
@@ -139,3 +141,30 @@ def test_a_plain_copy_is_distinguishable_from_a_consistent_one() -> None:
     snapshot = _snapshot(REQUIRED_ENTRIES, entries=tuple(entries) + (marker,))
     methods = {entry.method for entry in snapshot.entries}
     assert methods == {"sqlite-vacuum-into", "file-copy"}
+
+
+def test_an_unrecorded_width_is_absent_rather_than_zero() -> None:
+    """The case a real palace produces.
+
+    MemPalace writes ``dimension: 0`` when it has not recorded one. Storing that
+    verbatim would let a restore compare against a width nothing has; refusing
+    the snapshot over it would leave memory on the operator tool's uncovered
+    list, which is what this contract exists to fix.
+    """
+    snapshot = RealmSnapshot(
+        memory_space_id="r_a",
+        taken_at="2026-08-24T04:00:00Z",
+        embedder_identity="embeddinggemma",
+        entries=tuple(_entry(path) for path in REQUIRED_ENTRIES),
+    )
+
+    assert snapshot.embedder_dimension is None
+
+    with pytest.raises(ValidationError):
+        RealmSnapshot(
+            memory_space_id="r_a",
+            taken_at="2026-08-24T04:00:00Z",
+            embedder_identity="embeddinggemma",
+            embedder_dimension=0,
+            entries=tuple(_entry(path) for path in REQUIRED_ENTRIES),
+        )

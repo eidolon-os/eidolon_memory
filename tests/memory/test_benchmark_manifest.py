@@ -77,9 +77,10 @@ def test_an_unreadable_palace_marker_does_not_produce_a_confident_answer(
     palace.mkdir()
     (palace / "mempalace_embedder.json").write_text("not json")
 
-    name, source = m.palace_embedder(palace)
+    recorded = m.palace_embedder(palace)
 
-    assert (name, source) == ("", "unknown")
+    assert (recorded.name, recorded.source) == ("", "unknown")
+    assert recorded.dimension is None
 
 
 def test_a_dirty_tree_is_recorded_as_such() -> None:

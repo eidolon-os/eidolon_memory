@@ -19,6 +19,8 @@ import platform
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+
+from eidolon.memory.infrastructure.palace_inventory import palace_embedder
 from typing import Any
 
 
@@ -81,37 +83,13 @@ def machine_facts() -> dict[str, Any]:
     return facts
 
 
-def palace_embedder(palace_path: Path) -> tuple[str, str]:
-    """The embedder a palace was built with, and how confidently we know it.
-
-    Returns ``(name, source)``. ``palace`` means MemPalace's own record, which is
-    authoritative. ``unknown`` means the palace has not been built yet — a caller
-    should fall back to configuration and mark the manifest accordingly, rather
-    than reporting a guess as fact.
-    """
-
-    marker = Path(palace_path) / "mempalace_embedder.json"
-    if not marker.is_file():
-        return "", "unknown"
-    try:
-        recorded = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return "", "unknown"
-
-    # Keyed by collection; every collection in one palace shares an embedder, so
-    # any entry answers the question.
-    for entry in recorded.values():
-        if isinstance(entry, dict) and entry.get("model_name"):
-            return str(entry["model_name"]), "palace"
-    return "", "unknown"
-
-
 def storage_facts(settings: Any, *, palace_path: Path | None = None) -> dict[str, Any]:
     """Which stores these numbers came from, and the embedder behind them."""
 
     embedder, source = ("", "unknown")
     if palace_path is not None:
-        embedder, source = palace_embedder(palace_path)
+        recorded = palace_embedder(palace_path)
+        embedder, source = recorded.name, recorded.source
     if not embedder:
         embedder = (settings.embedding.model or "").strip() or "minilm"
         # Weaker evidence: this is what a new palace would use, which is not

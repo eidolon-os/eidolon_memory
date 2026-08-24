@@ -99,7 +99,12 @@ class RealmSnapshot(BaseModel):
     embedder_identity: str = Field(min_length=1, max_length=256)
     #: Vector width, recorded alongside the name because a same-named encoder at
     #: a different width produces a store that cannot be read either.
-    embedder_dimension: int = Field(ge=1)
+    #:
+    #: ``None`` when MemPalace's own marker did not record one — real palaces
+    #: write ``dimension: 0``, meaning unset, and a manifest that stored that as
+    #: a number would let a restore compare against a width nothing has. Absent
+    #: is checkable ("the snapshot does not say"); zero is a lie that validates.
+    embedder_dimension: int | None = Field(default=None, ge=1)
     entries: tuple[SnapshotEntry, ...]
 
     @model_validator(mode="after")
