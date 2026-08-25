@@ -85,7 +85,19 @@ class RecallPolicyRegistry:
         *,
         context: MemoryActorContext,
         include_private: bool = False,
+        every_audience: bool = False,
     ) -> bool:
+        """Whether this caller may see this record.
+
+        ``every_audience`` is for the one caller that is not a Companion: the
+        Owner asking for their own copy. The audience axis says which of their
+        Eidolons was *told* a thing, and narrowing that is not the same as
+        hiding it from the person who narrowed it — so their export carries all
+        of it and names the audience per record. Every other rule here still
+        applies, because those are boundaries the Owner is inside, not above:
+        privacy, space and device visibility are unchanged by this flag.
+        """
+
         meta = record.metadata or {}
         if meta.get("wing") == "Wing_Privacy":
             return False
@@ -101,7 +113,9 @@ class RecallPolicyRegistry:
         # the same default writes take, so an upgrade does not hide what was
         # already recalled.
         audience = str(meta.get("audience") or OWNER_AUDIENCE)
-        if audience not in readable_audiences(context.companion_id):
+        if not every_audience and audience not in readable_audiences(
+            context.companion_id
+        ):
             return False
         visibility = str(meta.get("visibility") or "all_devices")
         source_device = str(meta.get("source_device_id") or "")

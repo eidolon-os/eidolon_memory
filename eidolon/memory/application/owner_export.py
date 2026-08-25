@@ -15,9 +15,17 @@ copy that quietly is not one.
 
 Three things it does not do:
 
-- **It does not widen what can be seen.** The same visibility predicate recall
-  uses decides what appears. An export is a read, and a read that could see more
-  than the Eidolon can would be a way around every boundary above it.
+- **It does not widen what can be seen — with one boundary it is inside rather
+  than around.** The visibility predicate recall uses decides what appears, so an
+  export can never see past privacy, space or device rules. The audience axis is
+  different in kind: it says *which of the Owner's Eidolons was told a thing*,
+  and the Owner is not one of them. A person who marked a memory 「只让它记得」
+  narrowed who is told; they did not ask to lose it from their own copy. So the
+  Owner's own export carries every audience in their Realm and **names the
+  audience on each record**, while an export asked for on behalf of one Companion
+  keeps the recall predicate exactly. Omitting what somebody marked themselves
+  would be the very thing this file refuses to be: a copy that quietly is not
+  one.
 - **It does not dump metadata.** A named set of fields travels; the rest stays
   in. Handing over the whole internal mapping would make routing and audience
   keys part of a contract a person's file now depends on, and would carry
@@ -37,6 +45,8 @@ from typing import Any
 
 from eidolon.memory.application.mempalace_hierarchy import scan_records
 from eidolon.memory.domain.ports import MemoryBackend
+from eidolon_memory_contracts import OWNER_AUDIENCE
+
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 #: What travels per record. Named rather than derived from the metadata mapping:
@@ -50,6 +60,10 @@ EXPORTED_FIELDS = (
     "room_id",
     "memory_type",
     "value",
+    #: Who was told. Present on every record because the Owner's copy carries
+    #: every audience: a file that held a companion-private memory without
+    #: saying it was one would be less true than the memory it copies.
+    "audience",
 )
 
 
@@ -106,4 +120,8 @@ def _exported(record: MemoryWireRecord, *, when: datetime | None) -> dict[str, A
         "memory_type": str(record.metadata.get("memory_type") or ""),
         # Whole, not a preview. This is the copy.
         "value": record.value if isinstance(record.value, str) else str(record.value or ""),
+        # A record written before the field existed belongs to the owner layer —
+        # the same default a write takes, so nothing in an old palace reads as
+        # having been kept from anybody.
+        "audience": str(record.metadata.get("audience") or OWNER_AUDIENCE),
     }

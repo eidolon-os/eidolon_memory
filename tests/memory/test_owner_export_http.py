@@ -172,17 +172,24 @@ def test_the_file_says_where_each_memory_sits_and_what_kind_it_is() -> None:
 def test_the_file_holds_no_internal_metadata() -> None:
     """A named set travels; the rest stays in.
 
-    Handing over the whole mapping would make routing and audience keys part of
-    a contract a person's saved file depends on.
+    Handing over the whole mapping would make routing keys part of a contract a
+    person's saved file depends on, and would carry details that mean nothing to
+    them and something to whoever reads the file next.
+
+    ``audience`` is in the named set, and that is the distinction this test now
+    draws rather than the one it used to: it is not internal bookkeeping that
+    leaked, it is the person's own decision about which of their Eidolons was
+    told a thing. A file carrying a companion-private memory without saying so
+    would be less true than the memory it copies (§16).
     """
     # Owner-visible, so it is in the file at all — and still carrying the
-    # internal key the file must not learn.
+    # internal keys the file must not learn.
     http, _service = _client([_Record("drawer_1", audience=OWNER_AUDIENCE)])
     with http:
         record = http.get(EXPORT_PATH, headers=AUTH).json()["records"][0]
 
-    assert "audience" not in record
     assert "metadata" not in record
+    assert "memory_space_id" not in record
     assert set(record) == {
         "entry_id",
         "recorded_at",
@@ -191,16 +198,32 @@ def test_the_file_holds_no_internal_metadata() -> None:
         "room_id",
         "memory_type",
         "value",
+        "audience",
     }
 
 
-def test_an_export_cannot_see_what_recall_cannot() -> None:
-    """The read that would otherwise be the way around every boundary above it."""
+def test_an_export_cannot_see_past_a_boundary_it_is_inside() -> None:
+    """One axis behaves differently here, and only one.
+
+    Privacy, space and device rules are boundaries drawn *around* the person, so
+    an export must not be the way past them — it is the read with the widest
+    reach and would otherwise undo every rule above it. ``do_not_recall`` stays
+    out of both files below for that reason.
+
+    The audience axis is a boundary drawn *between the person's own Eidolons*,
+    and the Owner is not one of them. Somebody who marked a memory 「只让它记得」
+    narrowed who is told; they did not ask to lose it from their own copy. So
+    the request that names no Companion is the Owner asking for their own file
+    and carries every audience in the Realm (§16), while naming a Companion
+    means "what this Eidolon can recall" and keeps the recall predicate exactly
+    — the widening must not become a way around isolation.
+    """
 
     http, _service = _client(
         [
             _Record("drawer_owner", audience=OWNER_AUDIENCE),
             _Record("drawer_mochi", audience=companion_audience(MOCHI)),
+            _Record("drawer_nori", audience=companion_audience("c_nori")),
             _Record("drawer_private", wing="Wing_Privacy", privacy="do_not_recall"),
         ]
     )
@@ -210,7 +233,14 @@ def test_an_export_cannot_see_what_recall_cannot() -> None:
             f"{EXPORT_PATH}?companion_id={MOCHI}", headers=AUTH
         ).json()
 
-    assert [record["entry_id"] for record in owner_view["records"]] == ["drawer_owner"]
+    # Named per record, not merely present somewhere: the point of carrying the
+    # audience is that the person can tell which of their Eidolons knows a
+    # thing, which is exactly what they decided when they marked it.
+    assert {record["entry_id"]: record["audience"] for record in owner_view["records"]} == {
+        "drawer_owner": OWNER_AUDIENCE,
+        "drawer_mochi": companion_audience(MOCHI),
+        "drawer_nori": companion_audience("c_nori"),
+    }
     assert {record["entry_id"] for record in with_mochi["records"]} == {
         "drawer_owner",
         "drawer_mochi",

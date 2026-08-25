@@ -174,8 +174,13 @@ def export_handler(
     so a lost disk is survivable; this one exists so a person is not locked in,
     and the two have almost nothing in common but the word.
 
-    ``companion_id`` selects an audience exactly as the browse does, for the same
-    reason: an export must not be able to see what recall cannot.
+    ``companion_id`` selects an audience exactly as the browse does — with one
+    difference that only this route has: **without it, this is the Owner asking
+    for their own copy**, so it carries every audience in their Realm and names
+    the audience on each record. A memory somebody marked 「只让它记得」 is still
+    theirs; leaving it out of the file they saved would be losing it. Named
+    with one, the export is "what this Eidolon can recall" and keeps the recall
+    predicate exactly.
     """
 
     policy = RecallPolicyRegistry.default()
@@ -191,7 +196,11 @@ def export_handler(
             runtime = await service.runtime_for(context)
             export = await build_owner_export(
                 runtime.backend,
-                visible=lambda record: policy.visible(record, context=context),
+                visible=lambda record: policy.visible(
+                    record,
+                    context=context,
+                    every_audience=companion_id is None,
+                ),
                 max_records=DEFAULT_EXPORT_SCAN,
             )
         except Exception as exc:  # noqa: BLE001 - a read must not take the process down
