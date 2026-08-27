@@ -31,6 +31,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
+from eidolon_memory_contracts import OWNER_AUDIENCE
+
 from eidolon.memory.domain.kg import KgTripleRecord
 
 
@@ -86,6 +88,7 @@ class KnowledgeGraphPort(Protocol):
         subject: str,
         predicate: str,
         object: str,
+        audiences: tuple[str, ...] = (OWNER_AUDIENCE,),
         ended: str | None = None,
     ) -> int:
         """End a statement's validity, returning how many rows changed.
@@ -158,6 +161,7 @@ class KnowledgeGraphPort(Protocol):
         entity_id: str,
         alias: str,
         source: str,
+        audience: str = OWNER_AUDIENCE,
         confidence: float = 0.85,
     ) -> None:
         """Note that an entity was referred to by this alias.
@@ -263,7 +267,13 @@ class KnowledgeGraphPort(Protocol):
         """
         ...
 
-    async def match_entities_for_query(self, query: str, *, cap: int) -> list[str]:
+    async def match_entities_for_query(
+        self,
+        query: str,
+        *,
+        cap: int,
+        audiences: tuple[str, ...] = (OWNER_AUDIENCE,),
+    ) -> list[str]:
         """Guess which entities a piece of natural language is about.
 
         Bridges free text to canonical entity names, via stored aliases and

@@ -18,6 +18,7 @@ import re
 
 OWNER_AUDIENCE = "owner"
 _COMPANION_PREFIX = "companion:"
+_COUNCIL_PREFIX = "council:"
 
 # Companion ids come from the caller's token; keep the audience token safe to
 # embed in metadata keys, SQL parameters and vector-store filter expressions.
@@ -33,6 +34,15 @@ def companion_audience(companion_id: str) -> str:
     return f"{_COMPANION_PREFIX}{value}"
 
 
+def council_audience(council_id: str) -> str:
+    """Return the audience token for one participant-scoped Council session."""
+
+    value = (council_id or "").strip()
+    if not _COMPANION_ID_RE.fullmatch(value):
+        raise ValueError(f"council_id is not a safe audience token: {council_id!r}")
+    return f"{_COUNCIL_PREFIX}{value}"
+
+
 def validate_audience(audience: str) -> str:
     """Validate an audience token, returning its canonical form."""
 
@@ -41,9 +51,12 @@ def validate_audience(audience: str) -> str:
         return value
     if value.startswith(_COMPANION_PREFIX):
         return companion_audience(value[len(_COMPANION_PREFIX) :])
+    if value.startswith(_COUNCIL_PREFIX):
+        return council_audience(value[len(_COUNCIL_PREFIX) :])
     raise ValueError(
         f"audience must be {OWNER_AUDIENCE!r} or "
-        f"{_COMPANION_PREFIX}<companion_id>; got {audience!r}"
+        f"{_COMPANION_PREFIX}<companion_id> or {_COUNCIL_PREFIX}<council_id>; "
+        f"got {audience!r}"
     )
 
 
@@ -62,7 +75,11 @@ def audience_companion_id(audience: str) -> str | None:
     return value[len(_COMPANION_PREFIX) :]
 
 
-def readable_audiences(companion_id: str | None) -> tuple[str, ...]:
+def readable_audiences(
+    companion_id: str | None,
+    *,
+    council_id: str | None = None,
+) -> tuple[str, ...]:
     """Audience tokens a companion may recall.
 
     Without a companion id the caller gets the owner layer only. That is the
@@ -70,6 +87,9 @@ def readable_audiences(companion_id: str | None) -> tuple[str, ...]:
     with one specific companion.
     """
 
-    if not (companion_id or "").strip():
-        return (OWNER_AUDIENCE,)
-    return (OWNER_AUDIENCE, companion_audience(companion_id))
+    readable = [OWNER_AUDIENCE]
+    if (companion_id or "").strip():
+        readable.append(companion_audience(companion_id))
+    if (council_id or "").strip():
+        readable.append(council_audience(council_id))
+    return tuple(readable)

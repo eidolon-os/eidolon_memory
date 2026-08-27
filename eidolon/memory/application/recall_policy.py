@@ -114,7 +114,8 @@ class RecallPolicyRegistry:
         # already recalled.
         audience = str(meta.get("audience") or OWNER_AUDIENCE)
         if not every_audience and audience not in readable_audiences(
-            context.companion_id
+            context.companion_id,
+            council_id=context.council_id,
         ):
             return False
         visibility = str(meta.get("visibility") or "all_devices")

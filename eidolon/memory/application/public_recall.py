@@ -353,7 +353,10 @@ async def recall_with_kg_fusion(
                 kg,
                 # Scoped to what this caller may see. An unidentified caller gets
                 # the owner layer only — the companion layer is not theirs to read.
-                audiences=readable_audiences(context.companion_id),
+                audiences=readable_audiences(
+                    context.companion_id,
+                    council_id=context.council_id,
+                ),
                 query=query,
                 max_entities=settings.recall.kg_max_entities,
                 max_triples_per_entity=settings.recall.kg_max_triples_per_entity,
@@ -430,7 +433,10 @@ async def recall_with_kg_fusion(
             kg,
             settings,
             records=vector_records,
-            audiences=readable_audiences(context.companion_id),
+            audiences=readable_audiences(
+                context.companion_id,
+                council_id=context.council_id,
+            ),
             include_sensitive=include_sensitive_kg,
             for_voice=for_voice,
             kind=recall_kind,
@@ -452,7 +458,7 @@ async def recall_with_kg_fusion(
     # We fetch them with a dedicated search and merge ADDITIVELY (no
     # truncation of vector_records). Dedup on key avoids double-counting
     # if a theme happened to win a vector top-K slot too.
-    theme_records = await _fetch_themes(backend, query, settings)
+    theme_records = await _fetch_themes(backend, query, context, settings)
     if theme_records:
         existing_keys = {r.key for r in vector_records}
         # Themes go first in the merged list so the renderer's split-by-
@@ -528,6 +534,7 @@ def _record_recall(
 async def _fetch_themes(
     backend: MemoryReader,
     query: str,
+    context: MemoryActorContext,
     settings: MemorySettings,
 ) -> list[MemoryWireRecord]:
     """Pull up to ``recall.theme_top_k`` Wing_Theme drawers.
@@ -545,6 +552,10 @@ async def _fetch_themes(
             wing="Wing_Theme",
             n_results=cap,
             room=None,
+            audiences=readable_audiences(
+                context.companion_id,
+                council_id=context.council_id,
+            ),
         )
     except Exception as exc:  # noqa: BLE001 - never break recall
         log.warning("theme_fetch_failed", error=str(exc))
@@ -700,7 +711,9 @@ async def _kg_path_with_timeout(
             candidates = hinted[:max_entities]
             if len(candidates) < max_entities:
                 from_phrase = await kg.match_entities_for_query(
-                    query, cap=max_entities - len(candidates)
+                    query,
+                    audiences=audiences,
+                    cap=max_entities - len(candidates),
                 )
                 candidates.extend(
                     name for name in from_phrase if name not in set(candidates)
@@ -767,6 +780,10 @@ async def search_all_wings_mcp_style(
 ) -> list[MemoryWireRecord]:
     """Search configured wings in parallel, filter, rank, and cap top_k."""
     wings = _resolve_wings(settings, wing=wing, for_voice=for_voice)
+    audiences = readable_audiences(
+        context.companion_id,
+        council_id=context.council_id,
+    )
     vector_degraded = False
     use_shared_embedding = for_voice or settings.runtime.read.normal_shared_query_embedding
     scoped_reader = (
@@ -785,6 +802,7 @@ async def search_all_wings_mcp_style(
                 query=query,
                 wings=wings,
                 room=room,
+                audiences=audiences,
                 n_results=top_k,
                 skip_closets=(settings.runtime.read.voice_skip_closets if for_voice else False),
             )
@@ -825,6 +843,7 @@ async def search_all_wings_mcp_style(
                     wing=wing_id,
                     n_results=top_k,
                     room=room,
+                    audiences=audiences,
                 )
                 # memory_space_id is stamped at the source (backend.search →
                 # parse_search_tool_payload with the palace's authoritative id).

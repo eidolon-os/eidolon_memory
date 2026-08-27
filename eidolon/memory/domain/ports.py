@@ -62,6 +62,7 @@ class MemoryReader(Protocol):
         wing: str,
         n_results: int = 5,
         room: str | None = None,
+        audiences: tuple[str, ...] | None = None,
     ) -> list[MemoryWireRecord]:
         """Semantic search scoped to a wing (user / palace id)."""
 
@@ -84,6 +85,7 @@ class ScopedMemoryReader(Protocol):
         wings: list[str],
         n_results: int = 5,
         room: str | None = None,
+        audiences: tuple[str, ...] | None = None,
         skip_closets: bool = False,
     ) -> list[MemoryWireRecord]:
         """Search multiple wings while reusing backend-owned query work."""

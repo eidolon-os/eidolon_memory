@@ -18,16 +18,16 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
-
 from eidolon_memory_contracts import (
     OWNER_AUDIENCE,
     AudienceMutationCommand,
     PrivacyMutationCommand,
     companion_audience,
+    readable_audiences,
 )
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 from eidolon.memory.adapters.kg_sqlite import now_iso as _now_iso
 from eidolon.memory.application.explicit_writes import publish_with_status
@@ -35,9 +35,10 @@ from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     find_forget_candidates,
 )
+from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.mempalace_hierarchy import build_owner_browse
 from eidolon.memory.application.owner_entries import build_owner_entries
-from eidolon.memory.application.memory_service import MemoryService
+from eidolon.memory.application.owner_export import build_owner_export
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.entrypoints.memory_api import (
@@ -45,7 +46,6 @@ from eidolon.memory.entrypoints.memory_api import (
     actor_context,
     memory_api_routes,
 )
-from eidolon.memory.application.owner_export import build_owner_export
 from eidolon.memory.entrypoints.recollections_http import (
     RECOLLECTIONS_PATH,
     recollections_handler,
@@ -63,6 +63,7 @@ FORGET_CONFIRM_PATH = "/api/memory/v1/forget/confirm"
 #: because it is the desired end state of an exact record, not an event: the same
 #: call twice leaves the same memory in the same audience.
 AUDIENCE_PATH = "/api/memory/v1/entries/{entry_id}/audience"
+GRAPH_PATH = "/api/memory/v1/graph"
 
 #: How much of the palace one browse reads. A bound is required — the scan is a
 #: full enumeration — and it is not a page: the roll-up needs the whole window to
@@ -86,6 +87,92 @@ MAXIMUM_ENTRIES = 200
 #: the command is durably published either way, and a person watching a spinner
 #: is worse served by a long wait than by "已受理，正在生效".
 CONFIRM_WAIT_SECONDS = 0.75
+DEFAULT_GRAPH_EDGES = 160
+MAXIMUM_GRAPH_EDGES = 400
+
+
+def graph_handler(
+    *,
+    service: MemoryService,
+    settings: MemorySettings,
+    memory_space_id: str,
+    owner_id: str | None = None,
+) -> Handler:
+    """A bounded, audience-scoped knowledge graph for the Owner's viewer."""
+
+    del settings
+
+    async def handle(request: Request) -> Response:
+        companion_id = (request.query_params.get("companion_id") or "").strip() or None
+        try:
+            limit = int(request.query_params.get("limit", DEFAULT_GRAPH_EDGES))
+        except ValueError:
+            return JSONResponse({"detail": "limit must be a number"}, status_code=422)
+        limit = max(1, min(limit, MAXIMUM_GRAPH_EDGES))
+        context = actor_context(
+            memory_space_id=memory_space_id,
+            owner_id=owner_id,
+            companion_id=companion_id,
+        )
+        try:
+            runtime = await service.runtime_for(context)
+            if runtime.kg is None:
+                return JSONResponse(
+                    {
+                        "contract_version": "1",
+                        "operation": "memory.graph",
+                        "memory_space_id": memory_space_id,
+                        "nodes": [],
+                        "edges": [],
+                        "truncated": False,
+                    }
+                )
+            rows = await runtime.kg.timeline(
+                audiences=readable_audiences(companion_id),
+                limit=limit + 1,
+                current_only=True,
+                include_sensitive=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception(
+                "owner_graph_failed",
+                memory_space_id=memory_space_id,
+                error=str(exc),
+            )
+            return JSONResponse({"detail": "memory graph is unavailable"}, status_code=503)
+
+        visible = rows[:limit]
+        degree: dict[str, int] = {}
+        for row in visible:
+            degree[row.subject] = degree.get(row.subject, 0) + 1
+            degree[row.object] = degree.get(row.object, 0) + 1
+        return JSONResponse(
+            {
+                "contract_version": "1",
+                "operation": "memory.graph",
+                "memory_space_id": memory_space_id,
+                "nodes": [
+                    {"node_id": name, "label": name, "degree": count}
+                    for name, count in sorted(
+                        degree.items(), key=lambda item: (-item[1], item[0])
+                    )
+                ],
+                "edges": [
+                    {
+                        "edge_id": row.id,
+                        "subject": row.subject,
+                        "predicate": row.predicate,
+                        "object": row.object,
+                        "confidence": row.confidence,
+                        "recorded_at": row.recorded_at or "",
+                    }
+                    for row in visible
+                ],
+                "truncated": len(rows) > limit,
+            }
+        )
+
+    return handle
 
 
 def browse_handler(
@@ -622,6 +709,7 @@ def owner_memory_routes(
         BROWSE_PATH: (browse_handler(**shared), ["GET"]),
         EXPORT_PATH: (export_handler(**shared), ["GET"]),
         ENTRIES_PATH: (entries_handler(**shared), ["GET"]),
+        GRAPH_PATH: (graph_handler(**shared), ["GET"]),
         FORGET_PREVIEW_PATH: (
             forget_preview_handler(
                 service=service, memory_space_id=memory_space_id, owner_id=owner_id

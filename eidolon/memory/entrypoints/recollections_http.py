@@ -49,11 +49,10 @@ def recollections_handler(
     """A GET returning what this space holds about a query.
 
     ``companion_id`` is a query parameter rather than an argument here, because
-    the space belongs to the Owner and serves every Companion that Owner has.
-    It selects an *audience*, not a scope: without it the answer is the owner
-    layer, with it the owner layer plus that Companion's own. It cannot widen
-    what this space can see, so the caller naming it is not naming a scope it
-    was not routed to.
+    the physical space belongs to the Owner and hosts the audiences of their
+    Companions. It selects a logical scope within that Realm: without it the
+    answer is the automatically derived Owner layer; with it the Owner layer
+    plus that Companion's private memory. It can never reach a sibling audience.
     """
 
     async def handle(request: Request) -> JSONResponse:

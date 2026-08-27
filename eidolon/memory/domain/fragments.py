@@ -45,10 +45,9 @@ class MemoryFragment(BaseEidolonModel):
     # about the owner holds whichever companion is listening, while what happened
     # between the owner and one companion belongs to that companion.
     #
-    # Defaults to the owner layer: with one companion there is nothing to leak,
-    # and defaulting narrow would instead hide the owner's own facts from their
-    # other companions — the worse of the two failures. Deciding per statement
-    # needs the steward to judge it.
+    # Non-interaction writers default to the owner layer. Turn ingestion always
+    # overwrites this through the central scope policy, so raw conversations can
+    # never become owner-wide merely because a steward omitted the field.
     audience: str = OWNER_AUDIENCE
     scope: MemoryScope = "persona"
     visibility: MemoryVisibility = "all_devices"

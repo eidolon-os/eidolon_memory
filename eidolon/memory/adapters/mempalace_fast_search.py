@@ -21,6 +21,7 @@ def search_memories_shared_embedding(
     *,
     wings: list[str],
     room: str | None,
+    audiences: tuple[str, ...] | None = None,
     n_results: int,
     query_embedding: list[float] | None = None,
     skip_closets: bool = True,
@@ -34,6 +35,7 @@ def search_memories_shared_embedding(
             palace_path,
             wings=wings,
             room=room,
+            audiences=audiences,
             n_results=n_results,
             collection_name=collection_name,
         )
@@ -52,7 +54,7 @@ def search_memories_shared_embedding(
     try:
         drawers_col = get_collection(palace_path, collection_name=collection_name, create=False)
         metric = collection_metric(drawers_col)
-        where = _combined_where(wings, room)
+        where = _combined_where(wings, room, audiences)
         limit = max(n_results * max(3, len(wings) * 3), n_results)
         try:
             drawer_results = _query_collection(
@@ -85,6 +87,7 @@ def search_memories_shared_embedding(
                 post_filter=post_filter,
                 wings=wings,
                 room=room,
+                audiences=audiences,
             )
     except Exception as exc:
         raise MemoryBackendUnavailable(str(exc)) from exc
@@ -93,6 +96,7 @@ def search_memories_shared_embedding(
         drawer_results,
         wings=wings,
         room=room,
+        audiences=audiences,
         n_results=max(n_results * len(wings), n_results),
         closet_boost_by_source=closet_boost_by_source,
         post_filter=post_filter,
@@ -108,6 +112,7 @@ def _search_sqlite_fallback(
     *,
     wings: list[str],
     room: str | None,
+    audiences: tuple[str, ...] | None,
     n_results: int,
     collection_name: str | None,
 ) -> list[dict[str, Any]]:
@@ -137,6 +142,11 @@ def _search_sqlite_fallback(
             if not isinstance(raw, dict):
                 continue
             row = dict(raw)
+            metadata = row.get("metadata") or {}
+            if audiences is not None and str(
+                metadata.get("audience") or "owner"
+            ) not in audiences:
+                continue
             key = (
                 str(row.get("text") or ""),
                 str(row.get("wing") or wing or ""),
@@ -159,8 +169,12 @@ def _search_sqlite_fallback(
     return hits[: max(n_results * max(1, len(wings)), n_results)]
 
 
-def _combined_where(wings: list[str], room: str | None) -> dict[str, Any] | None:
-    if not wings and not room:
+def _combined_where(
+    wings: list[str],
+    room: str | None,
+    audiences: tuple[str, ...] | None,
+) -> dict[str, Any] | None:
+    if not wings and not room and audiences is None:
         return None
     wing_filter: dict[str, Any] | None
     if not wings:
@@ -169,11 +183,14 @@ def _combined_where(wings: list[str], room: str | None) -> dict[str, Any] | None
         wing_filter = {"wing": wings[0]}
     else:
         wing_filter = {"wing": {"$in": wings}}
-    if room and wing_filter:
-        return {"$and": [wing_filter, {"room": room}]}
-    if room:
-        return {"room": room}
-    return wing_filter
+    filters = [item for item in (wing_filter, {"room": room} if room else None) if item]
+    if audiences is not None:
+        filters.append({"audience": {"$in": list(audiences)}})
+    if not filters:
+        return None
+    if len(filters) == 1:
+        return filters[0]
+    return {"$and": filters}
 
 
 def _query_collection(
@@ -204,10 +221,18 @@ def _apply_distance_boost(distance: float, boost: float, metric: str) -> float:
     return max(0.0, effective)
 
 
-def _matches_scope(meta: dict[str, Any], *, wings: list[str], room: str | None) -> bool:
+def _matches_scope(
+    meta: dict[str, Any],
+    *,
+    wings: list[str],
+    room: str | None,
+    audiences: tuple[str, ...] | None = None,
+) -> bool:
     if wings and meta.get("wing") not in set(wings):
         return False
     if room and meta.get("room") != room:
+        return False
+    if audiences is not None and str(meta.get("audience") or "owner") not in audiences:
         return False
     return True
 
@@ -221,6 +246,7 @@ def _closet_boosts(
     post_filter: bool,
     wings: list[str],
     room: str | None,
+    audiences: tuple[str, ...] | None,
 ) -> dict[str, tuple]:
     try:
         from mempalace.palace import get_closets_collection
@@ -250,7 +276,12 @@ def _closet_boosts(
             )
         ):
             cmeta = cmeta or {}
-            if post_filter and not _matches_scope(cmeta, wings=wings, room=room):
+            if post_filter and not _matches_scope(
+                cmeta,
+                wings=wings,
+                room=room,
+                audiences=audiences,
+            ):
                 continue
             source = cmeta.get("source_file", "")
             if source and source not in out:
@@ -265,6 +296,7 @@ def _score_results(
     *,
     wings: list[str],
     room: str | None,
+    audiences: tuple[str, ...] | None,
     n_results: int,
     closet_boost_by_source: dict[str, tuple],
     post_filter: bool,
@@ -280,7 +312,12 @@ def _score_results(
         first_result_list(drawer_results, "distances"),
     ):
         meta = meta or {}
-        if post_filter and not _matches_scope(meta, wings=wings, room=room):
+        if post_filter and not _matches_scope(
+            meta,
+            wings=wings,
+            room=room,
+            audiences=audiences,
+        ):
             continue
         doc = doc or ""
         source = meta.get("source_file", "") or ""

@@ -147,6 +147,7 @@ class MemPalacePythonBackend(MemoryBackend):
         wing: str,
         n_results: int = 5,
         room: str | None = None,
+        audiences: tuple[str, ...] | None = None,
     ) -> list[MemoryWireRecord]:
         return await asyncio.to_thread(
             self.search_sync,
@@ -154,6 +155,7 @@ class MemPalacePythonBackend(MemoryBackend):
             wing=wing,
             n_results=n_results,
             room=room,
+            audiences=audiences,
         )
 
     def search_sync(
@@ -163,6 +165,7 @@ class MemPalacePythonBackend(MemoryBackend):
         wing: str,
         n_results: int = 5,
         room: str | None = None,
+        audiences: tuple[str, ...] | None = None,
     ) -> list[MemoryWireRecord]:
         if self._settings.mempalace.offline_embedding:
             # Query the collection directly with a hash vector. MemPalace's
@@ -173,6 +176,9 @@ class MemPalacePythonBackend(MemoryBackend):
                 where: dict[str, Any] = {"wing": wing}
                 if room:
                     where = {"$and": [where, {"room": room}]}
+                if audiences is not None:
+                    audience_filter = {"audience": {"$in": list(audiences)}}
+                    where = {"$and": [where, audience_filter]}
                 result = collection.query(
                     query_embeddings=[
                         _deterministic_embedding(
@@ -188,6 +194,22 @@ class MemPalacePythonBackend(MemoryBackend):
                 raise MemoryBackendUnavailable("mempalace package is not installed") from exc
             except Exception as exc:
                 raise MemoryBackendUnavailable(str(exc)) from exc
+
+        if audiences is not None:
+            raw = search_memories_shared_embedding(
+                query,
+                self._palace,
+                wings=[wing],
+                room=room,
+                audiences=audiences,
+                n_results=n_results,
+                skip_closets=False,
+            )
+            records = parse_search_tool_payload(
+                {"results": raw},
+                default_memory_space_id=self._memory_space_id,
+            )
+            return apply_recall_policy(records, self._settings)
 
         try:
             from mempalace.searcher import search_memories
@@ -228,6 +250,7 @@ class MemPalacePythonBackend(MemoryBackend):
         wings: list[str],
         n_results: int = 5,
         room: str | None = None,
+        audiences: tuple[str, ...] | None = None,
         skip_closets: bool = False,
     ) -> list[MemoryWireRecord]:
         """Adapter-owned multi-wing search with one query embedding."""
@@ -237,6 +260,7 @@ class MemPalacePythonBackend(MemoryBackend):
             wings=wings,
             n_results=n_results,
             room=room,
+            audiences=audiences,
             skip_closets=skip_closets,
         )
 
@@ -247,6 +271,7 @@ class MemPalacePythonBackend(MemoryBackend):
         wings: list[str],
         n_results: int = 5,
         room: str | None = None,
+        audiences: tuple[str, ...] | None = None,
         skip_closets: bool = False,
     ) -> list[MemoryWireRecord]:
         raw = search_memories_shared_embedding(
@@ -254,6 +279,7 @@ class MemPalacePythonBackend(MemoryBackend):
             self._palace,
             wings=wings,
             room=room,
+            audiences=audiences,
             n_results=n_results,
             skip_closets=skip_closets,
         )

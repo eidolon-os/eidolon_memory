@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from eidolon_memory_contracts import ConsolidatorIngestThemeCommand
+from eidolon_memory_contracts import OWNER_AUDIENCE, ConsolidatorIngestThemeCommand
 
 from eidolon.memory.config.memory_settings import (
     MemorySettings,
@@ -80,6 +80,7 @@ class Theme:
     underlying_wing: str
     confidence: float
     source_drawer_ids: list[str]
+    audience: str
 
     def idempotency_hash(self, *, memory_space_id: str, window_days: int) -> str:
         """Deterministic key so re-running the worker on the same input is a no-op.
@@ -90,7 +91,7 @@ class Theme:
         chroma layer via the ``fragment_id``.
         """
         body = "|".join([
-            memory_space_id, self.underlying_wing, str(window_days),
+            memory_space_id, self.audience, self.underlying_wing, str(window_days),
             ",".join(sorted(self.source_drawer_ids)),
         ])
         return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
@@ -145,14 +146,14 @@ def _parse_iso(s: str | None) -> datetime | None:
         return None
 
 
-def group_drawers_by_wing(
+def group_drawers_by_audience_and_wing(
     drawers: list[dict],
     *,
     window_days: int,
     now: datetime | None = None,
     themable_wings: frozenset[str] = _THEMABLE_WINGS_DEFAULT,
-) -> dict[str, list[dict]]:
-    """Filter drawers to ``themable_wings`` ∩ last ``window_days``, group by wing.
+) -> dict[tuple[str, str], list[dict]]:
+    """Filter recent drawers and group by ``(audience, wing)``.
 
     A drawer's "age" comes from its ``created_at`` (mempalace populates this).
     Drawers with missing/unparseable timestamps are kept (treated as recent) —
@@ -161,7 +162,7 @@ def group_drawers_by_wing(
     if now is None:
         now = datetime.now(UTC)
     cutoff = now - timedelta(days=window_days)
-    by_wing: dict[str, list[dict]] = defaultdict(list)
+    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for rec in drawers:
         meta = rec.get("metadata") or {}
         wing = meta.get("wing") or rec.get("user_id")  # MemoryWireRecord stores wing in metadata
@@ -170,8 +171,9 @@ def group_drawers_by_wing(
         ts = _parse_iso(rec.get("created_at"))
         if ts is not None and ts < cutoff:
             continue
-        by_wing[wing].append(rec)
-    return dict(by_wing)
+        audience = str(meta.get("audience") or OWNER_AUDIENCE)
+        grouped[(audience, wing)].append(rec)
+    return dict(grouped)
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -242,6 +244,7 @@ async def synthesize_themes_for_wing(
     wing_id: str,
     records: list[dict],
     *,
+    audience: str,
     settings: MemorySettings,
 ) -> list[Theme]:
     """Run one LLM round-trip for a wing.
@@ -303,6 +306,7 @@ async def synthesize_themes_for_wing(
             underlying_wing=wing_id,
             confidence=max(0.0, min(1.0, conf)),
             source_drawer_ids=drawer_ids,
+            audience=audience,
         ))
     return themes
 
@@ -340,6 +344,7 @@ async def publish_themes(
             window_days=window_days,
             source_drawer_ids=theme.source_drawer_ids,
             confidence=theme.confidence,
+            audience=theme.audience,
         )
         try:
             await publisher.publish(cmd)
@@ -350,7 +355,7 @@ async def publish_themes(
 
 
 async def synthesize_grouped_wings(
-    by_wing: dict[str, list[dict]],
+    grouped: dict[tuple[str, str], list[dict]],
     *,
     settings: MemorySettings,
     min_drawers: int,
@@ -371,17 +376,18 @@ async def synthesize_grouped_wings(
     semaphore = asyncio.Semaphore(max_parallel_wings)
 
     async def _one(
-        wing_id: str, recs: list[dict]
+        audience: str, wing_id: str, recs: list[dict]
     ) -> tuple[dict[str, Any], list[Theme]]:
         started = time.perf_counter()
         async with semaphore:
             produced = await synthesize_themes_for_wing(
-                wing_id, recs, settings=settings
+                wing_id, recs, audience=audience, settings=settings
             )
         kept = [theme for theme in produced if theme.confidence >= confidence_threshold]
         return (
             {
                 "wing": wing_id,
+                "audience": audience,
                 "drawer_count": len(recs),
                 "themes_produced": len(produced),
                 "themes_kept": len(kept),
@@ -391,12 +397,14 @@ async def synthesize_grouped_wings(
             kept,
         )
 
-    rows_by_wing: dict[str, dict[str, Any]] = {}
-    tasks: dict[asyncio.Task, tuple[str, list[dict], float]] = {}
-    for wing_id, recs in sorted(by_wing.items()):
+    rows_by_group: dict[tuple[str, str], dict[str, Any]] = {}
+    tasks: dict[asyncio.Task, tuple[str, str, list[dict], float]] = {}
+    for (audience, wing_id), recs in sorted(grouped.items()):
+        group_key = (audience, wing_id)
         if len(recs) < min_drawers:
-            rows_by_wing[wing_id] = {
+            rows_by_group[group_key] = {
                 "wing": wing_id,
+                "audience": audience,
                 "drawer_count": len(recs),
                 "themes_produced": 0,
                 "themes_kept": 0,
@@ -405,10 +413,13 @@ async def synthesize_grouped_wings(
                 "elapsed_ms": 0.0,
             }
             continue
-        task = asyncio.create_task(_one(wing_id, recs), name=f"consolidate-{wing_id}")
-        tasks[task] = (wing_id, recs, time.perf_counter())
+        task = asyncio.create_task(
+            _one(audience, wing_id, recs),
+            name=f"consolidate-{audience}-{wing_id}",
+        )
+        tasks[task] = (audience, wing_id, recs, time.perf_counter())
 
-    themes_by_wing: dict[str, list[Theme]] = {}
+    themes_by_group: dict[tuple[str, str], list[Theme]] = {}
     if tasks:
         done, pending = await asyncio.wait(
             tasks,
@@ -420,12 +431,14 @@ async def synthesize_grouped_wings(
             await asyncio.gather(*pending, return_exceptions=True)
 
         for task in done:
-            wing_id, recs, task_started = tasks[task]
+            audience, wing_id, recs, task_started = tasks[task]
+            group_key = (audience, wing_id)
             try:
                 row, kept = task.result()
             except asyncio.CancelledError:
-                rows_by_wing[wing_id] = {
+                rows_by_group[group_key] = {
                     "wing": wing_id,
+                    "audience": audience,
                     "drawer_count": len(recs),
                     "themes_produced": 0,
                     "themes_kept": 0,
@@ -436,8 +449,9 @@ async def synthesize_grouped_wings(
                     ),
                 }
             except Exception as exc:  # noqa: BLE001 - isolate one failed wing
-                rows_by_wing[wing_id] = {
+                rows_by_group[group_key] = {
                     "wing": wing_id,
+                    "audience": audience,
                     "drawer_count": len(recs),
                     "themes_produced": 0,
                     "themes_kept": 0,
@@ -448,13 +462,15 @@ async def synthesize_grouped_wings(
                     ),
                 }
             else:
-                rows_by_wing[wing_id] = row
-                themes_by_wing[wing_id] = kept
+                rows_by_group[group_key] = row
+                themes_by_group[group_key] = kept
 
         for task in pending:
-            wing_id, recs, task_started = tasks[task]
-            rows_by_wing[wing_id] = {
+            audience, wing_id, recs, task_started = tasks[task]
+            group_key = (audience, wing_id)
+            rows_by_group[group_key] = {
                 "wing": wing_id,
+                "audience": audience,
                 "drawer_count": len(recs),
                 "themes_produced": 0,
                 "themes_kept": 0,
@@ -465,11 +481,11 @@ async def synthesize_grouped_wings(
                 ),
             }
 
-    rows = [rows_by_wing[wing_id] for wing_id in sorted(rows_by_wing)]
+    rows = [rows_by_group[key] for key in sorted(rows_by_group)]
     themes = [
         theme
-        for wing_id in sorted(themes_by_wing)
-        for theme in themes_by_wing[wing_id]
+        for key in sorted(themes_by_group)
+        for theme in themes_by_group[key]
     ]
     return rows, themes
 
@@ -538,11 +554,14 @@ async def consolidate_once(
             timeout_seconds=query_startup_wait_seconds,
         )
         drawers = await _list_all_drawers(query_client, memory_space_id=memory_space_id)
-        by_wing = group_drawers_by_wing(drawers, window_days=window_days)
+        grouped = group_drawers_by_audience_and_wing(
+            drawers,
+            window_days=window_days,
+        )
 
         synthesis_started = time.perf_counter()
         rows, all_themes = await synthesize_grouped_wings(
-            by_wing,
+            grouped,
             settings=settings,
             min_drawers=min_drawers,
             confidence_threshold=confidence_threshold,

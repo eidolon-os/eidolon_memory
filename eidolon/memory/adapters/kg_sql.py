@@ -77,6 +77,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         mention_id TEXT NOT NULL,
         entity_id  TEXT NOT NULL,
         alias      TEXT NOT NULL,
+        audience   TEXT NOT NULL,
         source     TEXT NOT NULL,
         confidence REAL NOT NULL DEFAULT 0.85,
         created_at TEXT NOT NULL,
@@ -123,8 +124,11 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     DROP INDEX IF EXISTS idx_kg_statements_subject
     """,
     """
-    CREATE INDEX IF NOT EXISTS idx_kg_statements_triple
-        ON kg_statements (space_id, subject_id, predicate, object_id)
+    DROP INDEX IF EXISTS idx_kg_statements_triple
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_kg_statements_triple_audience
+        ON kg_statements (space_id, subject_id, predicate, object_id, audience)
     """,
     # The recall path's *ordering*, which the index above does not provide.
     #
@@ -139,9 +143,13 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     # walks the index and stops. That turns top-N-per-subject from O(rows for that
     # subject) into O(log n + N).
     """
-    CREATE INDEX IF NOT EXISTS idx_kg_statements_relevance
+    DROP INDEX IF EXISTS idx_kg_statements_relevance
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_kg_statements_relevance_audience
         ON kg_statements (
-            space_id, subject_id, confidence DESC, valid_from DESC, recorded_at DESC
+            space_id, subject_id, audience,
+            confidence DESC, valid_from DESC, recorded_at DESC
         )
     """,
     # Incoming direction — "what points at this entity".
@@ -221,12 +229,18 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     DROP INDEX IF EXISTS idx_kg_mentions_alias
     """,
     """
-    CREATE INDEX IF NOT EXISTS idx_kg_mentions_alias_entity
-        ON kg_entity_mentions (space_id, alias, entity_id)
+    DROP INDEX IF EXISTS idx_kg_mentions_alias_entity
     """,
     """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_kg_mentions_unique
-        ON kg_entity_mentions (space_id, entity_id, alias)
+    CREATE INDEX IF NOT EXISTS idx_kg_mentions_alias_audience_entity
+        ON kg_entity_mentions (space_id, alias, audience, entity_id)
+    """,
+    """
+    DROP INDEX IF EXISTS idx_kg_mentions_unique
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_kg_mentions_unique_audience
+        ON kg_entity_mentions (space_id, entity_id, alias, audience)
     """,
 )
 
@@ -302,7 +316,7 @@ ORDER_BY_RELEVANCE = f"ORDER BY {_RELEVANCE}"
 # to return 8 rows once a companion's hot subject held 13 333 statements.
 #
 # ``query_subjects`` now unions one bounded branch per subject, each walking
-# ``idx_kg_statements_relevance`` and stopping at its LIMIT. The per-subject bound
+# ``idx_kg_statements_relevance_audience`` and stopping at its LIMIT. The per-subject bound
 # is unchanged; only its cost is.
 
 

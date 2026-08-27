@@ -21,6 +21,7 @@ def test_score_results_uses_metric_aware_similarity_for_l2() -> None:
         _QueryResult(),
         wings=["Wing_Work"],
         room=None,
+        audiences=None,
         n_results=1,
         closet_boost_by_source={},
         post_filter=False,

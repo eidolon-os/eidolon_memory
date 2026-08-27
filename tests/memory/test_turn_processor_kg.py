@@ -328,7 +328,11 @@ async def test_invalidation_applies_before_new_triple(settings, backend, kg):
         settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
     )
 
-    coffee = [r for r in await kg.query_entity("self", audiences=("owner",)) if r.object == "coffee"]
+    coffee = [
+        r
+        for r in await kg.query_entity("self", audiences=("owner",))
+        if r.object == "coffee"
+    ]
     tea = [r for r in await kg.query_entity("self", audiences=("owner",)) if r.object == "tea"]
     # Coffee invalidated → no current "likes coffee"
     assert not coffee
@@ -411,9 +415,14 @@ async def test_steward_output_with_health_predicate_propagates(settings, backend
     # default query (read-side) excludes sensitive predicates (KG plan §3.3 G2)
     default = await kg.query_entity("self", audiences=("owner",))
     assert not any(r.predicate == "has_health_condition" for r in default)
-    # opt-in returns them
-    opt_in = await kg.query_entity(
+    # Sensitive interaction facts remain private to the companion that learned
+    # them; opting in to sensitive data must not widen the audience to Owner.
+    owner_opt_in = await kg.query_entity(
         "self", audiences=("owner",), include_sensitive=True
+    )
+    assert not any(r.predicate == "has_health_condition" for r in owner_opt_in)
+    opt_in = await kg.query_entity(
+        "self", audiences=("companion:test",), include_sensitive=True
     )
     assert any(r.predicate == "has_health_condition" for r in opt_in)
 

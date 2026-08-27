@@ -14,8 +14,8 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from eidolon_memory_contracts import (
-    AudienceMutationCommand,
     OWNER_AUDIENCE,
+    AudienceMutationCommand,
     ConsolidatorIngestThemeCommand,
     ConversationTurnPayload,
     DeviceSyncBatchPayload,
@@ -49,6 +49,10 @@ from eidolon.memory.application.ingest import (
     ingest_memory_fragments,
 )
 from eidolon.memory.application.memory_intents import memory_intents_from_decision
+from eidolon.memory.application.scope_policy import (
+    derived_triple_audience,
+    interaction_audience,
+)
 from eidolon.memory.application.steward.common import (
     apply_privacy_actions,
     stamp_fragment_identity,
@@ -443,8 +447,13 @@ async def process_turn_message(
                 invalidation_intents[source_index] = intent
         for index, inv in enumerate(decision.invalidations):
             intent = invalidation_intents.get(index)
+            audience = derived_triple_audience(inv.predicate, turn.context)
             try:
-                if canonical_facts is not None and intent is not None:
+                if (
+                    audience == OWNER_AUDIENCE
+                    and canonical_facts is not None
+                    and intent is not None
+                ):
                     if intent.occurred_at is None:
                         intent = intent.model_copy(update={"occurred_at": turn_ts})
                     result = await invalidate_exact_canonical_fact(
@@ -459,6 +468,7 @@ async def process_turn_message(
                         subject=inv.subject,
                         predicate=inv.predicate,
                         object=inv.object,
+                        audiences=(audience,),
                         ended=inv.ended or turn_ts,
                     )
                 if rows > 0:
@@ -495,8 +505,13 @@ async def process_turn_message(
                 continue
             try:
                 intent = triple_intents.get(index)
+                audience = derived_triple_audience(t.predicate, turn.context)
                 registration = None
-                if canonical_facts is not None and intent is not None:
+                if (
+                    audience == OWNER_AUDIENCE
+                    and canonical_facts is not None
+                    and intent is not None
+                ):
                     registration = await canonical_facts.register(
                         intent,
                         targets={"kg"},
@@ -527,7 +542,7 @@ async def process_turn_message(
                                 targets={"kg"},
                             )
                 await kg.add_triple(
-                    audience=OWNER_AUDIENCE,
+                    audience=audience,
                     subject=t.subject,
                     predicate=t.predicate,
                     object=t.object,
@@ -558,7 +573,10 @@ async def process_turn_message(
         # actually asserted in this turn (steward output is LLM-derived,
         # so cross-validation with structured triple ids is essential).
         mentions_written, mentions_rejected = await _write_mentions(
-            kg, decision, kg_failures=kg_failures,
+            kg,
+            decision,
+            audience=interaction_audience(turn.context),
+            kg_failures=kg_failures,
         )
 
     # A turn that reached here was absorbed. "wrote" versus "skipped" is the
@@ -648,6 +666,7 @@ async def _write_mentions(
     kg: Any,
     decision: Any,
     *,
+    audience: str,
     kg_failures: list[str],
 ) -> tuple[int, int]:
     """Persist ``decision.mentions`` to the KG, dropping LLM hallucinations.
@@ -690,6 +709,7 @@ async def _write_mentions(
             await kg.record_entity_mention(
                 entity_id=m.entity_id,
                 alias=m.alias,
+                audience=audience,
                 source="steward-llm",
                 confidence=m.confidence,
             )
@@ -804,6 +824,7 @@ async def process_command_message(
                 subject=cmd.subject,
                 predicate=cmd.predicate,
                 object=cmd.object,
+                audiences=(OWNER_AUDIENCE,),
                 ended=cmd.ended,
             )
             if rows == 0:
@@ -1089,10 +1110,10 @@ async def process_sync_message(
                 kg,
             )
             for fragment in decision.fragments if decision.should_write else []:
-                stamped = (
-                    fragment
-                    if fragment.occurred_at
-                    else fragment.model_copy(update={"occurred_at": turn.timestamp})
+                stamped = _stamped_for_turn(
+                    fragment,
+                    turn=turn,
+                    turn_ts=turn.timestamp,
                 )
                 await ingest_memory_fragment(backend, stamped)
             await ledger.mark_synced(
@@ -1151,6 +1172,7 @@ async def _ingest_theme(backend: Any, cmd: ConsolidatorIngestThemeCommand) -> st
         source_turn_id=f"consolidator:{cmd.request_id}",
         session_id="consolidator",
         tags=["theme", cmd.underlying_wing],
+        audience=cmd.audience,
         privacy="normal",
         metadata={
             "source": "consolidator",

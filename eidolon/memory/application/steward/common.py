@@ -16,6 +16,7 @@ from eidolon.memory.application.forget import (
     find_forget_statements,
     forget_graph_for_drawers,
 )
+from eidolon.memory.application.scope_policy import interaction_audience
 from eidolon.memory.domain.errors import MemoryBackendUnsupported
 from eidolon.memory.support.logging import get_logger
 
@@ -98,6 +99,7 @@ def stamp_fragment_identity(
         "source_instance_id": companion_id,
         "source_turn_id": source_turn_id or fragment.source_turn_id,
         "session_id": session_id,
+        "audience": interaction_audience(context),
     }
     if fragment.scope == "device" and not fragment.target_device_id:
         updates["target_device_id"] = device_id
@@ -134,6 +136,7 @@ def finalize_fragments(
             "memory_realm_id": frag.memory_realm_id or frag.memory_space_id,
             "owner_id": frag.owner_id or "",
             "companion_id": frag.companion_id or "",
+            "audience": frag.audience,
             "scope": frag.scope,
             "visibility": frag.visibility,
             "source_device_id": frag.source_device_id or "",

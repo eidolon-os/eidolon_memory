@@ -95,6 +95,14 @@ class ConsolidatorIngestThemeCommand(_BaseMemoryCommand):
     window_days: int = Field(gt=0, default=30)
     source_drawer_ids: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0, default=0.7)
+    audience: str
+
+    @field_validator("audience")
+    @classmethod
+    def _known_theme_audience(cls, value: str) -> str:
+        from .audience import validate_audience
+
+        return validate_audience(value)
 
 
 class MemoryIntentCommand(_BaseMemoryCommand):

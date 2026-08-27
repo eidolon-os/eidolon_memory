@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from eidolon_memory_contracts import SENSITIVE_PREDICATES, validate_audience
+from eidolon_memory_contracts import OWNER_AUDIENCE, SENSITIVE_PREDICATES, validate_audience
 
 from eidolon.memory.adapters.kg_sql import (
     JOIN_ENTITIES,
@@ -132,17 +132,25 @@ def entity_id_for(name: str) -> str:
 
 
 def statement_id_for(
-    subject_id: str, predicate: str, object_id: str, valid_from: str, recorded_at: str
+    subject_id: str,
+    predicate: str,
+    object_id: str,
+    audience: str,
+    valid_from: str,
+    recorded_at: str,
 ) -> str:
     """Derive a statement's id from its content and when it started.
 
-    Deterministic, so the same statement recorded twice in one instant collides
-    rather than duplicating. ``recorded_at`` is included because the same triple
-    may legitimately hold over more than one interval — someone moves away and
-    back — and those are different statements.
+    Deterministic, so the same statement recorded twice in one audience and one
+    instant collides rather than duplicating. ``audience`` keeps a private fact
+    distinct from a separately derived Owner fact. ``recorded_at`` is included
+    because the same triple may legitimately hold over more than one interval —
+    someone moves away and back — and those are different statements.
     """
 
-    payload = "\x1f".join((subject_id, predicate, object_id, valid_from, recorded_at))
+    payload = "\x1f".join(
+        (subject_id, predicate, object_id, audience, valid_from, recorded_at)
+    )
     return f"stmt_{hashlib.sha256(payload.encode()).hexdigest()[:24]}"
 
 
@@ -245,7 +253,18 @@ class SqliteKnowledgeGraph:
             # here and every later connection inherits it.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
-            for statement in SCHEMA_STATEMENTS:
+            for statement in SCHEMA_STATEMENTS[:3]:
+                conn.execute(statement)
+            mention_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(kg_entity_mentions)")
+            }
+            if "audience" not in mention_columns:
+                conn.execute(
+                    "ALTER TABLE kg_entity_mentions "
+                    "ADD COLUMN audience TEXT NOT NULL DEFAULT 'owner'"
+                )
+            for statement in SCHEMA_STATEMENTS[3:]:
                 conn.execute(statement)
 
     # ── writes ──────────────────────────────────────────────────────────────
@@ -296,6 +315,7 @@ class SqliteKnowledgeGraph:
         object_id = entity_id_for(object)
         started = canonical_temporal(valid_from) or now_iso()
         ended = canonical_temporal(valid_to)
+        audience = validate_audience(audience)
 
         # Replaying a turn must not duplicate, and must not undo an invalidation
         # that happened after it — so this check comes before the validity one.
@@ -305,9 +325,13 @@ class SqliteKnowledgeGraph:
                 SELECT statement_id FROM kg_statements
                 WHERE space_id = ? AND source_turn_id = ?
                   AND subject_id = ? AND predicate = ? AND object_id = ?
+                  AND audience = ?
                 LIMIT 1
                 """,
-                (self._space_id, source_turn_id, subject_id, predicate, object_id),
+                (
+                    self._space_id, source_turn_id, subject_id, predicate,
+                    object_id, audience,
+                ),
             ).fetchone()
             if existing is not None:
                 return existing["statement_id"]
@@ -317,16 +341,19 @@ class SqliteKnowledgeGraph:
             """
             SELECT statement_id FROM kg_statements
             WHERE space_id = ? AND subject_id = ? AND predicate = ? AND object_id = ?
+              AND audience = ?
               AND valid_to IS NULL
             LIMIT 1
             """,
-            (self._space_id, subject_id, predicate, object_id),
+            (self._space_id, subject_id, predicate, object_id, audience),
         ).fetchone()
         if still_valid is not None:
             return still_valid["statement_id"]
 
         recorded = now_iso()
-        statement_id = statement_id_for(subject_id, predicate, object_id, started, recorded)
+        statement_id = statement_id_for(
+            subject_id, predicate, object_id, audience, started, recorded
+        )
         is_sensitive = predicate_is_sensitive(predicate) if sensitive is None else sensitive
 
         with self._connection():
@@ -374,26 +401,39 @@ class SqliteKnowledgeGraph:
         subject: str,
         predicate: str,
         object: str,
+        audiences: tuple[str, ...] = (OWNER_AUDIENCE,),
         ended: str | None = None,
     ) -> int:
         async with self._lock.writer():
             return await asyncio.to_thread(
-                self._invalidate_sync, subject, predicate, object, ended
+                self._invalidate_sync, subject, predicate, object, audiences, ended
             )
 
     def _invalidate_sync(
-        self, subject: str, predicate: str, object: str, ended: str | None
+        self,
+        subject: str,
+        predicate: str,
+        object: str,
+        audiences: tuple[str, ...],
+        ended: str | None,
     ) -> int:
+        if not audiences:
+            return 0
+        checked = tuple(validate_audience(value) for value in audiences)
+        marks = ", ".join("?" for _ in checked)
         ended_at = canonical_temporal(ended) or now_iso()
         with self._connection():
             cursor = self._connection().execute(
-                """
+                f"""
                 UPDATE kg_statements SET valid_to = ?
                 WHERE space_id = ? AND subject_id = ? AND predicate = ? AND object_id = ?
                   AND valid_to IS NULL
+                  AND audience IN ({marks})
                 """,
-                (ended_at, self._space_id, entity_id_for(subject), predicate,
-                 entity_id_for(object)),
+                (
+                    ended_at, self._space_id, entity_id_for(subject), predicate,
+                    entity_id_for(object), *checked,
+                ),
             )
         return cursor.rowcount or 0
 
@@ -648,7 +688,7 @@ class SqliteKnowledgeGraph:
         confidence: float,
         source_turn_id: str | None,
     ) -> str:
-        self._invalidate_sync(subject, predicate, old_object, boundary)
+        self._invalidate_sync(subject, predicate, old_object, (audience,), boundary)
         return self._add_triple_sync(
             subject,
             predicate,
@@ -668,15 +708,26 @@ class SqliteKnowledgeGraph:
         entity_id: str,
         alias: str,
         source: str,
+        audience: str = OWNER_AUDIENCE,
         confidence: float = 0.85,
     ) -> None:
         async with self._lock.writer():
             await asyncio.to_thread(
-                self._record_mention_sync, entity_id, alias, source, confidence
+                self._record_mention_sync,
+                entity_id,
+                alias,
+                audience,
+                source,
+                confidence,
             )
 
     def _record_mention_sync(
-        self, entity_id: str, alias: str, source: str, confidence: float
+        self,
+        entity_id: str,
+        alias: str,
+        audience: str,
+        source: str,
+        confidence: float,
     ) -> None:
         """Write an alias against the same key every other write uses.
 
@@ -714,16 +765,20 @@ class SqliteKnowledgeGraph:
         normalised = (alias or "").strip().lower()
         if not normalised or not canonical:
             return
-        mention_id = f"{canonical}:{normalised}"
+        checked_audience = validate_audience(audience)
+        mention_id = f"{checked_audience}:{canonical}:{normalised}"
         with self._connection():
             self._connection().execute(
                 """
                 INSERT OR IGNORE INTO kg_entity_mentions (
-                    space_id, mention_id, entity_id, alias, source, confidence, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    space_id, mention_id, entity_id, alias, audience,
+                    source, confidence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (self._space_id, mention_id, canonical, normalised, source,
-                 confidence, now_iso()),
+                (
+                    self._space_id, mention_id, canonical, normalised,
+                    checked_audience, source, confidence, now_iso(),
+                ),
             )
 
     # ── reads ───────────────────────────────────────────────────────────────
@@ -781,7 +836,7 @@ class SqliteKnowledgeGraph:
             # slowest read in the graph. Measured at 20 000 statements, EXPLAIN
             # QUERY PLAN on each shape:
             #
-            #   s.subject_id = ?   SEARCH USING INDEX idx_kg_statements_relevance
+            #   s.subject_id = ?   SEARCH USING INDEX idx_kg_statements_relevance_audience
             #   the OR             SEARCH USING idx_kg_statements_source (space_id=?)
             #                      + USE TEMP B-TREE FOR ORDER BY
             #
@@ -861,7 +916,7 @@ class SqliteKnowledgeGraph:
         # sorting the 13 333 statements it had — 33 ms, measured at 20 000
         # statements, to hand back 8 records.
         #
-        # A bounded branch stops instead, because ``idx_kg_statements_relevance``
+        # A bounded branch stops instead, because ``idx_kg_statements_relevance_audience``
         # is ordered the same way the query is. Recall asks about
         # ``kg_max_entities`` subjects — three — so this is three index walks in
         # one round trip rather than one full-partition sort.
@@ -1017,13 +1072,23 @@ class SqliteKnowledgeGraph:
         ranked = sorted(counted.items(), key=lambda item: (-item[1], item[0]))
         return [name for name, _hits in ranked[:cap]]
 
-    async def match_entities_for_query(self, query: str, *, cap: int) -> list[str]:
-        if cap <= 0:
+    async def match_entities_for_query(
+        self,
+        query: str,
+        *,
+        cap: int,
+        audiences: tuple[str, ...] = (OWNER_AUDIENCE,),
+    ) -> list[str]:
+        if cap <= 0 or not audiences:
             return []
         async with self._lock.reader():
-            return await asyncio.to_thread(self._match_entities_sync, query, cap)
+            return await asyncio.to_thread(
+                self._match_entities_sync, query, audiences, cap
+            )
 
-    def _match_entities_sync(self, query: str, cap: int) -> list[str]:
+    def _match_entities_sync(
+        self, query: str, audiences: tuple[str, ...], cap: int
+    ) -> list[str]:
         """Find entities a phrase might be about.
 
         Bridges two naming conventions that do not meet on their own. The steward
@@ -1109,9 +1174,12 @@ class SqliteKnowledgeGraph:
             "SELECT e.name AS name, m.alias AS alias FROM kg_entity_mentions m "
             "JOIN kg_entities e ON e.space_id = m.space_id AND e.entity_id = m.entity_id "
             "WHERE m.space_id = ? AND m.alias <> '' AND m.alias IN ({marks}) "
+            f"AND m.audience IN ({', '.join('?' for _ in audiences)}) "
             "ORDER BY length(m.alias) DESC LIMIT ?"
         )
-        for name in self._lookup_names(alias_sql, lowered, cap):
+        for name in self._lookup_names(
+            alias_sql, lowered, cap, trailing_params=list(audiences)
+        ):
             if not name or name in seen:
                 continue
             seen.add(name)
@@ -1120,7 +1188,13 @@ class SqliteKnowledgeGraph:
                 break
         return found[:cap]
 
-    def _lookup_names(self, sql: str, pieces: list[str], cap: int) -> list[str]:
+    def _lookup_names(
+        self,
+        sql: str,
+        pieces: list[str],
+        cap: int,
+        trailing_params: list[str] | None = None,
+    ) -> list[str]:
         """Run one lookup over ``pieces``, chunked, longest name first.
 
         Chunking splits the ordering, so the chunks are re-sorted here rather
@@ -1134,7 +1208,8 @@ class SqliteKnowledgeGraph:
             chunk = pieces[start : start + _LOOKUP_CHUNK]
             marks = ", ".join("?" for _ in chunk)
             rows = connection.execute(
-                sql.format(marks=marks), (self._space_id, *chunk, cap)
+                sql.format(marks=marks),
+                (self._space_id, *chunk, *(trailing_params or []), cap),
             )
             names.extend(row["name"] for row in rows)
         names.sort(key=len, reverse=True)
@@ -1312,5 +1387,3 @@ __all__ = [
     "predicate_is_sensitive",
     "statement_id_for",
 ]
-
-

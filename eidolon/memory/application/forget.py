@@ -250,7 +250,11 @@ async def find_forget_statements(
     phrase = (target or "").strip()
     if not phrase:
         return []
-    names = await kg.match_entities_for_query(phrase, cap=FORGET_ENTITY_CAP)
+    names = await kg.match_entities_for_query(
+        phrase,
+        audiences=audiences,
+        cap=FORGET_ENTITY_CAP,
+    )
     if not names:
         return []
     triples = await kg.query_entity_combined(

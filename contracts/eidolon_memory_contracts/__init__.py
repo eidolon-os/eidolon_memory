@@ -41,6 +41,7 @@ from .audience import (
     OWNER_AUDIENCE,
     audience_companion_id,
     companion_audience,
+    council_audience,
     is_companion_audience,
     readable_audiences,
     validate_audience,
@@ -61,10 +62,10 @@ from .intent import (
     MemoryIntentType,
 )
 from .kg import (
-    AudienceMutationCommand,
     KG_PREDICATE_VALUES,
     SENSITIVE_PREDICATES,
     USER_CONFIRMED_ROOM_PREFIX,
+    AudienceMutationCommand,
     ConsolidatorIngestThemeCommand,
     DeviceSyncBatchPayload,
     DeviceSyncEvent,
@@ -191,6 +192,7 @@ __all__ = [
     "audience_companion_id",
     "build_memory_actor_context",
     "companion_audience",
+    "council_audience",
     "conversation_turn_stream_pattern",
     "conversation_turn_subject",
     "derive_memory_space_id",

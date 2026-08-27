@@ -108,8 +108,9 @@ def actor_context(
     caller's — the route carries no realm, and letting a query name one would
     make this surface answer for a space its caller was never routed to.
 
-    ``companion_id`` selects an *audience*: absent is the Owner layer, present
-    adds that Companion's own. It cannot widen what the space can see.
+    ``companion_id`` selects a logical audience inside the already-routed Owner
+    Realm: absent is the derived Owner layer, present adds only that Companion's
+    private memory. It cannot reach a sibling audience.
     """
 
     from eidolon_memory_contracts import MemoryActorContext

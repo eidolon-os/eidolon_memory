@@ -927,7 +927,8 @@ async def test_the_old_three_column_index_is_gone(graph) -> None:
         )
     }
 
-    assert "idx_kg_statements_triple" in names
+    assert "idx_kg_statements_triple_audience" in names
+    assert "idx_kg_statements_triple" not in names
     assert "idx_kg_statements_subject" not in names
 
 
@@ -957,7 +958,8 @@ async def test_an_existing_graph_picks_up_the_new_index(tmp_path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             )
         }
-        assert "idx_kg_statements_triple" in names
+        assert "idx_kg_statements_triple_audience" in names
+        assert "idx_kg_statements_triple" not in names
         assert "idx_kg_statements_subject" not in names
     finally:
         graph.close()
@@ -1079,11 +1081,12 @@ async def test_the_alias_lookup_is_a_seek_too(graph) -> None:
             "SELECT e.name AS name, m.alias AS alias FROM kg_entity_mentions m "
             "JOIN kg_entities e ON e.space_id = m.space_id AND e.entity_id = m.entity_id "
             "WHERE m.space_id = ? AND m.alias <> '' AND m.alias IN (?, ?) "
+            "AND m.audience IN (?) "
             "ORDER BY length(m.alias) DESC LIMIT ?",
-            ("alice", "my dad", "x", 3),
+            ("alice", "my dad", "x", OWNER, 3),
         )
     )
 
-    assert "idx_kg_mentions_alias_entity" in plan, plan
+    assert "idx_kg_mentions_alias_audience_entity" in plan, plan
     assert "alias=?" in plan, f"the alias lookup fell back to a scan: {plan}"
     assert "idx_kg_mentions_unique (space_id=?)" not in plan, plan

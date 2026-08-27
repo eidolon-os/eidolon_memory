@@ -202,9 +202,16 @@ class LockedBackend(MemoryBackend):
         wing: str,
         n_results: int = 5,
         room: str | None = None,
+        audiences: tuple[str, ...] | None = None,
     ) -> list[MemoryWireRecord]:
         return await self._serialized(
-            lambda: self._inner.search(query, wing=wing, n_results=n_results, room=room),
+            lambda: self._inner.search(
+                query,
+                wing=wing,
+                n_results=n_results,
+                room=room,
+                audiences=audiences,
+            ),
             name="search",
             write=False,
         )
@@ -216,6 +223,7 @@ class LockedBackend(MemoryBackend):
         wings: list[str],
         n_results: int = 5,
         room: str | None = None,
+        audiences: tuple[str, ...] | None = None,
         skip_closets: bool = False,
     ) -> list[MemoryWireRecord]:
         search_scoped = getattr(self._inner, "search_scoped", None)
@@ -227,6 +235,7 @@ class LockedBackend(MemoryBackend):
                 wings=wings,
                 n_results=n_results,
                 room=room,
+                audiences=audiences,
                 skip_closets=skip_closets,
             ),
             name="search_scoped",

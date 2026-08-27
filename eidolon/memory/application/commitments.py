@@ -118,6 +118,7 @@ async def apply_explicit_commitment(
             subject=record.promisor,
             predicate=record.predicate,
             object=record.action,
+            audiences=(OWNER_AUDIENCE,),
             ended=intent.occurred_at or cmd.issued_at,
         )
     await commitments.mark_projected(

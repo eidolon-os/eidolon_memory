@@ -15,6 +15,7 @@ class MemoryActorContext(EidolonWireModel):
 
     owner_id: str | None = None
     companion_id: str | None = None
+    council_id: str | None = None
     memory_realm_id: str
     device_id: str | None = None
     session_id: str | None = None
@@ -28,7 +29,9 @@ class MemoryActorContext(EidolonWireModel):
             raise ValueError("memory_realm_id cannot be blank")
         return text
 
-    @field_validator("owner_id", "companion_id", "device_id", "session_id")
+    @field_validator(
+        "owner_id", "companion_id", "council_id", "device_id", "session_id"
+    )
     @classmethod
     def _optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -67,6 +70,7 @@ def build_memory_actor_context(
     memory_realm_id: str,
     owner_id: str | None = None,
     companion_id: str | None = None,
+    council_id: str | None = None,
     device_id: str | None = None,
     session_id: str | None = None,
 ) -> MemoryActorContext:
@@ -75,6 +79,7 @@ def build_memory_actor_context(
     return MemoryActorContext(
         owner_id=owner_id,
         companion_id=companion_id,
+        council_id=council_id,
         memory_realm_id=memory_realm_id,
         device_id=device_id,
         session_id=session_id,

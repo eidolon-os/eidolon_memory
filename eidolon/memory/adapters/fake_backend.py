@@ -40,6 +40,7 @@ class FakeMemoryBackend:
         wing: str,
         n_results: int = 5,
         room: str | None = None,
+        audiences: tuple[str, ...] | None = None,
     ) -> list[MemoryWireRecord]:
         self.searches.append((query, wing, n_results, room))
         hits: list[MemoryWireRecord] = []
@@ -48,6 +49,10 @@ class FakeMemoryBackend:
             if rec.metadata.get("wing", rec.memory_space_id) != wing:
                 continue
             if room and rec.key != room:
+                continue
+            if audiences is not None and str(
+                rec.metadata.get("audience") or "owner"
+            ) not in audiences:
                 continue
             blob = json.dumps(rec.value, ensure_ascii=False).lower() if rec.value else ""
             if q in blob or q in rec.key.lower():

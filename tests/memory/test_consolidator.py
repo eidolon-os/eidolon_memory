@@ -2,7 +2,7 @@
 
 Scope:
   * ``Theme.idempotency_hash`` is deterministic / input-sensitive.
-  * ``group_drawers_by_wing`` honors the time window + wing allowlist.
+  * grouping honors time, wing and audience boundaries.
   * ``_extract_themes_from_llm_response`` survives JSON wobbles (fences,
     extra prose, partial JSON).
   * ``_ingest_theme`` writes a Wing_Theme drawer with the expected schema.
@@ -30,7 +30,7 @@ from eidolon.memory.entrypoints.consolidator import (
     Theme,
     _extract_themes_from_llm_response,
     _list_all_drawers,
-    group_drawers_by_wing,
+    group_drawers_by_audience_and_wing,
 )
 from eidolon.memory.infrastructure.nats.query import NatsMemoryQueryClient
 
@@ -40,9 +40,14 @@ from eidolon.memory.infrastructure.nats.query import NatsMemoryQueryClient
 def test_idempotency_hash_stable_for_same_input():
     """Same user/wing/window/drawer-set → same hash, every time."""
     t1 = Theme(text="x", underlying_wing="Wing_Work", confidence=0.8,
-               source_drawer_ids=["d1", "d2", "d3"])
-    t2 = Theme(text="DIFFERENT TEXT", underlying_wing="Wing_Work", confidence=0.5,
-               source_drawer_ids=["d2", "d3", "d1"])  # order-independent
+               source_drawer_ids=["d1", "d2", "d3"], audience="companion:mochi")
+    t2 = Theme(
+        text="DIFFERENT TEXT",
+        underlying_wing="Wing_Work",
+        confidence=0.5,
+        source_drawer_ids=["d2", "d3", "d1"],
+        audience="companion:mochi",
+    )  # source order is intentionally irrelevant
     h1 = t1.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
     h2 = t2.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
     assert h1 == h2, "hash must depend only on input drawer set, not theme content"
@@ -51,9 +56,9 @@ def test_idempotency_hash_stable_for_same_input():
 def test_idempotency_hash_changes_on_new_drawer():
     """Adding/removing a single drawer flips the hash."""
     base = Theme(text="x", underlying_wing="Wing_Work", confidence=0.8,
-                 source_drawer_ids=["d1", "d2"])
+                 source_drawer_ids=["d1", "d2"], audience="companion:mochi")
     extended = Theme(text="x", underlying_wing="Wing_Work", confidence=0.8,
-                     source_drawer_ids=["d1", "d2", "d3"])
+                     source_drawer_ids=["d1", "d2", "d3"], audience="companion:mochi")
     h1 = base.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
     h2 = extended.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
     assert h1 != h2
@@ -61,7 +66,8 @@ def test_idempotency_hash_changes_on_new_drawer():
 
 def test_idempotency_hash_isolates_user_and_window():
     """Same drawers under different (user, window) → different hashes."""
-    t = Theme(text="x", underlying_wing="W", confidence=0.8, source_drawer_ids=["d1"])
+    t = Theme(text="x", underlying_wing="W", confidence=0.8,
+              source_drawer_ids=["d1"], audience="companion:mochi")
     assert (
         t.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
         != t.idempotency_hash(memory_space_id="default.bob.mochi", window_days=30)
@@ -75,7 +81,9 @@ def test_idempotency_hash_isolates_user_and_window():
 # ─── group_drawers_by_wing ────────────────────────────────────────────────
 
 
-def _drawer(*, wing: str, age_days: float, value: str = "x") -> dict:
+def _drawer(
+    *, wing: str, age_days: float, value: str = "x", audience: str = "companion:mochi"
+) -> dict:
     """Build a ``eidolon_memory_list``-shaped record dict."""
     created = datetime.now(UTC) - timedelta(days=age_days)
     return {
@@ -83,7 +91,7 @@ def _drawer(*, wing: str, age_days: float, value: str = "x") -> dict:
         "key": f"k-{wing}-{age_days}",
         "value": value,
         "created_at": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "metadata": {"wing": wing, "memory_type": "preference"},
+        "metadata": {"wing": wing, "memory_type": "preference", "audience": audience},
     }
 
 
@@ -94,8 +102,8 @@ def test_group_drawers_filters_window():
         _drawer(wing="Wing_Work", age_days=10),
         _drawer(wing="Wing_Work", age_days=45),   # outside 30d window
     ]
-    grouped = group_drawers_by_wing(drawers, window_days=30)
-    assert len(grouped["Wing_Work"]) == 2
+    grouped = group_drawers_by_audience_and_wing(drawers, window_days=30)
+    assert len(grouped[("companion:mochi", "Wing_Work")]) == 2
 
 
 def test_group_drawers_filters_to_themable_wings():
@@ -105,10 +113,10 @@ def test_group_drawers_filters_to_themable_wings():
         _drawer(wing="Wing_Privacy", age_days=1),
         _drawer(wing="Wing_Work", age_days=1),
     ]
-    grouped = group_drawers_by_wing(drawers, window_days=30)
-    assert "Wing_Theme" not in grouped
-    assert "Wing_Privacy" not in grouped
-    assert grouped.get("Wing_Work")
+    grouped = group_drawers_by_audience_and_wing(drawers, window_days=30)
+    assert all(wing != "Wing_Theme" for _audience, wing in grouped)
+    assert all(wing != "Wing_Privacy" for _audience, wing in grouped)
+    assert grouped.get(("companion:mochi", "Wing_Work"))
 
 
 def test_group_drawers_keeps_drawers_with_missing_timestamp():
@@ -118,8 +126,20 @@ def test_group_drawers_keeps_drawers_with_missing_timestamp():
         "created_at": None,
         "metadata": {"wing": "Wing_Life"},
     }
-    grouped = group_drawers_by_wing([rec], window_days=30)
-    assert grouped.get("Wing_Life") == [rec]
+    grouped = group_drawers_by_audience_and_wing([rec], window_days=30)
+    assert grouped.get(("owner", "Wing_Life")) == [rec]
+
+
+def test_group_drawers_never_mixes_companion_audiences() -> None:
+    drawers = [
+        _drawer(wing="Wing_Work", age_days=1, audience="companion:mochi"),
+        _drawer(wing="Wing_Work", age_days=1, audience="companion:nori"),
+    ]
+    grouped = group_drawers_by_audience_and_wing(drawers, window_days=30)
+    assert set(grouped) == {
+        ("companion:mochi", "Wing_Work"),
+        ("companion:nori", "Wing_Work"),
+    }
 
 
 async def test_list_all_drawers_reads_pages_from_query_client():
@@ -160,18 +180,20 @@ async def test_grouped_wing_synthesis_is_bounded_parallel_and_ordered(monkeypatc
     active = 0
     peak = 0
 
-    async def _fake_synthesize(wing_id, records, *, settings):
+    async def _fake_synthesize(wing_id, records, *, audience, settings):
         nonlocal active, peak
         del records, settings
         active += 1
         peak = max(peak, active)
         await asyncio.sleep(0.01)
         active -= 1
-        return [Theme(wing_id, wing_id, 0.8, [f"drawer_{wing_id}"])]
+        return [Theme(wing_id, wing_id, 0.8, [f"drawer_{wing_id}"], audience)]
 
     monkeypatch.setattr(consolidator, "synthesize_themes_for_wing", _fake_synthesize)
     grouped = {
-        f"Wing_{index}": [{"key": f"drawer_{index}"}, {"key": f"drawer_{index}_b"}]
+        ("companion:mochi", f"Wing_{index}"): [
+            {"key": f"drawer_{index}"}, {"key": f"drawer_{index}_b"}
+        ]
         for index in range(7)
     }
 
@@ -184,8 +206,9 @@ async def test_grouped_wing_synthesis_is_bounded_parallel_and_ordered(monkeypatc
     )
 
     assert peak == 3
-    assert [row["wing"] for row in rows] == sorted(grouped)
-    assert [theme.underlying_wing for theme in themes] == sorted(grouped)
+    expected_wings = sorted(wing for _audience, wing in grouped)
+    assert [row["wing"] for row in rows] == expected_wings
+    assert [theme.underlying_wing for theme in themes] == expected_wings
 
 
 async def test_grouped_wing_synthesis_returns_partial_results_at_pass_budget(
@@ -198,11 +221,11 @@ async def test_grouped_wing_synthesis_returns_partial_results_at_pass_budget(
 
     cancelled: list[str] = []
 
-    async def _fake_synthesize(wing_id, records, *, settings):
+    async def _fake_synthesize(wing_id, records, *, audience, settings):
         del records, settings
         if wing_id == "Wing_Fast":
             await asyncio.sleep(0.01)
-            return [Theme("fast", wing_id, 0.8, ["drawer_fast"])]
+            return [Theme("fast", wing_id, 0.8, ["drawer_fast"], audience)]
         try:
             await asyncio.sleep(10)
         except asyncio.CancelledError:
@@ -212,8 +235,8 @@ async def test_grouped_wing_synthesis_returns_partial_results_at_pass_budget(
 
     monkeypatch.setattr(consolidator, "synthesize_themes_for_wing", _fake_synthesize)
     grouped = {
-        "Wing_Fast": [{"key": "drawer_fast"}],
-        "Wing_Slow": [{"key": "drawer_slow"}],
+        ("companion:mochi", "Wing_Fast"): [{"key": "drawer_fast"}],
+        ("companion:mochi", "Wing_Slow"): [{"key": "drawer_slow"}],
     }
 
     rows, themes = await consolidator.synthesize_grouped_wings(
@@ -237,16 +260,19 @@ async def test_grouped_wing_synthesis_isolates_unexpected_wing_failure(monkeypat
     from eidolon.memory.config.memory_settings import load_memory_settings
     from eidolon.memory.entrypoints import consolidator
 
-    async def _fake_synthesize(wing_id, records, *, settings):
+    async def _fake_synthesize(wing_id, records, *, audience, settings):
         del records, settings
         if wing_id == "Wing_Broken":
             raise RuntimeError("bad wing")
-        return [Theme("ok", wing_id, 0.8, ["drawer_ok"])]
+        return [Theme("ok", wing_id, 0.8, ["drawer_ok"], audience)]
 
     monkeypatch.setattr(consolidator, "synthesize_themes_for_wing", _fake_synthesize)
 
     rows, themes = await consolidator.synthesize_grouped_wings(
-        {"Wing_Broken": [{}], "Wing_Ok": [{}]},
+        {
+            ("companion:mochi", "Wing_Broken"): [{}],
+            ("companion:mochi", "Wing_Ok"): [{}],
+        },
         settings=load_memory_settings(),
         min_drawers=1,
         confidence_threshold=0.5,
@@ -354,6 +380,7 @@ async def test_ingest_theme_writes_wing_theme_drawer():
         window_days=21,
         source_drawer_ids=["d1", "d2"],
         confidence=0.85,
+        audience="companion:mochi",
     )
     await _ingest_theme(backend, cmd)
 
@@ -385,6 +412,7 @@ async def test_ingest_theme_idempotent_on_redelivery():
         request_id="dedup-key", memory_space_id="default.alice.mochi",
         issued_at="2026-05-26T00:00:00Z", issuer="agent",
         text="主题 A", underlying_wing="Wing_Work",
+        audience="companion:mochi",
     )
     for _ in range(3):
         await _ingest_theme(backend, cmd)
@@ -493,12 +521,12 @@ def test_renderer_theme_detection_by_source_marker():
 
 
 def test_consolidator_command_pydantic_defaults():
-    """Old JetStream payloads without ``window_days`` / ``source_drawer_ids``
-    must validate using defaults."""
+    """Optional synthesis fields keep defaults; audience is always explicit."""
     cmd = ConsolidatorIngestThemeCommand(
         request_id="r", memory_space_id="default.alice.mochi",
         issued_at="2026-05-26T00:00:00Z", issuer="agent",
         text="theme", underlying_wing="Wing_Work",
+        audience="companion:mochi",
     )
     assert cmd.window_days == 30
     assert cmd.source_drawer_ids == []
@@ -568,7 +596,10 @@ async def test_fetch_themes_applies_similarity_floor():
         _theme("borderline", 0.55),     # == floor → kept
         _theme("irrelevant-low", 0.40), # < floor → dropped
     ]))
-    out = await _fetch_themes(backend, "query", settings)
+    context = MemoryActorContext(
+        memory_realm_id="default.alice.mochi", companion_id="mochi"
+    )
+    out = await _fetch_themes(backend, "query", context, settings)
     vals = [r.value for r in out]
     assert vals == ["relevant-high", "borderline"], vals
 
@@ -587,5 +618,8 @@ async def test_fetch_themes_floor_zero_disables():
         MemoryWireRecord(memory_space_id="Wing_Theme", key="k", value="low",
                          metadata={"wing": "Wing_Theme", "similarity": 0.1}),
     ]))
-    out = await _fetch_themes(backend, "q", settings)
+    context = MemoryActorContext(
+        memory_realm_id="default.alice.mochi", companion_id="mochi"
+    )
+    out = await _fetch_themes(backend, "q", context, settings)
     assert [r.value for r in out] == ["low"]
