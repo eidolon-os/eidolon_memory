@@ -15,13 +15,14 @@ what a person is shown can never be more than what the agent could have seen.
 
 from __future__ import annotations
 
+import json
+
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.public_recall import (
     search_all_wings_mcp_style,
-    wire_record_to_public_dict,
 )
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.entrypoints.memory_api import Handler, actor_context
@@ -37,6 +38,22 @@ RECOLLECTIONS_PATH = "/api/memory/v1/recollections"
 
 MAXIMUM_RESULTS = 50
 DEFAULT_RESULTS = 10
+
+
+def _recollection_view(record: object) -> dict[str, object]:
+    """Project one storage record into the small person-facing HTTP contract."""
+    value = getattr(record, "value", "")
+    if isinstance(value, str):
+        text = value
+    elif value is None:
+        text = ""
+    else:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    result: dict[str, object] = {"text": text}
+    remembered_at = getattr(record, "memory_time", None)
+    if remembered_at is not None:
+        result["remembered_at"] = remembered_at.isoformat()
+    return result
 
 
 def recollections_handler(
@@ -113,7 +130,7 @@ def recollections_handler(
                 "memory_space_id": memory_space_id,
                 "query": query,
                 "recollections": [
-                    wire_record_to_public_dict(record) for record in records
+                    _recollection_view(record) for record in records
                 ],
             }
         )

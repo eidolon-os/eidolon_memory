@@ -13,6 +13,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.entrypoints import recollections_http
 from eidolon.memory.entrypoints.owner_memory_http import owner_memory_routes
 from eidolon.memory.entrypoints.recollections_http import (
@@ -38,11 +39,6 @@ class _Service:
         return _Runtime()
 
 
-class _Record:
-    def __init__(self, text: str) -> None:
-        self.text = text
-
-
 #: This surface requires the Host's own service credential (see
 #: memory_api.py). These tests are about what the route *answers*, so they
 #: present it; that it is required at all is asserted in
@@ -58,14 +54,15 @@ def client(monkeypatch: pytest.MonkeyPatch):
 
     async def _search(backend, settings, **kwargs):
         calls.append(kwargs)
-        return [_Record("他喜欢在下午散步")]
+        return [
+            MemoryWireRecord(
+                memory_space_id="realm_primary",
+                key="profile:walk",
+                value="他喜欢在下午散步",
+            )
+        ]
 
     monkeypatch.setattr(recollections_http, "search_all_wings_mcp_style", _search)
-    monkeypatch.setattr(
-        recollections_http,
-        "wire_record_to_public_dict",
-        lambda record: {"text": record.text},
-    )
     app = Starlette(
         routes=[
             *owner_memory_routes(
@@ -111,6 +108,20 @@ def test_answers_with_what_the_space_holds(client) -> None:
     # "Could not look" and "there is nothing" are different answers, and this
     # is the surface where a person asked the question that distinguishes them.
     assert calls[0]["raise_on_degraded"] is True
+
+
+def test_storage_value_and_time_are_projected_as_a_recollection() -> None:
+    record = MemoryWireRecord(
+        memory_space_id="realm_primary",
+        key="profile:tea",
+        value="用户喜欢乌龙茶",
+        metadata={"occurred_at": "2026-08-28T04:24:36Z"},
+    )
+
+    assert recollections_http._recollection_view(record) == {
+        "text": "用户喜欢乌龙茶",
+        "remembered_at": "2026-08-28T04:24:36+00:00",
+    }
 
 
 def test_a_limit_is_bounded_rather_than_believed(client) -> None:
