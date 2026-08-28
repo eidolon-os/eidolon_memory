@@ -7,6 +7,7 @@ from hashlib import sha256
 
 DEFAULT_MEMORY_MCP_HOST = "127.0.0.1"
 DEFAULT_MEMORY_MCP_PATH = "/mcp"
+DEFAULT_MEMORY_OPS_MCP_PATH = "/ops/mcp"
 DEFAULT_MEMORY_MCP_BASE_PORT = 10030
 MEMORY_MCP_PORT_SPAN = 2000
 
@@ -19,10 +20,15 @@ class MemoryRuntimeRoute:
     mcp_host: str = DEFAULT_MEMORY_MCP_HOST
     mcp_port: int = DEFAULT_MEMORY_MCP_BASE_PORT
     mcp_path: str = DEFAULT_MEMORY_MCP_PATH
+    ops_mcp_path: str = DEFAULT_MEMORY_OPS_MCP_PATH
 
     @property
     def mcp_http_url(self) -> str:
         return f"http://{self.mcp_host}:{self.mcp_port}{self.mcp_path}"
+
+    @property
+    def ops_mcp_http_url(self) -> str:
+        return f"http://{self.mcp_host}:{self.mcp_port}{self.ops_mcp_path}"
 
 
 def stable_memory_realm_port(
@@ -53,6 +59,7 @@ def memory_runtime_route_for_realm(
     used_ports: set[int] | None = None,
     mcp_host: str = DEFAULT_MEMORY_MCP_HOST,
     mcp_path: str = DEFAULT_MEMORY_MCP_PATH,
+    ops_mcp_path: str = DEFAULT_MEMORY_OPS_MCP_PATH,
 ) -> MemoryRuntimeRoute:
     """Resolve the runtime route for a realm from deployment defaults."""
     allocated_ports = used_ports if used_ports is not None else set()
@@ -67,4 +74,5 @@ def memory_runtime_route_for_realm(
         mcp_host=mcp_host,
         mcp_port=port,
         mcp_path=mcp_path,
+        ops_mcp_path=ops_mcp_path,
     )

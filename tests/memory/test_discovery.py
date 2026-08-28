@@ -64,7 +64,7 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
 
     payload = await discovery.build_agent_routing_discovery(_settings())
 
-    assert payload["version"] == 1
+    assert payload["version"] == 2
     assert payload["nats"] == {
         "url": "nats://127.0.0.1:4222",
         "stream": "MEMORY_TURNS",
@@ -78,6 +78,7 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
             "owner_id": "benchmark",
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:8030/mcp",
+            "ops_mcp_http_url": "http://127.0.0.1:8030/ops/mcp",
             # Published, so a consumer never has to cut the MCP path off the
             # line above and hope both stay where they are.
             "recollections_url": "http://127.0.0.1:8030/api/memory/v1/recollections",
@@ -121,6 +122,7 @@ async def test_discovery_uses_default_user_when_registry_empty(
             "owner_id": None,
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:10030/mcp",
+            "ops_mcp_http_url": "http://127.0.0.1:10030/ops/mcp",
             "recollections_url": "http://127.0.0.1:10030/api/memory/v1/recollections",
             "mcp_auth": {"type": "none"},
             "agent_reachable": False,

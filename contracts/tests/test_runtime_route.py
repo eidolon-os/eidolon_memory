@@ -13,6 +13,7 @@ def test_memory_runtime_route_derives_stable_mcp_url() -> None:
 
     assert first == second
     assert first.mcp_http_url == f"http://127.0.0.1:{first.mcp_port}/mcp"
+    assert first.ops_mcp_http_url == f"http://127.0.0.1:{first.mcp_port}/ops/mcp"
     assert 10030 <= first.mcp_port <= 12029
 
 
@@ -34,7 +35,11 @@ def test_memory_runtime_route_supports_explicit_host_and_path() -> None:
         base_port=10030,
         mcp_host="127.0.0.2",
         mcp_path="/custom-mcp",
+        ops_mcp_path="/custom-ops-mcp",
     )
 
     assert isinstance(route, MemoryRuntimeRoute)
     assert route.mcp_http_url == f"http://127.0.0.2:{route.mcp_port}/custom-mcp"
+    assert route.ops_mcp_http_url == (
+        f"http://127.0.0.2:{route.mcp_port}/custom-ops-mcp"
+    )

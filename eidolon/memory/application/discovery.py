@@ -19,12 +19,12 @@ from eidolon_memory_contracts import (
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from eidolon.memory.entrypoints.recollections_http import RECOLLECTIONS_PATH
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.config.registry import load_users_config
 from eidolon.memory.config.users import UserEntry
+from eidolon.memory.entrypoints.recollections_http import RECOLLECTIONS_PATH
 
-DISCOVERY_VERSION = 1
+DISCOVERY_VERSION = 2
 
 
 async def probe_mcp_http(url: str, *, timeout_seconds: float = 1.5) -> bool:
@@ -100,6 +100,7 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
                 "owner_id": realm.owner_id,
                 "enabled": realm.enabled,
                 "mcp_http_url": settings.mcp_http.base_url(port=realm.port),
+                "ops_mcp_http_url": settings.mcp_http.ops_base_url(port=realm.port),
                 # Where a person's own Host reads this space from. Published
                 # rather than derived: a consumer that had to cut the MCP path
                 # off the URL above would be guessing at this one, and would
