@@ -94,10 +94,12 @@ def _make_steward(decision):
     return s
 
 
-async def test_generic_turn_is_skipped_when_explicit_write_owns_source_turn(
+async def test_explicit_write_suppresses_duplicate_drawer_but_projects_kg(
     settings,
     backend,
+    kg,
 ) -> None:
+    from eidolon_memory_contracts import companion_audience
     from eidolon.memory.application.ingest import ingest_memory_fragment
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.fragments import MemoryFragment
@@ -122,8 +124,38 @@ async def test_generic_turn_is_skipped_when_explicit_write_owns_source_turn(
             metadata={"source": "user-confirmed"},
         ),
     )
-    steward = MagicMock()
-    steward.decide = AsyncMock()
+    from eidolon.memory.domain.kg import KgTripleAction
+    from eidolon.memory.domain.steward import StewardDecision
+
+    steward_fragment = MemoryFragment(
+        memory_id="derived-duplicate",
+        memory_space_id=MEMORY_SPACE_ID,
+        source_device_id="device",
+        source_instance_id="test",
+        wing="Wing_Event",
+        room="event_trip",
+        content="用户明天要去北京",
+        memory_type="event",
+        importance=4,
+        confidence=0.9,
+        source_turn_id=turn_id,
+        session_id="s1",
+    )
+    steward = _make_steward(
+        StewardDecision(
+            should_write=True,
+            reason="explicit durable fact",
+            fragments=[steward_fragment],
+            triples=[
+                KgTripleAction(
+                    subject="self",
+                    predicate="planned_to",
+                    object="去北京",
+                    confidence=0.95,
+                )
+            ],
+        )
+    )
     msg = _stub_msg(
         _turn_payload(
             turn_id=turn_id,
@@ -135,12 +167,21 @@ async def test_generic_turn_is_skipped_when_explicit_write_owns_source_turn(
         msg,
         steward=steward,
         backend=backend,
+        kg=kg,
         settings=settings,
         max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
     )
 
-    steward.decide.assert_not_awaited()
+    steward.decide.assert_awaited_once()
+    rows = await backend.get_all("")
+    assert [row.value for row in rows] == ["明天我要去北京"]
+    graph_rows = await kg.query_entity(
+        "self", audiences=(companion_audience("test"),)
+    )
+    assert [(row.predicate, row.object) for row in graph_rows] == [
+        ("planned_to", "去北京")
+    ]
     assert msg.ack_calls == ["ack"]
     assert msg.nak_calls == []
 

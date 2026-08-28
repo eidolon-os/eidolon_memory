@@ -324,10 +324,13 @@ async def process_turn_message(
         except Exception as exc:  # noqa: BLE001 - defensive: never break turn ack
             log.warning("working_memory_append_failed", error=str(exc))
 
-    # The explicit verbatim command is authoritative for a source turn. A
-    # delayed generic turn event must not ask the steward to create a second
-    # paraphrased/classified copy. Agent-side suppression is the fast path;
-    # this source-turn check is the service-owned safety net.
+    # The explicit verbatim command is authoritative evidence for a source
+    # turn, but it is not a replacement for the steward's derived projections.
+    # We still run one normal decision so KG facts, invalidations, mentions and
+    # privacy actions are produced. Only the duplicate fragment projection is
+    # suppressed, after the service verifies the evidence rather than trusting
+    # caller metadata.
+    explicit_evidence_exists = False
     try:
         existing = await backend.get_by_source_turn_id(memory_space_id, turn.turn_id)
     except Exception as exc:  # noqa: BLE001 - dedup lookup must not lose the turn
@@ -342,13 +345,12 @@ async def process_turn_message(
             and isinstance(existing.metadata, dict)
             and existing.metadata.get("source") == "user-confirmed"
         ):
+            explicit_evidence_exists = True
             log.info(
-                "turn_processor_skipped_after_explicit_write",
+                "turn_processor_projecting_after_explicit_write",
                 turn_id=turn.turn_id,
                 memory_space_id=memory_space_id,
             )
-            await msg.ack()
-            return
 
     # ── decide ─────────────────────────────────────────────────────────────
     steward_started = time.perf_counter()
@@ -391,7 +393,7 @@ async def process_turn_message(
     try:
         # Privacy actions first; they may purge before we attempt new writes.
         await _apply_privacy(backend, memory_space_id, decision.privacy_actions, kg)
-        if decision.should_write:
+        if decision.should_write and not explicit_evidence_exists:
             # Stamped first, written once. Writing them one at a time took the
             # space's writer lock per fragment and made three Chroma calls each —
             # eighteen for a six-fragment turn, 55ms measured, against 10.6ms for a
