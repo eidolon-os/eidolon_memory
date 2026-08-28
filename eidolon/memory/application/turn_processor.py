@@ -514,13 +514,42 @@ async def process_turn_message(
                     and canonical_facts is not None
                     and intent is not None
                 ):
-                    registration = await canonical_facts.register(
-                        intent,
-                        targets={"kg"},
+                    exact = await canonical_facts.get_fact(
+                        intent.memory_space_id,
+                        intent.subject or "",
+                        intent.predicate or "",
+                        intent.object or "",
                     )
+                    if exact is not None and exact.state != "active":
+                        # A current fact may become true again after an earlier
+                        # correction. Reuse the canonical ledger's existing
+                        # reactivation transition rather than either rejecting
+                        # the new evidence forever or creating a second fact id.
+                        # The steward has already supplied a complete,
+                        # high-confidence triple; this is not inferred from the
+                        # fragment text.
+                        intent = intent.model_copy(
+                            update={
+                                "operation_hint": "update",
+                                "attributes": {
+                                    **intent.attributes,
+                                    "reason": "steward reasserted exact fact",
+                                },
+                            }
+                        )
+                        registration = await canonical_facts.register_reactivation(
+                            intent,
+                            targets={"kg"},
+                        )
+                    else:
+                        registration = await canonical_facts.register(
+                            intent,
+                            targets={"kg"},
+                        )
                     if registration.state != "active":
-                        kg_exact_noop += 1
-                        continue
+                        if not registration.reactivation_pending:
+                            kg_exact_noop += 1
+                            continue
                     kg_pending = "kg" in registration.pending_targets
                     should_verify = (
                         not kg_pending
@@ -565,6 +594,12 @@ async def process_turn_message(
                         registration.assertion_id,
                         targets={"kg"},
                     )
+                    if registration.reactivation_pending and intent is not None:
+                        await canonical_facts.mark_reactivated(
+                            memory_space_id,
+                            intent.intent_id,
+                            targets={"kg"},
+                        )
                 kg_triples_added += 1
             except Exception as exc:
                 kg_failures.append(f"add:{exc}")

@@ -161,11 +161,17 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
         self,
         memory_space_id: str,
         intent_id: str,
+        *,
+        targets: set[ProjectionTarget] | None = None,
     ) -> None:
+        required = set(_TARGET_COLUMNS) if targets is None else set(targets)
+        if not required or not required.issubset(_TARGET_COLUMNS):
+            raise ValueError("canonical reactivation requires known projection targets")
         await self._write(
             self._mark_reactivated_sync,
             memory_space_id,
             intent_id,
+            required,
         )
 
     async def register_invalidation(
@@ -677,6 +683,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
         self,
         memory_space_id: str,
         intent_id: str,
+        targets: set[ProjectionTarget],
     ) -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
@@ -702,8 +709,8 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                 raise LookupError("canonical assertion not found for reactivation")
             pending = [
                 target
-                for target, column in _TARGET_COLUMNS.items()
-                if str(assertion[column]) != "projected"
+                for target in sorted(targets)
+                if str(assertion[_TARGET_COLUMNS[target]]) != "projected"
             ]
             if pending:
                 raise RuntimeError(

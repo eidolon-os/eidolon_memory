@@ -64,6 +64,19 @@ class _FailOnceMarkStore:
     async def register(self, intent, *, targets):
         return await self.inner.register(intent, targets=targets)
 
+    async def get_fact(self, memory_space_id, subject, predicate, object_value):
+        return await self.inner.get_fact(
+            memory_space_id, subject, predicate, object_value
+        )
+
+    async def register_reactivation(self, intent, *, targets):
+        return await self.inner.register_reactivation(intent, targets=targets)
+
+    async def mark_reactivated(self, memory_space_id, intent_id, *, targets=None):
+        await self.inner.mark_reactivated(
+            memory_space_id, intent_id, targets=targets
+        )
+
     async def mark_projection_pending(
         self,
         memory_space_id,
@@ -414,6 +427,46 @@ async def test_exact_change_archives_canonical_drawer_and_keeps_fact_history(
     assert stats.invalidations_total == 1
     assert stats.drawer_projected == 0
     assert stats.kg_projected == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_fact_can_become_current_again_after_correction(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+
+    await _apply_automatic("turn-first", backend=backend, kg=kg, ledger=ledger)
+    await _apply_decision(
+        "turn-stop",
+        StewardDecision(
+            should_write=False,
+            reason="preference ended",
+            invalidations=[
+                KgInvalidationAction(
+                    subject="self",
+                    predicate="likes",
+                    object="oolong",
+                    reason="user no longer likes it",
+                )
+            ],
+        ),
+        backend=backend,
+        kg=kg,
+        ledger=ledger,
+    )
+    await _apply_automatic("turn-again", backend=backend, kg=kg, ledger=ledger)
+
+    assert ("self", "likes", "oolong") in kg.rows
+    assert kg.add_triple.await_count == 2
+    fact = await ledger.get_fact(MEMORY_SPACE_ID, "self", "likes", "oolong")
+    assert fact is not None
+    assert fact.state == "active"
+    assert fact.projection_id.endswith(":activation:2")
+    stats = await ledger.stats()
+    assert stats.reactivations_total == 1
+    assert stats.reactivations_pending == 0
 
 
 @pytest.mark.asyncio

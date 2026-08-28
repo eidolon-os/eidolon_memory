@@ -350,6 +350,8 @@ class CanonicalFactWriter(Protocol):
         self,
         memory_space_id: str,
         intent_id: str,
+        *,
+        targets: set[ProjectionTarget] | None = None,
     ) -> None: ...
 
     async def mark_projected(
