@@ -13,10 +13,12 @@ from eidolon_memory_contracts import (
     OWNER_AUDIENCE,
     MemoryActorContext,
     companion_audience,
+    council_audience,
 )
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import recall_with_kg_fusion
+from eidolon.memory.application.steward.common import finalize_fragments
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.fragments import MemoryFragment
 
@@ -31,9 +33,16 @@ def _settings(**recall) -> MemorySettings:
     )
 
 
-def _context(companion_id: str | None) -> MemoryActorContext:
+def _context(
+    companion_id: str | None,
+    *,
+    council_id: str | None = None,
+) -> MemoryActorContext:
     return MemoryActorContext(
-        memory_realm_id=SPACE, owner_id="alice", companion_id=companion_id
+        memory_realm_id=SPACE,
+        owner_id="alice",
+        companion_id=companion_id,
+        council_id=council_id,
     )
 
 
@@ -111,6 +120,87 @@ def test_provenance_and_visibility_are_separate_fields() -> None:
 
     assert fragment.companion_id == COMP_A
     assert fragment.audience == OWNER_AUDIENCE
+
+
+def test_model_private_does_not_hide_a_companion_scoped_interaction() -> None:
+    """"Private code word" describes its audience, not a recall embargo.
+
+    Before the audience axis existed, ``privacy=private`` was the only narrow
+    switch. Keeping both flags after the runtime stamps ``companion:<id>`` makes
+    the record invisible even to that companion, which is exactly what the Pi5
+    E2E exposed for ordinary turns and Council turns.
+    """
+
+    fragment = MemoryFragment(
+        memory_space_id=SPACE,
+        source_turn_id="t-private-code",
+        wing="Wing_Interaction",
+        room="codeword",
+        content="our private code word",
+        memory_type="interaction",
+        importance=5,
+        confidence=0.9,
+        privacy="private",
+    )
+
+    [stamped] = finalize_fragments(
+        [fragment],
+        steward="llm",
+        context=_context(COMP_A),
+        source_turn_id="t-private-code",
+    )
+
+    assert stamped.audience == companion_audience(COMP_A)
+    assert stamped.privacy == "normal"
+    assert stamped.metadata["privacy"] == "normal"
+
+
+def test_owner_private_retains_management_only_semantics() -> None:
+    fragment = MemoryFragment(
+        memory_space_id=SPACE,
+        source_turn_id="t-owner-private",
+        wing="Wing_Profile",
+        room="private",
+        content="owner management-only note",
+        memory_type="profile",
+        importance=3,
+        confidence=0.9,
+        privacy="private",
+    )
+
+    [stamped] = finalize_fragments(
+        [fragment],
+        steward="admin",
+        context=_context(None),
+        source_turn_id="t-owner-private",
+    )
+
+    assert stamped.audience == OWNER_AUDIENCE
+    assert stamped.privacy == "private"
+
+
+def test_model_private_does_not_hide_a_council_interaction() -> None:
+    fragment = MemoryFragment(
+        memory_space_id=SPACE,
+        source_turn_id="t-council-private",
+        wing="Wing_Work",
+        room="council",
+        content="council participant-only decision",
+        memory_type="work",
+        importance=4,
+        confidence=0.9,
+        privacy="private",
+    )
+
+    [stamped] = finalize_fragments(
+        [fragment],
+        steward="llm",
+        context=_context(COMP_A, council_id="planning"),
+        source_turn_id="t-council-private",
+    )
+
+    assert stamped.audience == council_audience("planning")
+    assert stamped.privacy == "normal"
 
 
 @pytest.mark.parametrize("bad", ["everyone", "companion:", "", "  "])

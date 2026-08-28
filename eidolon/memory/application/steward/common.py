@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from eidolon_memory_contracts import readable_audiences
+from eidolon_memory_contracts import OWNER_AUDIENCE, readable_audiences
 
 from eidolon.memory.application.forget import (
     archive_exact_drawers,
@@ -90,6 +90,7 @@ def stamp_fragment_identity(
     companion_id = getattr(context, "companion_id", None)
     device_id = getattr(context, "device_id", None)
     session_id = getattr(context, "session_id", None)
+    audience = interaction_audience(context)
     updates = {
         "memory_space_id": memory_space_id,
         "memory_realm_id": memory_realm_id or memory_space_id,
@@ -99,8 +100,18 @@ def stamp_fragment_identity(
         "source_instance_id": companion_id,
         "source_turn_id": source_turn_id or fragment.source_turn_id,
         "session_id": session_id,
-        "audience": interaction_audience(context),
+        "audience": audience,
     }
+    # ``private`` predates the audience axis and means "omit from ordinary
+    # recall", not "only this Companion may recall it". Models naturally emit
+    # it for prose such as "our private code word"; once the runtime has already
+    # narrowed the record to one Companion or Council, keeping both flags makes
+    # the memory invisible even to that intended audience. The runtime owns the
+    # audience, so normalise only this ambiguous legacy value on a narrow
+    # interaction. ``do_not_recall`` remains an absolute boundary and owner-wide
+    # private records retain their existing management-only meaning.
+    if fragment.privacy == "private" and audience != OWNER_AUDIENCE:
+        updates["privacy"] = "normal"
     if fragment.scope == "device" and not fragment.target_device_id:
         updates["target_device_id"] = device_id
     return fragment.model_copy(update=updates)

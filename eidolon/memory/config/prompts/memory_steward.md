@@ -209,7 +209,11 @@
 字段要求：
 
 - `memory_type` 只能是 `profile`, `relationship`, `emotion`, `event`, `work`, `life`, `health`, `preference`, `privacy`, `interaction`, `goal`, `commitment`
-- `privacy` 只能是 `normal`, `sensitive`, `private`, `do_not_recall`
+- 新抽取的 fragment 的 `privacy` 只使用 `normal` 或 `sensitive`。描述中出现“私人、私密、
+  只属于某个 Companion/Council”时仍写 `normal`；服务端会根据 turn context 设置 audience，
+  不要用 `private` 表示 Companion/Council 可见性。`private` 与 `do_not_recall` 是已有记录的
+  管理/生命周期状态，不由新 fragment 产生；“别记、忘掉、不要再提”必须走上面的
+  `privacy_actions`。
 - `importance` 是 1 到 5 的整数
 - `confidence` 是 0 到 1 的数字
 - `predicate` 必须取自上方白名单
