@@ -20,6 +20,8 @@ from eidolon_memory_contracts import (
     MemoryActorContext,
     MemoryIntent,
     MemoryIntentCommand,
+    companion_audience,
+    council_audience,
     envelope_memory_payload,
 )
 
@@ -190,6 +192,50 @@ async def test_ingest_writes_verbatim_drawer_with_source_marker():
     assert "user-confirmed" in passed_meta.get("tags", [])
 
 
+async def test_confirmed_interaction_is_private_to_its_companion_by_default():
+    backend = LockedBackend(FakeMemoryBackend())
+    cmd = _intent_command(
+        request_id="companion-private",
+        attributes={
+            "wing": "Wing_Experiences",
+            "memory_type": "episode",
+            "source_instance_id": "companion-a",
+        },
+    )
+
+    await apply_explicit_intent(backend, None, cmd)
+
+    _, _, _, metadata = backend._inner.ingests[-1]
+    assert metadata["audience"] == companion_audience("companion-a")
+
+
+async def test_confirmed_admin_fact_without_interaction_identity_stays_owner_shared():
+    backend = LockedBackend(FakeMemoryBackend())
+
+    await apply_explicit_intent(backend, None, _intent_command(request_id="owner-admin"))
+
+    _, _, _, metadata = backend._inner.ingests[-1]
+    assert metadata["audience"] == "owner"
+
+
+async def test_confirmed_council_interaction_uses_participant_scope():
+    backend = LockedBackend(FakeMemoryBackend())
+    cmd = _intent_command(
+        request_id="council-private",
+        attributes={
+            "wing": "Wing_Experiences",
+            "memory_type": "episode",
+            "source_instance_id": "companion-a",
+            "council_id": "planning-council",
+        },
+    )
+
+    await apply_explicit_intent(backend, None, cmd)
+
+    _, _, _, metadata = backend._inner.ingests[-1]
+    assert metadata["audience"] == council_audience("planning-council")
+
+
 async def test_ingest_idempotent_on_redelivery():
     """Same intent_id → same fragment_id → chroma dedups."""
     backend = LockedBackend(FakeMemoryBackend())
@@ -230,6 +276,36 @@ async def test_structured_intent_projects_drawer_and_kg_with_same_source_event()
         confidence=0.99,
         source_turn_id="turn-1",
         adapter_name="user-confirmed",
+    )
+
+
+async def test_relationship_projection_is_not_promoted_out_of_companion_scope():
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = SimpleNamespace(add_triple=AsyncMock(return_value="triple-1"))
+    base = _intent_command(
+        request_id="private-promise",
+        attributes={
+            "wing": "Wing_Relationships",
+            "memory_type": "relationship",
+            "source_instance_id": "companion-a",
+        },
+    )
+    cmd = base.model_copy(
+        update={
+            "intent": base.intent.model_copy(
+                update={
+                    "subject": "companion-a",
+                    "predicate": "promised",
+                    "object": "一起看星星",
+                }
+            )
+        }
+    )
+
+    await apply_explicit_intent(backend, kg, cmd)
+
+    assert kg.add_triple.await_args.kwargs["audience"] == companion_audience(
+        "companion-a"
     )
 
 

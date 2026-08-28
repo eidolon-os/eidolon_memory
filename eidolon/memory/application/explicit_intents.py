@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 from typing import Any
 
 from eidolon_memory_contracts import (
@@ -19,6 +20,10 @@ from eidolon.memory.application.canonical_invalidation import (
 from eidolon.memory.application.claim_routing import route_explicit_claim
 from eidolon.memory.application.commitments import apply_explicit_commitment
 from eidolon.memory.application.ingest import ingest_memory_fragment
+from eidolon.memory.application.scope_policy import (
+    derived_triple_audience,
+    interaction_audience,
+)
 from eidolon.memory.domain.canonical_fact import (
     CanonicalFactRegistration,
     ProjectionTarget,
@@ -173,6 +178,15 @@ async def apply_explicit_intent(
     extensions = attributes.get("extensions", {})
     if not isinstance(extensions, dict):
         extensions = {}
+    # A verbatim confirmation is still part of one interaction. It is not an
+    # implicit request to publish that conversation to every Companion. Stable
+    # owner facts may still be promoted independently by the derived KG policy;
+    # provenance and visibility must not be collapsed into one switch.
+    interaction_context = SimpleNamespace(
+        companion_id=_optional_attribute(attributes, "source_instance_id"),
+        council_id=_optional_attribute(attributes, "council_id"),
+    )
+    drawer_audience = interaction_audience(interaction_context)
     registration = prepared_registration
     projection_identity = intent.intent_id
     pending_targets: set[ProjectionTarget] = {"drawer"}
@@ -236,6 +250,7 @@ async def apply_explicit_intent(
             memory_space_id=cmd.memory_space_id,
             memory_realm_id=cmd.memory_space_id,
             companion_id=_optional_attribute(attributes, "source_instance_id"),
+            audience=drawer_audience,
             scope=scope,
             visibility=visibility,
             source_device_id=(
@@ -283,7 +298,7 @@ async def apply_explicit_intent(
 
     if all(structured) and "kg" in pending_targets:
         await kg.add_triple(
-            audience=OWNER_AUDIENCE,
+            audience=derived_triple_audience(intent.predicate, interaction_context),
             subject=intent.subject,
             predicate=intent.predicate,
             object=intent.object,

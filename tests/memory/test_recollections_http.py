@@ -179,5 +179,10 @@ def test_a_runner_is_spawned_with_the_environment_it_needs_to_embed(
         "/var/lib/eidolon/models/bge-base-zh"
     )
     assert environment["MEMPALACE_EMBEDDING_MODEL"] == "bge-base-zh"
+    # MemPalace 3.6+ puts its cross-process Chroma write lock below HOME.
+    # The systemd account deliberately inherits /nonexistent, so a runner that
+    # does not override it is read-only by accident while still reporting ready.
+    assert environment["HOME"] == "/tmp/palace"
+    assert environment["MEMPALACE_PALACE_PATH"] == "/tmp/palace"
     # And still its own temp isolation, which is what it used to have alone.
     assert environment["TMPDIR"] == environment["SQLITE_TMPDIR"]

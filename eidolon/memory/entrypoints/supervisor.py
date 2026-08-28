@@ -52,6 +52,7 @@ from eidolon.memory.infrastructure.palace_init import (
     PalaceInitError,
     _resolve_mempalace_cli,
     ensure_palace_initialized,
+    palace_environment,
 )
 from eidolon.memory.infrastructure.process_temp import process_temp_subprocess_env
 from eidolon.memory.support.logging import get_logger
@@ -410,7 +411,9 @@ class Supervisor:
                     stdout=fh,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
-                    env=mempalace_backend_env(self._settings),
+                    env=palace_environment(
+                        mempalace_backend_env(self._settings), palace_path
+                    ),
                 )
                 repair_returncode = await proc.wait()
                 returncode = repair_returncode
@@ -439,7 +442,9 @@ class Supervisor:
                         stdout=fh,
                         stderr=subprocess.STDOUT,
                         stdin=subprocess.DEVNULL,
-                        env=mempalace_backend_env(self._settings),
+                        env=palace_environment(
+                            mempalace_backend_env(self._settings), palace_path
+                        ),
                     )
                     identity_returncode = await identity_proc.wait()
                     embedder_identity_recorded = identity_returncode == 0
@@ -492,11 +497,12 @@ class Supervisor:
         ``mempalace_backend_env`` is what turns one into the other.
         """
 
+        backend_env = mempalace_backend_env(self._settings)
         return process_temp_subprocess_env(
             self._settings,
             palace,
             memory_space_id,
-            base_env=mempalace_backend_env(self._settings),
+            base_env=palace_environment(backend_env, palace),
         )
 
     def _palace_for(self, user: UserEntry) -> Path:
@@ -662,11 +668,13 @@ class Supervisor:
         existing = self._consolidators.get(user.id)
         if existing is not None and existing.is_alive():
             return
+        palace = self._palace_for(user)
         child = _Child(
             user,
-            self._palace_for(user),
+            palace,
             self._log_root,
             kind="consolidator",
+            env=self._child_environment(palace, user.id),
         )
         try:
             child.spawn()

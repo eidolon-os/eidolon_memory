@@ -8,7 +8,18 @@ import pytest
 from eidolon.memory.infrastructure.palace_init import (
     PalaceInitError,
     _materialize_backend_collection,
+    palace_environment,
 )
+
+
+def test_palace_environment_overrides_nonexistent_service_home(tmp_path: Path) -> None:
+    palace = tmp_path / "palace"
+
+    env = palace_environment({"HOME": "/nonexistent", "KEPT": "yes"}, palace)
+
+    assert env["HOME"] == str(palace)
+    assert env["MEMPALACE_PALACE_PATH"] == str(palace)
+    assert env["KEPT"] == "yes"
 
 
 def test_materialize_backend_timeout_is_palace_init_error(

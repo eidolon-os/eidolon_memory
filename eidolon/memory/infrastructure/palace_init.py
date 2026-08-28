@@ -69,11 +69,11 @@ def _resolve_mempalace_cli() -> str:
     raise PalaceInitError(msg)
 
 
-def _palace_environment(
+def palace_environment(
     env: dict[str, str] | None,
     palace_path: Path,
 ) -> dict[str, str]:
-    """Say where the palace is by the means the CLI actually reads.
+    """Return the environment for any process that reads or writes one palace.
 
     ``mempalace init`` takes a *project directory* as its positional argument
     and resolves the palace itself, from ``MEMPALACE_PALACE_PATH`` or, failing
@@ -84,14 +84,15 @@ def _palace_environment(
     initialise, the runner never started, and the Eidolon ran with no memory at
     all while everything else looked healthy.
 
-    ``HOME`` is pointed at the palace too, and unconditionally. Deferring to an
-    inherited one was the first version of this fix and it changed nothing on a
-    Host: systemd hands the service the home from its passwd entry, and that
-    home is ``/nonexistent`` — the value being defended against was the value
-    being inherited. This subprocess has no business anywhere but the palace,
-    so nothing it reaches for should resolve outside it, and pinning that here
-    removes the machine-dependent behaviour that hid the fault in the first
-    place: it worked wherever a home happened to be writable.
+    ``HOME`` is pointed at the palace too, and unconditionally. This is not only
+    for ``init``: MemPalace 3.6+ serialises every Chroma mutation with a lock at
+    ``~/.mempalace/locks``. The Host service account deliberately has
+    ``HOME=/nonexistent``; leaving that value on the long-lived runner makes
+    reads work while every write fails before Chroma is called. Using one
+    canonical home for init, runner and maintenance also keeps all of those
+    processes on the *same* per-palace lock. A private temp home or a patched
+    lock path would appear writable but silently defeat cross-process writer
+    exclusion.
     """
 
     resolved = dict(os.environ if env is None else env)
@@ -134,7 +135,7 @@ def ensure_palace_initialized(
         timeout_seconds=timeout_seconds,
     )
     cli = _resolve_mempalace_cli()
-    env = _palace_environment(env, palace_path)
+    env = palace_environment(env, palace_path)
     cmd = [
         cli,
         "--backend",
