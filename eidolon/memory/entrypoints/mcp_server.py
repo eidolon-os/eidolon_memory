@@ -66,7 +66,7 @@ log = get_logger(__name__)
 _AGENT = "agent"
 _OPS = "ops"
 
-#: The two tools the conversational agent calls. Everything else on this server is
+#: The narrow read tools the conversational agent calls. Everything else on this server is
 #: for operators, benchmarks and the admin UI.
 #:
 #: Measured before splitting: 27 tools were 15,602 characters of name, description
@@ -76,7 +76,11 @@ _OPS = "ops"
 #: ``dlq_replay``, ``dlq_resolve``, ``kg_invalidate`` and ``user_confirm``: a model
 #: reading "忘了这件事吧" from a user had a plausible destructive tool in reach, and
 #: nothing but its own judgement between the two.
-AGENT_SURFACE_TOOLS = ("eidolon_memory_search", "eidolon_memory_recall_context")
+AGENT_SURFACE_TOOLS = (
+    "eidolon_memory_search",
+    "eidolon_memory_recall_context",
+    "eidolon_memory_active_commitments",
+)
 
 
 def _audience_gate(mcp: Any, surface: str):
@@ -371,6 +375,28 @@ def build_control_plane_mcp(
                 "object": clean_object,
                 "facts": [record.model_dump(mode="json") for record in records],
             }
+
+    @tool(_AGENT)
+    async def eidolon_memory_active_commitments(
+        context: dict[str, Any],
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """Return active commitments visible in the caller's Realm context.
+
+        This is an Agent read contract, not the operator ledger browser below.
+        Requiring the same actor context as recall keeps missing identity fail-closed
+        and prevents callers from selecting another Palace or audience. A runtime
+        without a commitment ledger returns an explicit degraded result.
+        """
+        ctx = MemoryActorContext.model_validate(context)
+        result = await service.read_active_commitments(
+            ctx,
+            limit=max(1, min(limit, 10)),
+        )
+        return {
+            "memory_space_id": ctx.memory_space_id,
+            **result.model_dump(mode="json"),
+        }
 
     if commitments is not None:
 

@@ -432,7 +432,9 @@ class MemoryService:
             return CommitmentReadResult(degraded=True, degraded_reason=str(exc))
 
         return CommitmentReadResult(
-            commitments=[_active_commitment(row) for row in page.commitments]
+            commitments=[_active_commitment(row) for row in page.commitments],
+            total=page.total,
+            truncated=page.truncated,
         )
 
     async def get_by_source_turn(

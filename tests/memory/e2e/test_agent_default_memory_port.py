@@ -188,6 +188,23 @@ def _active_commitment_section(system_prompt: str) -> str:
     return tail.split("\n\n[", 1)[0]
 
 
+def _latency_percentiles(values: list[float]) -> dict[str, float | int]:
+    ordered = sorted(values)
+    assert ordered
+
+    def _pct(fraction: float) -> float:
+        index = min(len(ordered) - 1, int((len(ordered) - 1) * fraction))
+        return round(ordered[index], 3)
+
+    return {
+        "count": len(ordered),
+        "p50": _pct(0.50),
+        "p95": _pct(0.95),
+        "p99": _pct(0.99),
+        "max": round(ordered[-1], 3),
+    }
+
+
 async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runner) -> None:
     handle = live_agent_runner(
         user_id=MEMORY_SPACE_ID,
@@ -198,7 +215,8 @@ async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runn
         endpoints=[
             MemoryEndpoint(
                 memory_space_id=MEMORY_SPACE_ID,
-                mcp_url=handle.mcp_url,
+                mcp_url=handle.agent_mcp_url,
+                ops_mcp_url=handle.mcp_url,
             )
         ],
         nats=NatsSettings(url=handle.nats_url),
@@ -247,6 +265,126 @@ async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runn
         await bus.close()
 
 
+async def test_agent_personal_recall_latency_distribution(live_agent_runner) -> None:
+    """Measure the public Agent read path with the natural personal-question budget."""
+    handle = live_agent_runner(
+        user_id="e2e_agent_personal_recall_perf",
+        steward_mode="noop",
+    )
+    routes = MemoryRoutingTable.from_static(
+        endpoints=[
+            MemoryEndpoint(
+                memory_space_id=handle.user_id,
+                mcp_url=handle.agent_mcp_url,
+                ops_mcp_url=handle.mcp_url,
+            )
+        ],
+        nats=NatsSettings(url=handle.nats_url),
+    )
+    bus = NatsEventBus(handle.nats_url)
+    pool = McpClientPool(routes=routes)
+    port = EidolonMemoryPort(
+        pool=pool,
+        publisher=MemoryNatsPublisher(event_bus=bus, routes=routes),
+    )
+    marker = f"火龙果-{uuid.uuid4().hex[:8]}"
+    owner_id = "owner-perf"
+    companion_id = "companion-perf"
+    query = f"我最喜欢的水果是不是 {marker}？"
+    try:
+        write_started = time.perf_counter()
+        await port.assert_fact(
+            owner_id,
+            companion_id,
+            handle.user_id,
+            "owner",
+            "likes",
+            marker,
+            source_event_id=f"turn-{marker}",
+            tool_call_id=f"call-{marker}",
+            confidence=0.99,
+        )
+
+        latest_recall = None
+
+        async def _fact_visible() -> bool:
+            nonlocal latest_recall
+            latest_recall = await port.recall_context(
+                owner_id,
+                query,
+                memory_realm_id=handle.user_id,
+                plan=MemoryQueryPlan(semantic_k=5, voice=True),
+                timeout_s=4.0,
+                companion_id=companion_id,
+                device_id="device-perf",
+                session_id="session-perf",
+            )
+            return not latest_recall.degraded and marker in latest_recall.context
+
+        assert await _wait_for_true(_fact_visible, timeout_s=30, poll_interval_s=0.05)
+        write_visibility_ms = (time.perf_counter() - write_started) * 1000
+
+        compiler = ContextCompiler(
+            personas_service=_E2EPersonas(),
+            instance_locator=lambda _owner, companion, _conversation: (
+                companion,
+                "genome-e2e",
+            ),
+            history_manager=HistoryManager(),
+            memory_port=port,
+            memory_timeout_s=0.5,
+            explicit_memory_timeout_s=4.0,
+            active_commitment_limit=1,
+            active_commitment_timeout_s=0.5,
+            context_budget_mode="disabled",
+        )
+
+        samples: list[dict[str, float]] = []
+        for index in range(60):
+            turn = _turn_input(
+                owner_id=owner_id,
+                companion_id=companion_id,
+                memory_realm_id=handle.user_id,
+                turn_id=f"turn-perf-{index}-{marker}",
+                text=query,
+            )
+            started = time.perf_counter()
+            messages = await compiler.compile(turn)
+            compiler_total_ms = (time.perf_counter() - started) * 1000
+            trace = turn.metadata["memory_trace"]
+            assert trace["timeout_ms"] == 4000
+            assert trace["degraded"] is False, trace
+            assert trace["context_injected"] is True
+            assert marker in messages[0].content
+            sample = {
+                "compiler_total_ms": compiler_total_ms,
+                "agent_memory_elapsed_ms": float(trace["elapsed_ms"]),
+            }
+            for name, value in (trace.get("backend_trace") or {}).items():
+                sample[f"backend_{name}"] = float(value)
+            samples.append(sample)
+
+        metrics = {
+            name: _latency_percentiles(
+                [sample[name] for sample in samples if name in sample]
+            )
+            for name in sorted({key for sample in samples for key in sample})
+        }
+        report = {
+            "write_visibility_ms": round(write_visibility_ms, 3),
+            "query": query,
+            "timeout_classification_ms": 4000,
+            "metrics": metrics,
+        }
+        print("AGENT_MEMORY_PERF=" + json.dumps(report, ensure_ascii=False, sort_keys=True))
+
+        assert metrics["agent_memory_elapsed_ms"]["p95"] < 500
+        assert metrics["compiler_total_ms"]["p95"] < 500
+    finally:
+        await port.close()
+        await bus.close()
+
+
 async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -> None:
     """Real NATS + Realm MCP: active is injected; fulfilled disappears."""
     handle = live_agent_runner(
@@ -258,7 +396,8 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         endpoints=[
             MemoryEndpoint(
                 memory_space_id=handle.user_id,
-                mcp_url=handle.mcp_url,
+                mcp_url=handle.agent_mcp_url,
+                ops_mcp_url=handle.mcp_url,
             )
         ],
         nats=NatsSettings(url=handle.nats_url),
@@ -458,7 +597,8 @@ async def test_agent_memory_port_delete_is_previewed_and_terminally_applied(
         endpoints=[
             MemoryEndpoint(
                 memory_space_id=handle.user_id,
-                mcp_url=handle.mcp_url,
+                mcp_url=handle.agent_mcp_url,
+                ops_mcp_url=handle.mcp_url,
             )
         ],
         nats=NatsSettings(url=handle.nats_url),
@@ -570,7 +710,8 @@ async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_stat
         endpoints=[
             MemoryEndpoint(
                 memory_space_id=handle.user_id,
-                mcp_url=handle.mcp_url,
+                mcp_url=handle.agent_mcp_url,
+                ops_mcp_url=handle.mcp_url,
             )
         ],
         nats=NatsSettings(url=handle.nats_url),

@@ -153,7 +153,7 @@ def _schema_chars(surface: str) -> int:
     )
 
 
-def test_the_agent_surface_is_exactly_the_two_tools_it_calls() -> None:
+def test_the_agent_surface_is_exactly_the_read_tools_it_calls() -> None:
     assert _tools("agent") == set(AGENT_SURFACE_TOOLS)
 
 
@@ -201,7 +201,7 @@ def test_the_split_is_worth_its_complexity() -> None:
     agent_chars = _schema_chars("agent")
     all_chars = _schema_chars("all")
 
-    assert agent_chars < 3_500, (
+    assert agent_chars < 5_000, (
         f"the agent's tool surface has grown to {agent_chars} chars "
         f"(~{agent_chars // 4} tokens per request)"
     )
@@ -215,7 +215,7 @@ def test_the_default_surface_is_unchanged() -> None:
     """``build_control_plane_mcp`` has other callers — tests, the admin path — and
     the split must not have moved anything under them."""
 
-    assert len(_tools("all")) == 27
+    assert len(_tools("all")) == 28
 
 
 def test_the_two_surfaces_have_distinct_paths() -> None:

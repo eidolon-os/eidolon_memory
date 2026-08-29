@@ -550,7 +550,7 @@ class McpHttpConfig(BaseModel):
 
     host: str = "127.0.0.1"
     port: int = 10030  # only used if CLI --port unset
-    # The agent's surface: the two tools it calls, and nothing else. Unchanged from
+    # The agent's surface: its narrow, identity-scoped read tools and nothing else. Unchanged from
     # when this path served all 27, so nothing addressing it needs to move.
     path: str = "/mcp"
     # Operator, benchmark and admin surface, on the same port and the same handles.
