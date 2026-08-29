@@ -6,7 +6,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from eidolon_memory_contracts import MemoryIntent
+from eidolon_memory_contracts import MemoryIntent, validate_audience
 
 from eidolon.memory.domain.canonical_fact import (
     CanonicalEvidenceConflict,
@@ -21,6 +21,7 @@ from eidolon.memory.domain.canonical_fact import (
     CanonicalFactTransitionRecord,
     ProjectionTarget,
     canonical_assertion_id,
+    canonical_intent_audience,
 )
 from eidolon.memory.domain.predicates import PredicateCardinality, predicate_definition
 from eidolon.memory.infrastructure.ledger_sql import (
@@ -70,7 +71,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             ensure_ledger_schema_current(
                 conn,
                 table="canonical_assertions",
-                required_column="activation_count",
+                required_column="audience",
                 path=self.path,
             )
             for statement in canonical_schema():
@@ -83,6 +84,38 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
         targets: set[ProjectionTarget],
     ) -> CanonicalFactRegistration:
         return await self._write(self._register_sync, intent, targets)
+
+    async def begin_forget(
+        self,
+        memory_space_id: str,
+        assertion_ids: list[str],
+        *,
+        hard: bool,
+        reason: str,
+        targets: set[ProjectionTarget],
+    ) -> list[str]:
+        return await self._write(
+            self._begin_forget_sync,
+            memory_space_id,
+            assertion_ids,
+            hard,
+            reason,
+            targets,
+        )
+
+    async def mark_forget_projected(
+        self,
+        memory_space_id: str,
+        assertion_ids: list[str],
+        *,
+        targets: set[ProjectionTarget],
+    ) -> None:
+        await self._write(
+            self._mark_forget_projected_sync,
+            memory_space_id,
+            assertion_ids,
+            targets,
+        )
 
     async def mark_projected(
         self,
@@ -120,12 +153,14 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
     async def active_for_slot(
         self,
         memory_space_id: str,
+        audience: str,
         subject: str,
         predicate: str,
     ) -> list[CanonicalFactRecord]:
         return await self._read(
             self._active_for_slot_sync,
             memory_space_id,
+            audience,
             subject,
             predicate,
         )
@@ -133,6 +168,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
     async def get_fact(
         self,
         memory_space_id: str,
+        audience: str,
         subject: str,
         predicate: str,
         object_value: str,
@@ -140,6 +176,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
         return await self._read(
             self._get_fact_sync,
             memory_space_id,
+            audience,
             subject,
             predicate,
             object_value,
@@ -221,8 +258,10 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             raise ValueError("canonical fact registration requires a complete triple")
         if not targets or not targets.issubset(_TARGET_COLUMNS):
             raise ValueError("canonical fact registration requires known projection targets")
+        audience = canonical_intent_audience(intent)
         assertion_id = canonical_assertion_id(
             intent.memory_space_id,
+            audience,
             intent.subject,
             intent.predicate,
             intent.object,
@@ -234,16 +273,26 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                 "SELECT * FROM canonical_assertions WHERE assertion_id = ?",
                 (assertion_id,),
             ).fetchone()
+            # A hard privacy delete deliberately redacts the fact fields while
+            # retaining this opaque id as a replay tombstone.  Check the state
+            # before comparing those redacted fields: a replay of the original
+            # turn must be refused as forgotten, not misreported as a hash
+            # collision (and certainly not recreated).
+            if assertion is not None and str(assertion["state"]) == "forgotten":
+                raise CanonicalFactInactive(
+                    "forgotten canonical fact cannot be reactivated by replay"
+                )
             definition = predicate_definition(intent.predicate)
             if assertion is None and definition.cardinality == PredicateCardinality.SINGLE:
                 occupied = conn.execute(
                     """
                     SELECT assertion_id, object_value
                     FROM canonical_assertions
-                    WHERE memory_space_id = ? AND subject = ? AND predicate = ?
+                    WHERE memory_space_id = ? AND audience = ?
+                      AND subject = ? AND predicate = ?
                       AND state = 'active'
                     """,
-                    (intent.memory_space_id, intent.subject, intent.predicate),
+                    (intent.memory_space_id, audience, intent.subject, intent.predicate),
                 ).fetchall()
                 if occupied:
                     objects = ", ".join(str(row["object_value"]) for row in occupied)
@@ -254,15 +303,16 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                 conn.execute(
                     """
                     INSERT INTO canonical_assertions (
-                        assertion_id, memory_space_id, subject, predicate,
+                        assertion_id, memory_space_id, audience, subject, predicate,
                         object_value, state, drawer_projection_state,
                         kg_projection_state, evidence_count,
                         created_at, updated_at, last_confirmed_at
-                    ) VALUES (?, ?, ?, ?, ?, 'active', 'pending', 'pending', 0, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'active', 'pending', 'pending', 0, ?, ?, ?)
                     """,
                     (
                         assertion_id,
                         intent.memory_space_id,
+                        audience,
                         intent.subject,
                         intent.predicate,
                         intent.object,
@@ -275,6 +325,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             else:
                 if (
                     str(assertion["memory_space_id"]) != intent.memory_space_id
+                    or str(assertion["audience"]) != audience
                     or str(assertion["subject"]) != intent.subject
                     or str(assertion["predicate"]) != intent.predicate
                     or str(assertion["object_value"]) != intent.object
@@ -383,6 +434,141 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             ),
         )
 
+    def _begin_forget_sync(
+        self,
+        memory_space_id: str,
+        assertion_ids: list[str],
+        hard: bool,
+        reason: str,
+        targets: set[ProjectionTarget],
+    ) -> list[str]:
+        wanted = list(dict.fromkeys(value.strip() for value in assertion_ids if value.strip()))
+        if not wanted:
+            return []
+        if not targets or not targets.issubset(_TARGET_COLUMNS):
+            raise ValueError("canonical forget requires known projection targets")
+        now = datetime.now(UTC).isoformat()
+        found: list[str] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for assertion_id in wanted:
+                assertion = conn.execute(
+                    """
+                    SELECT memory_space_id, activation_count
+                    FROM canonical_assertions WHERE assertion_id = ?
+                    """,
+                    (assertion_id,),
+                ).fetchone()
+                if assertion is None:
+                    continue
+                if str(assertion["memory_space_id"]) != memory_space_id:
+                    raise CanonicalEvidenceConflict(
+                        "canonical forget resolved outside memory space"
+                    )
+                projection_id = _projection_id(
+                    assertion_id, int(assertion["activation_count"])
+                )
+                existing = conn.execute(
+                    "SELECT hard FROM canonical_forgets WHERE assertion_id = ?",
+                    (assertion_id,),
+                ).fetchone()
+                if existing is None:
+                    conn.execute(
+                        """
+                        INSERT INTO canonical_forgets (
+                            assertion_id, memory_space_id, projection_id, hard,
+                            reason, drawer_projection_state, kg_projection_state,
+                            forgotten_at
+                        ) VALUES (?, ?, ?, ?, ?, 'pending', 'pending', ?)
+                        """,
+                        (
+                            assertion_id,
+                            memory_space_id,
+                            projection_id,
+                            1 if hard else 0,
+                            reason,
+                            now,
+                        ),
+                    )
+                elif hard and not bool(existing["hard"]):
+                    conn.execute(
+                        "UPDATE canonical_forgets SET hard = 1, reason = ? "
+                        "WHERE assertion_id = ?",
+                        (reason, assertion_id),
+                    )
+                conn.execute(
+                    """
+                    UPDATE canonical_assertions
+                    SET state = 'forgotten', updated_at = ?,
+                        drawer_projection_state = 'pending',
+                        kg_projection_state = 'pending'
+                    WHERE assertion_id = ? AND memory_space_id = ?
+                    """,
+                    (now, assertion_id, memory_space_id),
+                )
+                if hard:
+                    # Keep only the opaque assertion id tombstone. It blocks a
+                    # replay from recreating the fact without retaining the
+                    # person's claim in ledger backups.
+                    conn.execute(
+                        "DELETE FROM canonical_evidence WHERE assertion_id = ?",
+                        (assertion_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM canonical_invalidations WHERE assertion_id = ?",
+                        (assertion_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM canonical_reactivations WHERE assertion_id = ?",
+                        (assertion_id,),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE canonical_assertions
+                        SET subject = ?, predicate = '[forgotten]',
+                            object_value = '[forgotten]', evidence_count = 0,
+                            last_confirmed_at = ?
+                        WHERE assertion_id = ?
+                        """,
+                        (f"[forgotten:{assertion_id}]", now, assertion_id),
+                    )
+                found.append(assertion_id)
+        return found
+
+    def _mark_forget_projected_sync(
+        self,
+        memory_space_id: str,
+        assertion_ids: list[str],
+        targets: set[ProjectionTarget],
+    ) -> None:
+        wanted = list(dict.fromkeys(value.strip() for value in assertion_ids if value.strip()))
+        if not wanted:
+            return
+        if not targets or not targets.issubset(_TARGET_COLUMNS):
+            raise ValueError("canonical forget projection requires known targets")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for assertion_id in wanted:
+                assignments = ", ".join(
+                    f"{_TARGET_COLUMNS[target]} = 'projected'" for target in sorted(targets)
+                )
+                result = conn.execute(
+                    f"""
+                    UPDATE canonical_forgets SET {assignments}
+                    WHERE assertion_id = ? AND memory_space_id = ?
+                    """,
+                    (assertion_id, memory_space_id),
+                )
+                if result.rowcount != 1:
+                    raise LookupError("canonical forget tombstone not found")
+                conn.execute(
+                    f"""
+                    UPDATE canonical_assertions SET {assignments}
+                    WHERE assertion_id = ? AND memory_space_id = ?
+                    """,
+                    (assertion_id, memory_space_id),
+                )
+
     def _register_invalidation_sync(
         self,
         intent: MemoryIntent,
@@ -399,6 +585,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             )
         assertion_id = canonical_assertion_id(
             intent.memory_space_id,
+            canonical_intent_audience(intent),
             intent.subject,
             intent.predicate,
             intent.object,
@@ -510,6 +697,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             raise ValueError("canonical reactivation requires known projection targets")
         assertion_id = canonical_assertion_id(
             intent.memory_space_id,
+            canonical_intent_audience(intent),
             intent.subject,
             intent.predicate,
             intent.object,
@@ -588,11 +776,13 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                 occupied = conn.execute(
                     """
                     SELECT object_value FROM canonical_assertions
-                    WHERE memory_space_id = ? AND subject = ? AND predicate = ?
+                    WHERE memory_space_id = ? AND audience = ?
+                      AND subject = ? AND predicate = ?
                       AND state = 'active' AND assertion_id != ?
                     """,
                     (
                         intent.memory_space_id,
+                        canonical_intent_audience(intent),
                         intent.subject,
                         intent.predicate,
                         assertion_id,
@@ -825,21 +1015,24 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
     def _active_for_slot_sync(
         self,
         memory_space_id: str,
+        audience: str,
         subject: str,
         predicate: str,
     ) -> list[CanonicalFactRecord]:
         predicate_definition(predicate)
+        audience = validate_audience(audience)
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT assertion_id, memory_space_id, subject, predicate,
+                SELECT assertion_id, memory_space_id, audience, subject, predicate,
                        object_value, state, activation_count
                 FROM canonical_assertions
-                WHERE memory_space_id = ? AND subject = ? AND predicate = ?
+                WHERE memory_space_id = ? AND audience = ?
+                  AND subject = ? AND predicate = ?
                   AND state = 'active'
                 ORDER BY created_at, assertion_id
                 """,
-                (memory_space_id, subject, predicate),
+                (memory_space_id, audience, subject, predicate),
             ).fetchall()
         return [
             _fact_record(row)
@@ -849,13 +1042,16 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
     def _get_fact_sync(
         self,
         memory_space_id: str,
+        audience: str,
         subject: str,
         predicate: str,
         object_value: str,
     ) -> CanonicalFactRecord | None:
         predicate_definition(predicate)
+        audience = validate_audience(audience)
         assertion_id = canonical_assertion_id(
             memory_space_id,
+            audience,
             subject,
             predicate,
             object_value,
@@ -863,7 +1059,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT assertion_id, memory_space_id, subject, predicate,
+                SELECT assertion_id, memory_space_id, audience, subject, predicate,
                        object_value, state, activation_count
                 FROM canonical_assertions
                 WHERE assertion_id = ? AND memory_space_id = ?
@@ -998,6 +1194,8 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                         AS assertions_invalidated,
                     COALESCE(SUM(state = 'superseded'), 0)
                         AS assertions_superseded,
+                    COALESCE(SUM(state = 'forgotten'), 0)
+                        AS assertions_forgotten,
                     COALESCE(SUM(
                         state = 'active' AND drawer_projection_state = 'pending'
                     ), 0)
@@ -1073,6 +1271,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             assertions_active=int(row["assertions_active"]),
             assertions_invalidated=int(row["assertions_invalidated"]),
             assertions_superseded=int(row["assertions_superseded"]),
+            assertions_forgotten=int(row["assertions_forgotten"]),
             evidence_total=evidence_total,
             invalidations_total=invalidations_total,
             supersessions_total=supersessions_total,
@@ -1100,6 +1299,7 @@ def _fact_record(row: sqlite3.Row) -> CanonicalFactRecord:
     return CanonicalFactRecord(
         assertion_id=assertion_id,
         memory_space_id=str(row["memory_space_id"]),
+        audience=str(row["audience"]),
         subject=str(row["subject"]),
         predicate=str(row["predicate"]),
         object=str(row["object_value"]),

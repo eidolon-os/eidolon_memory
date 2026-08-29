@@ -1,39 +1,25 @@
-"""One policy for deciding who may recall derived memory.
-
-Raw interaction memory is narrow by default.  Owner-wide memory is a derived
-projection reserved for stable, low-risk facts; it is never the accidental
-default of a conversation write.
-"""
+"""One fail-closed policy for interaction memory visibility."""
 
 from __future__ import annotations
 
-from eidolon_memory_contracts import (
-    OWNER_AUDIENCE,
-    companion_audience,
-    council_audience,
-)
-
-# These predicates describe durable owner facts that remain useful whichever
-# Companion is active. Relationship history, promises, episodes, emotions and
-# health stay in the interaction audience.
-_OWNER_SHARED_PREDICATES = frozenset({
-    "works_at",
-    "lives_in",
-    "studies_at",
-    "holds_role",
-    "born_in",
-    "likes",
-    "dislikes",
-    "prefers",
-    "does",
-    "practices",
-    "owns",
-    "uses",
-})
+from eidolon_memory_contracts import OWNER_AUDIENCE, companion_audience, council_audience
 
 
-def interaction_audience(context: object) -> str:
-    """Return the narrow audience of one turn."""
+class MissingInteractionIdentity(ValueError):
+    """An ordinary interaction cannot be assigned a safe audience."""
+
+
+def interaction_audience(
+    context: object,
+    *,
+    allow_owner_shared: bool = False,
+) -> str:
+    """Return one authoritative interaction audience.
+
+    Owner is never the fallback for a malformed ordinary turn.  System/admin
+    flows that intentionally materialise Owner Shared must opt in at their
+    callsite, where that authority can be reviewed.
+    """
 
     council_id = str(getattr(context, "council_id", "") or "").strip()
     if council_id:
@@ -41,12 +27,15 @@ def interaction_audience(context: object) -> str:
     companion_id = str(getattr(context, "companion_id", "") or "").strip()
     if companion_id:
         return companion_audience(companion_id)
-    return OWNER_AUDIENCE
+    if allow_owner_shared:
+        return OWNER_AUDIENCE
+    raise MissingInteractionIdentity(
+        "interaction requires an authoritative companion_id or council_id"
+    )
 
 
 def derived_triple_audience(predicate: str, context: object) -> str:
-    """Promote only stable, low-risk facts; keep all other triples narrow."""
+    """Keep every ordinary derived projection in its interaction audience."""
 
-    if predicate in _OWNER_SHARED_PREDICATES:
-        return OWNER_AUDIENCE
+    del predicate
     return interaction_audience(context)

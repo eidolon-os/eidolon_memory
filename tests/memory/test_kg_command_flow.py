@@ -108,19 +108,45 @@ async def test_command_add_triple_flow(kg_setup, tmp_path: Path) -> None:
 
 
 async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -> None:
+    from eidolon_memory_contracts import MemoryIntent
+
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
     from eidolon.memory.application.turn_processor import process_command_message
     from eidolon.memory.config.memory_settings import get_memory_settings
     from eidolon.memory.domain.wire import MemoryWireRecord
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
     backend = FakeMemoryBackend()
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
     for key in ("drawer_tea_1", "drawer_tea_2"):
+        intent = MemoryIntent(
+            intent_id=f"intent:{key}",
+            memory_space_id=SPACE,
+            source_event_id=f"turn:{key}",
+            authority="explicit_user",
+            intent_type="fact",
+            raw_claim="绿茶",
+            operation_hint="confirm",
+            subject="$text",
+            predicate="remembers_text",
+            object=key,
+            attributes={"audience": "owner"},
+        )
+        registration = await canonical.register(intent, targets={"drawer"})
         backend.docs[f"{SPACE}::{key}"] = MemoryWireRecord(
             memory_space_id=SPACE,
             key=key,
             value="绿茶",
-            metadata={"memory_space_id": SPACE, "wing": "Wing_Profile"},
+            metadata={
+                "memory_space_id": SPACE,
+                "wing": "Wing_Profile",
+                "assertion_id": registration.assertion_id,
+                "projection_id": registration.projection_id,
+            },
+        )
+        await canonical.mark_projected(
+            SPACE, registration.assertion_id, targets={"drawer"}
         )
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     msg = _stub_msg(
@@ -143,6 +169,7 @@ async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -
         settings=get_memory_settings(),
         expected_memory_space_id=SPACE,
         command_status=ledger,
+        canonical_facts=canonical,
     )
 
     assert msg.ack_calls == ["ack"]
@@ -422,9 +449,36 @@ async def test_subject_helpers() -> None:
     assert "eidolon.memory.sync.*" in patterns
 
 
-def _seed_drawer(backend, key: str, *, turn_id: str, text: str = "绿茶") -> None:
+async def _seed_drawer(
+    backend,
+    canonical,
+    key: str,
+    *,
+    graph=None,
+    turn_id: str,
+    text: str = "绿茶",
+    subject: str = "用户",
+    predicate: str = "likes",
+) -> None:
+    from eidolon_memory_contracts import MemoryIntent
+
     from eidolon.memory.domain.wire import MemoryWireRecord
 
+    intent = MemoryIntent(
+        intent_id=f"intent:{key}",
+        memory_space_id=SPACE,
+        source_event_id=turn_id,
+        authority="explicit_user",
+        intent_type="fact",
+        raw_claim=text,
+        operation_hint="confirm",
+        subject=subject,
+        predicate=predicate,
+        object=text,
+        attributes={"audience": "owner"},
+    )
+    targets = {"drawer", "kg"} if graph is not None else {"drawer"}
+    registration = await canonical.register(intent, targets=targets)
     backend.docs[f"{SPACE}::{key}"] = MemoryWireRecord(
         memory_space_id=SPACE,
         key=key,
@@ -432,8 +486,25 @@ def _seed_drawer(backend, key: str, *, turn_id: str, text: str = "绿茶") -> No
         metadata={
             "memory_space_id": SPACE,
             "wing": "Wing_Profile",
-            "source_turn_id": turn_id,
+            "source_turn_id": f"canonical:{registration.projection_id}",
+            "assertion_id": registration.assertion_id,
+            "evidence_id": intent.intent_id,
+            "projection_id": registration.projection_id,
         },
+    )
+    if graph is not None:
+        await graph.add_triple(
+            subject=subject,
+            predicate=predicate,
+            object=text,
+            audience="owner",
+            source_turn_id=f"canonical:{registration.projection_id}",
+            assertion_id=registration.assertion_id,
+            evidence_id=intent.intent_id,
+            projection_id=registration.projection_id,
+        )
+    await canonical.mark_projected(
+        SPACE, registration.assertion_id, targets=targets
     )
 
 
@@ -452,7 +523,7 @@ def _privacy_msg(action: str, drawer_ids: list[str], *, request_id: str):
     )
 
 
-async def _apply_privacy(msg, backend, kg, ledger) -> None:
+async def _apply_privacy(msg, backend, kg, ledger, canonical) -> None:
     from eidolon.memory.application.turn_processor import process_command_message
     from eidolon.memory.config.memory_settings import get_memory_settings
 
@@ -463,6 +534,7 @@ async def _apply_privacy(msg, backend, kg, ledger) -> None:
         settings=get_memory_settings(),
         expected_memory_space_id=SPACE,
         command_status=ledger,
+        canonical_facts=canonical,
     )
 
 
@@ -477,13 +549,17 @@ async def test_a_confirmed_delete_reaches_the_graph_and_not_only_the_drawer(
     """
 
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
     backend = FakeMemoryBackend()
-    _seed_drawer(backend, "drawer_tea", turn_id="turn-tea")
-    await kg_setup.add_triple(
-        subject="用户", predicate="likes", object="绿茶",
-        audience="owner", source_turn_id="turn-tea",
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_drawer(
+        backend,
+        canonical,
+        "drawer_tea",
+        graph=kg_setup,
+        turn_id="turn-tea",
     )
     # A different turn, which must survive: a forget is scoped to what was said,
     # not to everything about the subject.
@@ -494,7 +570,7 @@ async def test_a_confirmed_delete_reaches_the_graph_and_not_only_the_drawer(
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
 
     msg = _privacy_msg("delete", ["drawer_tea"], request_id="p-delete")
-    await _apply_privacy(msg, backend, kg_setup, ledger)
+    await _apply_privacy(msg, backend, kg_setup, ledger, canonical)
 
     assert msg.ack_calls == ["ack"]
     assert await backend.get(SPACE, "drawer_tea") is None
@@ -510,24 +586,31 @@ async def test_a_confirmed_delete_reaches_the_graph_and_not_only_the_drawer(
 async def test_a_hard_forget_writes_what_it_removed_before_removing_it(
     tmp_path: Path, kg_setup
 ) -> None:
-    """Irreversible for the product, recoverable for whoever has to answer for it."""
+    """The audit receipt proves deletion without retaining replayable content."""
 
     import json as _json
 
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
     backend = FakeMemoryBackend()
-    _seed_drawer(backend, "drawer_city", turn_id="turn-city", text="杭州")
-    await kg_setup.add_triple(
-        subject="张丽", predicate="lives_in", object="杭州",
-        audience="owner", source_turn_id="turn-city",
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_drawer(
+        backend,
+        canonical,
+        "drawer_city",
+        graph=kg_setup,
+        turn_id="turn-city",
+        text="杭州",
+        subject="张丽",
+        predicate="lives_in",
     )
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
 
     await _apply_privacy(
         _privacy_msg("delete", ["drawer_city"], request_id="p-export"),
-        backend, kg_setup, ledger,
+            backend, kg_setup, ledger, canonical,
     )
 
     # Beside the graph file, which is outside the palace directory MemPalace
@@ -541,7 +624,10 @@ async def test_a_hard_forget_writes_what_it_removed_before_removing_it(
         if line.strip()
     ]
     assert len(lines) == 1
-    assert lines[0]["predicate"] == "lives_in"
+    assert lines[0]["statement_id"].startswith("stmt_")
+    assert "predicate" not in lines[0]
+    assert "subject_id" not in lines[0]
+    assert "object_id" not in lines[0]
     assert lines[0]["space_id"] == SPACE
     assert lines[0]["forgotten_at"]
 
@@ -552,19 +638,23 @@ async def test_an_archive_ends_the_triple_rather_than_deleting_it(
     """Archive and delete are different promises, and the graph keeps both."""
 
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
     backend = FakeMemoryBackend()
-    _seed_drawer(backend, "drawer_tea", turn_id="turn-tea")
-    await kg_setup.add_triple(
-        subject="用户", predicate="likes", object="绿茶",
-        audience="owner", source_turn_id="turn-tea",
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_drawer(
+        backend,
+        canonical,
+        "drawer_tea",
+        graph=kg_setup,
+        turn_id="turn-tea",
     )
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
 
     await _apply_privacy(
         _privacy_msg("archive", ["drawer_tea"], request_id="p-archive"),
-        backend, kg_setup, ledger,
+        backend, kg_setup, ledger, canonical,
     )
 
     records = await kg_setup.query_entity("用户", audiences=("owner",))
@@ -580,22 +670,26 @@ async def test_forgetting_a_turn_twice_is_not_an_error(tmp_path: Path, kg_setup)
     """The retry a failure between the two stores would produce."""
 
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
     from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
     backend = FakeMemoryBackend()
-    _seed_drawer(backend, "drawer_tea", turn_id="turn-tea")
-    await kg_setup.add_triple(
-        subject="用户", predicate="likes", object="绿茶",
-        audience="owner", source_turn_id="turn-tea",
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_drawer(
+        backend,
+        canonical,
+        "drawer_tea",
+        graph=kg_setup,
+        turn_id="turn-tea",
     )
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
 
     first = _privacy_msg("delete", ["drawer_tea"], request_id="p-1")
-    await _apply_privacy(first, backend, kg_setup, ledger)
+    await _apply_privacy(first, backend, kg_setup, ledger, canonical)
     # The drawer is gone now, so the second pass cannot even find the turn — which
     # is the point: it must ack rather than fail on a request already honoured.
-    second = _privacy_msg("delete", ["drawer_tea"], request_id="p-2")
-    await _apply_privacy(second, backend, kg_setup, ledger)
+    second = _privacy_msg("delete", ["drawer_tea"], request_id="p-1")
+    await _apply_privacy(second, backend, kg_setup, ledger, canonical)
 
     assert second.ack_calls == ["ack"]
     assert second.nak_calls == []

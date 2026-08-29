@@ -324,9 +324,28 @@ class CanonicalFactWriter(Protocol):
         targets: set[ProjectionTarget],
     ) -> CanonicalFactRegistration: ...
 
+    async def begin_forget(
+        self,
+        memory_space_id: str,
+        assertion_ids: list[str],
+        *,
+        hard: bool,
+        reason: str,
+        targets: set[ProjectionTarget],
+    ) -> list[str]: ...
+
+    async def mark_forget_projected(
+        self,
+        memory_space_id: str,
+        assertion_ids: list[str],
+        *,
+        targets: set[ProjectionTarget],
+    ) -> None: ...
+
     async def active_for_slot(
         self,
         memory_space_id: str,
+        audience: str,
         subject: str,
         predicate: str,
     ) -> list[CanonicalFactRecord]: ...
@@ -334,6 +353,7 @@ class CanonicalFactWriter(Protocol):
     async def get_fact(
         self,
         memory_space_id: str,
+        audience: str,
         subject: str,
         predicate: str,
         object_value: str,

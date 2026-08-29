@@ -67,6 +67,9 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         recorded_at    TEXT NOT NULL,
         confidence     REAL NOT NULL DEFAULT 1.0,
         source_turn_id TEXT,
+        assertion_id   TEXT,
+        evidence_id    TEXT,
+        projection_id  TEXT,
         adapter_name   TEXT,
         PRIMARY KEY (space_id, statement_id)
     )
@@ -166,6 +169,16 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_kg_statements_source
         ON kg_statements (space_id, source_turn_id)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_kg_statements_projection
+        ON kg_statements (space_id, projection_id)
+        WHERE projection_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_kg_statements_assertion
+        ON kg_statements (space_id, assertion_id)
+        WHERE assertion_id IS NOT NULL
     """,
     # Entity-name matching, which is now a seek.
     #
@@ -294,7 +307,10 @@ SELECT_COLUMNS = """
     -- ``valid_from``: a fact can start years before it is mentioned ("我 2015 年
     -- 搬到杭州"), and telling the model a 2015 provenance for something heard
     -- last week is worse than telling it nothing.
-    s.recorded_at   AS recorded_at
+    s.recorded_at   AS recorded_at,
+    s.assertion_id  AS assertion_id,
+    s.evidence_id   AS evidence_id,
+    s.projection_id AS projection_id
 """
 
 JOIN_ENTITIES = """

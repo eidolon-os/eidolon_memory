@@ -56,8 +56,8 @@ from eidolon.memory.config.palace_directory import (
     resolve_palaces_root,
     validate_memory_space_id,
 )
-from eidolon.memory.entrypoints.owner_memory_http import owner_memory_routes
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
+from eidolon.memory.entrypoints.owner_memory_http import owner_memory_routes
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.chroma_refresh import checkpoint_sqlite_wal
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
@@ -476,6 +476,7 @@ async def _nats_subscriber_loop(
                     expected_memory_space_id=memory_space_id,
                     decision_store=decision_store,
                     kg=kg,
+                    canonical_facts=canonical_facts,
                 )
 
             workers = [

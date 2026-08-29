@@ -84,12 +84,12 @@ _LOOKUP_CHUNK = 900
 
 
 def now_iso() -> str:
-    """UTC, second resolution, ``Z`` suffix.
+    """UTC with microseconds and a ``Z`` suffix.
 
     One canonical form everywhere, because these are compared as strings.
     """
 
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def canonical_temporal(value: str | None) -> str | None:
@@ -118,7 +118,9 @@ def canonical_temporal(value: str | None) -> str | None:
         return text
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return parsed.astimezone(UTC).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
 
 
 def entity_id_for(name: str) -> str:
@@ -138,6 +140,7 @@ def statement_id_for(
     audience: str,
     valid_from: str,
     recorded_at: str,
+    projection_id: str | None = None,
 ) -> str:
     """Derive a statement's id from its content and when it started.
 
@@ -148,9 +151,8 @@ def statement_id_for(
     someone moves away and back — and those are different statements.
     """
 
-    payload = "\x1f".join(
-        (subject_id, predicate, object_id, audience, valid_from, recorded_at)
-    )
+    identity = projection_id or f"{valid_from}\x1f{recorded_at}"
+    payload = "\x1f".join((subject_id, predicate, object_id, audience, identity))
     return f"stmt_{hashlib.sha256(payload.encode()).hexdigest()[:24]}"
 
 
@@ -264,6 +266,13 @@ class SqliteKnowledgeGraph:
                     "ALTER TABLE kg_entity_mentions "
                     "ADD COLUMN audience TEXT NOT NULL DEFAULT 'owner'"
                 )
+            statement_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(kg_statements)")
+            }
+            for column in ("assertion_id", "evidence_id", "projection_id"):
+                if column not in statement_columns:
+                    conn.execute(f"ALTER TABLE kg_statements ADD COLUMN {column} TEXT")
             for statement in SCHEMA_STATEMENTS[3:]:
                 conn.execute(statement)
 
@@ -280,6 +289,9 @@ class SqliteKnowledgeGraph:
         valid_to: str | None = None,
         confidence: float = 1.0,
         source_turn_id: str | None = None,
+        assertion_id: str | None = None,
+        evidence_id: str | None = None,
+        projection_id: str | None = None,
         adapter_name: str | None = None,
         sensitive: bool | None = None,
     ) -> str:
@@ -294,6 +306,9 @@ class SqliteKnowledgeGraph:
                 valid_to,
                 confidence,
                 source_turn_id,
+                assertion_id,
+                evidence_id,
+                projection_id,
                 adapter_name,
                 sensitive,
             )
@@ -308,6 +323,9 @@ class SqliteKnowledgeGraph:
         valid_to: str | None,
         confidence: float,
         source_turn_id: str | None,
+        assertion_id: str | None,
+        evidence_id: str | None,
+        projection_id: str | None,
         adapter_name: str | None,
         sensitive: bool | None,
     ) -> str:
@@ -316,6 +334,33 @@ class SqliteKnowledgeGraph:
         started = canonical_temporal(valid_from) or now_iso()
         ended = canonical_temporal(valid_to)
         audience = validate_audience(audience)
+
+        # Canonical projection identity is the idempotency key. Replaying an old
+        # activation returns its interval even after invalidation; reactivation
+        # carries ``:activation:N`` and therefore creates a new interval.
+        if projection_id:
+            existing = self._connection().execute(
+                """
+                SELECT statement_id, subject_id, predicate, object_id, audience
+                FROM kg_statements
+                WHERE space_id = ? AND projection_id = ?
+                LIMIT 1
+                """,
+                (self._space_id, projection_id),
+            ).fetchone()
+            if existing is not None:
+                expected = (subject_id, predicate, object_id, audience)
+                actual = (
+                    existing["subject_id"],
+                    existing["predicate"],
+                    existing["object_id"],
+                    existing["audience"],
+                )
+                if actual != expected:
+                    raise ValueError(
+                        f"projection {projection_id!r} already names a different KG statement"
+                    )
+                return str(existing["statement_id"])
 
         # Replaying a turn must not duplicate, and must not undo an invalidation
         # that happened after it — so this check comes before the validity one.
@@ -352,7 +397,7 @@ class SqliteKnowledgeGraph:
 
         recorded = now_iso()
         statement_id = statement_id_for(
-            subject_id, predicate, object_id, audience, started, recorded
+            subject_id, predicate, object_id, audience, started, recorded, projection_id
         )
         is_sensitive = predicate_is_sensitive(predicate) if sensitive is None else sensitive
 
@@ -361,11 +406,12 @@ class SqliteKnowledgeGraph:
             self._upsert_entity(object_id, object, recorded)
             self._connection().execute(
                 """
-                INSERT OR IGNORE INTO kg_statements (
+                INSERT INTO kg_statements (
                     space_id, statement_id, subject_id, predicate, object_id,
                     audience, sensitive, valid_from, valid_to, recorded_at,
-                    confidence, source_turn_id, adapter_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    confidence, source_turn_id, assertion_id, evidence_id,
+                    projection_id, adapter_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._space_id,
@@ -380,9 +426,23 @@ class SqliteKnowledgeGraph:
                     recorded,
                     confidence,
                     source_turn_id,
+                    assertion_id,
+                    evidence_id,
+                    projection_id,
                     adapter_name,
                 ),
             )
+            stored = self._connection().execute(
+                """
+                SELECT statement_id, valid_to FROM kg_statements
+                WHERE space_id = ? AND statement_id = ?
+                """,
+                (self._space_id, statement_id),
+            ).fetchone()
+            if stored is None or stored["valid_to"] != ended:
+                raise RuntimeError(
+                    f"KG projection {projection_id or statement_id!r} was not stored exactly"
+                )
         return statement_id
 
     def _upsert_entity(self, entity_id: str, name: str, recorded: str) -> None:
@@ -445,6 +505,15 @@ class SqliteKnowledgeGraph:
         ended: str | None = None,
     ) -> int:
         return await self._forget_by("source_turn_id", turn_ids, hard=hard, ended=ended)
+
+    async def forget_assertions(
+        self,
+        assertion_ids: Sequence[str],
+        *,
+        hard: bool = False,
+        ended: str | None = None,
+    ) -> int:
+        return await self._forget_by("assertion_id", assertion_ids, hard=hard, ended=ended)
 
     async def move_source_turns_to_audience(
         self, turn_ids: Sequence[str], *, audience: str
@@ -511,7 +580,7 @@ class SqliteKnowledgeGraph:
         someone adds a third caller.
         """
 
-        assert column in {"source_turn_id", "statement_id"}, column
+        assert column in {"source_turn_id", "statement_id", "assertion_id"}, column
         wanted = list(dict.fromkeys(v.strip() for v in values if v and v.strip()))
         if not wanted:
             return 0
@@ -563,12 +632,9 @@ class SqliteKnowledgeGraph:
         if not doomed:
             return 0
 
-        # Written out before anything is removed, and the write is verified by
-        # reading it back. A hard forget is irreversible for the product on
-        # purpose; it must not also be irreversible for whoever has to answer
-        # "what did we delete on the 6th". Refusing here is the intended
-        # behaviour when the record cannot be made — deleting without one is the
-        # failure this is meant to prevent, not a degraded success.
+        # Write an opaque deletion receipt before removal. It proves which stable
+        # ids were deleted without copying the private subject/object into a
+        # backup-like replay source.
         self._record_forgotten(doomed, ended_at)
 
         with connection:
@@ -579,6 +645,29 @@ class SqliteKnowledgeGraph:
                 """,
                 (self._space_id, *keys),
             )
+            entity_ids = {
+                str(row[column])
+                for row in doomed
+                for column in ("subject_id", "object_id")
+            }
+            for entity_id in entity_ids:
+                referenced = connection.execute(
+                    """
+                    SELECT 1 FROM kg_statements
+                    WHERE space_id = ? AND (subject_id = ? OR object_id = ?)
+                    LIMIT 1
+                    """,
+                    (self._space_id, entity_id, entity_id),
+                ).fetchone()
+                if referenced is None:
+                    connection.execute(
+                        "DELETE FROM kg_entity_mentions WHERE space_id = ? AND entity_id = ?",
+                        (self._space_id, entity_id),
+                    )
+                    connection.execute(
+                        "DELETE FROM kg_entities WHERE space_id = ? AND entity_id = ?",
+                        (self._space_id, entity_id),
+                    )
         # Verified rather than trusted, the way ``delete_many`` verifies on the
         # vector side. A DELETE that silently matched nothing and a DELETE that
         # worked have the same rowcount when the caller retries.
@@ -595,26 +684,19 @@ class SqliteKnowledgeGraph:
                 f"in space {self._space_id}"
             )
 
-        # Entity rows are deliberately left. An entity may be named by statements
-        # from other turns, and finding out costs a query per entity; orphan
-        # collection is a sweep's job. It also means a hard forget does not remove
-        # the *name* — an operator inspecting the entity table can still see that
-        # someone called 张丽 was known, which is worth stating rather than
-        # implying this erases every trace.
         return len(doomed)
 
     def _record_forgotten(self, rows: Sequence[sqlite3.Row], ended_at: str) -> None:
-        """Append the rows to the forgetting log, and prove it landed.
+        """Append opaque deletion receipts, and prove they landed.
 
         Beside the graph file, which is inside ``<palace>.ledgers`` and therefore
         outside the palace directory MemPalace renames during a repair. That is
         not incidental: an audit trail stored inside the thing being repaired is
         an audit trail that disappears exactly when someone needs it.
 
-        Nothing prunes this directory and nothing should. It has to outlive what
-        it describes, or the record of a deletion becomes deletable by the same
-        mechanisms — which is the one property that makes "we can tell you what we
-        removed" true rather than aspirational.
+        The receipt deliberately contains no subject, object, source turn or raw
+        text. A privacy delete must not manufacture a second store from which the
+        deleted fact can be replayed.
         """
 
         directory = self._path.parent / "forgotten"
@@ -622,7 +704,13 @@ class SqliteKnowledgeGraph:
         destination = directory / f"{ended_at[:10]}.jsonl"
         payload = "".join(
             json.dumps(
-                {"forgotten_at": ended_at, "space_id": self._space_id, **dict(row)},
+                {
+                    "forgotten_at": ended_at,
+                    "space_id": self._space_id,
+                    "statement_id": str(row["statement_id"]),
+                    "assertion_id": str(row["assertion_id"] or ""),
+                    "projection_id": str(row["projection_id"] or ""),
+                },
                 ensure_ascii=False,
                 sort_keys=True,
             )
@@ -698,6 +786,9 @@ class SqliteKnowledgeGraph:
             None,
             confidence,
             source_turn_id,
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -1376,6 +1467,9 @@ def _to_record(row: sqlite3.Row) -> KgTripleRecord:
         source_turn_id=row[7],
         adapter_name=row[8],
         recorded_at=row[9],
+        assertion_id=row[10],
+        evidence_id=row[11],
+        projection_id=row[12],
     )
 
 

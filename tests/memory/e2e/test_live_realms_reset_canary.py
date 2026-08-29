@@ -21,6 +21,12 @@ from tests.memory.e2e.conftest import (
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e, pytest.mark.live_realm]
 
 
+def _ops_mcp_url(port: int) -> str:
+    """The canary is an operator client, so it only uses the operator surface."""
+
+    return f"http://127.0.0.1:{port}/ops/mcp"
+
+
 def _realms() -> list[dict[str, object]]:
     raw = os.environ.get("EIDOLON_MEMORY_LIVE_REALMS_JSON", "").strip()
     if not raw:
@@ -120,6 +126,24 @@ async def _wait_for_agent_turn(
     )
 
 
+async def test_live_mcp_surface_ownership(mcp_session) -> None:
+    """Command status and snapshots are ops contracts, never Agent tools."""
+
+    port = int(_realms()[0]["port"])
+    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as agent:
+        agent_tools = {tool.name for tool in (await agent.list_tools()).tools}
+    async with mcp_session(_ops_mcp_url(port)) as ops:
+        ops_tools = {tool.name for tool in (await ops.list_tools()).tools}
+
+    assert agent_tools == {
+        "eidolon_memory_recall_context",
+        "eidolon_memory_working_context",
+    }
+    assert "eidolon_memory_command_status" not in agent_tools
+    assert "eidolon_memory_command_status" in ops_tools
+    assert "eidolon_memory_kg_snapshot" in ops_tools
+
+
 async def test_live_realms_empty_write_visible_and_isolated(mcp_session) -> None:
     realms = _realms()
     verify_existing = os.environ.get("EIDOLON_MEMORY_LIVE_VERIFY_EXISTING", "") == "1"
@@ -133,7 +157,7 @@ async def test_live_realms_empty_write_visible_and_isolated(mcp_session) -> None
         drawer_marker = f"eidolon-3.5-reset-canary::{realm_id}"
         kg_marker = f"canary:{realm_id}"
         markers[realm_id] = (drawer_marker, kg_marker)
-        async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+        async with mcp_session(_ops_mcp_url(port)) as session:
             status = mcp_tool_json(await session.call_tool("eidolon_memory_status", {}))
             assert status["memory_space_id"] == realm_id
             assert status["ready"] is True
@@ -175,7 +199,7 @@ async def test_live_realms_empty_write_visible_and_isolated(mcp_session) -> None
         realm_id = str(item["realm_id"])
         port = int(item["port"])
         own_drawer, own_kg = markers[realm_id]
-        async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+        async with mcp_session(_ops_mcp_url(port)) as session:
             records, triples = await _snapshot(session)
         seen_drawers = {str(record.get("value", "")) for record in records}
         seen_kg = {str(record.get("object", "")) for record in triples}
@@ -198,7 +222,7 @@ async def test_live_exact_canonical_dedup_evidence_and_isolation(mcp_session) ->
     target_port = int(target["port"])
     marker = f"live-canonical-{uuid.uuid4().hex[:12]}"
 
-    async with mcp_session(f"http://127.0.0.1:{target_port}/mcp") as session:
+    async with mcp_session(_ops_mcp_url(target_port)) as session:
         before = mcp_tool_json(
             await session.call_tool("eidolon_memory_canonical_stats", {})
         )
@@ -246,9 +270,7 @@ async def test_live_exact_canonical_dedup_evidence_and_isolation(mcp_session) ->
         )
 
     for item in realms[1:]:
-        async with mcp_session(
-            f"http://127.0.0.1:{int(item['port'])}/mcp"
-        ) as session:
+        async with mcp_session(_ops_mcp_url(int(item["port"]))) as session:
             records, triples = await _snapshot(session)
         assert not any(marker in str(row.get("value") or "") for row in records)
         assert not any(row.get("object") == marker for row in triples)
@@ -268,7 +290,7 @@ async def test_live_exact_canonical_invalidation_archives_current_projection(
     )
     marker = f"live-invalidation-{uuid.uuid4().hex[:12]}"
 
-    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+    async with mcp_session(_ops_mcp_url(port)) as session:
         before = mcp_tool_json(
             await session.call_tool("eidolon_memory_canonical_stats", {})
         )
@@ -347,7 +369,7 @@ async def test_live_explicit_single_slot_update_retains_superseded_history(
     old_city = f"old-city:{marker}"
     new_city = f"new-city:{marker}"
 
-    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+    async with mcp_session(_ops_mcp_url(port)) as session:
         before = mcp_tool_json(
             await session.call_tool("eidolon_memory_canonical_stats", {})
         )
@@ -435,7 +457,7 @@ async def test_live_exact_fact_reactivation_creates_new_validity_period(
     subject = f"person:reactivation-canary:{marker}"
     object_value = f"topic:reactivation:{marker}"
 
-    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+    async with mcp_session(_ops_mcp_url(port)) as session:
         before = mcp_tool_json(
             await session.call_tool("eidolon_memory_canonical_stats", {})
         )
@@ -543,7 +565,7 @@ async def test_live_commitment_supplement_and_fulfilment_lifecycle(
     action = f"带 companion:test 去恐龙园 {marker}"
     beneficiary = f"companion:test:{marker}"
 
-    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+    async with mcp_session(_ops_mcp_url(port)) as session:
         create_id = await nats_publish_commitment(
             nats_url,
             user_id=realm_id,
@@ -665,7 +687,7 @@ async def test_live_commitment_reaches_agent_product_context(mcp_session) -> Non
     action = f"dogfood commitment context {marker}"
     commitment_id = ""
 
-    async with mcp_session(f"http://127.0.0.1:{port}/mcp") as session:
+    async with mcp_session(_ops_mcp_url(port)) as session:
         try:
             create_id = await nats_publish_commitment(
                 nats_url,

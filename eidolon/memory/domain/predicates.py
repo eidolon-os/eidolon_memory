@@ -68,6 +68,10 @@ _PREDICATES: dict[str, PredicateDefinition] = {
 }
 _PREDICATES.update(
     {
+        # Ledger-only identity for a durable natural-language assertion that
+        # has no safe semantic triple. It is never written to the KG; Chroma is
+        # its drawer projection and the canonical ledger owns lifecycle.
+        "remembers_text": _definition("remembers_text"),
         "lives_in": _definition(
             "lives_in",
             cardinality=PredicateCardinality.SINGLE,

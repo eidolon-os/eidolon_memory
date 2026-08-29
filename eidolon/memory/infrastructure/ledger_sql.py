@@ -24,6 +24,7 @@ second implementation was.
 
 from __future__ import annotations
 
+
 class LedgerSchemaOutdated(RuntimeError):
     """A ledger file predates a column the current statements require.
 
@@ -609,6 +610,7 @@ CANONICAL_ASSERTIONS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS canonical_assertions (
     assertion_id TEXT PRIMARY KEY,
     memory_space_id TEXT NOT NULL,
+    audience TEXT NOT NULL,
     subject TEXT NOT NULL,
     predicate TEXT NOT NULL,
     object_value TEXT NOT NULL,
@@ -620,12 +622,12 @@ CREATE TABLE IF NOT EXISTS canonical_assertions (
     updated_at TEXT NOT NULL,
     last_confirmed_at TEXT NOT NULL,
     activation_count INTEGER NOT NULL DEFAULT 1,
-    UNIQUE(memory_space_id, subject, predicate, object_value)
+    UNIQUE(memory_space_id, audience, subject, predicate, object_value)
 )
 """
-"""The UNIQUE constraint is the identity claim: one assertion per fact per space.
+"""The UNIQUE constraint is the identity claim: one assertion per scoped fact.
 
-``assertion_id`` is derived from those same four values, so the constraint is
+``assertion_id`` is derived from those same five values, so the constraint is
 what makes a second derivation collide rather than duplicate.
 """
 
@@ -709,6 +711,24 @@ CREATE INDEX IF NOT EXISTS idx_canonical_reactivations_assertion
 ON canonical_reactivations(assertion_id, recorded_at)
 """
 
+CANONICAL_FORGETS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS canonical_forgets (
+    assertion_id TEXT PRIMARY KEY,
+    memory_space_id TEXT NOT NULL,
+    projection_id TEXT NOT NULL,
+    hard INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL,
+    drawer_projection_state TEXT NOT NULL DEFAULT 'pending',
+    kg_projection_state TEXT NOT NULL DEFAULT 'pending',
+    forgotten_at TEXT NOT NULL
+)
+"""
+
+CANONICAL_FORGETS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_canonical_forgets_space
+ON canonical_forgets(memory_space_id, forgotten_at)
+"""
+
 
 def canonical_schema() -> tuple[str, ...]:
     """Every statement needed to create the canonical-fact tables, in order.
@@ -726,4 +746,6 @@ def canonical_schema() -> tuple[str, ...]:
         CANONICAL_INVALIDATIONS_INDEX,
         CANONICAL_REACTIVATIONS_SCHEMA,
         CANONICAL_REACTIVATIONS_INDEX,
+        CANONICAL_FORGETS_SCHEMA,
+        CANONICAL_FORGETS_INDEX,
     )

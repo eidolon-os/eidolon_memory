@@ -145,6 +145,7 @@ def build_confirmed_fact_command(
     source_device_id: str = "",
     target_device_id: str | None = None,
     source_instance_id: str = "",
+    council_id: str = "",
     session_id: str = "",
     extensions: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[MemoryIntentCommand, dict[str, Any]]:
@@ -193,7 +194,8 @@ def build_confirmed_fact_command(
             "visibility": visibility,
             "source_device_id": source_device_id,
             "target_device_id": target_device_id,
-            "source_instance_id": source_instance_id,
+            "source_instance_id": source_instance_id or ctx.companion_id or "",
+            "council_id": council_id or ctx.council_id or "",
             "session_id": session_id,
             "extensions": dict(extensions or {}),
         },

@@ -43,6 +43,13 @@ def kg(backend, tmp_path: Path):
     locked.close()
 
 
+@pytest.fixture
+def canonical(tmp_path: Path):
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
+
+    return CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+
+
 MEMORY_SPACE_ID = "r:alice:default"
 
 
@@ -94,12 +101,14 @@ def _make_steward(decision):
     return s
 
 
-async def test_explicit_write_suppresses_duplicate_drawer_but_projects_kg(
+async def test_explicit_write_is_the_only_long_term_source_for_its_turn(
     settings,
     backend,
     kg,
+    canonical,
 ) -> None:
     from eidolon_memory_contracts import companion_audience
+
     from eidolon.memory.application.ingest import ingest_memory_fragment
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.fragments import MemoryFragment
@@ -171,6 +180,7 @@ async def test_explicit_write_suppresses_duplicate_drawer_but_projects_kg(
         settings=settings,
         max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
 
     steward.decide.assert_awaited_once()
@@ -179,9 +189,7 @@ async def test_explicit_write_suppresses_duplicate_drawer_but_projects_kg(
     graph_rows = await kg.query_entity(
         "self", audiences=(companion_audience("test"),)
     )
-    assert [(row.predicate, row.object) for row in graph_rows] == [
-        ("planned_to", "去北京")
-    ]
+    assert graph_rows == []
     assert msg.ack_calls == ["ack"]
     assert msg.nak_calls == []
 
@@ -189,8 +197,10 @@ async def test_explicit_write_suppresses_duplicate_drawer_but_projects_kg(
 # ─── G7: KG write failure does not block ack ─────────────────────────────
 
 
-async def test_kg_failure_does_not_block_chat_ack(settings, backend):
-    """When KG raises, fragment write still succeeds and msg is acked."""
+async def test_kg_failure_leaves_projection_pending_and_naks(
+    settings, backend, canonical
+):
+    """A canonical drawer cannot be advertised complete while KG is absent."""
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.fragments import MemoryFragment
     from eidolon.memory.domain.kg import KgTripleAction
@@ -226,14 +236,14 @@ async def test_kg_failure_does_not_block_chat_ack(settings, backend):
         settings=settings,
         max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
-    # ack despite KG failure
-    assert msg.ack_calls == ["ack"]
-    assert msg.nak_calls == []
-    # fragment did make it
+    assert msg.ack_calls == []
+    assert msg.nak_calls == ["nak"]
+    # The deterministic canonical drawer landed; redelivery will repair KG.
     rows = await backend.get_all("")
-    assert any("user likes tea" in (r.value or "") for r in rows)
-    row = next(r for r in rows if "user likes tea" in (r.value or ""))
+    assert any("self likes tea" in (r.value or "") for r in rows)
+    row = next(r for r in rows if "self likes tea" in (r.value or ""))
     assert row.metadata["owner_id"] == "alice"
     assert row.metadata["companion_id"] == "test"
     assert row.metadata["memory_realm_id"] == MEMORY_SPACE_ID
@@ -244,7 +254,7 @@ async def test_kg_failure_does_not_block_chat_ack(settings, backend):
 # ─── G7: chroma failure NAKs (fragment is source of truth) ────────────────
 
 
-async def test_chroma_failure_naks_below_max_deliveries(settings, kg):
+async def test_chroma_failure_naks_below_max_deliveries(settings, kg, canonical):
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.fragments import MemoryFragment
     from eidolon.memory.domain.steward import StewardDecision
@@ -271,6 +281,7 @@ async def test_chroma_failure_naks_below_max_deliveries(settings, kg):
         settings=settings,
         max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
     assert msg.nak_calls == ["nak"]
     assert msg.ack_calls == []
@@ -279,7 +290,9 @@ async def test_chroma_failure_naks_below_max_deliveries(settings, kg):
 # ─── G1: same turn replayed twice → KG triple not duplicated ─────────────
 
 
-async def test_replay_of_same_turn_does_not_duplicate_triples(settings, backend, kg):
+async def test_replay_of_same_turn_does_not_duplicate_triples(
+    settings, backend, kg, canonical
+):
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.kg import KgTripleAction
     from eidolon.memory.domain.steward import StewardDecision
@@ -296,6 +309,7 @@ async def test_replay_of_same_turn_does_not_duplicate_triples(settings, backend,
         await process_turn_message(
             msg, steward=steward, backend=backend, kg=kg,
             settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+            canonical_facts=canonical,
         )
         assert msg.ack_calls == ["ack"]
 
@@ -306,7 +320,7 @@ async def test_replay_of_same_turn_does_not_duplicate_triples(settings, backend,
 # ─── G10: low-confidence triples dropped ─────────────────────────────────
 
 
-async def test_low_confidence_triples_skipped(settings, backend, kg):
+async def test_low_confidence_triples_skipped(settings, backend, kg, canonical):
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.kg import KgTripleAction
     from eidolon.memory.domain.steward import StewardDecision
@@ -324,17 +338,20 @@ async def test_low_confidence_triples_skipped(settings, backend, kg):
     await process_turn_message(
         msg, steward=_make_steward(decision), backend=backend, kg=kg,
         settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
     stats = await kg.stats()
     assert stats["triples_total"] == 1
-    rows = await kg.query_entity("self", audiences=("owner",))
+    rows = await kg.query_entity("self", audiences=("companion:test",))
     assert {r.object for r in rows} == {"tea"}
 
 
 # ─── Invalidation runs before any new triple is recorded ─────────────────
 
 
-async def test_invalidation_applies_before_new_triple(settings, backend, kg):
+async def test_invalidation_applies_before_new_triple(
+    settings, backend, kg, canonical
+):
     """If both an invalidation and a new triple target the same (s,p,o),
     the invalidation should fire first so we end up with one *new* triple
     with valid_to=None and an older one with valid_to set."""
@@ -355,6 +372,7 @@ async def test_invalidation_applies_before_new_triple(settings, backend, kg):
     await process_turn_message(
         msg1, steward=_make_steward(seed_decision), backend=backend, kg=kg,
         settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
 
     # New turn changes mind.
@@ -367,14 +385,19 @@ async def test_invalidation_applies_before_new_triple(settings, backend, kg):
     await process_turn_message(
         msg2, steward=_make_steward(change_decision), backend=backend, kg=kg,
         settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
 
     coffee = [
         r
-        for r in await kg.query_entity("self", audiences=("owner",))
+        for r in await kg.query_entity("self", audiences=("companion:test",))
         if r.object == "coffee"
     ]
-    tea = [r for r in await kg.query_entity("self", audiences=("owner",)) if r.object == "tea"]
+    tea = [
+        r
+        for r in await kg.query_entity("self", audiences=("companion:test",))
+        if r.object == "tea"
+    ]
     # Coffee invalidated → no current "likes coffee"
     assert not coffee
     # Tea is currently liked
@@ -384,7 +407,7 @@ async def test_invalidation_applies_before_new_triple(settings, backend, kg):
 # ─── Privacy turn writes nothing into KG ─────────────────────────────────
 
 
-async def test_privacy_actions_skip_kg(settings, backend, kg):
+async def test_privacy_actions_skip_kg(settings, backend, kg, canonical):
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
 
@@ -399,6 +422,7 @@ async def test_privacy_actions_skip_kg(settings, backend, kg):
     await process_turn_message(
         msg, steward=_make_steward(decision), backend=backend, kg=kg,
         settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
     stats = await kg.stats()
     assert stats["triples_total"] == 0
@@ -432,7 +456,9 @@ async def test_decision_with_bad_predicate_rejected_at_pydantic() -> None:
 # ─── KG-V13 G2: KG plan privacy carry-over via steward output ────────────
 
 
-async def test_steward_output_with_health_predicate_propagates(settings, backend, kg):
+async def test_steward_output_with_health_predicate_propagates(
+    settings, backend, kg, canonical
+):
     """Sanity: a health triple does land in KG, but is filtered from default reads."""
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.kg import KgTripleAction
@@ -451,10 +477,11 @@ async def test_steward_output_with_health_predicate_propagates(settings, backend
     await process_turn_message(
         msg, steward=_make_steward(decision), backend=backend, kg=kg,
         settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
 
     # default query (read-side) excludes sensitive predicates (KG plan §3.3 G2)
-    default = await kg.query_entity("self", audiences=("owner",))
+    default = await kg.query_entity("self", audiences=("companion:test",))
     assert not any(r.predicate == "has_health_condition" for r in default)
     # Sensitive interaction facts remain private to the companion that learned
     # them; opting in to sensitive data must not widen the audience to Owner.
@@ -472,7 +499,7 @@ async def test_steward_output_with_health_predicate_propagates(settings, backend
 
 
 async def test_a_triple_survives_a_turn_whose_fragments_were_not_worth_keeping(
-    settings, backend, kg
+    settings, backend, kg, canonical
 ):
     """``should_write=False`` must not silence the graph.
 
@@ -499,6 +526,7 @@ async def test_a_triple_survives_a_turn_whose_fragments_were_not_worth_keeping(
     await process_turn_message(
         msg, steward=_make_steward(decision), backend=backend, kg=kg,
         settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
 
     assert msg.ack_calls == ["ack"]
@@ -506,7 +534,7 @@ async def test_a_triple_survives_a_turn_whose_fragments_were_not_worth_keeping(
 
 
 async def test_a_correction_is_applied_even_with_nothing_worth_storing(
-    settings, backend, kg
+    settings, backend, kg, canonical
 ):
     """The reason gating on ``should_write`` would be worse than the bug it looks like.
 
@@ -535,6 +563,7 @@ async def test_a_correction_is_applied_even_with_nothing_worth_storing(
         ),
         backend=backend, kg=kg, settings=settings, max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
     assert (await kg.stats())["triples_active"] == 1
 
@@ -552,6 +581,7 @@ async def test_a_correction_is_applied_even_with_nothing_worth_storing(
         ),
         backend=backend, kg=kg, settings=settings, max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
 
     stats = await kg.stats()

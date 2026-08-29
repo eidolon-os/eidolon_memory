@@ -160,50 +160,37 @@ async def find_forget_candidates(
     return candidates
 
 
-async def source_turns_for_drawers(
+async def assertion_ids_for_drawers(
     backend: MemoryAdmin,
     memory_space_id: str,
     drawer_ids: list[str],
 ) -> list[str]:
-    """Which conversation turns produced these drawers.
+    """Stable ledger identities carried by exact drawer projections."""
 
-    The bridge between the two stores in a forget. There is no fact-level
-    identity shared by a drawer and a triple — the steward emits fragments and
-    triples from one turn without claiming they correspond one to one — so the
-    turn is the narrowest thing both sides can name, and the only one.
-
-    Must be called *before* the drawers are mutated: the turn id lives in the
-    drawer's metadata, so a deleted drawer takes the only pointer to its triples
-    with it. That ordering is the reason this is a separate function rather than
-    something the deletion helpers do on the way past.
-
-    Missing drawers and drawers without a turn id are skipped rather than
-    refused. A drawer predating the field, or one already gone, should not stop
-    the rest of a confirmed privacy request from being honoured.
-    """
-
-    wanted = list(dict.fromkeys(k.strip() for k in drawer_ids if k.strip()))
+    wanted = list(dict.fromkeys(key.strip() for key in drawer_ids if key.strip()))
     if not wanted:
         return []
-
     batch = getattr(backend, "get_many", None)
-    if batch is not None:
-        records = await batch(memory_space_id, wanted)
-    else:
-        # A backend that predates the plural. Correct, just a round trip each,
-        # and the batch above exists because a hundred of those is the actual
-        # cost of one privacy command.
-        found = [await backend.get(memory_space_id, key) for key in wanted]
-        records = [record for record in found if record is not None]
-
-    turn_ids: list[str] = []
+    records = (
+        await batch(memory_space_id, wanted)
+        if batch is not None
+        else [record for record in await _get_records(backend, memory_space_id, wanted)]
+    )
+    assertion_ids: list[str] = []
     seen: set[str] = set()
     for record in records:
-        turn_id = str(record.metadata.get("source_turn_id") or "").strip()
-        if turn_id and turn_id not in seen:
-            seen.add(turn_id)
-            turn_ids.append(turn_id)
-    return turn_ids
+        assertion_id = str(record.metadata.get("assertion_id") or "").strip()
+        if assertion_id and assertion_id not in seen:
+            seen.add(assertion_id)
+            assertion_ids.append(assertion_id)
+    return assertion_ids
+
+
+async def _get_records(
+    backend: MemoryAdmin, memory_space_id: str, drawer_ids: list[str]
+) -> list[MemoryWireRecord]:
+    found = [await backend.get(memory_space_id, key) for key in drawer_ids]
+    return [record for record in found if record is not None]
 
 
 #: How many entities a forget target is resolved to before its statements are read.
@@ -286,65 +273,86 @@ def _refers_to(target: str, sentence: str) -> bool:
     return left == right or left in right or (len(right) >= 4 and right in left)
 
 
-async def forget_graph_for_drawers(
+async def forget_exact_projections(
     backend: MemoryAdmin,
     kg: Any,
+    canonical_facts: Any,
     memory_space_id: str,
     drawer_ids: list[str],
     *,
     hard: bool,
-) -> int:
-    """The graph half of a forget, for whichever path asked for one.
+) -> tuple[list[str], int]:
+    """Ledger-first deletion of one exact projection set.
 
-    There are two ways to be forgotten and they used to disagree. The confirmed
-    MCP command and the steward acting on "忘掉…" mid-conversation both end at
-    ``delete_exact_drawers`` / ``archive_exact_drawers``, and neither reached the
-    graph; the second is the one people actually use, since it needs no tool call.
-    Shared here so a third caller cannot arrive and quietly forget half again.
-
-    **Call before mutating the drawers.** The turn id lives in drawer metadata, so
-    a deleted drawer takes the only pointer to its triples with it — this reads
-    them while they still exist. Graph first is also the safer order: its half is
-    recoverable (an archive ends an interval, a hard forget is exported first),
-    while ``delete_many`` is not.
-
-    Returns statements affected; zero for a graph-less space, a turn that produced
-    no triples, or drawers already gone.
+    The canonical tombstone is written first and remains pending until both KG
+    and drawer mutations verify. A redelivery resumes the same outbox entry; a
+    replay of the original evidence cannot reactivate a forgotten assertion.
     """
 
-    if kg is None:
-        return 0
-    turn_ids = await source_turns_for_drawers(backend, memory_space_id, drawer_ids)
-    if not turn_ids:
-        return 0
-    return await kg.forget_source_turns(turn_ids, hard=hard)
+    assertion_ids = await assertion_ids_for_drawers(
+        backend, memory_space_id, drawer_ids
+    )
+    if not assertion_ids:
+        raise RuntimeError("privacy mutation refused a non-canonical drawer")
+    if canonical_facts is None:
+        raise RuntimeError("canonical drawer forget requires its fact ledger")
+    targets = {"drawer", "kg"} if kg is not None else {"drawer"}
+    ledger_assertions = await canonical_facts.begin_forget(
+        memory_space_id,
+        assertion_ids,
+        hard=hard,
+        reason="user privacy request",
+        targets=targets,
+    )
+    if set(ledger_assertions) != set(assertion_ids):
+        raise RuntimeError("drawer projection points to a missing canonical assertion")
+
+    statements = 0
+    if kg is not None:
+        statements = await kg.forget_assertions(ledger_assertions, hard=hard)
+        await canonical_facts.mark_forget_projected(
+            memory_space_id, ledger_assertions, targets={"kg"}
+        )
+
+    changed = (
+        await delete_exact_drawers(backend, memory_space_id, drawer_ids)
+        if hard
+        else await archive_exact_drawers(backend, memory_space_id, drawer_ids)
+    )
+    if ledger_assertions:
+        await canonical_facts.mark_forget_projected(
+            memory_space_id, ledger_assertions, targets={"drawer"}
+        )
+    return changed, statements
 
 
-async def assign_graph_audience_for_drawers(
-    backend: MemoryAdmin,
+async def forget_graph_assertions(
     kg: Any,
+    canonical_facts: Any,
     memory_space_id: str,
-    drawer_ids: list[str],
-    audience: str,
+    assertion_ids: list[str],
 ) -> int:
-    """The graph half of giving a memory to one Companion.
+    """Archive graph-only projections through their canonical ledger identity."""
 
-    Beside the forget's graph half because it has the same shape and the same
-    trap: a drawer's triples are reachable only through the turn its metadata
-    names, and a change that touches the drawer and not the statements produces
-    a product that agrees to keep something between two people and then puts it
-    in the third's next prompt.
-
-    Returns statements moved; zero for a graph-less space, a turn that produced
-    no triples, or drawers that are no longer there.
-    """
-
-    if kg is None:
-        return 0
-    turn_ids = await source_turns_for_drawers(backend, memory_space_id, drawer_ids)
-    if not turn_ids:
-        return 0
-    return await kg.move_source_turns_to_audience(turn_ids, audience=audience)
+    wanted = list(dict.fromkeys(value.strip() for value in assertion_ids if value.strip()))
+    if not wanted:
+        raise RuntimeError("privacy mutation refused a non-canonical graph projection")
+    if canonical_facts is None:
+        raise RuntimeError("canonical graph forget requires its fact ledger")
+    ledger_assertions = await canonical_facts.begin_forget(
+        memory_space_id,
+        wanted,
+        hard=False,
+        reason="user privacy request",
+        targets={"kg"},
+    )
+    if set(ledger_assertions) != set(wanted):
+        raise RuntimeError("graph projection points to a missing canonical assertion")
+    changed = await kg.forget_assertions(ledger_assertions, hard=False)
+    await canonical_facts.mark_forget_projected(
+        memory_space_id, ledger_assertions, targets={"kg"}
+    )
+    return changed
 
 
 async def delete_exact_drawers(

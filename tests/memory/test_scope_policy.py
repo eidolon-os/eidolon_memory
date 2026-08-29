@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from eidolon_memory_contracts import OWNER_AUDIENCE, companion_audience, council_audience
 
 from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 from eidolon.memory.application.scope_policy import (
+    MissingInteractionIdentity,
     derived_triple_audience,
     interaction_audience,
 )
@@ -19,13 +21,17 @@ def test_interaction_scope_is_narrow_by_default() -> None:
     assert interaction_audience(
         SimpleNamespace(companion_id="mochi", council_id="weekly")
     ) == council_audience("weekly")
-    assert interaction_audience(SimpleNamespace(companion_id=None)) == OWNER_AUDIENCE
+    with pytest.raises(MissingInteractionIdentity):
+        interaction_audience(SimpleNamespace(companion_id=None))
+    assert interaction_audience(
+        SimpleNamespace(companion_id=None), allow_owner_shared=True
+    ) == OWNER_AUDIENCE
 
 
-def test_only_stable_low_risk_facts_are_promoted() -> None:
+def test_ordinary_triples_never_escape_the_interaction_scope() -> None:
     context = SimpleNamespace(companion_id="mochi", council_id=None)
-    assert derived_triple_audience("lives_in", context) == OWNER_AUDIENCE
-    assert derived_triple_audience("prefers", context) == OWNER_AUDIENCE
+    assert derived_triple_audience("lives_in", context) == companion_audience("mochi")
+    assert derived_triple_audience("prefers", context) == companion_audience("mochi")
     assert derived_triple_audience("friend_of", context) == companion_audience("mochi")
     assert derived_triple_audience("promised", context) == companion_audience("mochi")
     assert derived_triple_audience("has_health_condition", context) == companion_audience(

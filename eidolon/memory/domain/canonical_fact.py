@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 from typing import Literal
 
+from eidolon_memory_contracts import validate_audience
 from pydantic import Field
 
 from eidolon.memory.support.model_base import BaseEidolonModel
@@ -24,7 +25,7 @@ class CanonicalFactConflict(RuntimeError):
 
 
 ProjectionTarget = Literal["drawer", "kg"]
-CanonicalFactState = Literal["active", "invalidated", "superseded"]
+CanonicalFactState = Literal["active", "invalidated", "superseded", "forgotten"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class CanonicalFactStats:
     assertions_active: int
     assertions_invalidated: int
     assertions_superseded: int
+    assertions_forgotten: int
     evidence_total: int
     invalidations_total: int
     supersessions_total: int
@@ -77,6 +79,7 @@ class CanonicalFactInvalidation(BaseEidolonModel):
 class CanonicalFactRecord(BaseEidolonModel):
     assertion_id: str
     memory_space_id: str
+    audience: str
     subject: str
     predicate: str
     object: str
@@ -117,10 +120,19 @@ class CanonicalFactHistoryRecord(BaseEidolonModel):
 
 def canonical_assertion_id(
     memory_space_id: str,
+    audience: str,
     subject: str,
     predicate: str,
     object_: str,
 ) -> str:
-    raw = "\x1f".join((memory_space_id, subject, predicate, object_))
+    raw = "\x1f".join((memory_space_id, audience, subject, predicate, object_))
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
     return f"fact:{digest}"
+
+
+def canonical_intent_audience(intent: object) -> str:
+    attributes = getattr(intent, "attributes", {})
+    raw = str(attributes.get("audience") or "").strip()
+    if not raw:
+        raise ValueError("canonical fact intent requires an explicit audience")
+    return validate_audience(raw)

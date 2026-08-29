@@ -10,11 +10,11 @@ from typing import TYPE_CHECKING, Any
 from eidolon_memory_contracts import OWNER_AUDIENCE, readable_audiences
 
 from eidolon.memory.application.forget import (
-    archive_exact_drawers,
-    delete_exact_drawers,
+    assertion_ids_for_drawers,
     find_forget_candidates,
     find_forget_statements,
-    forget_graph_for_drawers,
+    forget_exact_projections,
+    forget_graph_assertions,
 )
 from eidolon.memory.application.scope_policy import interaction_audience
 from eidolon.memory.domain.errors import MemoryBackendUnsupported
@@ -79,6 +79,7 @@ def stamp_fragment_identity(
     *,
     context: object,
     source_turn_id: str | None = None,
+    allow_owner_shared: bool = False,
 ) -> MemoryFragment:
     """Stamp runtime identity from the authoritative turn context."""
 
@@ -90,7 +91,9 @@ def stamp_fragment_identity(
     companion_id = getattr(context, "companion_id", None)
     device_id = getattr(context, "device_id", None)
     session_id = getattr(context, "session_id", None)
-    audience = interaction_audience(context)
+    audience = interaction_audience(
+        context, allow_owner_shared=allow_owner_shared
+    )
     updates = {
         "memory_space_id": memory_space_id,
         "memory_realm_id": memory_realm_id or memory_space_id,
@@ -132,6 +135,7 @@ def finalize_fragments(
                 frag,
                 context=context,
                 source_turn_id=source_turn_id,
+                allow_owner_shared=steward in {"admin", "system"},
             )
         if not frag.memory_id:
             frag.memory_id = stable_fragment_id(
@@ -174,6 +178,7 @@ async def apply_privacy_actions(
     memory_space_id: str,
     actions: list[PrivacyAction],
     kg: Any = None,
+    canonical_facts: Any = None,
 ) -> PrivacyActionResult:
     """Resolve targets, then run a serialized and verified privacy batch.
 
@@ -218,19 +223,16 @@ async def apply_privacy_actions(
                     target=action.target,
                 )
                 continue
-            if statements:
-                # Matched by their own text, so forgotten directly rather than
-                # through whichever turn happened to produce them — a turn can
-                # carry several facts and only one of them was asked about.
-                #
-                # Never hard here, whatever the action. A statement matched by a
-                # rendered sentence is a looser identification than a drawer
-                # matched by its stored text, and the reversible half of the
-                # request is the right answer to a looser match.
-                result.statements_forgotten += await kg.forget_statements(
-                    [statement.id for statement in statements], hard=False
-                )
             if not candidates:
+                # A graph-only projection is still a ledger assertion. Refuse
+                # legacy rows without that identity instead of mutating a second
+                # source of truth directly.
+                result.statements_forgotten += await forget_graph_assertions(
+                    kg,
+                    canonical_facts,
+                    memory_space_id,
+                    [str(statement.assertion_id or "") for statement in statements],
+                )
                 log.info(
                     "privacy_action_graph_only",
                     action=action.action,
@@ -239,15 +241,14 @@ async def apply_privacy_actions(
                 )
                 continue
             keys = [candidate.key for candidate in candidates]
+            drawer_assertion_ids = set(
+                await assertion_ids_for_drawers(backend, memory_space_id, keys)
+            )
             if action.action == "archive_topic":
-                result.statements_forgotten += await forget_graph_for_drawers(
-                    backend, kg, memory_space_id, keys, hard=False
+                archived, statements_forgotten = await forget_exact_projections(
+                    backend, kg, canonical_facts, memory_space_id, keys, hard=False
                 )
-                archived = await archive_exact_drawers(
-                    backend,
-                    memory_space_id,
-                    keys,
-                )
+                result.statements_forgotten += statements_forgotten
                 result.archived_keys.extend(archived)
             elif len(candidates) > 1:
                 # **An ambiguous delete is archived, not abandoned.**
@@ -270,10 +271,10 @@ async def apply_privacy_actions(
                 # a constant nobody can calibrate, and the failure mode of
                 # getting it wrong is deleting a memory the person wanted.
                 # Choosing the reversible action needs no constant at all.
-                result.statements_forgotten += await forget_graph_for_drawers(
-                    backend, kg, memory_space_id, keys, hard=False
+                archived, statements_forgotten = await forget_exact_projections(
+                    backend, kg, canonical_facts, memory_space_id, keys, hard=False
                 )
-                archived = await archive_exact_drawers(backend, memory_space_id, keys)
+                result.statements_forgotten += statements_forgotten
                 result.archived_keys.extend(archived)
                 result.downgraded_to_archive[action.target] = list(archived)
                 result.confirmation_required[action.target] = [
@@ -287,16 +288,26 @@ async def apply_privacy_actions(
                 )
             else:
                 # Exactly one match, so nothing is being guessed at. The graph
-                # goes first — see ``forget_graph_for_drawers``.
-                result.statements_forgotten += await forget_graph_for_drawers(
-                    backend, kg, memory_space_id, keys, hard=True
+                # goes first inside ``forget_exact_projections``.
+                deleted, statements_forgotten = await forget_exact_projections(
+                    backend, kg, canonical_facts, memory_space_id, keys, hard=True
                 )
-                deleted = await delete_exact_drawers(
-                    backend,
-                    memory_space_id,
-                    keys,
-                )
+                result.statements_forgotten += statements_forgotten
                 result.deleted_keys.extend(deleted)
+            graph_only_assertions = list(
+                dict.fromkeys(
+                    str(statement.assertion_id or "")
+                    for statement in statements
+                    if str(statement.assertion_id or "") not in drawer_assertion_ids
+                )
+            )
+            if graph_only_assertions:
+                result.statements_forgotten += await forget_graph_assertions(
+                    kg,
+                    canonical_facts,
+                    memory_space_id,
+                    graph_only_assertions,
+                )
         except MemoryBackendUnsupported as exc:
             log.warning(
                 "privacy_action_backend_unsupported",
