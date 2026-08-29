@@ -32,6 +32,7 @@ from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     find_forget_candidates,
 )
+from eidolon.memory.application.materialization import inspect_materialization
 from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.mempalace_hierarchy import build_owner_browse
 from eidolon.memory.application.owner_entries import build_owner_entries
@@ -52,6 +53,7 @@ from eidolon.memory.support.logging import get_logger
 log = get_logger(__name__)
 
 BROWSE_PATH = "/api/memory/v1/browse"
+STATUS_PATH = "/api/memory/v1/status"
 EXPORT_PATH = "/api/memory/v1/export"
 ENTRIES_PATH = "/api/memory/v1/entries"
 FORGET_PREVIEW_PATH = "/api/memory/v1/forget/preview"
@@ -82,6 +84,47 @@ MAXIMUM_ENTRIES = 200
 CONFIRM_WAIT_SECONDS = 0.75
 DEFAULT_GRAPH_EDGES = 160
 MAXIMUM_GRAPH_EDGES = 400
+
+
+def status_handler(
+    *,
+    service: MemoryService,
+    memory_space_id: str,
+    owner_id: str | None = None,
+) -> Handler:
+    """Return the same storage-backed status every Host consumer sees."""
+
+    async def handle(request: Request) -> Response:
+        companion_id = (request.query_params.get("companion_id") or "").strip() or None
+        context = actor_context(
+            memory_space_id=memory_space_id,
+            owner_id=owner_id,
+            companion_id=companion_id,
+        )
+        try:
+            status = await service.status(context)
+        except Exception as exc:  # noqa: BLE001 - status is a failure boundary
+            log.exception(
+                "owner_memory_status_failed",
+                memory_space_id=memory_space_id,
+                error=str(exc),
+            )
+            return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
+        return JSONResponse(
+            {
+                "contract_version": "1",
+                "operation": "memory.status",
+                "memory_realm_id": memory_space_id,
+                "memory_space_id": memory_space_id,
+                "audience_scope": (
+                    f"companion:{companion_id}" if companion_id else "owner"
+                ),
+                "ready": status.ready,
+                **status.details,
+            }
+        )
+
+    return handle
 
 
 def graph_handler(
@@ -217,6 +260,7 @@ def browse_handler(
                 max_records=scan,
                 max_titles_per_room=TITLES_PER_ROOM,
             )
+            materialization = await inspect_materialization(runtime)
         except Exception as exc:  # noqa: BLE001 - a read must not take the process down
             log.exception(
                 "owner_browse_failed",
@@ -232,6 +276,13 @@ def browse_handler(
                 "contract_version": "1",
                 "operation": "memory.browse",
                 "memory_space_id": memory_space_id,
+                "audience_scope": (
+                    f"companion:{companion_id}" if companion_id else "owner"
+                ),
+                "materialization": {
+                    "ready": materialization.ready,
+                    **materialization.details,
+                },
                 **browse,
             }
         )
@@ -605,6 +656,14 @@ def owner_memory_routes(
         "owner_id": owner_id,
     }
     routes: dict[str, tuple[Handler, list[str]]] = {
+        STATUS_PATH: (
+            status_handler(
+                service=service,
+                memory_space_id=memory_space_id,
+                owner_id=owner_id,
+            ),
+            ["GET"],
+        ),
         RECOLLECTIONS_PATH: (recollections_handler(**shared), ["GET"]),
         BROWSE_PATH: (browse_handler(**shared), ["GET"]),
         EXPORT_PATH: (export_handler(**shared), ["GET"]),

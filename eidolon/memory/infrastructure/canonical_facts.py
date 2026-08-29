@@ -300,6 +300,8 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                         f"single predicate slot is already active: {objects}"
                     )
             if assertion is None:
+                drawer_state = "pending" if "drawer" in targets else "not_required"
+                kg_state = "pending" if "kg" in targets else "not_required"
                 conn.execute(
                     """
                     INSERT INTO canonical_assertions (
@@ -307,7 +309,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                         object_value, state, drawer_projection_state,
                         kg_projection_state, evidence_count,
                         created_at, updated_at, last_confirmed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'active', 'pending', 'pending', 0, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?)
                     """,
                     (
                         assertion_id,
@@ -316,12 +318,14 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                         intent.subject,
                         intent.predicate,
                         intent.object,
+                        drawer_state,
+                        kg_state,
                         now,
                         now,
                         now,
                     ),
                 )
-                projection_states = {"drawer": "pending", "kg": "pending"}
+                projection_states = {"drawer": drawer_state, "kg": kg_state}
             else:
                 if (
                     str(assertion["memory_space_id"]) != intent.memory_space_id
@@ -334,9 +338,22 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                         "canonical assertion id resolved to different fact fields"
                     )
                 projection_states = {
-                    target: str(assertion[column])
-                    for target, column in _TARGET_COLUMNS.items()
+                    target: str(assertion[column]) for target, column in _TARGET_COLUMNS.items()
                 }
+                newly_required = [
+                    target for target in targets if projection_states[target] == "not_required"
+                ]
+                if newly_required:
+                    assignments = ", ".join(
+                        f"{_TARGET_COLUMNS[target]} = 'pending'"
+                        for target in sorted(newly_required)
+                    )
+                    conn.execute(
+                        f"UPDATE canonical_assertions SET {assignments} WHERE assertion_id = ?",
+                        (assertion_id,),
+                    )
+                    for target in newly_required:
+                        projection_states[target] = "pending"
 
             existing_evidence = conn.execute(
                 "SELECT * FROM canonical_evidence WHERE intent_id = ?",
@@ -345,18 +362,14 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             evidence_created = existing_evidence is None
             if existing_evidence is not None:
                 if (
-                    str(existing_evidence["memory_space_id"])
-                    != intent.memory_space_id
+                    str(existing_evidence["memory_space_id"]) != intent.memory_space_id
                     or str(existing_evidence["assertion_id"]) != assertion_id
-                    or str(existing_evidence["source_event_id"])
-                    != intent.source_event_id
-                    or (existing_evidence["tool_call_id"] or None)
-                    != intent.tool_call_id
+                    or str(existing_evidence["source_event_id"]) != intent.source_event_id
+                    or (existing_evidence["tool_call_id"] or None) != intent.tool_call_id
                     or str(existing_evidence["authority"]) != intent.authority
                     or str(existing_evidence["raw_claim"]) != intent.raw_claim
                     or float(existing_evidence["confidence"]) != intent.confidence
-                    or (existing_evidence["occurred_at"] or None)
-                    != intent.occurred_at
+                    or (existing_evidence["occurred_at"] or None) != intent.occurred_at
                 ):
                     raise CanonicalEvidenceConflict(
                         "intent id reused with different canonical evidence"
@@ -424,9 +437,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             evidence_created=evidence_created,
             state="active",
             pending_targets=sorted(
-                target
-                for target in targets
-                if projection_states[target] != "projected"
+                target for target in targets if projection_states[target] != "projected"
             ),
             projection_id=_projection_id(
                 assertion_id,
@@ -465,21 +476,21 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     raise CanonicalEvidenceConflict(
                         "canonical forget resolved outside memory space"
                     )
-                projection_id = _projection_id(
-                    assertion_id, int(assertion["activation_count"])
-                )
+                projection_id = _projection_id(assertion_id, int(assertion["activation_count"]))
                 existing = conn.execute(
-                    "SELECT hard FROM canonical_forgets WHERE assertion_id = ?",
+                    "SELECT * FROM canonical_forgets WHERE assertion_id = ?",
                     (assertion_id,),
                 ).fetchone()
                 if existing is None:
+                    drawer_state = "pending" if "drawer" in targets else "not_required"
+                    kg_state = "pending" if "kg" in targets else "not_required"
                     conn.execute(
                         """
                         INSERT INTO canonical_forgets (
                             assertion_id, memory_space_id, projection_id, hard,
                             reason, drawer_projection_state, kg_projection_state,
                             forgotten_at
-                        ) VALUES (?, ?, ?, ?, ?, 'pending', 'pending', ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             assertion_id,
@@ -487,24 +498,51 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                             projection_id,
                             1 if hard else 0,
                             reason,
+                            drawer_state,
+                            kg_state,
                             now,
                         ),
                     )
-                elif hard and not bool(existing["hard"]):
-                    conn.execute(
-                        "UPDATE canonical_forgets SET hard = 1, reason = ? "
-                        "WHERE assertion_id = ?",
-                        (reason, assertion_id),
-                    )
+                else:
+                    projection_states = {
+                        target: str(existing[column]) for target, column in _TARGET_COLUMNS.items()
+                    }
+                    updates: list[str] = []
+                    parameters: list[object] = []
+                    if hard and not bool(existing["hard"]):
+                        updates.extend(("hard = 1", "reason = ?"))
+                        parameters.append(reason)
+                    for target in sorted(targets):
+                        column = _TARGET_COLUMNS[target]
+                        if str(existing[column]) == "not_required":
+                            updates.append(f"{column} = 'pending'")
+                            projection_states[target] = "pending"
+                    if updates:
+                        parameters.append(assertion_id)
+                        conn.execute(
+                            f"UPDATE canonical_forgets SET {', '.join(updates)} "
+                            "WHERE assertion_id = ?",
+                            parameters,
+                        )
+                    drawer_state = projection_states["drawer"]
+                    kg_state = projection_states["kg"]
+                assertion_assignments = ", ".join(
+                    f"{column} = ?" for column in _TARGET_COLUMNS.values()
+                )
                 conn.execute(
-                    """
+                    f"""
                     UPDATE canonical_assertions
                     SET state = 'forgotten', updated_at = ?,
-                        drawer_projection_state = 'pending',
-                        kg_projection_state = 'pending'
+                        {assertion_assignments}
                     WHERE assertion_id = ? AND memory_space_id = ?
                     """,
-                    (now, assertion_id, memory_space_id),
+                    (
+                        now,
+                        drawer_state,
+                        kg_state,
+                        assertion_id,
+                        memory_space_id,
+                    ),
                 )
                 if hard:
                     # Keep only the opaque assertion id tombstone. It blocks a
@@ -580,9 +618,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             or not intent.predicate
             or not intent.object
         ):
-            raise ValueError(
-                "canonical invalidation requires an exact correction triple"
-            )
+            raise ValueError("canonical invalidation requires an exact correction triple")
         assertion_id = canonical_assertion_id(
             intent.memory_space_id,
             canonical_intent_audience(intent),
@@ -625,10 +661,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     or str(existing["assertion_id"]) != assertion_id
                     or str(existing["source_event_id"]) != intent.source_event_id
                     or str(existing["raw_claim"]) != intent.raw_claim
-                    or (
-                        intent.occurred_at is not None
-                        and str(existing["ended_at"]) != ended_at
-                    )
+                    or (intent.occurred_at is not None and str(existing["ended_at"]) != ended_at)
                     or str(existing["reason"]) != reason
                     or str(existing["result_state"]) != result_state
                 ):
@@ -671,9 +704,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             matched=True,
             invalidation_created=created,
             invalidation_count=count,
-            state=(
-                "pending" if existing is None else str(existing["state"])
-            ),
+            state=("pending" if existing is None else str(existing["state"])),
             result_state=result_state,
             projection_id=_projection_id(
                 assertion_id,
@@ -736,8 +767,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     )
                 activation_number = int(existing["activation_number"])
                 projection_states = {
-                    target: str(assertion[column])
-                    for target, column in _TARGET_COLUMNS.items()
+                    target: str(assertion[column]) for target, column in _TARGET_COLUMNS.items()
                 }
                 event_state = str(existing["state"])
                 return CanonicalFactRegistration(
@@ -746,18 +776,12 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     intent_id=intent.intent_id,
                     evidence_count=int(assertion["evidence_count"]),
                     evidence_created=False,
-                    state=(
-                        "active"
-                        if event_state == "applied"
-                        else str(assertion["state"])
-                    ),
+                    state=("active" if event_state == "applied" else str(assertion["state"])),
                     pending_targets=(
                         []
                         if event_state == "applied"
                         else sorted(
-                            target
-                            for target in targets
-                            if projection_states[target] != "projected"
+                            target for target in targets if projection_states[target] != "projected"
                         )
                     ),
                     projection_id=_projection_id(assertion_id, activation_number),
@@ -989,9 +1013,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             raise ValueError("canonical projection update requires known targets")
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
-            assignments = ", ".join(
-                f"{_TARGET_COLUMNS[target]} = ?" for target in sorted(targets)
-            )
+            assignments = ", ".join(f"{_TARGET_COLUMNS[target]} = ?" for target in sorted(targets))
             values = [state for _target in sorted(targets)]
             result = conn.execute(
                 f"""
@@ -1034,10 +1056,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                 """,
                 (memory_space_id, audience, subject, predicate),
             ).fetchall()
-        return [
-            _fact_record(row)
-            for row in rows
-        ]
+        return [_fact_record(row) for row in rows]
 
     def _get_fact_sync(
         self,
@@ -1091,7 +1110,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             assertions = conn.execute(
                 f"""
                 SELECT * FROM canonical_assertions
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY updated_at DESC, assertion_id
                 LIMIT ?
                 """,
@@ -1128,9 +1147,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     (assertion_id, _HISTORY_EVENT_LIMIT + 1),
                 ).fetchall()
                 evidence_capped = len(evidence_rows) > _HISTORY_EVENT_LIMIT
-                evidence_rows = list(
-                    reversed(evidence_rows[:_HISTORY_EVENT_LIMIT])
-                )
+                evidence_rows = list(reversed(evidence_rows[:_HISTORY_EVENT_LIMIT]))
                 transitions = [
                     CanonicalFactTransitionRecord(
                         intent_id=str(row["intent_id"]),
@@ -1211,7 +1228,12 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     COALESCE(SUM(
                         state = 'active' AND kg_projection_state = 'projected'
                     ), 0)
-                        AS kg_projected
+                        AS kg_projected,
+                    MAX(CASE
+                        WHEN drawer_projection_state IN ('projected', 'not_required')
+                         AND kg_projection_state IN ('projected', 'not_required')
+                        THEN updated_at
+                    END) AS last_materialized_at
                 FROM canonical_assertions
                 """
             ).fetchone()
@@ -1266,6 +1288,26 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     """
                 ).fetchone()[0]
             )
+            forget_row = conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(drawer_projection_state = 'pending'), 0)
+                    + COALESCE(SUM(kg_projection_state = 'pending'), 0)
+                        AS projections_pending,
+                    MAX(CASE
+                        WHEN drawer_projection_state IN ('projected', 'not_required')
+                         AND kg_projection_state IN ('projected', 'not_required')
+                        THEN forgotten_at
+                    END) AS last_materialized_at
+                FROM canonical_forgets
+                """
+            ).fetchone()
+            forget_projections_pending = int(forget_row["projections_pending"])
+            materialized_times = tuple(
+                str(value)
+                for value in (row["last_materialized_at"], forget_row["last_materialized_at"])
+                if value
+            )
         return CanonicalFactStats(
             assertions_total=int(row["assertions_total"]),
             assertions_active=int(row["assertions_active"]),
@@ -1279,11 +1321,13 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             reactivations_pending=reactivations_pending,
             invalidations_pending=invalidations_pending,
             supersessions_pending=supersessions_pending,
+            forget_projections_pending=forget_projections_pending,
             drawer_not_projected=int(row["drawer_not_projected"]),
             drawer_projected=int(row["drawer_projected"]),
             kg_not_projected=int(row["kg_not_projected"]),
             kg_projected=int(row["kg_projected"]),
             database_bytes=self.path.stat().st_size if self.path.exists() else 0,
+            last_materialized_at=max(materialized_times) if materialized_times else None,
         )
 
 

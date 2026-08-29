@@ -75,6 +75,34 @@ def test_scoped_search_is_owned_by_mempalace_adapter(
     assert hits[0].metadata["privacy"] == "normal"
 
 
+def test_offline_warm_uses_the_same_explicit_vector_read_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_memory_settings()
+    settings.mempalace.offline_embedding = True
+    backend = MemPalacePythonBackend(settings, "/tmp/palace")
+    seen: dict[str, object] = {}
+
+    def _search(query: str, **kwargs):
+        seen.update({"query": query, **kwargs})
+        return []
+
+    monkeypatch.setattr(backend, "search_scoped_sync", _search)
+    monkeypatch.setattr(
+        "eidolon.memory.adapters.mempalace_python_backend.active_embedder",
+        lambda: pytest.fail("offline warm must not initialize a model"),
+    )
+
+    backend._warm_read_path_sync(("Wing_Life", "Wing_Work"))
+
+    assert seen == {
+        "query": "warmup",
+        "wings": ["Wing_Life", "Wing_Work"],
+        "n_results": 1,
+        "skip_closets": True,
+    }
+
+
 @pytest.mark.asyncio
 async def test_delete_requires_drawer_id_key(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)

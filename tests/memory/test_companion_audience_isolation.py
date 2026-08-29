@@ -13,13 +13,10 @@ There are two of them, and a leak in either would be invisible in the other:
 - the vector/drawer leg, where each recalled record is checked one at a time by
   ``RecallPolicyRegistry.visible``.
 
-The statements here are written directly rather than through a write path. That
-was once because no path wrote a companion audience at all; now one does — the
-Owner can say "只让它记得" about an exact memory (``test_audience_marking.py``
-covers that end to end, marking through the same function the command worker
-calls and then checking both Companions' recall) — and writing directly is still
-the right shape here, because what these tests are about is the *filter*, and a
-filter tested through a writer fails for two reasons at once.
+The statements here are written directly because these tests are about the
+filter. Production assigns the audience once, from the authoritative interaction
+scope or an explicit system Owner-shared policy; it deliberately has no
+per-drawer audience reassignment path.
 
 The graph leg is still filter-only: nothing marks a *triple* as one Companion's,
 so a statement's audience there comes from how it was written. See

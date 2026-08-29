@@ -9,7 +9,6 @@ from typing import Any
 from eidolon.memory.application.kg_recall import plain_triple_sentence
 from eidolon.memory.domain.ports import (
     MemoryAdmin,
-    MemoryAudienceAdmin,
     MemoryPrivacyAdmin,
 )
 from eidolon.memory.domain.wire import MemoryWireRecord
@@ -369,33 +368,6 @@ async def delete_exact_drawers(
         if not key.startswith("drawer_"):
             raise ValueError(f"invalid MemPalace drawer_id: {key}")
     return await backend.delete_many(memory_space_id, unique_ids)
-
-
-async def assign_audience_to_exact_drawers(
-    backend: MemoryAudienceAdmin,
-    memory_space_id: str,
-    drawer_ids: list[str],
-    audience: str,
-) -> list[str]:
-    """Move one confirmed id batch to another audience.
-
-    Beside the two privacy writes rather than in a module of its own: all three
-    are "apply exactly this set of ids, verify it stored", and the guard that
-    matters — a key that is not a MemPalace drawer id never reaches the store —
-    should not be written twice.
-
-    Not a forget, though. Nothing becomes unrecallable: a memory moved to one
-    Companion's audience is recalled in full by that Companion. Which is also
-    why this needs no preview — the ids came off a page the person was reading.
-    """
-
-    unique_ids = list(dict.fromkeys(key.strip() for key in drawer_ids if key.strip()))
-    if not unique_ids:
-        raise ValueError("at least one drawer_id is required")
-    for key in unique_ids:
-        if not key.startswith("drawer_"):
-            raise ValueError(f"invalid MemPalace drawer_id: {key}")
-    return await backend.assign_audience(memory_space_id, unique_ids, audience)
 
 
 async def archive_exact_drawers(
