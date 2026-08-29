@@ -21,6 +21,7 @@ class ConfirmedPrivacyMutation:
     action: PrivacyMutationAction
     target: str
     drawer_ids: list[str]
+    commitment_ids: list[str]
     expires_at: int
 
 
@@ -44,21 +45,32 @@ class PrivacyConfirmationSigner:
         action: PrivacyMutationAction,
         target: str,
         drawer_ids: list[str],
+        commitment_ids: list[str] | None = None,
         now: int | None = None,
     ) -> tuple[str, ConfirmedPrivacyMutation]:
         issued_at = int(time.time() if now is None else now)
         unique_ids = list(dict.fromkeys(value.strip() for value in drawer_ids if value.strip()))
-        if not unique_ids or len(unique_ids) > 100:
-            raise ValueError("confirmation requires 1..100 exact drawer IDs")
+        unique_commitments = list(
+            dict.fromkeys(
+                value.strip() for value in (commitment_ids or []) if value.strip()
+            )
+        )
+        if not unique_ids and not unique_commitments:
+            raise ValueError("confirmation requires at least one exact memory ID")
+        if len(unique_ids) > 100 or len(unique_commitments) > 100:
+            raise ValueError("confirmation accepts at most 100 IDs per memory kind")
         if any(not value.startswith("drawer_") for value in unique_ids):
             raise ValueError("confirmation contains an invalid drawer ID")
+        if any(not value.startswith("commitment:") for value in unique_commitments):
+            raise ValueError("confirmation contains an invalid commitment ID")
         payload = {
-            "v": 1,
+            "v": 2,
             "preview_id": secrets.token_hex(12),
             "memory_space_id": memory_space_id,
             "action": action,
             "target": target,
             "drawer_ids": unique_ids,
+            "commitment_ids": unique_commitments,
             "expires_at": issued_at + self.ttl_seconds,
         }
         serialized = json.dumps(
@@ -109,19 +121,28 @@ class PrivacyConfirmationSigner:
 
     @staticmethod
     def _mutation_from_payload(payload: dict[str, object]) -> ConfirmedPrivacyMutation:
-        if payload.get("v") != 1 or payload.get("action") not in {"archive", "delete"}:
+        if payload.get("v") not in {1, 2} or payload.get("action") not in {"archive", "delete"}:
             raise ValueError("confirmation token schema is invalid")
         drawer_ids = payload.get("drawer_ids")
-        if not isinstance(drawer_ids, list) or not drawer_ids:
-            raise ValueError("confirmation token has no drawer IDs")
+        commitment_ids = payload.get("commitment_ids", [])
+        if not isinstance(drawer_ids, list) or not isinstance(commitment_ids, list):
+            raise ValueError("confirmation token IDs are invalid")
+        if not drawer_ids and not commitment_ids:
+            raise ValueError("confirmation token has no memory IDs")
         values = [str(value) for value in drawer_ids]
+        commitment_values = [str(value) for value in commitment_ids]
         if len(values) > 100 or any(not value.startswith("drawer_") for value in values):
             raise ValueError("confirmation token has invalid drawer IDs")
+        if len(commitment_values) > 100 or any(
+            not value.startswith("commitment:") for value in commitment_values
+        ):
+            raise ValueError("confirmation token has invalid commitment IDs")
         return ConfirmedPrivacyMutation(
             preview_id=str(payload.get("preview_id") or ""),
             memory_space_id=str(payload.get("memory_space_id") or ""),
             action=str(payload["action"]),  # type: ignore[arg-type]
             target=str(payload.get("target") or ""),
             drawer_ids=values,
+            commitment_ids=commitment_values,
             expires_at=int(payload.get("expires_at") or 0),
         )

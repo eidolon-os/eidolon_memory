@@ -66,7 +66,7 @@ log = get_logger(__name__)
 _AGENT = "agent"
 _OPS = "ops"
 
-#: The two tools the conversational agent calls. Everything else on this server is
+#: The narrow read tools the conversational agent calls. Everything else on this server is
 #: for operators, benchmarks and the admin UI.
 #:
 #: Measured before splitting: 27 tools were 15,602 characters of name, description
@@ -76,7 +76,11 @@ _OPS = "ops"
 #: ``dlq_replay``, ``dlq_resolve``, ``kg_invalidate`` and ``user_confirm``: a model
 #: reading "忘了这件事吧" from a user had a plausible destructive tool in reach, and
 #: nothing but its own judgement between the two.
-AGENT_SURFACE_TOOLS = ("eidolon_memory_search", "eidolon_memory_recall_context")
+AGENT_SURFACE_TOOLS = (
+    "eidolon_memory_search",
+    "eidolon_memory_recall_context",
+    "eidolon_memory_active_commitments",
+)
 
 
 def _audience_gate(mcp: Any, surface: str):
@@ -372,6 +376,28 @@ def build_control_plane_mcp(
                 "facts": [record.model_dump(mode="json") for record in records],
             }
 
+    @tool(_AGENT)
+    async def eidolon_memory_active_commitments(
+        context: dict[str, Any],
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """Return active commitments visible in the caller's Realm context.
+
+        This is an Agent read contract, not the operator ledger browser below.
+        Requiring the same actor context as recall keeps missing identity fail-closed
+        and prevents callers from selecting another Palace or audience. A runtime
+        without a commitment ledger returns an explicit degraded result.
+        """
+        ctx = MemoryActorContext.model_validate(context)
+        result = await service.read_active_commitments(
+            ctx,
+            limit=max(1, min(limit, 10)),
+        )
+        return {
+            "memory_space_id": ctx.memory_space_id,
+            **result.model_dump(mode="json"),
+        }
+
     if commitments is not None:
 
         @tool(_OPS)
@@ -504,6 +530,7 @@ def build_control_plane_mcp(
             command_publisher=command_publisher,
             memory_space_id=memory_space_id,
             command_status=command_status,
+            commitments=commitments,
             # The service's signer, not a second one. A proof carries a
             # per-instance secret, so a preview minted by ``preview_forget`` and a
             # confirm arriving at this tool have to meet on the same key —
@@ -600,6 +627,7 @@ def _register_privacy_tools(
     memory_space_id: str,
     command_status: CommandStatusStore | None,
     signer: PrivacyConfirmationSigner,
+    commitments: Any = None,
 ) -> None:
     """Read-only preview followed by an exact-ID command on the write stream."""
 
@@ -621,7 +649,10 @@ def _register_privacy_tools(
             return {"status": "error", "error": "action must be archive or delete"}
         try:
             candidates = await find_forget_candidates(
-                backend, memory_space_id, clean_target
+                backend,
+                memory_space_id,
+                clean_target,
+                commitments=commitments,
             )
         except ForgetResolutionLimitExceeded as exc:
             return {
@@ -635,7 +666,14 @@ def _register_privacy_tools(
             memory_space_id=memory_space_id,
             action=action,  # type: ignore[arg-type]
             target=clean_target,
-            drawer_ids=[candidate.key for candidate in candidates],
+            drawer_ids=[
+                candidate.key for candidate in candidates if candidate.key.startswith("drawer_")
+            ],
+            commitment_ids=[
+                candidate.key
+                for candidate in candidates
+                if candidate.key.startswith("commitment:")
+            ],
         )
         ambiguous = len(candidates) > 1 or any(candidate.score < 1.0 for candidate in candidates)
         return {
@@ -669,6 +707,7 @@ def _register_privacy_tools(
             issuer="agent",
             action=proof.action,
             drawer_ids=proof.drawer_ids,
+            commitment_ids=proof.commitment_ids,
             preview_id=proof.preview_id,
             target=proof.target,
         )
@@ -683,6 +722,7 @@ def _register_privacy_tools(
             "preview_id": proof.preview_id,
             "action": proof.action,
             "drawer_ids": proof.drawer_ids,
+            "commitment_ids": proof.commitment_ids,
         }
 
 

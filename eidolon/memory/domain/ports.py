@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from eidolon.memory.domain.command_status import CommandStatusRecord, CommandStatusStats
     from eidolon.memory.domain.commitment import (
         CommitmentApplyResult,
+        CommitmentForgetPlan,
         CommitmentListPage,
         CommitmentRecord,
         CommitmentRevisionRecord,
@@ -422,6 +423,14 @@ class CommitmentReader(Protocol):
         limit: int = 200,
     ) -> list[CommitmentRevisionRecord]: ...
 
+    async def list_for_privacy(
+        self,
+        memory_space_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> list[CommitmentRecord]: ...
+
 
 @runtime_checkable
 class CommitmentWriter(Protocol):
@@ -434,6 +443,28 @@ class CommitmentWriter(Protocol):
         revision: int,
         *,
         targets: set[ProjectionTarget],
+    ) -> None: ...
+
+    async def begin_forget(
+        self,
+        memory_space_id: str,
+        commitment_ids: list[str],
+        *,
+        hard: bool,
+    ) -> list[CommitmentForgetPlan]: ...
+
+    async def mark_forget_projected(
+        self,
+        memory_space_id: str,
+        commitment_ids: list[str],
+        *,
+        targets: set[ProjectionTarget],
+    ) -> None: ...
+
+    async def finalize_forget(
+        self,
+        memory_space_id: str,
+        commitment_ids: list[str],
     ) -> None: ...
 
 

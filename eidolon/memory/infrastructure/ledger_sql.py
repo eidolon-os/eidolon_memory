@@ -455,6 +455,19 @@ CREATE INDEX IF NOT EXISTS idx_commitment_revisions_commitment
 ON commitment_revisions(commitment_id, recorded_at)
 """
 
+COMMITMENT_PRIVACY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS commitment_privacy (
+    memory_space_id TEXT NOT NULL,
+    commitment_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    revision_count INTEGER NOT NULL,
+    drawer_projection_state TEXT NOT NULL DEFAULT 'pending',
+    kg_projection_state TEXT NOT NULL DEFAULT 'pending',
+    forgotten_at TEXT NOT NULL,
+    PRIMARY KEY (memory_space_id, commitment_id)
+)
+"""
+
 COMMITMENT_COLUMNS = (
     "commitment_id",
     "memory_space_id",

@@ -488,7 +488,12 @@ def forget_preview_handler(
         try:
             runtime = await service.runtime_for(context)
             candidates = await find_forget_candidates(
-                runtime.backend, memory_space_id, target
+                runtime.backend,
+                memory_space_id,
+                target,
+                commitments=getattr(
+                    getattr(runtime, "ledgers", None), "commitments", None
+                ),
             )
         except ForgetResolutionLimitExceeded as exc:
             # Too many matches to show, so nothing is offered to confirm. A
@@ -530,7 +535,14 @@ def forget_preview_handler(
             memory_space_id=memory_space_id,
             action=action,  # type: ignore[arg-type]
             target=target,
-            drawer_ids=[candidate.key for candidate in candidates],
+            drawer_ids=[
+                candidate.key for candidate in candidates if candidate.key.startswith("drawer_")
+            ],
+            commitment_ids=[
+                candidate.key
+                for candidate in candidates
+                if candidate.key.startswith("commitment:")
+            ],
         )
         ambiguous = len(candidates) > 1 or any(
             candidate.score < 1.0 for candidate in candidates
@@ -600,6 +612,7 @@ def forget_confirm_handler(
             issuer="admin",
             action=proof.action,
             drawer_ids=proof.drawer_ids,
+            commitment_ids=proof.commitment_ids,
             preview_id=proof.preview_id,
             target=proof.target,
         )
@@ -624,7 +637,7 @@ def forget_confirm_handler(
                 "operation": "memory.forget-confirm",
                 "action": proof.action,
                 "target": proof.target,
-                "entry_count": len(proof.drawer_ids),
+                "entry_count": len(proof.drawer_ids) + len(proof.commitment_ids),
                 **outcome,
             }
         )

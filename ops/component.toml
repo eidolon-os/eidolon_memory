@@ -14,12 +14,21 @@ component_id = "eidolon_memory"
 contract_version = "1"
 
 [[units]]
+id = "eidolon-memory-embedder"
+kind = "service"
+exec = ".venv/bin/eidolon-memory-embedder"
+user = "eidolon"
+serves = ["memory_embedder"]
+requires = []
+after = ["local-fs.target"]
+
+[[units]]
 id = "eidolon-memory-supervisor"
 kind = "service"
 exec = ".venv/bin/eidolon-memory-supervisor"
 user = "eidolon"
 serves = ["memory_admin"]
-requires = ["eidolon-nats", "eidolon-admin"]
+requires = ["eidolon-nats", "eidolon-admin", "eidolon-memory-embedder"]
 after = ["local-fs.target"]
 
 [[units]]
@@ -41,6 +50,11 @@ default = 8020
 bind = "loopback"
 purpose = "where the palace for a memory space is, asked by Agent"
 
+[ports.memory_embedder]
+default = 8760
+bind = "loopback"
+purpose = "shared BGE-small-zh encoder for every Memory Realm"
+
 [[inputs]]
 name = "memory_env"
 install_path = "/etc/eidolon/memory.env"
@@ -49,7 +63,7 @@ source = "operator"
 owner = "root"
 group = "root"
 mode = "0600"
-required_by = ["eidolon-memory-supervisor", "eidolon-memory-discovery"]
+required_by = ["eidolon-memory-embedder", "eidolon-memory-supervisor", "eidolon-memory-discovery"]
 
 [[inputs]]
 name = "memory_settings"
@@ -59,15 +73,14 @@ source = "operator"
 owner = "root"
 group = "eidolon"
 mode = "0640"
-required_by = ["eidolon-memory-supervisor", "eidolon-memory-discovery"]
+required_by = ["eidolon-memory-embedder", "eidolon-memory-supervisor", "eidolon-memory-discovery"]
 
 [[artifacts]]
-id = "bge-base-zh"
+id = "bge-small-zh"
 kind = "model"
-install_root = "/var/lib/eidolon/models/bge-base-zh"
-# The board's encoder. A Pi runs bge-base-zh where a laptop runs bge-large-zh:
-# measured on a Pi 5, large scores better and costs 626 MB and 104 ms/doc
-# against base's 198 MB and 32 ms/doc, which a board cannot pay.
+install_root = "/var/lib/eidolon/models/bge-small-zh"
+# The board's encoder is the same immutable BGE-small-zh-v1.5 identity Memory
+# declares in settings: 512 dimensions, shared once across all Realm runners.
 #
 # Declared here because a release is exact git commits and these files are in
 # neither. Without this, the first query on a fresh Host either downloads on
@@ -76,11 +89,11 @@ install_root = "/var/lib/eidolon/models/bge-base-zh"
 
 [[artifacts.files]]
 path = "onnx/model_quantized.onnx"
-sha256 = "b665f3bba56c3119bc76ba131ebcc544d720a7408cb11581bdf354aaa0198d43"
+sha256 = "15b717c382bcb518ba457b93ea6850ede7f4f1cd8937454aa06972366cd19bcc"
 
 [[artifacts.files]]
 path = "tokenizer.json"
-sha256 = "7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
+sha256 = "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26"
 
 [[state.authority]]
 path = "/var/lib/eidolon/memory"

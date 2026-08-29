@@ -181,6 +181,109 @@ async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -
     assert status.resource_id == "delete:2:preview-1"
 
 
+async def test_confirmed_commitment_delete_removes_ledger_drawer_and_kg(
+    tmp_path: Path, kg_setup
+) -> None:
+    from eidolon_memory_contracts import MemoryIntent, MemoryIntentCommand
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.adapters.locked_backend import LockedBackend
+    from eidolon.memory.application.explicit_intents import apply_explicit_intent
+    from eidolon.memory.application.turn_processor import process_command_message
+    from eidolon.memory.config.memory_settings import get_memory_settings
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+    from eidolon.memory.infrastructure.commitments import CommitmentLedger
+
+    backend = LockedBackend(FakeMemoryBackend())
+    commitments = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    intent = MemoryIntent(
+        intent_id="intent:commitment-privacy",
+        memory_space_id=SPACE,
+        source_event_id="turn:commitment-privacy",
+        authority="explicit_user",
+        intent_type="commitment",
+        raw_claim="以后带你去看海",
+        operation_hint="confirm",
+        subject="self",
+        predicate="promised",
+        object="带 companion:e2e 去看海 canary",
+        confidence=1.0,
+        attributes={"beneficiaries": ["companion:e2e"]},
+    )
+    resource = await apply_explicit_intent(
+        backend,
+        kg_setup,
+        MemoryIntentCommand(
+            request_id="commitment-create",
+            memory_space_id=SPACE,
+            issued_at="2026-08-29T00:00:00Z",
+            issuer="agent",
+            intent=intent,
+        ),
+        commitments=commitments,
+    )
+    commitment_id = resource.split(":revision:", 1)[0]
+    status = CommandStatusLedger(tmp_path / "command-status.sqlite3", space_id=SPACE)
+    msg = _stub_msg(
+        {
+            "kind": "privacy_mutation",
+            "request_id": "commitment-delete",
+            "memory_space_id": SPACE,
+            "issued_at": "2026-08-29T00:00:01Z",
+            "action": "delete",
+            "commitment_ids": [commitment_id],
+            "preview_id": "preview-commitment-delete",
+            "target": "带 companion:e2e 去看海 canary",
+        }
+    )
+
+    await process_command_message(
+        msg,
+        backend=backend,
+        kg=kg_setup,
+        settings=get_memory_settings(),
+        expected_memory_space_id=SPACE,
+        command_status=status,
+        commitments=commitments,
+    )
+
+    assert msg.ack_calls == ["ack"]
+    assert await backend.get_all(SPACE) == []
+    assert await commitments.get(SPACE, commitment_id) is None
+    assert await commitments.history(SPACE, commitment_id) == []
+    assert await kg_setup.query_entity("self", audiences=("owner",)) == []
+    outcome = await status.get("commitment-delete")
+    assert outcome is not None
+    assert outcome.status == "applied"
+    assert outcome.resource_id == "delete:1:preview-commitment-delete"
+
+    replay = _stub_msg(
+        MemoryIntentCommand(
+            request_id="commitment-replay",
+            memory_space_id=SPACE,
+            issued_at="2026-08-29T00:00:02Z",
+            issuer="agent",
+            intent=intent,
+        ).model_dump(mode="json")
+    )
+    await process_command_message(
+        replay,
+        backend=backend,
+        kg=kg_setup,
+        settings=get_memory_settings(),
+        expected_memory_space_id=SPACE,
+        command_status=status,
+        commitments=commitments,
+    )
+    assert replay.ack_calls == ["ack"]
+    assert replay.nak_calls == []
+    assert await commitments.get(SPACE, commitment_id) is None
+    replay_outcome = await status.get("commitment-replay")
+    assert replay_outcome is not None
+    assert replay_outcome.status == "failed"
+    assert replay_outcome.error == "forgotten commitment cannot be replayed"
+
+
 async def test_command_failure_naks_and_reports_retrying(tmp_path: Path) -> None:
     from eidolon.memory.application.turn_processor import process_command_message
     from eidolon.memory.config.memory_settings import get_memory_settings

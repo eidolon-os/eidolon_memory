@@ -7,7 +7,7 @@ name = "eidolon-memory-contracts"
 version = "0.1.0"
 description = "Wire contracts for the Eidolon memory service — NATS subjects, payloads, and the read/write interface"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13,<3.14"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
 # Deliberately pydantic-only. Consumers of the memory service (agents, admin
 # consoles) depend on this package to speak the protocol; they must not be
@@ -29,7 +29,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]

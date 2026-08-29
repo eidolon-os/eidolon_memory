@@ -10,6 +10,7 @@ import uuid
 import httpx
 import pytest
 
+from eidolon.memory.entrypoints.mcp_server import AGENT_SURFACE_TOOLS
 from tests.memory.e2e.conftest import (
     mcp_tool_json,
     nats_publish_commitment,
@@ -135,10 +136,7 @@ async def test_live_mcp_surface_ownership(mcp_session) -> None:
     async with mcp_session(_ops_mcp_url(port)) as ops:
         ops_tools = {tool.name for tool in (await ops.list_tools()).tools}
 
-    assert agent_tools == {
-        "eidolon_memory_recall_context",
-        "eidolon_memory_working_context",
-    }
+    assert agent_tools == set(AGENT_SURFACE_TOOLS)
     assert "eidolon_memory_command_status" not in agent_tools
     assert "eidolon_memory_command_status" in ops_tools
     assert "eidolon_memory_kg_snapshot" in ops_tools

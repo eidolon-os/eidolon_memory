@@ -38,7 +38,10 @@ from eidolon.memory.application.explicit_intents import (
     _projection_room_token,
     apply_explicit_intent,
 )
-from eidolon.memory.application.forget import forget_exact_projections
+from eidolon.memory.application.forget import (
+    forget_commitment_projections,
+    forget_exact_projections,
+)
 from eidolon.memory.application.ingest import (
     ingest_memory_fragment,
     ingest_memory_fragments,
@@ -1134,15 +1137,37 @@ async def process_command_message(
             # produced the fact it had just agreed to forget.
             #
             # Before the vector mutation, deliberately — see the helper.
-            changed, forgotten = await forget_exact_projections(
-                backend,
-                kg,
-                canonical_facts,
-                cmd.memory_space_id,
-                cmd.drawer_ids,
-                hard=cmd.action == "delete",
+            changed: list[str] = []
+            forgotten = 0
+            if cmd.drawer_ids:
+                drawer_changed, drawer_forgotten = await forget_exact_projections(
+                    backend,
+                    kg,
+                    canonical_facts,
+                    cmd.memory_space_id,
+                    cmd.drawer_ids,
+                    hard=cmd.action == "delete",
+                )
+                changed.extend(drawer_changed)
+                forgotten += drawer_forgotten
+            if cmd.commitment_ids:
+                if commitments is None:
+                    raise RuntimeError("commitment privacy mutation requires its ledger")
+                commitment_changed, commitment_forgotten = (
+                    await forget_commitment_projections(
+                        backend,
+                        kg,
+                        commitments,
+                        cmd.memory_space_id,
+                        cmd.commitment_ids,
+                        hard=cmd.action == "delete",
+                    )
+                )
+                changed.extend(commitment_changed)
+                forgotten += commitment_forgotten
+            resource_id = (
+                f"{cmd.action}:{len(cmd.drawer_ids) + len(cmd.commitment_ids)}:{cmd.preview_id}"
             )
-            resource_id = f"{cmd.action}:{len(changed)}:{cmd.preview_id}"
             log.info(
                 "cmd_privacy_mutation_ok",
                 request_id=cmd.request_id,

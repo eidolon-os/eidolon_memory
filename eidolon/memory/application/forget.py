@@ -8,6 +8,8 @@ from typing import Any
 
 from eidolon.memory.application.kg_recall import plain_triple_sentence
 from eidolon.memory.domain.ports import (
+    CommitmentReader,
+    CommitmentWriter,
     MemoryAdmin,
     MemoryPrivacyAdmin,
 )
@@ -31,12 +33,19 @@ class ForgetCandidate:
     score: float
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "drawer_id": self.key,
+        result = {
+            "id": self.key,
             "text": self.text,
             "wing": self.wing,
             "score": self.score,
         }
+        if self.key.startswith("drawer_"):
+            result["drawer_id"] = self.key
+            result["kind"] = "assertion"
+        elif self.key.startswith("commitment:"):
+            result["commitment_id"] = self.key
+            result["kind"] = "commitment"
+        return result
 
 
 class ForgetResolutionLimitExceeded(RuntimeError):
@@ -69,6 +78,7 @@ async def find_forget_candidates(
     max_scan: int = 50_000,
     max_candidates: int = 20,
     page_size: int = DEFAULT_FORGET_PAGE_SIZE,
+    commitments: CommitmentReader | None = None,
 ) -> list[ForgetCandidate]:
     """Return a bounded candidate set without silent static truncation.
 
@@ -117,6 +127,12 @@ async def find_forget_candidates(
         for record in rows:
             if not _belongs_to_space(record, memory_space_id):
                 continue
+            # A commitment drawer is a projection of the commitment ledger, not
+            # a canonical fact. Returning it here would mint a token that later
+            # sends it through the assertion ledger and correctly fails as a
+            # non-canonical drawer. Resolve the aggregate below instead, once.
+            if str(record.metadata.get("commitment_id") or "").strip():
+                continue
             normalized_key = _normalize(record.key)
             normalized_text = _normalize(record.value)
             memory_id = _normalize(record.metadata.get("memory_id"))
@@ -154,6 +170,57 @@ async def find_forget_candidates(
             raise ForgetResolutionLimitExceeded(
                 f"privacy candidate scan exceeds {max_scan} drawers; use exact drawer IDs"
             )
+
+    if commitments is not None:
+        commitment_offset = 0
+        while commitment_offset < max_scan:
+            request_size = min(chunk, max_scan - commitment_offset)
+            records = await commitments.list_for_privacy(
+                memory_space_id,
+                limit=request_size,
+                offset=commitment_offset,
+            )
+            if not records:
+                break
+            commitment_offset += len(records)
+            for record in records:
+                normalized_id = _normalize(record.commitment_id)
+                normalized_action = _normalize(record.action)
+                if normalized_target == normalized_id:
+                    score = 1.0
+                elif normalized_target == normalized_action:
+                    score = 1.0
+                elif normalized_target in normalized_action:
+                    score = 0.9
+                elif len(normalized_action) >= 4 and normalized_action in normalized_target:
+                    score = 0.85
+                else:
+                    continue
+                if record.commitment_id in candidate_keys:
+                    continue
+                candidate_keys.add(record.commitment_id)
+                candidates.append(
+                    ForgetCandidate(
+                        key=record.commitment_id,
+                        text=record.action,
+                        wing="Wing_Future",
+                        score=score,
+                    )
+                )
+                if len(candidates) > max_candidates:
+                    raise ForgetResolutionLimitExceeded(
+                        f"privacy target matches more than {max_candidates} memories"
+                    )
+            if len(records) < request_size:
+                break
+        if commitment_offset >= max_scan:
+            overflow = await commitments.list_for_privacy(
+                memory_space_id, limit=1, offset=commitment_offset
+            )
+            if overflow:
+                raise ForgetResolutionLimitExceeded(
+                    f"privacy candidate scan exceeds {max_scan} commitments; use an exact ID"
+                )
 
     candidates.sort(key=lambda item: (-item.score, item.key))
     return candidates
@@ -322,6 +389,59 @@ async def forget_exact_projections(
         await canonical_facts.mark_forget_projected(
             memory_space_id, ledger_assertions, targets={"drawer"}
         )
+    return changed, statements
+
+
+async def forget_commitment_projections(
+    backend: MemoryAdmin,
+    kg: Any,
+    commitments: CommitmentWriter,
+    memory_space_id: str,
+    commitment_ids: list[str],
+    *,
+    hard: bool,
+) -> tuple[list[str], int]:
+    """Tombstone commitment content before removing either projection.
+
+    The retained row contains only the stable commitment id, revision count and
+    projection states. It is enough to resume an interrupted delete and reject
+    replay, without preserving the promise text the person asked us to remove.
+    """
+
+    wanted = list(dict.fromkeys(value.strip() for value in commitment_ids if value.strip()))
+    if not wanted:
+        return [], 0
+    plans = await commitments.begin_forget(memory_space_id, wanted, hard=hard)
+    if {plan.commitment_id for plan in plans} != set(wanted):
+        raise RuntimeError("commitment privacy ledger did not accept every target")
+
+    statements = 0
+    if kg is not None:
+        statements = await kg.forget_source_turns(wanted, hard=hard)
+    await commitments.mark_forget_projected(
+        memory_space_id, wanted, targets={"kg"}
+    )
+
+    drawer_ids: list[str] = []
+    for plan in plans:
+        for revision in range(1, plan.revision_count + 1):
+            record = await backend.get_by_source_turn_id(
+                memory_space_id,
+                f"{plan.commitment_id}:revision:{revision}",
+            )
+            if record is not None:
+                drawer_ids.append(record.key)
+    changed: list[str] = []
+    if drawer_ids:
+        changed = (
+            await backend.delete_many(memory_space_id, drawer_ids)
+            if hard
+            else await backend.archive_many(memory_space_id, drawer_ids)
+        )
+    await commitments.mark_forget_projected(
+        memory_space_id, wanted, targets={"drawer"}
+    )
+    await commitments.finalize_forget(memory_space_id, wanted)
     return changed, statements
 
 
