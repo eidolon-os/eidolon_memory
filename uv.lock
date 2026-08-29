@@ -376,7 +376,7 @@ requires-dist = [
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.20" },
     { name = "litellm", specifier = ">=1.0" },
     { name = "mcp", specifier = ">=1.2.0" },
-    { name = "mempalace", specifier = "==3.6.0" },
+    { name = "mempalace", specifier = "==3.8.0" },
     { name = "nats-py", specifier = ">=2.9" },
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -873,7 +873,7 @@ wheels = [
 
 [[package]]
 name = "mempalace"
-version = "3.6.0"
+version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "chromadb" },
@@ -883,9 +883,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ac/3e/27936499c22259acda3cf793b9c6d0d0038a83fce50cfcddf2703b034c12/mempalace-3.6.0.tar.gz", hash = "sha256:6e80dd335a071d93452d6f52c457be74211cbdc8f67acda19665899d11a8ffd7", size = 25312229, upload-time = "2026-07-17T10:52:58.126Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/6b/f771d3ba3ab8393cdea451932df96097585b5659c17853b046b992fa60d1/mempalace-3.8.0.tar.gz", hash = "sha256:9336425c2e8dabdc028617565e663c22af2179be33ef9f822404aa78221ed21e", size = 25756745, upload-time = "2026-08-23T21:19:17.155Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/db/c6369c7d300ea161dc1115f2bca23485122483e13db6e8ee05686982d1d8/mempalace-3.6.0-py3-none-any.whl", hash = "sha256:924341896d88e6d586734211fc431ed65baf7fbc26bce499337f8eaf108d91aa", size = 580713, upload-time = "2026-07-17T10:52:56.496Z" },
+    { url = "https://files.pythonhosted.org/packages/82/c7/999a2fa64d5875eac50fb87ce2babf1ee033267df2cbe45e033e1afd078f/mempalace-3.8.0-py3-none-any.whl", hash = "sha256:1c00680aeab8b9cf0f2c94bc79cbabce3fad2ea6586c3fc215d5a6b503e2d9dd", size = 755074, upload-time = "2026-08-23T21:19:14.585Z" },
 ]
 
 [[package]]

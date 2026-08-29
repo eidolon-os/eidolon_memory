@@ -250,13 +250,12 @@ def test_the_host_may_say_where_that_encoder_lives(tmp_path, monkeypatch) -> Non
     settings = load_memory_settings(settings_file)
 
     assert settings.embedding.model_dir == "/var/lib/eidolon/models/bge-base-zh"
-    # And it reaches the children, which read a different name entirely.
+    # A local model remains valid for the standalone embedding service, but the
+    # MemPalace storage process must use its public OpenAI-compatible provider.
     from eidolon.memory.infrastructure.mempalace_backend import mempalace_backend_env
 
-    environment = mempalace_backend_env(settings, base={})
-    assert environment["MEMPALACE_EMBEDDING_MODEL_DIR"] == (
-        "/var/lib/eidolon/models/bge-base-zh"
-    )
+    with pytest.raises(ValueError, match="embedding.provider=http"):
+        mempalace_backend_env(settings, base={})
 
 
 def test_an_override_cannot_name_an_encoder_nobody_implements(tmp_path, monkeypatch) -> None:

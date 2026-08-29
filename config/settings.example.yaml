@@ -17,9 +17,8 @@ runtime:
 mempalace:
   # chroma keeps vectors in a file in the palace directory.
   backend: chroma
-  # The embedder used to be configured here. It moved to the `embedding` section
-  # below, because the encoder is ours rather than MemPalace's — we choose it, we
-  # implement it, and we inject it into MemPalace. The four old keys
+  # The embedder is configured in the `embedding` section below. MemPalace 3.8
+  # receives explicit vectors through its public API. The four old keys
   # (embedding_model, embedding_device, embedding_model_dir, embedding_threads)
   # are still accepted for compatibility and folded into that section at load;
   # setting the same thing in both places is refused when the two disagree.
@@ -41,10 +40,12 @@ embedding:
   # the embedder's name on the collection and refuses mismatched reads, so the
   # switch fails loudly rather than silently comparing vectors from two different
   # vector spaces. That refusal is the mechanism, not a defect.
-  provider: auto
+  provider: http
 
-  # Set per host: bge-base-zh on the Pi, bge-large-zh on a workstation. The two
-  # differ because the cost differs, not because the ranking does.
+  # Production default: bge-small-zh on the Pi and on every writer/reader of the
+  # same fresh Palace. Model identity, 512 dimensions and the query/document
+  # contract are one storage invariant; changing any of them creates a new
+  # vector space.
   #
   # Measured on a Raspberry Pi 5 over C-MTEB VideoRetrieval — 1000 queries
   # against a 20 000-document corpus, full runs, batch 32
@@ -76,19 +77,23 @@ embedding:
   #     help: 24M to 326M parameters moves R@1 only between 14.2% and 16.7%. If a
   #     palace holds much English, no size of this model is the right choice.
   #
+  # The Pi selects small despite base's higher retrieval score because base costs
+  # 5x the measured document latency and about 4x the model disk footprint. The
+  # Agent latency and board-wide RSS acceptance tests decide that trade-off; it
+  # is not inferred from model size alone.
+  #
   # bge-m3 is implemented and rejected for this board on memory: 2.79 GB resident
   # at batch 8 and 6.7 GB at batch 16 on 8 GB with no swap, and second-worst of
   # eight models on Chinese dialogue anyway.
   #
   # An unrecognised name is refused at config load, because MemPalace answers
   # anything it does not know with minilm and says nothing.
-  model: bge-base-zh
+  model: bge-small-zh
   # ONNX Runtime execution provider for `local`: auto, cpu, cuda, coreml, or dml.
   device: ""
   # Optional local copy of the model files, so a deployment can ship them instead
   # of probing the hub on first use. Our own encoder reads this directory
-  # directly; for MemPalace's it is bridged into their download call, which is the
-  # one case still needing a process-wide patch.
+  # directly when developing the standalone embedding service.
   model_dir: ""
   # Explicit ONNX Runtime intra-op cap. 0 keeps the native auto default (≈ core
   # count), which a background mine will happily use all of.
@@ -114,29 +119,28 @@ embedding:
   #
   # For deployment 2 on this board:
   #
-  #   eidolon-memory-embedder --model bge-base-zh --model-dir /opt/eidolon/models/bge-base-zh
+  #   eidolon-memory-embedder --model bge-small-zh --model-dir /opt/eidolon/models/bge-small-zh
   #
   #   embedding:
   #     provider: http
   #     http:
   #       base_url: http://127.0.0.1:8760/v1
-  #       model: bge-base-zh
-  #       dimension: 768
-  #       collection_name: bge_base_zh_v15
+  #       model: bge-small-zh
+  #       dimension: 512
+  #       collection_name: bge_small_zh_v15
   #
   # That last line is not optional and not cosmetic. A hosted endpoint's name is
-  # prefixed (`http_bge_base_zh`) precisely so a palace built by one
+  # prefixed (`http_bge_small_zh`) precisely so a palace built by one
   # implementation cannot be read by another claiming the same model id — a
-  # hosted "bge-base-zh" is nobody's promise of the same weights. Moving an
-  # existing palace to a *local* server running our own encoder is the one case
-  # where the weights really are identical, so the name is overridden back to
-  # what the collection was created with. Without it Chroma refuses to open the
-  # collection, which is the guard working, not a bug.
+  # hosted "bge-small-zh" is nobody's promise of the same weights. This release
+  # creates a fresh Palace with the explicit local identity above; it does not
+  # reinterpret or migrate vectors from an older Palace. Chroma refusing an
+  # identity mismatch is the guard working, not a bug.
   http:
     # The API root, ending in /v1. `/embeddings` is appended.
-    base_url: ""
+    base_url: http://127.0.0.1:8760/v1
     # The model id the endpoint accepts. Defaults to `model` above when blank.
-    model: ""
+    model: bge-small-zh
     # Name of the env var holding the key; put the value in config/.env. Blank
     # means the endpoint needs no credential. A named variable that resolves
     # empty is an error, not an empty Bearer header answered with a 401.
@@ -146,10 +150,10 @@ embedding:
     # ask a network service is a build that fails differently on a bad day.
     # Checked against every response, so a wrong value is reported here rather
     # than surfacing later as a rejected write.
-    dimension: 0
+    dimension: 512
     # Persisted by Chroma on the collection. Derived from the model id when
     # blank (as http_<model>), which is enough to keep two hosted models apart.
-    collection_name: ""
+    collection_name: bge_small_zh_v15
     # As mandatory for a hosted E5 as for a local one, and as silent when
     # omitted: not an error, just worse ranking.
     query_prefix: ""

@@ -10,7 +10,7 @@ of the port declared Chroma's embedding-function protocol directly — ``name()`
 ``__call__``, ``embed_query``, ``embed_documents`` — which made "be an embedder"
 and "be a Chroma embedding function" the same obligation. A second
 implementation then had to satisfy a vector store it never talks to. The Chroma
-shape now lives in exactly one place, ``infrastructure/chroma_embedding_function``,
+storage adapters pass the returned vectors through public backend APIs,
 wrapping any port.
 
 Three properties belong to the port rather than to any implementation:

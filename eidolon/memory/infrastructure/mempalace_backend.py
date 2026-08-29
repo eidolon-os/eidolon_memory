@@ -8,7 +8,9 @@ checks for the supported backends we may run in development.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import sqlite3
 from collections.abc import Mapping
@@ -19,12 +21,13 @@ from typing import Any
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.infrastructure.embedder_factory import (
     EMBEDDING_CONFIG_ENV,
+    active_embedder,
+    build_embedder,
     embedding_config_env_value,
+    embedding_config_from_env,
+    set_active_embedder,
 )
-from eidolon.memory.infrastructure.embedder_registration import register_embedder
-from eidolon.memory.infrastructure.embedding_model_dir import (
-    apply_mempalace_model_dir_bridge_from_env,
-)
+from eidolon.memory.infrastructure.http_embedder import resolve_api_key
 
 #: One backend, because this deployment is local. MemPalace offers others;
 #: they are server backends and serving from several hosts is not a shape we
@@ -96,7 +99,8 @@ def selected_mempalace_backend(settings: MemorySettings) -> str:
 #: ones are theirs to read; ``EIDOLON_EMBEDDING_CONFIG`` is the whole embedding
 #: section, which a spawned process needs because the encoder is ours and its
 #: settings no longer fit into four strings MemPalace happens to understand.
-_EXPORTED_ENV_PREFIXES = ("MEMPALACE_", EMBEDDING_CONFIG_ENV)
+_OFFLINE_EMBEDDING_ENV = "EIDOLON_MEMORY_OFFLINE_EMBEDDING"
+_EXPORTED_ENV_PREFIXES = ("MEMPALACE_", EMBEDDING_CONFIG_ENV, _OFFLINE_EMBEDDING_ENV)
 
 
 def mempalace_backend_env(
@@ -106,11 +110,12 @@ def mempalace_backend_env(
 ) -> dict[str, str]:
     """Return an environment with backend and embedder selection applied.
 
-    The four ``MEMPALACE_EMBEDDING_*`` variables are still written, because
-    MemPalace reads them itself and because the model name among them is both the
-    key its embedder cache is looked up under and the identity it records on the
-    palace. They are derived from the ``embedding`` section, which is where the
-    embedder is configured now.
+    MemPalace 3.8 has a public OpenAI-compatible provider.  Production uses that
+    provider for collection identity while Eidolon passes document/query vectors
+    explicitly through ``BaseCollection``.  That keeps BGE's two embedding roles
+    under our ``EmbeddingPort`` without reaching MemPalace's private provider
+    cache.  Offline storage tests use MemPalace's public MiniLM identity but also
+    pass deterministic vectors explicitly, so no model is loaded.
 
     ``EIDOLON_EMBEDDING_CONFIG`` carries the section entire. A child process gets
     a hosted endpoint's address, timeout and declared width from it without this
@@ -127,64 +132,110 @@ def mempalace_backend_env(
     env["MEMPALACE_BACKEND"] = backend
 
     embedding = settings.embedding
-    embedding_model = embedding.model.strip().lower()
-    if embedding_model:
-        env["MEMPALACE_EMBEDDING_MODEL"] = embedding_model
-    embedding_device = embedding.device.strip().lower()
-    if embedding_device:
-        env["MEMPALACE_EMBEDDING_DEVICE"] = embedding_device
-    model_dir = embedding.model_dir.strip()
-    if model_dir:
-        env["MEMPALACE_EMBEDDING_MODEL_DIR"] = str(Path(model_dir).expanduser())
-    if embedding.threads > 0:
-        env["MEMPALACE_EMBEDDING_THREADS"] = str(embedding.threads)
+    provider = embedding.resolved_provider()
+    if settings.mempalace.offline_embedding:
+        env[_OFFLINE_EMBEDDING_ENV] = "1"
+        env["MEMPALACE_EMBEDDING_MODEL"] = "minilm"
+        env.pop("MEMPALACE_EMBEDDING_API_URL", None)
+        env.pop("MEMPALACE_EMBEDDING_API_MODEL", None)
+        env.pop("MEMPALACE_EMBEDDING_API_KEY", None)
+    elif provider == "http":
+        env.pop(_OFFLINE_EMBEDDING_ENV, None)
+        env["MEMPALACE_EMBEDDING_MODEL"] = "openai-compat"
+        env["MEMPALACE_EMBEDDING_API_URL"] = embedding.http.base_url.strip()
+        env["MEMPALACE_EMBEDDING_API_MODEL"] = embedding.endpoint_model()
+        api_key = resolve_api_key(embedding.http.api_key_env)
+        if api_key:
+            env["MEMPALACE_EMBEDDING_API_KEY"] = api_key
+        else:
+            env.pop("MEMPALACE_EMBEDDING_API_KEY", None)
+    elif provider == "mempalace":
+        env.pop(_OFFLINE_EMBEDDING_ENV, None)
+        env["MEMPALACE_EMBEDDING_MODEL"] = embedding.model.strip().lower()
+        embedding_device = embedding.device.strip().lower()
+        if embedding_device:
+            env["MEMPALACE_EMBEDDING_DEVICE"] = embedding_device
+        model_dir = embedding.model_dir.strip()
+        if model_dir:
+            env["MEMPALACE_EMBEDDING_MODEL_DIR"] = str(Path(model_dir).expanduser())
+        if embedding.threads > 0:
+            env["MEMPALACE_EMBEDDING_THREADS"] = str(embedding.threads)
+    else:
+        raise ValueError(
+            "MemPalace 3.8 storage requires embedding.provider=http (the official "
+            "openai-compat provider) or a native MemPalace embedder. Local Eidolon "
+            "embedders cannot be installed through a public MemPalace API; run the "
+            "existing eidolon-memory-embedder service instead of injecting private "
+            "provider/cache symbols."
+        )
     env[EMBEDDING_CONFIG_ENV] = embedding_config_env_value(embedding)
 
     return env
 
 
 def apply_mempalace_backend_env(settings: MemorySettings) -> str | None:
-    """Apply backend selection to the current process, and install our embedder.
+    """Apply the public MemPalace provider config and publish Eidolon's port.
 
-    Returns the embedding model that was installed, or ``None`` when the
-    configured model is one of MemPalace's own.
-
-    The embedder registration lives here rather than in its own hook because its
-    ordering requirement is identical — after the environment is applied, before
-    any store is opened — and because this function has six call sites, five of
-    them benchmark scripts. A separate hook would have to be remembered at each,
-    and forgetting it in a bench is precisely the defect that made every quality
-    number this project published before 2026-08-03 measure the wrong model.
+    No MemPalace module is mutated.  Its official provider identifies the
+    collection; every Eidolon write/search supplies vectors explicitly.
     """
     env = mempalace_backend_env(settings)
     for key, value in env.items():
         if key.startswith(_EXPORTED_ENV_PREFIXES):
             os.environ[key] = value
-    # Registered from the settings rather than by re-reading what was just
-    # written: the round trip through the environment is the transport for a
-    # *child* process, and using it here too would mean a parsing bug showed up
-    # only in the parent, where it is hardest to attribute.
-    return register_embedder(settings.embedding)
+    if settings.mempalace.offline_embedding:
+        return None
+    if settings.embedding.resolved_provider() == "mempalace":
+        return None
+    port = build_embedder(settings.embedding)
+    set_active_embedder(port)
+    return port.identity().name
 
 
 def prepare_embedder_resolution_from_env() -> str | None:
-    """Make this process able to resolve the embedder its environment names.
+    """Publish the inherited Eidolon embedder without mutating MemPalace.
 
-    Two steps, and doing only one of them is a silent wrong answer, which is why
-    they live in a single function: bridge a local model directory into
-    MemPalace's own hub calls, and install our encoder when the configured one is
-    not theirs.
-
-    Needed by any process that opens or creates a collection — including the
-    subprocess that materialises a fresh palace, which runs a ``python -c`` and
-    therefore inherits none of the parent's registration. Without this there, a
-    new palace is created with MemPalace's default encoder while its marker
-    records the configured name: minilm vectors under a label saying otherwise,
-    and nothing reports a problem.
+    Used by the fresh-Palace subprocess before it computes the explicit probe
+    vector.  Offline tests intentionally need no real embedder.
     """
 
-    apply_mempalace_model_dir_bridge_from_env()
-    return register_embedder()
+    config = embedding_config_from_env()
+    if os.environ.get(_OFFLINE_EMBEDDING_ENV, "").lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return None
+    if config.resolved_provider() == "mempalace":
+        return None
+    port = build_embedder(config)
+    set_active_embedder(port)
+    return port.identity().name
+
+
+def fresh_palace_probe_embedding_from_env(text: str) -> list[float]:
+    """One explicit document vector for fresh-collection materialisation.
+
+    Production uses the configured ``EmbeddingPort``.  Offline tests use a
+    deterministic vector at the declared width, so opening a Palace never loads
+    a model merely to create an empty collection.
+    """
+
+    config = embedding_config_from_env()
+    if os.environ.get(_OFFLINE_EMBEDDING_ENV, "").lower() in {
+        "1", "true", "yes", "on"
+    }:
+        identity = config.declared_identity()
+        dimension = identity.dimension if identity is not None else 384
+        vector = [0.0] * dimension
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        for index, value in enumerate(digest):
+            vector[(index * 17 + value) % dimension] += (value + 1) / 256.0
+        norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        return [value / norm for value in vector]
+    prepare_embedder_resolution_from_env()
+    rows = active_embedder().embed_documents([text])
+    if len(rows) != 1 or not rows[0]:
+        raise RuntimeError("configured embedder returned no fresh-Palace probe vector")
+    return [float(value) for value in rows[0]]
 
 
 def backend_artifact_path(palace_path: Path, backend: str) -> Path:

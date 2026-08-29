@@ -52,30 +52,22 @@ def search_memories_shared_embedding(
     vec = [embedding]
 
     try:
-        drawers_col = get_collection(palace_path, collection_name=collection_name, create=False)
+        drawers_col = get_collection(
+            palace_path,
+            collection_name=collection_name,
+            create=False,
+            read_only=True,
+        )
         metric = collection_metric(drawers_col)
         where = _combined_where(wings, room, audiences)
         limit = max(n_results * max(3, len(wings) * 3), n_results)
-        try:
-            drawer_results = _query_collection(
-                drawers_col,
-                query_embeddings=vec,
-                n_results=limit,
-                where=where,
-            )
-            post_filter = False
-        except Exception:
-            # Chroma 1.5.x can throw transient SQLite/HNSW errors specifically
-            # on filtered queries while an unfiltered vector query still works.
-            # Keep the voice path fast and useful by falling back once, then
-            # applying the wing/room filter in Python.
-            drawer_results = _query_collection(
-                drawers_col,
-                query_embeddings=vec,
-                n_results=max(limit * 2, 50),
-                where=None,
-            )
-            post_filter = True
+        drawer_results = _query_collection(
+            drawers_col,
+            query_embeddings=vec,
+            n_results=limit,
+            where=where,
+        )
+        post_filter = False
 
         closet_boost_by_source = {}
         if not skip_closets:
@@ -249,8 +241,14 @@ def _closet_boosts(
     audiences: tuple[str, ...] | None,
 ) -> dict[str, tuple]:
     try:
-        from mempalace.palace import get_closets_collection
-        closets_col = get_closets_collection(palace_path, create=False)
+        from mempalace.palace import get_collection
+
+        closets_col = get_collection(
+            palace_path,
+            collection_name="mempalace_closets",
+            create=False,
+            read_only=True,
+        )
         try:
             closet_results = _query_collection(
                 closets_col,
@@ -311,7 +309,10 @@ def _score_results(
         first_result_list(drawer_results, "metadatas"),
         first_result_list(drawer_results, "distances"),
     ):
-        meta = meta or {}
+        # These metadata came from the same Chroma query as the vector hit, not
+        # from MemPalace's older lossy public search payload. Mark that provenance
+        # explicitly so privacy filtering never needs a second hydration read.
+        meta = {**(meta or {}), "_storage_metadata_verified": True}
         if post_filter and not _matches_scope(
             meta,
             wings=wings,

@@ -223,8 +223,8 @@ class EmbeddingConfig(BaseModel):
     """Which encoder runs, and how to reach it.
 
     Its own section rather than part of ``mempalace``, because the embedder is no
-    longer MemPalace's. We choose it, we implement it, and we inject it into
-    MemPalace — the settings that decide it belong with the thing they decide.
+    longer MemPalace's. We choose it and pass vectors through MemPalace's public
+    collection API — the settings that decide it belong with the thing they decide.
     ``mempalace.embedding_*`` is still accepted as input and is folded in here
     before validation; see ``MemorySettings``.
 
@@ -257,8 +257,7 @@ class EmbeddingConfig(BaseModel):
     # ONNX Runtime execution provider for ``local``: auto, cpu, cuda, coreml, dml.
     device: str = ""
     # An operator's local copy of the model files. Our own implementation reads
-    # it directly; for MemPalace's embedders it is bridged into their hub call,
-    # which is the one case that still needs a process-wide patch.
+    # it directly. Native MemPalace embedders read the equivalent public env.
     model_dir: str = ""
     # Explicit ORT intra-op cap. 0 keeps the native default (≈ core count),
     # which a background mine will happily use all of.

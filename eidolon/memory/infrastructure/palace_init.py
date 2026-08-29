@@ -25,6 +25,7 @@ log = get_logger(__name__)
 
 _MEMPALACE_INIT_TIMEOUT_SECONDS = 300.0
 _BACKEND_MATERIALIZE_TIMEOUT_SECONDS = 300.0
+MEMPALACE_HOME_ENV = "EIDOLON_MEMORY_MEMPALACE_HOME"
 
 
 class PalaceInitError(RuntimeError):
@@ -84,21 +85,38 @@ def palace_environment(
     initialise, the runner never started, and the Eidolon ran with no memory at
     all while everything else looked healthy.
 
-    ``HOME`` is pointed at the palace too, and unconditionally. This is not only
-    for ``init``: MemPalace 3.6+ serialises every Chroma mutation with a lock at
-    ``~/.mempalace/locks``. The Host service account deliberately has
-    ``HOME=/nonexistent``; leaving that value on the long-lived runner makes
-    reads work while every write fails before Chroma is called. Using one
-    canonical home for init, runner and maintenance also keeps all of those
-    processes on the *same* per-palace lock. A private temp home or a patched
-    lock path would appear writable but silently defeat cross-process writer
-    exclusion.
+    MemPalace 3.8 keys every writer lock by the normalized Palace path, but keeps
+    those locks under ``~/.mempalace/locks``. All Palace processes therefore use
+    one writable service home, not one HOME per Palace: different HOME values for
+    the same Palace create different lock files and defeat upstream's exclusion.
+    ``EIDOLON_MEMORY_MEMPALACE_HOME`` may name the service home explicitly;
+    otherwise a sibling of the Palace directories is used.
     """
 
     resolved = dict(os.environ if env is None else env)
     resolved["MEMPALACE_PALACE_PATH"] = str(palace_path)
-    resolved["HOME"] = str(palace_path)
+    configured_home = resolved.get(MEMPALACE_HOME_ENV, "").strip()
+    shared_home = (
+        Path(configured_home).expanduser()
+        if configured_home
+        else palace_path.parent / ".mempalace-home"
+    )
+    resolved["HOME"] = str(shared_home)
     return resolved
+
+
+def configure_shared_mempalace_home(palaces_root: Path) -> Path:
+    """Activate the one upstream lock/config root used by this process."""
+
+    configured = os.environ.get(MEMPALACE_HOME_ENV, "").strip()
+    home = (
+        Path(configured).expanduser()
+        if configured
+        else Path(palaces_root).expanduser() / ".mempalace-home"
+    )
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.environ["HOME"] = str(home)
+    return home
 
 
 def ensure_palace_initialized(
@@ -213,14 +231,15 @@ def _materialize_backend_collection(
     code = (
         "import sys; "
         "from eidolon.memory.infrastructure.mempalace_backend import "
-        "prepare_embedder_resolution_from_env; "
-        "prepare_embedder_resolution_from_env(); "
+        "fresh_palace_probe_embedding_from_env; "
         "from mempalace.palace import get_collection; "
         "palace, backend = sys.argv[1], sys.argv[2]; "
         "col = get_collection(palace, create=True, backend=backend); "
         "probe = '__eidolon_backend_init_probe__'; "
+        "vector = fresh_palace_probe_embedding_from_env('eidolon backend init probe'); "
         "col.upsert(ids=[probe], documents=['eidolon backend init probe'], "
-        "metadatas=[{'wing':'Wing_Work','room':'init','source_file':'eidolon'}]); "
+        "metadatas=[{'wing':'Wing_Work','room':'init','source_file':'eidolon'}], "
+        "embeddings=[vector]); "
         "col.delete(ids=[probe]); "
         "print('ok')"
     )

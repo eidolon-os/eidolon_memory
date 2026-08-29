@@ -2,7 +2,7 @@
 
 One implementation of ``EmbeddingPort``, and the default one. It knows about ONNX
 Runtime, tokenizers, pooling and where its weights live; it knows nothing about
-Chroma — that shape is in ``chroma_embedding_function`` and wraps this.
+Chroma; the MemPalace adapter passes these vectors explicitly.
 
 Why this exists: MemPalace ships two embedders and neither is deployable for us.
 ``minilm`` is English-only — 5/43 top-1 on our Chinese corpus against 21–27 for
