@@ -530,6 +530,7 @@ def build_control_plane_mcp(
             command_publisher=command_publisher,
             memory_space_id=memory_space_id,
             command_status=command_status,
+            commitments=commitments,
             # The service's signer, not a second one. A proof carries a
             # per-instance secret, so a preview minted by ``preview_forget`` and a
             # confirm arriving at this tool have to meet on the same key —
@@ -626,6 +627,7 @@ def _register_privacy_tools(
     memory_space_id: str,
     command_status: CommandStatusStore | None,
     signer: PrivacyConfirmationSigner,
+    commitments: Any = None,
 ) -> None:
     """Read-only preview followed by an exact-ID command on the write stream."""
 
@@ -647,7 +649,10 @@ def _register_privacy_tools(
             return {"status": "error", "error": "action must be archive or delete"}
         try:
             candidates = await find_forget_candidates(
-                backend, memory_space_id, clean_target
+                backend,
+                memory_space_id,
+                clean_target,
+                commitments=commitments,
             )
         except ForgetResolutionLimitExceeded as exc:
             return {
@@ -661,7 +666,14 @@ def _register_privacy_tools(
             memory_space_id=memory_space_id,
             action=action,  # type: ignore[arg-type]
             target=clean_target,
-            drawer_ids=[candidate.key for candidate in candidates],
+            drawer_ids=[
+                candidate.key for candidate in candidates if candidate.key.startswith("drawer_")
+            ],
+            commitment_ids=[
+                candidate.key
+                for candidate in candidates
+                if candidate.key.startswith("commitment:")
+            ],
         )
         ambiguous = len(candidates) > 1 or any(candidate.score < 1.0 for candidate in candidates)
         return {
@@ -695,6 +707,7 @@ def _register_privacy_tools(
             issuer="agent",
             action=proof.action,
             drawer_ids=proof.drawer_ids,
+            commitment_ids=proof.commitment_ids,
             preview_id=proof.preview_id,
             target=proof.target,
         )
@@ -709,6 +722,7 @@ def _register_privacy_tools(
             "preview_id": proof.preview_id,
             "action": proof.action,
             "drawer_ids": proof.drawer_ids,
+            "commitment_ids": proof.commitment_ids,
         }
 
 

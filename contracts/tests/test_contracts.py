@@ -152,6 +152,16 @@ def test_privacy_mutation_command_is_exact_id_only() -> None:
 
     assert isinstance(parsed, PrivacyMutationCommand)
     assert parsed.drawer_ids == ["drawer_a", "drawer_b"]
+    commitment = PrivacyMutationCommand(
+        request_id="privacy-commitment",
+        memory_space_id="realm:owner-a:default",
+        issued_at="2026-06-15T00:00:00Z",
+        action="delete",
+        commitment_ids=["commitment:abc"],
+        preview_id="preview-commitment",
+    )
+    assert commitment.drawer_ids == []
+    assert commitment.commitment_ids == ["commitment:abc"]
     with pytest.raises(ValidationError, match="drawer_ids"):
         PrivacyMutationCommand(
             request_id="privacy-2",
@@ -160,6 +170,14 @@ def test_privacy_mutation_command_is_exact_id_only() -> None:
             action="delete",
             drawer_ids=["natural language target"],
             preview_id="preview-2",
+        )
+    with pytest.raises(ValidationError, match="at least one exact target"):
+        PrivacyMutationCommand(
+            request_id="privacy-empty",
+            memory_space_id="realm:owner-a:default",
+            issued_at="2026-06-15T00:00:00Z",
+            action="delete",
+            preview_id="preview-empty",
         )
 
 

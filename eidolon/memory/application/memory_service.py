@@ -98,6 +98,7 @@ def _minted(
     action: str,
     target: str,
     drawer_ids: list[str],
+    commitment_ids: list[str],
 ) -> dict[str, str]:
     """The token fields for a preview, or none if a token cannot cover it.
 
@@ -113,6 +114,7 @@ def _minted(
             action=action,  # type: ignore[arg-type]
             target=target,
             drawer_ids=drawer_ids,
+            commitment_ids=commitment_ids,
         )
     except ValueError as exc:
         log.info("forget_preview_not_tokenisable", target=target, reason=str(exc))
@@ -491,7 +493,10 @@ class MemoryService:
         target = extract_privacy_target(query)
         try:
             candidates = await find_forget_candidates(
-                runtime.backend, ctx.memory_realm_id, target
+                runtime.backend,
+                ctx.memory_realm_id,
+                target,
+                commitments=runtime.ledgers.commitments,
             )
         except Exception as exc:  # noqa: BLE001 - contract: never raise on storage
             log.warning(
@@ -533,7 +538,16 @@ class MemoryService:
                 memory_space_id=ctx.memory_realm_id,
                 action=action,
                 target=target,
-                drawer_ids=[str(getattr(c, "key", "") or "") for c in candidates],
+                drawer_ids=[
+                    str(getattr(c, "key", "") or "")
+                    for c in candidates
+                    if str(getattr(c, "key", "") or "").startswith("drawer_")
+                ],
+                commitment_ids=[
+                    str(getattr(c, "key", "") or "")
+                    for c in candidates
+                    if str(getattr(c, "key", "") or "").startswith("commitment:")
+                ],
             ),
         )
 
@@ -691,6 +705,7 @@ class MemoryService:
             issuer="agent",
             action=proof.action,
             drawer_ids=proof.drawer_ids,
+            commitment_ids=proof.commitment_ids,
             preview_id=proof.preview_id,
             target=proof.target,
         )
@@ -708,7 +723,11 @@ class MemoryService:
             status=status if status in {"accepted", "applied", "failed"} else "accepted",
             action=proof.action,
             request_id=str(outcome.get("request_id") or command.request_id),
-            forgotten_ids=list(proof.drawer_ids) if status == "applied" else [],
+            forgotten_ids=(
+                [*proof.drawer_ids, *proof.commitment_ids]
+                if status == "applied"
+                else []
+            ),
             error=str(outcome.get("error") or ""),
         )
 

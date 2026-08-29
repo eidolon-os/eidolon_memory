@@ -77,6 +77,15 @@ class CommitmentListPage(BaseEidolonModel):
     truncated: bool
 
 
+class CommitmentForgetPlan(BaseEidolonModel):
+    """Opaque projection coordinates retained after commitment content is gone."""
+
+    memory_space_id: str
+    commitment_id: str
+    revision_count: int = Field(ge=1)
+    hard: bool
+
+
 def normalize_commitment_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).strip().casefold().split())
 

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 from eidolon_memory_contracts import MemoryIntent, MemoryIntentCommand
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.application.explicit_intents import apply_explicit_intent
+from eidolon.memory.application.forget import (
+    find_forget_candidates,
+    forget_commitment_projections,
+)
 from eidolon.memory.domain.commitment import CommitmentConflict
 from eidolon.memory.infrastructure.commitments import CommitmentLedger
 
@@ -139,6 +145,11 @@ class _CommitmentKG:
         self.invalidate_calls += 1
         self.rows.remove(key)
         return 1
+
+    async def forget_source_turns(self, source_turn_ids, *, hard=False):
+        changed = len(self.rows)
+        self.rows.clear()
+        return changed
 
 
 @pytest.mark.asyncio
@@ -329,6 +340,158 @@ async def test_explicit_commitment_projects_only_current_revision(tmp_path) -> N
     assert kg.invalidate_calls == 1
     records = await backend.get_all(SPACE)
     assert all(row.metadata.get("privacy") == "do_not_recall" for row in records)
+
+
+@pytest.mark.asyncio
+async def test_commitment_delete_is_ledger_first_and_replay_safe(tmp_path) -> None:
+    ledger = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _CommitmentKG()
+    intent = _intent("intent:privacy", operation="confirm", action="去海边看日出 canary")
+    resource = await apply_explicit_intent(
+        backend, kg, _command(intent), commitments=ledger
+    )
+    commitment_id = resource.split(":revision:", 1)[0]
+
+    candidates = await find_forget_candidates(
+        backend,
+        SPACE,
+        "去海边看日出 canary",
+        commitments=ledger,
+    )
+    assert [(row.key, row.text) for row in candidates] == [
+        (commitment_id, "去海边看日出 canary")
+    ]
+
+    drawers, statements = await forget_commitment_projections(
+        backend,
+        kg,
+        ledger,
+        SPACE,
+        [commitment_id],
+        hard=True,
+    )
+
+    assert len(drawers) == 1
+    assert statements == 1
+    assert await backend.get_all(SPACE) == []
+    assert await ledger.get(SPACE, commitment_id) is None
+    assert await ledger.history(SPACE, commitment_id) == []
+    assert await ledger.list_current(SPACE, include_terminal=True) == []
+    assert await ledger.list_for_privacy(SPACE, limit=10, offset=0) == []
+    with pytest.raises(CommitmentConflict, match="forgotten commitment"):
+        await ledger.apply(intent)
+    with pytest.raises(CommitmentConflict, match="forgotten commitment"):
+        await ledger.apply(
+            _intent(
+                "intent:privacy-replay",
+                operation="confirm",
+                action="去海边看日出 canary",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_commitment_forget_preview_binds_ledger_id_not_projection(tmp_path) -> None:
+    from eidolon.memory.config.memory_settings import load_memory_settings
+    from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+
+    commitments = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _CommitmentKG()
+    intent = _intent("intent:mcp-privacy", operation="confirm", action="去玄武湖散步 canary")
+    resource = await apply_explicit_intent(
+        backend, kg, _command(intent), commitments=commitments
+    )
+    commitment_id = resource.split(":revision:", 1)[0]
+    publisher = AsyncMock()
+    status = CommandStatusLedger(
+        tmp_path / "command-status.sqlite3", space_id=SPACE
+    )
+    mcp = build_control_plane_mcp(
+        backend,
+        load_memory_settings(),
+        memory_space_id=SPACE,
+        palace_path=str(tmp_path),
+        host="127.0.0.1",
+        port=9997,
+        kg=kg,
+        command_publisher=publisher,
+        command_status=status,
+        commitments=commitments,
+    )
+    tools = {tool.name: tool for tool in mcp._tool_manager.list_tools()}
+
+    preview = await tools["eidolon_memory_forget_preview"].fn(
+        target="去玄武湖散步 canary", action="delete"
+    )
+
+    assert preview["status"] == "preview"
+    assert preview["candidates"] == [
+        {
+            "id": commitment_id,
+            "text": "去玄武湖散步 canary",
+            "wing": "Wing_Future",
+            "score": 1.0,
+            "commitment_id": commitment_id,
+            "kind": "commitment",
+        }
+    ]
+
+    async def _record_applied(command):
+        await status.record_applied(
+            command.request_id,
+            kind=command.kind,
+            resource_id=f"delete:1:{command.preview_id}",
+        )
+
+    publisher.publish.side_effect = _record_applied
+    confirmed = await tools["eidolon_memory_forget_confirm"].fn(
+        confirmation_token=preview["confirmation_token"],
+        wait_applied_seconds=0.1,
+    )
+
+    assert confirmed["status"] == "applied"
+    command = publisher.publish.await_args.args[0]
+    assert command.drawer_ids == []
+    assert command.commitment_ids == [commitment_id]
+
+
+@pytest.mark.asyncio
+async def test_archived_commitment_can_be_previewed_then_hard_deleted(tmp_path) -> None:
+    commitments = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _CommitmentKG()
+    intent = _intent(
+        "intent:archive-privacy",
+        operation="confirm",
+        action="去紫金山看日落 canary",
+    )
+    resource = await apply_explicit_intent(
+        backend, kg, _command(intent), commitments=commitments
+    )
+    commitment_id = resource.split(":revision:", 1)[0]
+
+    await forget_commitment_projections(
+        backend, kg, commitments, SPACE, [commitment_id], hard=False
+    )
+
+    assert await commitments.get(SPACE, commitment_id) is None
+    archived = await find_forget_candidates(
+        backend,
+        SPACE,
+        "去紫金山看日落 canary",
+        commitments=commitments,
+    )
+    assert [row.key for row in archived] == [commitment_id]
+
+    await forget_commitment_projections(
+        backend, kg, commitments, SPACE, [commitment_id], hard=True
+    )
+
+    assert await backend.get_all(SPACE) == []
+    assert await commitments.list_for_privacy(SPACE, limit=10, offset=0) == []
 
 
 @pytest.mark.asyncio

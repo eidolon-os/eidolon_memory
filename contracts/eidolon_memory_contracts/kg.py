@@ -119,11 +119,12 @@ class MemoryIntentCommand(_BaseMemoryCommand):
 
 
 class PrivacyMutationCommand(_BaseMemoryCommand):
-    """Apply an explicitly confirmed privacy mutation to exact drawer IDs."""
+    """Apply an explicitly confirmed mutation to exact ledger/projection IDs."""
 
     kind: Literal["privacy_mutation"] = "privacy_mutation"
     action: Literal["archive", "delete"]
-    drawer_ids: list[str] = Field(min_length=1, max_length=100)
+    drawer_ids: list[str] = Field(default_factory=list, max_length=100)
+    commitment_ids: list[str] = Field(default_factory=list, max_length=100)
     preview_id: str = Field(min_length=1)
     target: str = ""
 
@@ -131,9 +132,23 @@ class PrivacyMutationCommand(_BaseMemoryCommand):
     @classmethod
     def _valid_drawer_ids(cls, values: list[str]) -> list[str]:
         cleaned = list(dict.fromkeys(value.strip() for value in values if value.strip()))
-        if not cleaned or any(not value.startswith("drawer_") for value in cleaned):
+        if any(not value.startswith("drawer_") for value in cleaned):
             raise ValueError("drawer_ids must contain MemPalace drawer IDs")
         return cleaned
+
+    @field_validator("commitment_ids")
+    @classmethod
+    def _valid_commitment_ids(cls, values: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+        if any(not value.startswith("commitment:") for value in cleaned):
+            raise ValueError("commitment_ids must contain commitment ledger IDs")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _has_exact_targets(self) -> PrivacyMutationCommand:
+        if not self.drawer_ids and not self.commitment_ids:
+            raise ValueError("privacy mutation requires at least one exact target")
+        return self
 
 
 class DeviceSyncEvent(EidolonWireModel):
