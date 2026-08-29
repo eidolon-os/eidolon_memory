@@ -9,6 +9,7 @@ import yaml
 
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.config.palace_directory import (
+    PALACE_STORAGE_EPOCH,
     memory_space_storage_name,
     resolve_palace_for_memory_space,
     resolve_palaces_root,
@@ -30,7 +31,7 @@ def test_resolve_palaces_root_default(tmp_path: Path, monkeypatch: pytest.Monkey
     settings = load_memory_settings(_write_settings(tmp_path))
     assert (
         resolve_palaces_root(settings)
-        == (Path.home() / "eidolon" / "data" / "memory" / "mempalaces").resolve()
+        == (Path.home() / "eidolon" / "data" / "memory" / PALACE_STORAGE_EPOCH).resolve()
     )
 
 

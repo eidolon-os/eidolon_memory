@@ -9,7 +9,7 @@ Resolution order for :func:`resolve_palace_for_user`:
 2. ``settings.runtime.palaces_root`` joined with encoded ``memory_space_id``
 
 ``palaces_root`` priority: ``EIDOLON_MEMORY_PALACES_ROOT`` env > config field
-> ``$EIDOLON_STATE_ROOT/memory/mempalaces`` fallback.
+> ``$EIDOLON_STATE_ROOT/memory/mempalaces-v3.8`` fallback.
 """
 
 from __future__ import annotations
@@ -24,11 +24,14 @@ from eidolon_memory_contracts import memory_space_storage_name, validate_memory_
 
 from eidolon.memory.config.memory_settings import MemorySettings
 
+PALACE_STORAGE_EPOCH = "mempalaces-v3.8"
+
 __all__ = [
     "validate_memory_space_id",
     "resolve_palaces_root",
     "resolve_palace_for_memory_space",
     "memory_space_storage_name",
+    "PALACE_STORAGE_EPOCH",
 ]
 
 
@@ -41,7 +44,7 @@ def resolve_palaces_root(settings: MemorySettings) -> Path:
     if configured:
         return Path(os.path.expandvars(configured)).expanduser().resolve()
     state_root = Path(os.environ.get("EIDOLON_STATE_ROOT", "~/eidolon/data")).expanduser()
-    return (state_root / "memory/mempalaces").resolve()
+    return (state_root / "memory" / PALACE_STORAGE_EPOCH).resolve()
 
 
 def resolve_palace_for_memory_space(

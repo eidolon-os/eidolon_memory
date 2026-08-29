@@ -7,6 +7,8 @@
 # variable holding the value; put those in config/.env.
 
 runtime:
+  # Empty uses $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8. This epoch boundary
+  # deliberately leaves pre-3.8 Palace data untouched.
   palaces_root: ""
   # Optional root for per-Realm SQLite/Chroma temp directories. Empty uses
   # <palaces_root>/.process-tmp. Env: EIDOLON_MEMORY_PROCESS_TMP_ROOT.

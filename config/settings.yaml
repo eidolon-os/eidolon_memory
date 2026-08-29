@@ -1,5 +1,7 @@
 runtime:
-  palaces_root: $EIDOLON_STATE_ROOT/memory/mempalaces
+  # 3.8 starts a new storage epoch. The former `mempalaces` tree is retained
+  # untouched for operator-controlled rollback; it is never opened or migrated.
+  palaces_root: $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8
   log_dir: ''
   run_dir: ''
 mempalace:
