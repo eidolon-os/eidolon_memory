@@ -8,9 +8,12 @@ from typing import Any, Protocol
 from eidolon_memory_contracts import (
     OWNER_AUDIENCE,
     MemoryActorContext,
-    readable_audiences,
 )
 
+from eidolon.memory.application.scope_policy import (
+    MissingInteractionIdentity,
+    interaction_readable_audiences,
+)
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 
@@ -86,6 +89,7 @@ class RecallPolicyRegistry:
         context: MemoryActorContext,
         include_private: bool = False,
         every_audience: bool = False,
+        owner_shared_only: bool = False,
     ) -> bool:
         """Whether this caller may see this record.
 
@@ -113,11 +117,16 @@ class RecallPolicyRegistry:
         # the same default writes take, so an upgrade does not hide what was
         # already recalled.
         audience = str(meta.get("audience") or OWNER_AUDIENCE)
-        if not every_audience and audience not in readable_audiences(
-            context.companion_id,
-            council_id=context.council_id,
-        ):
-            return False
+        if not every_audience:
+            if owner_shared_only:
+                audiences = (OWNER_AUDIENCE,)
+            else:
+                try:
+                    audiences = interaction_readable_audiences(context)
+                except MissingInteractionIdentity:
+                    return False
+            if audience not in audiences:
+                return False
         visibility = str(meta.get("visibility") or "all_devices")
         source_device = str(meta.get("source_device_id") or "")
         target_device = str(meta.get("target_device_id") or "")

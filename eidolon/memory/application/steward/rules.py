@@ -4,24 +4,18 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
 
 from eidolon_memory_contracts import ConversationTurnPayload
 
 from eidolon.memory.application.claim_routing import PROFILE_RE, TEMPORAL_EVENT_RE
 from eidolon.memory.application.forget import extract_privacy_target
-from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.steward.common import (
-    apply_privacy_actions,
     finalize_fragments,
     safe_room_token,
 )
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
-
-if TYPE_CHECKING:
-    from eidolon.memory.domain.ports import MemoryBackend
 
 SMALLTALK_RE = re.compile(r"^(你好|嗨|哈喽|hello|hi|早安|晚安|谢谢|嗯嗯|好的|ok)[。！!.\s]*$", re.I)
 
@@ -104,31 +98,6 @@ class RuleBasedSteward:
             reason="规则管家识别到可用于未来陪伴的个人记忆。",
             fragments=fragments,
         )
-
-    async def handle_turn(
-        self,
-        turn: ConversationTurnPayload,
-        backend: MemoryBackend,
-        kg: Any = None,
-    ) -> None:
-        """Decide and apply, for callers that are not the turn worker.
-
-        ``kg`` mirrors what ``process_turn_message`` passes. It is not the
-        production path — that one calls ``apply_privacy_actions`` itself — but
-        the two must not disagree about whether a forget reaches the graph.
-        """
-
-        decision = await self.decide(turn)
-        await apply_privacy_actions(
-            backend,
-            memory_space_id=turn.context.memory_space_id,
-            actions=decision.privacy_actions,
-            kg=kg,
-        )
-        if not decision.should_write:
-            return
-        for fragment in decision.fragments:
-            await ingest_memory_fragment(backend, fragment)
 
     def _privacy_actions(self, user_text: str) -> list[PrivacyAction]:
         if not PRIVACY_RE.search(user_text):

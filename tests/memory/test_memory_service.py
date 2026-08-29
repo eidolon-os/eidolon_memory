@@ -71,7 +71,7 @@ def _settings() -> MemorySettings:
     return MemorySettings.model_validate({"kg": {"backend": "none"}})
 
 
-def _ctx(space: str, *, companion: str | None = None) -> MemoryActorContext:
+def _ctx(space: str, *, companion: str | None = "default") -> MemoryActorContext:
     owner = space.split(".")[1]
     return MemoryActorContext(
         memory_realm_id=space, owner_id=owner, companion_id=companion

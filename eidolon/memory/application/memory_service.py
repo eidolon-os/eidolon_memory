@@ -30,14 +30,15 @@ explicitly named internal method rather than a second contract — see
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from eidolon_memory_contracts import (
     ActiveCommitment,
-    ConversationTurnPayload,
     CommitmentReadResult,
+    ConversationTurnPayload,
     ForgetCandidate,
     ForgetOutcome,
     ForgetPreview,
@@ -50,8 +51,8 @@ from eidolon_memory_contracts import (
     ServiceStatus,
     SourceTurnLookup,
     TurnPublishReceipt,
-    conversation_turn_subject,
     WriteOutcome,
+    conversation_turn_subject,
 )
 
 from eidolon.memory.application.explicit_writes import (
@@ -303,6 +304,8 @@ class MemoryService:
 
         plan = plan or RecallPlan()
         kind = "voice" if plan.voice else "chat"
+        service_started = time.perf_counter()
+        resolution_started = time.perf_counter()
 
         try:
             runtime = await self._runtime(ctx)
@@ -314,7 +317,14 @@ class MemoryService:
                 memory_space_id=ctx.memory_realm_id,
                 error=str(exc),
             )
-            return _degraded_recall(str(exc))
+            return _degraded_recall(
+                str(exc),
+                trace={
+                    "runtime_resolution_ms": _elapsed_ms(resolution_started),
+                    "service_total_ms": _elapsed_ms(service_started),
+                },
+            )
+        runtime_resolution_ms = _elapsed_ms(resolution_started)
 
         # A caller may turn the graph off for one request; it can never turn one
         # on that this deployment does not have.
@@ -342,7 +352,13 @@ class MemoryService:
         except Exception as exc:  # noqa: BLE001 - contract: never raise on storage
             log.warning("recall_degraded", memory_space_id=ctx.memory_realm_id, error=str(exc))
             metrics.RECALL_TOTAL.labels(kind=kind, outcome="degraded").inc()
-            return _degraded_recall(str(exc))
+            return _degraded_recall(
+                str(exc),
+                trace={
+                    "runtime_resolution_ms": runtime_resolution_ms,
+                    "service_total_ms": _elapsed_ms(service_started),
+                },
+            )
 
         records = fused["vector"]
         kg_records = fused["kg"]
@@ -376,6 +392,11 @@ class MemoryService:
         degraded = bool(fused.get("degraded"))
         result["degraded"] = degraded
         result["degraded_reason"] = fused.get("degraded_reason") if degraded else None
+        result["trace"] = {
+            **dict(fused.get("trace") or {}),
+            "runtime_resolution_ms": runtime_resolution_ms,
+            "service_total_ms": _elapsed_ms(service_started),
+        }
         return result
 
     # ── the rest of the read contract ────────────────────────────────────────
@@ -756,7 +777,9 @@ class MemoryService:
         return list(holder()) if holder is not None else []
 
 
-def _degraded_recall(reason: str) -> FusedRecall:
+def _degraded_recall(
+    reason: str, *, trace: dict[str, float] | None = None
+) -> FusedRecall:
     result = FusedRecall()
     result["context"] = ""
     result["snippets"] = []
@@ -765,7 +788,12 @@ def _degraded_recall(reason: str) -> FusedRecall:
     result["working_memory"] = []
     result["degraded"] = True
     result["degraded_reason"] = reason
+    result["trace"] = dict(trace or {})
     return result
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 3)
 
 
 def _active_commitment(row: Any) -> ActiveCommitment:

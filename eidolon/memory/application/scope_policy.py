@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
-from eidolon_memory_contracts import OWNER_AUDIENCE, companion_audience, council_audience
+from eidolon_memory_contracts import (
+    OWNER_AUDIENCE,
+    companion_audience,
+    council_audience,
+    readable_audiences,
+)
 
 
 class MissingInteractionIdentity(ValueError):
     """An ordinary interaction cannot be assigned a safe audience."""
+
+
+def interaction_readable_audiences(context: object) -> tuple[str, ...]:
+    """Owner Shared plus the authenticated Companion/Council scope."""
+
+    council_id = str(getattr(context, "council_id", "") or "").strip()
+    companion_id = str(getattr(context, "companion_id", "") or "").strip()
+    if not companion_id and not council_id:
+        raise MissingInteractionIdentity(
+            "interaction requires an authoritative companion_id or council_id"
+        )
+    return readable_audiences(companion_id, council_id=council_id)
 
 
 def interaction_audience(

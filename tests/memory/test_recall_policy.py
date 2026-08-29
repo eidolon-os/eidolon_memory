@@ -42,6 +42,7 @@ def test_user_confirmed_authority_outranks_same_session_recency() -> None:
     context = MemoryActorContext(
         memory_realm_id="default.alice.default",
         memory_space_id="default.alice.default",
+        companion_id="default",
         session_id="current-session",
     )
     current_chat = MemoryWireRecord(

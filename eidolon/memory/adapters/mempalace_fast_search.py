@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +27,13 @@ def search_memories_shared_embedding(
     query_embedding: list[float] | None = None,
     skip_closets: bool = True,
     collection_name: str | None = None,
+    diagnostics: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Search multiple wings using a single precomputed query embedding."""
+    total_started = time.perf_counter()
+    probe_started = time.perf_counter()
     hnsw_safety = probe_hnsw_safety(palace_path, collection_name)
+    _record_ms(diagnostics, "hnsw_probe_ms", probe_started)
     if hnsw_safety.vector_disabled:
         return _search_sqlite_fallback(
             query,
@@ -45,32 +50,39 @@ def search_memories_shared_embedding(
     except ImportError as exc:
         raise MemoryBackendUnavailable("mempalace package is not installed") from exc
 
+    embedding_started = time.perf_counter()
     if query_embedding is None:
         embedding = embed_query_vector(query)
     else:
         embedding = query_embedding
     vec = [embedding]
+    _record_ms(diagnostics, "embedding_ms", embedding_started)
 
     try:
+        open_started = time.perf_counter()
         drawers_col = get_collection(
             palace_path,
             collection_name=collection_name,
             create=False,
             read_only=True,
         )
+        _record_ms(diagnostics, "storage_open_ms", open_started)
         metric = collection_metric(drawers_col)
         where = _combined_where(wings, room, audiences)
         limit = max(n_results * max(3, len(wings) * 3), n_results)
+        query_started = time.perf_counter()
         drawer_results = _query_collection(
             drawers_col,
             query_embeddings=vec,
             n_results=limit,
             where=where,
         )
+        _record_ms(diagnostics, "chroma_query_ms", query_started)
         post_filter = False
 
         closet_boost_by_source = {}
         if not skip_closets:
+            closet_started = time.perf_counter()
             closet_boost_by_source = _closet_boosts(
                 palace_path,
                 query_embeddings=vec,
@@ -81,9 +93,11 @@ def search_memories_shared_embedding(
                 room=room,
                 audiences=audiences,
             )
+            _record_ms(diagnostics, "closet_query_ms", closet_started)
     except Exception as exc:
         raise MemoryBackendUnavailable(str(exc)) from exc
 
+    scoring_started = time.perf_counter()
     hits = _score_results(
         drawer_results,
         wings=wings,
@@ -94,8 +108,17 @@ def search_memories_shared_embedding(
         post_filter=post_filter,
         metric=metric,
     )
+    _record_ms(diagnostics, "storage_rank_ms", scoring_started)
     hits.sort(key=lambda h: float(h.get("similarity", 0.0)), reverse=True)
+    _record_ms(diagnostics, "vector_storage_total_ms", total_started)
     return hits[: max(n_results * len(wings), n_results)]
+
+
+def _record_ms(
+    diagnostics: dict[str, float] | None, key: str, started: float
+) -> None:
+    if diagnostics is not None:
+        diagnostics[key] = round((time.perf_counter() - started) * 1000, 3)
 
 
 def _search_sqlite_fallback(
@@ -249,21 +272,12 @@ def _closet_boosts(
             create=False,
             read_only=True,
         )
-        try:
-            closet_results = _query_collection(
-                closets_col,
-                query_embeddings=query_embeddings,
-                n_results=n_results * 2,
-                where=where,
-            )
-        except Exception:
-            closet_results = _query_collection(
-                closets_col,
-                query_embeddings=query_embeddings,
-                n_results=max(n_results * 4, 50),
-                where=None,
-            )
-            post_filter = True
+        closet_results = _query_collection(
+            closets_col,
+            query_embeddings=query_embeddings,
+            n_results=n_results * 2,
+            where=where,
+        )
 
         out: dict[str, tuple] = {}
         for rank, (cdoc, cmeta, cdist) in enumerate(

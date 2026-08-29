@@ -12,7 +12,6 @@ from typing import Any
 from eidolon_memory_contracts import (
     USER_CONFIRMED_ROOM_PREFIX,
     MemoryActorContext,
-    readable_audiences,
 )
 
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
@@ -20,6 +19,7 @@ from eidolon.memory.application.kg_recall import expand_from_recalled, query_kg_
 from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
+from eidolon.memory.application.scope_policy import interaction_readable_audiences
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
 from eidolon.memory.domain.ports import MemoryReader, ScopedMemoryReader
@@ -315,8 +315,11 @@ async def recall_with_kg_fusion(
     """
     recall_kind = "voice" if for_voice else "chat"
     started = time.perf_counter()
-    vector_task = asyncio.create_task(
-        search_all_wings_mcp_style(
+    diagnostics: dict[str, float] = {}
+
+    async def _vector_path() -> list[MemoryWireRecord]:
+        vector_started = time.perf_counter()
+        result = await search_all_wings_mcp_style(
             backend,
             settings,
             query=query,
@@ -328,8 +331,12 @@ async def recall_with_kg_fusion(
             user_utterance=user_utterance,
             palace_path=palace_path,
             raise_on_degraded=True,
+            diagnostics=diagnostics,
         )
-    )
+        diagnostics["vector_total_ms"] = _elapsed_ms(vector_started)
+        return result
+
+    vector_task = asyncio.create_task(_vector_path())
 
     kg_task: asyncio.Task | None = None
     if kg is not None and settings.recall.kg_in_recall:
@@ -348,15 +355,12 @@ async def recall_with_kg_fusion(
             if for_voice
             else settings.recall.kg_timeout_seconds_normal
         )
-        kg_task = asyncio.create_task(
-            _kg_path_with_timeout(
+        async def _kg_seed_path() -> list:
+            kg_started = time.perf_counter()
+            result = await _kg_path_with_timeout(
                 kg,
-                # Scoped to what this caller may see. An unidentified caller gets
-                # the owner layer only — the companion layer is not theirs to read.
-                audiences=readable_audiences(
-                    context.companion_id,
-                    council_id=context.council_id,
-                ),
+                # Scoped to what this authenticated Companion/Council may see.
+                audiences=interaction_readable_audiences(context),
                 query=query,
                 max_entities=settings.recall.kg_max_entities,
                 max_triples_per_entity=settings.recall.kg_max_triples_per_entity,
@@ -365,7 +369,10 @@ async def recall_with_kg_fusion(
                 kind=recall_kind,
                 subject_names=kg_subjects,
             )
-        )
+            diagnostics["kg_seed_ms"] = _elapsed_ms(kg_started)
+            return result
+
+        kg_task = asyncio.create_task(_kg_seed_path())
 
     vector_degraded = False
     # Carried out with the result, not only logged. A caller that can only see
@@ -392,6 +399,7 @@ async def recall_with_kg_fusion(
     # ~ms scale, fully bypassed when settings.recall.rerank_enabled = False.
     # Defensive fallback inside rerank_bm25_rrf returns hits[:top_k] on any
     # failure — never breaks recall.
+    rank_started = time.perf_counter()
     if settings.recall.rerank_enabled and vector_records:
         vector_records = rerank_bm25_rrf(
             query,
@@ -419,6 +427,7 @@ async def recall_with_kg_fusion(
         query=query,
         top_k=max(top_k, len(vector_records)),
     )
+    diagnostics["rerank_policy_ms"] = _elapsed_ms(rank_started)
 
     # The graph's second seed: one hop out from what was actually recalled.
     #
@@ -427,16 +436,14 @@ async def recall_with_kg_fusion(
     # nobody at all. Serialised behind the vector leg by necessity: it cannot
     # start until there are results to seed from. That is the cost; what it buys
     # is a seed that needs no matching, so it is a handful of indexed seeks.
+    expand_started = time.perf_counter()
     kg_records = _merge_triples(
         kg_records,
         await _expand_with_timeout(
             kg,
             settings,
             records=vector_records,
-            audiences=readable_audiences(
-                context.companion_id,
-                council_id=context.council_id,
-            ),
+            audiences=interaction_readable_audiences(context),
             include_sensitive=include_sensitive_kg,
             for_voice=for_voice,
             kind=recall_kind,
@@ -450,6 +457,7 @@ async def recall_with_kg_fusion(
         },
         limit=settings.recall.kg_max_entities * settings.recall.kg_max_triples_per_entity,
     )
+    diagnostics["kg_expand_ms"] = _elapsed_ms(expand_started)
 
     # Phase 4 — Wing_Theme drawers always surface (when present). They
     # encode cross-time "what's been on your mind" overviews that don't
@@ -458,6 +466,7 @@ async def recall_with_kg_fusion(
     # We fetch them with a dedicated search and merge ADDITIVELY (no
     # truncation of vector_records). Dedup on key avoids double-counting
     # if a theme happened to win a vector top-K slot too.
+    theme_started = time.perf_counter()
     theme_records = await _fetch_themes(backend, query, context, settings)
     if theme_records:
         existing_keys = {r.key for r in vector_records}
@@ -466,10 +475,12 @@ async def recall_with_kg_fusion(
         merged: list[MemoryWireRecord] = [r for r in theme_records if r.key not in existing_keys]
         merged.extend(vector_records)
         vector_records = merged
+    diagnostics["theme_ms"] = _elapsed_ms(theme_started)
 
     # Phase 2 — working memory snapshot. ``backend.working_memory`` is
     # ``None`` on test fakes; the ring's snapshot is empty when disabled
     # (``maxlen=0``). Either way callers get a list to render.
+    working_started = time.perf_counter()
     working_memory: list = []
     ring = getattr(backend, "working_memory", None)
     if ring is not None:
@@ -480,6 +491,7 @@ async def recall_with_kg_fusion(
             )
         except Exception as exc:  # noqa: BLE001 - never break recall
             log.warning("working_memory_snapshot_failed", error=str(exc))
+    diagnostics["working_memory_ms"] = _elapsed_ms(working_started)
 
     _record_recall(
         kind=recall_kind,
@@ -490,13 +502,19 @@ async def recall_with_kg_fusion(
         vector_count=len(vector_records),
         kg_count=len(kg_records),
     )
+    diagnostics["recall_total_ms"] = _elapsed_ms(started)
     return {
         "vector": vector_records,
         "kg": kg_records,
         "working_memory": working_memory,
         "degraded": vector_degraded,
         "degraded_reason": degraded_reason,
+        "trace": diagnostics,
     }
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 3)
 
 
 def _record_recall(
@@ -552,10 +570,7 @@ async def _fetch_themes(
             wing="Wing_Theme",
             n_results=cap,
             room=None,
-            audiences=readable_audiences(
-                context.companion_id,
-                council_id=context.council_id,
-            ),
+            audiences=interaction_readable_audiences(context),
         )
     except Exception as exc:  # noqa: BLE001 - never break recall
         log.warning("theme_fetch_failed", error=str(exc))
@@ -777,13 +792,15 @@ async def search_all_wings_mcp_style(
     user_utterance: str = "",
     palace_path: str | None = None,
     raise_on_degraded: bool = False,
+    diagnostics: dict[str, float] | None = None,
 ) -> list[MemoryWireRecord]:
     """Search configured wings in parallel, filter, rank, and cap top_k."""
+    vector_started = time.perf_counter()
+    scope_started = time.perf_counter()
     wings = _resolve_wings(settings, wing=wing, for_voice=for_voice)
-    audiences = readable_audiences(
-        context.companion_id,
-        council_id=context.council_id,
-    )
+    audiences = interaction_readable_audiences(context)
+    if diagnostics is not None:
+        diagnostics["scope_resolution_ms"] = _elapsed_ms(scope_started)
     vector_degraded = False
     use_shared_embedding = for_voice or settings.runtime.read.normal_shared_query_embedding
     scoped_reader = (
@@ -804,7 +821,10 @@ async def search_all_wings_mcp_style(
                 room=room,
                 audiences=audiences,
                 n_results=top_k,
-                skip_closets=(settings.runtime.read.voice_skip_closets if for_voice else False),
+                skip_closets=(
+                    settings.runtime.read.voice_skip_closets if for_voice else False
+                ),
+                diagnostics=diagnostics,
             )
             hits = [
                 record
@@ -865,6 +885,7 @@ async def search_all_wings_mcp_style(
                 continue
             hits.extend(batch)
 
+    lexical_started = time.perf_counter()
     if len(hits) < top_k:
         exact_hits = await _exact_lexical_fallback(
             backend,
@@ -887,6 +908,8 @@ async def search_all_wings_mcp_style(
                 for_voice=for_voice,
             )
             hits = _merge_unique_records(hits, exact_hits)
+    if diagnostics is not None:
+        diagnostics["lexical_fallback_ms"] = _elapsed_ms(lexical_started)
 
     if vector_degraded and raise_on_degraded and not hits:
         raise MemoryBackendUnavailable("vector search degraded and exact fallback found no hits")
@@ -900,9 +923,12 @@ async def search_all_wings_mcp_style(
         )
 
     hits = rank_records_by_similarity(hits, top_k=max(top_k, len(hits)))
-    return RecallPolicyRegistry.default().rank(
+    result = RecallPolicyRegistry.default().rank(
         hits,
         context=context,
         query=query,
         top_k=top_k,
     )
+    if diagnostics is not None:
+        diagnostics["vector_pipeline_ms"] = _elapsed_ms(vector_started)
+    return result

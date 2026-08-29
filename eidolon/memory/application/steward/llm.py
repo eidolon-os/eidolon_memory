@@ -5,13 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from eidolon_memory_contracts import ConversationTurnPayload
 from pydantic import ValidationError
 
-from eidolon.memory.application.ingest import ingest_memory_fragment
-from eidolon.memory.application.steward.common import apply_privacy_actions, finalize_fragments
+from eidolon.memory.application.steward.common import finalize_fragments
 from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import StewardOutputError
@@ -19,9 +18,6 @@ from eidolon.memory.domain.fragments import is_usable_extension
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
-
-if TYPE_CHECKING:
-    from eidolon.memory.domain.ports import MemoryBackend
 
 log = get_logger(__name__)
 
@@ -113,31 +109,6 @@ class LiteLLMSteward:
                 raise
             log.warning("llm_steward_fallback_to_rules", error=str(exc))
             return await self._fallback.decide(turn)
-
-    async def handle_turn(
-        self,
-        turn: ConversationTurnPayload,
-        backend: MemoryBackend,
-        kg: Any = None,
-    ) -> None:
-        """Decide and apply, for callers that are not the turn worker.
-
-        ``kg`` mirrors what ``process_turn_message`` passes. It is not the
-        production path — that one calls ``apply_privacy_actions`` itself — but
-        the two must not disagree about whether a forget reaches the graph.
-        """
-
-        decision = await self.decide(turn)
-        await apply_privacy_actions(
-            backend,
-            memory_space_id=turn.context.memory_space_id,
-            actions=decision.privacy_actions,
-            kg=kg,
-        )
-        if not decision.should_write:
-            return
-        for fragment in decision.fragments:
-            await ingest_memory_fragment(backend, fragment)
 
     async def _call_llm(self, turn: ConversationTurnPayload) -> str:
         from litellm import acompletion

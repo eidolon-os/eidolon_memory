@@ -25,6 +25,7 @@ from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.space_lock import SpaceLock
 from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.nats.names import memory_consumer_name, nats_safe_name
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 
@@ -235,6 +236,13 @@ class _Backend:
     async def ingest_fragment(self, fragment: MemoryFragment) -> None:
         self.fragments.append(fragment)
 
+    async def ingest_fragments(self, fragments: list[MemoryFragment]) -> int:
+        self.fragments.extend(fragments)
+        return len(fragments)
+
+    async def get_by_source_turn_id(self, *_args, **_kwargs):
+        return None
+
     async def delete(self, *_args, **_kwargs) -> None:
         return None
 
@@ -247,6 +255,7 @@ async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
     ledger = SyncLedger(
         tmp_path / "sync_ledger.sqlite3", space_id=_ctx().memory_space_id
     )
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
     turn = _turn("我喜欢乌龙茶").model_dump(mode="json")
     batch = DeviceSyncBatchPayload(
         request_id="sync-1",
@@ -273,6 +282,7 @@ async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
         ledger=ledger,
         settings=settings,
         expected_memory_space_id=_ctx().memory_space_id,
+        canonical_facts=canonical,
     )
     msg2 = _Msg(envelope)
     await process_sync_message(
@@ -282,6 +292,7 @@ async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
         ledger=ledger,
         settings=settings,
         expected_memory_space_id=_ctx().memory_space_id,
+        canonical_facts=canonical,
     )
 
     assert msg1.acked and msg2.acked

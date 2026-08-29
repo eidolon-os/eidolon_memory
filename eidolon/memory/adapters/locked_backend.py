@@ -225,6 +225,7 @@ class LockedBackend(MemoryBackend):
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
         skip_closets: bool = False,
+        diagnostics: dict[str, float] | None = None,
     ) -> list[MemoryWireRecord]:
         search_scoped = getattr(self._inner, "search_scoped", None)
         if not self.supports_scoped_search or search_scoped is None:
@@ -237,6 +238,7 @@ class LockedBackend(MemoryBackend):
                 room=room,
                 audiences=audiences,
                 skip_closets=skip_closets,
+                diagnostics=diagnostics,
             ),
             name="search_scoped",
             write=False,

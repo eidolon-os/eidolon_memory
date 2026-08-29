@@ -81,7 +81,9 @@ async def test_recall_still_answers_with_the_graph_off() -> None:
         backend,
         _settings(backend="none"),
         query="colour",
-        context=MemoryActorContext(memory_realm_id=SPACE, owner_id="alice"),
+        context=MemoryActorContext(
+            memory_realm_id=SPACE, owner_id="alice", companion_id="default"
+        ),
         top_k=5,
         kg=None,
         for_voice=False,
