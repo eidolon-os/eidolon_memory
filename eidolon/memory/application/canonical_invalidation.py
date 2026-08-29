@@ -5,9 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from eidolon_memory_contracts import OWNER_AUDIENCE, MemoryIntent
+from eidolon_memory_contracts import MemoryIntent
 
-from eidolon.memory.domain.canonical_fact import canonical_assertion_id
+from eidolon.memory.domain.canonical_fact import (
+    canonical_assertion_id,
+    canonical_intent_audience,
+)
 from eidolon.memory.domain.ports import CanonicalFactWriter, MemoryBackend
 
 
@@ -43,6 +46,7 @@ async def invalidate_exact_canonical_fact(
 
     assertion_id = canonical_assertion_id(
         intent.memory_space_id,
+        canonical_intent_audience(intent),
         intent.subject,
         intent.predicate,
         intent.object,
@@ -74,7 +78,7 @@ async def invalidate_exact_canonical_fact(
         subject=intent.subject,
         predicate=intent.predicate,
         object=intent.object,
-        audiences=(OWNER_AUDIENCE,),
+        audiences=(canonical_intent_audience(intent),),
         ended=intent.occurred_at,
     )
     if registration.matched:

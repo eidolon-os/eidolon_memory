@@ -8,7 +8,6 @@ from typing import Any
 
 from eidolon_memory_contracts import (
     KG_PREDICATE_VALUES,
-    OWNER_AUDIENCE,
     USER_CONFIRMED_ROOM_PREFIX,
     MemoryIntent,
     MemoryIntentCommand,
@@ -21,7 +20,6 @@ from eidolon.memory.application.claim_routing import route_explicit_claim
 from eidolon.memory.application.commitments import apply_explicit_commitment
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.scope_policy import (
-    derived_triple_audience,
     interaction_audience,
 )
 from eidolon.memory.domain.canonical_fact import (
@@ -79,6 +77,25 @@ async def apply_explicit_intent(
             )
         except (CommitmentConflict, ValueError) as exc:
             raise MemoryIntentRejected(str(exc)) from exc
+    if canonical_facts is None:
+        raise MemoryIntentRejected(
+            "long-term fact intent requires the canonical fact ledger"
+        )
+    attributes = intent.attributes
+    interaction_context = SimpleNamespace(
+        companion_id=_optional_attribute(attributes, "source_instance_id"),
+        council_id=_optional_attribute(attributes, "council_id"),
+    )
+    # Only an administrative/system command may intentionally create Owner
+    # Shared without a Companion/Council identity. Agent-originated writes with
+    # missing identity fail closed.
+    drawer_audience = interaction_audience(
+        interaction_context,
+        allow_owner_shared=cmd.issuer == "admin",
+    )
+    intent = intent.model_copy(
+        update={"attributes": {**intent.attributes, "audience": drawer_audience}}
+    )
     if intent.intent_type == "correction":
         if (
             intent.operation_hint != "invalidate"
@@ -178,27 +195,29 @@ async def apply_explicit_intent(
     extensions = attributes.get("extensions", {})
     if not isinstance(extensions, dict):
         extensions = {}
-    # A verbatim confirmation is still part of one interaction. It is not an
-    # implicit request to publish that conversation to every Companion. Stable
-    # owner facts may still be promoted independently by the derived KG policy;
-    # provenance and visibility must not be collapsed into one switch.
-    interaction_context = SimpleNamespace(
-        companion_id=_optional_attribute(attributes, "source_instance_id"),
-        council_id=_optional_attribute(attributes, "council_id"),
-    )
-    drawer_audience = interaction_audience(interaction_context)
     registration = prepared_registration
     projection_identity = intent.intent_id
-    pending_targets: set[ProjectionTarget] = {"drawer"}
-    if all(structured):
-        pending_targets.add("kg")
-    if all(structured) and canonical_facts is not None:
-        requested_targets: set[ProjectionTarget] = {"drawer", "kg"}
-        if registration is None:
-            registration = await canonical_facts.register(
-                intent,
-                targets=requested_targets,
-            )
+    requested_targets: set[ProjectionTarget] = (
+        {"drawer", "kg"} if all(structured) else {"drawer"}
+    )
+    ledger_intent = (
+        intent
+        if all(structured)
+        else intent.model_copy(
+            update={
+                "subject": "$text",
+                "predicate": "remembers_text",
+                "object": intent.raw_claim,
+            }
+        )
+    )
+    pending_targets: set[ProjectionTarget] = set(requested_targets)
+    if registration is None:
+        registration = await canonical_facts.register(
+            ledger_intent,
+            targets=requested_targets,
+        )
+    if registration is not None:
         if registration.state != "active" and not registration.reactivation_pending:
             return f"{registration.state}:{registration.assertion_id}"
         projection_identity = registration.projection_id or registration.assertion_id
@@ -211,7 +230,7 @@ async def apply_explicit_intent(
             visible_targets = await _visible_canonical_targets(
                 backend,
                 kg,
-                intent,
+                ledger_intent,
                 projection_identity,
                 targets_to_verify,
             )
@@ -285,6 +304,9 @@ async def apply_explicit_intent(
                 "intent_type": intent.intent_type,
                 "authority": intent.authority,
                 "tool_call_id": intent.tool_call_id or "",
+                "assertion_id": registration.assertion_id if registration else "",
+                "evidence_id": intent.intent_id if registration else "",
+                "projection_id": projection_identity if registration else "",
             },
             extensions=extensions,
         )
@@ -298,7 +320,7 @@ async def apply_explicit_intent(
 
     if all(structured) and "kg" in pending_targets:
         await kg.add_triple(
-            audience=derived_triple_audience(intent.predicate, interaction_context),
+            audience=drawer_audience,
             subject=intent.subject,
             predicate=intent.predicate,
             object=intent.object,
@@ -306,10 +328,13 @@ async def apply_explicit_intent(
             valid_to=None,
             confidence=intent.confidence,
             source_turn_id=(
-                f"canonical:{projection_identity}:evidence:{intent.intent_id}"
+                f"canonical:{projection_identity}"
                 if registration is not None
                 else intent.source_event_id
             ),
+            assertion_id=registration.assertion_id if registration else None,
+            evidence_id=intent.intent_id if registration else None,
+            projection_id=projection_identity if registration else None,
             adapter_name=source,
         )
         if registration is not None:
@@ -349,6 +374,7 @@ async def _prepare_explicit_update(
     definition = predicate_definition(intent.predicate)
     exact = await canonical_facts.get_fact(
         intent.memory_space_id,
+        str(intent.attributes["audience"]),
         intent.subject,
         intent.predicate,
         intent.object,
@@ -411,6 +437,7 @@ async def _supersede_explicit_single_slot(
     ):
         active = await canonical_facts.active_for_slot(
             intent.memory_space_id,
+            str(intent.attributes["audience"]),
             intent.subject,
             intent.predicate,
         )
@@ -422,6 +449,7 @@ async def _supersede_explicit_single_slot(
 
     active = await canonical_facts.active_for_slot(
         intent.memory_space_id,
+        str(intent.attributes["audience"]),
         intent.subject,
         intent.predicate,
     )
@@ -448,6 +476,7 @@ async def _supersede_explicit_single_slot(
         tool_call_id=intent.tool_call_id,
         confidence=intent.confidence,
         attributes={
+            "audience": old.audience,
             "reason": f"superseded by {intent.intent_id}",
             "result_state": "superseded",
             "superseded_by_intent_id": intent.intent_id,
@@ -521,7 +550,7 @@ async def _visible_canonical_targets(
     if "kg" in targets:
         triples = await kg.query_entity(
             intent.subject,
-            audiences=(OWNER_AUDIENCE,),
+            audiences=(str(intent.attributes["audience"]),),
             direction="outgoing",
             include_sensitive=True,
         )

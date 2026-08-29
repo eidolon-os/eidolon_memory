@@ -100,7 +100,8 @@ def test_conversation_turn_payload_serializes_wire_shape() -> None:
         "turn_id": "t1",
         "context": {
             "owner_id": "owner-a",
-            "companion_id": "companion-a",
+                "companion_id": "companion-a",
+                "council_id": None,
             "memory_realm_id": "realm:owner-a:default",
             "device_id": "device-1",
             "session_id": "s1",

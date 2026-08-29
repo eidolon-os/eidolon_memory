@@ -19,10 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from eidolon_memory_contracts import (
-    OWNER_AUDIENCE,
-    AudienceMutationCommand,
     PrivacyMutationCommand,
-    companion_audience,
     readable_audiences,
 )
 from starlette.requests import Request
@@ -59,10 +56,6 @@ EXPORT_PATH = "/api/memory/v1/export"
 ENTRIES_PATH = "/api/memory/v1/entries"
 FORGET_PREVIEW_PATH = "/api/memory/v1/forget/preview"
 FORGET_CONFIRM_PATH = "/api/memory/v1/forget/confirm"
-#: Marking a memory as belonging to one Companion. A ``PUT`` on the entry
-#: because it is the desired end state of an exact record, not an event: the same
-#: call twice leaves the same memory in the same audience.
-AUDIENCE_PATH = "/api/memory/v1/entries/{entry_id}/audience"
 GRAPH_PATH = "/api/memory/v1/graph"
 
 #: How much of the palace one browse reads. A bound is required — the scan is a
@@ -580,107 +573,6 @@ def forget_confirm_handler(
     return handle
 
 
-def audience_handler(
-    *,
-    service: MemoryService,
-    memory_space_id: str,
-    command_publisher: Any,
-    command_status: Any,
-    owner_id: str | None = None,
-) -> Handler:
-    """Say which of the Owner's Eidolons a memory belongs to.
-
-    The write side of the audience axis, whose read side every other read on this
-    surface already honours. Until this route existed, "只让它记得" was a thing
-    the system could enforce and nobody could ask for.
-
-    Deliberately **not** shaped like a forget. A forget resolves words into a set,
-    so it needs a preview and a token binding exactly what was shown — between
-    the two steps the words could match something the person never saw. Here the
-    subject is one entry the person was looking at when they asked, named in the
-    path. There is nothing to resolve, so there is nothing to bind, and a
-    confirmation step would be ceremony rather than safety.
-
-    And it is not destructive: nothing becomes unrecallable. The memory is
-    recalled in full by the Companion it now belongs to, and moving it back is
-    the same call with ``owner``. That is why one step is honest here where it
-    would not be for a delete.
-
-    ``PUT`` because the body is the desired end state of an exact record. Two
-    identical calls leave the same memory in the same audience, which is what
-    lets a client retry a request it did not see the answer to.
-    """
-
-    async def handle(request: Request) -> Response:
-        entry_id = request.path_params.get("entry_id", "")
-        if not entry_id.startswith("drawer_"):
-            # The store's own id shape. Refused rather than passed on: a key that
-            # is not a drawer id cannot name a memory, and guessing at what the
-            # caller meant is how one memory's audience gets written onto
-            # another's.
-            return JSONResponse(
-                {"detail": "entry_id must be a MemPalace drawer id"}, status_code=422
-            )
-        try:
-            body = await request.json()
-        except (ValueError, TypeError):
-            return JSONResponse({"detail": "a JSON body is required"}, status_code=422)
-        if not isinstance(body, dict):
-            return JSONResponse({"detail": "a JSON body is required"}, status_code=422)
-
-        companion_id = (body.get("companion_id") or "").strip()
-        try:
-            # Absent means the Owner layer: "everyone I talk to may recall this".
-            # Said as an absence rather than a magic string so a client cannot
-            # accidentally name a Companion called "owner".
-            audience = (
-                companion_audience(companion_id) if companion_id else OWNER_AUDIENCE
-            )
-        except ValueError as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=422)
-
-        command = AudienceMutationCommand(
-            request_id=uuid.uuid4().hex,
-            memory_space_id=memory_space_id,
-            issued_at=_now_iso(),
-            #: ``admin``: a person asked through a management surface, rather
-            #: than the Eidolon deciding for itself. Same reasoning as the forget
-            #: confirm — the contract's two values already carry that.
-            issuer="admin",
-            drawer_ids=[entry_id],
-            audience=audience,
-        )
-        try:
-            outcome = await publish_with_status(
-                command_publisher,
-                command_status,
-                command,
-                wait_seconds=CONFIRM_WAIT_SECONDS,
-            )
-        except Exception as exc:  # noqa: BLE001 - a write must not take the process down
-            log.exception(
-                "owner_audience_write_failed",
-                memory_space_id=memory_space_id,
-                error=str(exc),
-            )
-            return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
-
-        return JSONResponse(
-            {
-                "contract_version": "1",
-                "operation": "memory.audience",
-                "entry_id": entry_id,
-                "audience": audience,
-                #: Echoed so a client never has to parse the audience token to
-                #: know which Eidolon it named. Empty means the Owner layer.
-                "companion_id": companion_id,
-                **outcome,
-            }
-        )
-
-    return handle
-
-
 def owner_memory_routes(
     *,
     service: MemoryService,
@@ -722,19 +614,6 @@ def owner_memory_routes(
         # route that always failed would be a button this Host promises and
         # cannot honour; its absence is discoverable, and the preview above
         # stays useful for seeing what would go.
-        # Same condition as the confirm below, and the same reason: this is a
-        # write, and a route that could only ever fail is a promise this Host
-        # cannot honour. Its absence is discoverable; a dead button is not.
-        routes[AUDIENCE_PATH] = (
-            audience_handler(
-                service=service,
-                memory_space_id=memory_space_id,
-                command_publisher=command_publisher,
-                command_status=command_status,
-                owner_id=owner_id,
-            ),
-            ["PUT"],
-        )
         routes[FORGET_CONFIRM_PATH] = (
             forget_confirm_handler(
                 service=service,

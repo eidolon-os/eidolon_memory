@@ -749,6 +749,13 @@ def _register_user_confirm_tool(
                 "status": "error",
                 "error": "text must be a non-empty string",
             }
+        clean_source_instance_id = source_instance_id.strip()
+        clean_council_id = council_id.strip()
+        if not clean_source_instance_id and not clean_council_id:
+            return {
+                "status": "error",
+                "error": "source_instance_id or council_id is required",
+            }
         clean_request_id = request_id.strip()
         if clean_request_id and (
             len(clean_request_id) > 128
@@ -793,8 +800,8 @@ def _register_user_confirm_tool(
                 "visibility": visibility,
                 "source_device_id": source_device_id,
                 "target_device_id": target_device_id,
-                "source_instance_id": source_instance_id,
-                "council_id": council_id,
+                "source_instance_id": clean_source_instance_id,
+                "council_id": clean_council_id,
                 "session_id": session_id,
                 "extensions": dict(extensions or {}),
             },

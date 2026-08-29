@@ -71,6 +71,9 @@ class KgTripleRecord(BaseEidolonModel):
     source_turn_id: str | None = None
     adapter_name: str | None = None
     recorded_at: str | None = None
+    assertion_id: str | None = None
+    evidence_id: str | None = None
+    projection_id: str | None = None
     """When this was written down — not when it became true.
 
     ``valid_from`` answers "since when is this the case"; this answers "when did

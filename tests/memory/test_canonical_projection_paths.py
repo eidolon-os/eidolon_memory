@@ -10,6 +10,7 @@ import pytest
 from eidolon_memory_contracts import (
     MemoryIntent,
     MemoryIntentCommand,
+    companion_audience,
     envelope_memory_payload,
 )
 
@@ -28,6 +29,7 @@ from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 
 MEMORY_SPACE_ID = "r:alice:default"
+AUDIENCE = companion_audience("companion-default")
 
 
 class _StatefulKG:
@@ -64,9 +66,11 @@ class _FailOnceMarkStore:
     async def register(self, intent, *, targets):
         return await self.inner.register(intent, targets=targets)
 
-    async def get_fact(self, memory_space_id, subject, predicate, object_value):
+    async def get_fact(
+        self, memory_space_id, audience, subject, predicate, object_value
+    ):
         return await self.inner.get_fact(
-            memory_space_id, subject, predicate, object_value
+            memory_space_id, audience, subject, predicate, object_value
         )
 
     async def register_reactivation(self, intent, *, targets):
@@ -107,12 +111,14 @@ class _FailOnceMarkStore:
         )
 
 
-def _turn_message(turn_id: str) -> SimpleNamespace:
+def _turn_message(
+    turn_id: str, *, companion_id: str | None = "companion-default"
+) -> SimpleNamespace:
     payload = {
         "turn_id": turn_id,
         "context": {
             "owner_id": "alice",
-            "companion_id": "companion-default",
+            "companion_id": companion_id,
             "memory_realm_id": MEMORY_SPACE_ID,
             "device_id": "device",
             "session_id": "session",
@@ -175,6 +181,7 @@ def _explicit_command(
             predicate=predicate,
             object=object_,
             confidence=0.99,
+            attributes={"source_instance_id": "companion-default"},
         ),
     )
 
@@ -197,6 +204,7 @@ def _exact_correction_command() -> MemoryIntentCommand:
             predicate="likes",
             object="oolong",
             confidence=1.0,
+            attributes={"source_instance_id": "companion-default"},
         ),
     )
 
@@ -267,6 +275,7 @@ async def test_automatic_then_explicit_adds_evidence_and_only_projects_drawer(
 
     assertion_id = canonical_assertion_id(
         MEMORY_SPACE_ID,
+        AUDIENCE,
         "self",
         "likes",
         "oolong",
@@ -294,6 +303,7 @@ async def test_explicit_then_automatic_reuses_both_existing_projections(
 
     assertion_id = canonical_assertion_id(
         MEMORY_SPACE_ID,
+        AUDIENCE,
         "self",
         "likes",
         "oolong",
@@ -316,12 +326,13 @@ async def test_repeated_automatic_fact_keeps_one_projection_and_two_evidence(
 
     assertion_id = canonical_assertion_id(
         MEMORY_SPACE_ID,
+        AUDIENCE,
         "self",
         "likes",
         "oolong",
     )
     assert kg.add_triple.await_count == 1
-    assert len(backend.inner.docs) == 0
+    assert len(backend.inner.docs) == 1
     assert await ledger.evidence_count(assertion_id) == 2
 
 
@@ -363,6 +374,19 @@ async def test_automatic_new_evidence_repairs_mark_failure_without_kg_rewrite(
     ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
     store = _FailOnceMarkStore(ledger, "kg")
 
+    first = _turn_message("turn-auto-1")
+    await process_turn_message(
+        first,
+        steward=_steward(),
+        backend=backend,
+        kg=kg,
+        settings=load_memory_settings(),
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=store,
+    )
+    first.nak.assert_awaited_once()
+    first.ack.assert_not_awaited()
     await _apply_automatic("turn-auto-1", backend=backend, kg=kg, ledger=store)
     await _apply_automatic("turn-auto-2", backend=backend, kg=kg, ledger=store)
 
@@ -415,7 +439,9 @@ async def test_exact_change_archives_canonical_drawer_and_keeps_fact_history(
     old_drawer = await backend.get_by_source_turn_id(
         MEMORY_SPACE_ID,
         "canonical:"
-        + canonical_assertion_id(MEMORY_SPACE_ID, "self", "likes", "oolong"),
+        + canonical_assertion_id(
+            MEMORY_SPACE_ID, AUDIENCE, "self", "likes", "oolong"
+        ),
     )
     assert old_drawer is not None
     assert old_drawer.metadata["privacy"] == "do_not_recall"
@@ -425,7 +451,7 @@ async def test_exact_change_archives_canonical_drawer_and_keeps_fact_history(
     assert stats.assertions_active == 1
     assert stats.assertions_invalidated == 1
     assert stats.invalidations_total == 1
-    assert stats.drawer_projected == 0
+    assert stats.drawer_projected == 1
     assert stats.kg_projected == 1
 
 
@@ -460,7 +486,9 @@ async def test_automatic_fact_can_become_current_again_after_correction(
 
     assert ("self", "likes", "oolong") in kg.rows
     assert kg.add_triple.await_count == 2
-    fact = await ledger.get_fact(MEMORY_SPACE_ID, "self", "likes", "oolong")
+    fact = await ledger.get_fact(
+        MEMORY_SPACE_ID, AUDIENCE, "self", "likes", "oolong"
+    )
     assert fact is not None
     assert fact.state == "active"
     assert fact.projection_id.endswith(":activation:2")
@@ -505,14 +533,16 @@ async def test_explicit_single_slot_update_supersedes_old_fact_via_existing_port
     assert ("self", "lives_in", "常州") not in kg.rows
     assert ("self", "lives_in", "苏州") in kg.rows
     old_id = canonical_assertion_id(
-        MEMORY_SPACE_ID, "self", "lives_in", "常州"
+        MEMORY_SPACE_ID, AUDIENCE, "self", "lives_in", "常州"
     )
     old_drawer = await backend.get_by_source_turn_id(
         MEMORY_SPACE_ID, f"canonical:{old_id}"
     )
     assert old_drawer is not None
     assert old_drawer.metadata["privacy"] == "do_not_recall"
-    active = await ledger.active_for_slot(MEMORY_SPACE_ID, "self", "lives_in")
+    active = await ledger.active_for_slot(
+        MEMORY_SPACE_ID, AUDIENCE, "self", "lives_in"
+    )
     assert [fact.object for fact in active] == ["苏州"]
     stats = await ledger.stats()
     assert stats.assertions_active == 1
@@ -627,6 +657,74 @@ def test_reactivation_projection_rooms_do_not_collide_between_facts() -> None:
     assert first != second
     assert len(first) == 16
     assert _projection_room_token("fact:0123456789abcdef") == "0123456789abcdef"
+
+
+@pytest.mark.asyncio
+async def test_same_natural_fact_is_isolated_per_companion(tmp_path) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+
+    for turn_id, companion_id in (("turn-a", "companion-default"), ("turn-b", "other")):
+        msg = _turn_message(turn_id, companion_id=companion_id)
+        await process_turn_message(
+            msg,
+            steward=_steward(),
+            backend=backend,
+            kg=kg,
+            settings=load_memory_settings(),
+            max_deliveries=3,
+            expected_memory_space_id=MEMORY_SPACE_ID,
+            canonical_facts=ledger,
+        )
+        msg.ack.assert_awaited_once()
+
+    docs = await backend.get_all(MEMORY_SPACE_ID)
+    assert {row.metadata["audience"] for row in docs} == {
+        AUDIENCE,
+        companion_audience("other"),
+    }
+    assert len({row.metadata["assertion_id"] for row in docs}) == 2
+    calls = kg.add_triple.await_args_list
+    assert {call.kwargs["audience"] for call in calls} == {
+        AUDIENCE,
+        companion_audience("other"),
+    }
+    assert {
+        call.kwargs["assertion_id"] for call in calls
+    } == {row.metadata["assertion_id"] for row in docs}
+    assert (await ledger.stats()).assertions_total == 2
+
+
+@pytest.mark.asyncio
+async def test_missing_interaction_identity_is_dlqd_without_owner_fallback(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    steward = _steward()
+    dlq = SimpleNamespace(add=AsyncMock())
+    msg = _turn_message("turn-no-identity", companion_id=None)
+
+    await process_turn_message(
+        msg,
+        steward=steward,
+        backend=backend,
+        kg=kg,
+        settings=load_memory_settings(),
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=ledger,
+        dlq_writer=dlq,
+    )
+
+    msg.ack.assert_awaited_once()
+    msg.nak.assert_not_awaited()
+    steward.decide.assert_not_awaited()
+    dlq.add.assert_awaited_once()
+    assert await backend.get_all(MEMORY_SPACE_ID) == []
+    assert kg.add_triple.await_count == 0
 
 
 @pytest.mark.asyncio

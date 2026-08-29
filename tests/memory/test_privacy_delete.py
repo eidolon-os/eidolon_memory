@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from eidolon_memory_contracts import MemoryActorContext
+from eidolon_memory_contracts import MemoryActorContext, MemoryIntent
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.forget import (
@@ -9,12 +9,14 @@ from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     extract_privacy_target,
     find_forget_candidates,
-    source_turns_for_drawers,
+    forget_exact_projections,
 )
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.steward.common import apply_privacy_actions
+from eidolon.memory.domain.canonical_fact import CanonicalFactInactive
 from eidolon.memory.domain.steward import PrivacyAction
 from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 
 SPACE = "default.alice.default"
 
@@ -30,6 +32,97 @@ def _seed(backend: FakeMemoryBackend, key: str, text: str) -> None:
         value=text,
         metadata={"memory_space_id": SPACE, "wing": "Wing_Profile"},
     )
+
+
+async def _seed_canonical(
+    backend: FakeMemoryBackend,
+    ledger: CanonicalFactLedger,
+    key: str,
+    text: str,
+    *,
+    graph=None,
+    subject: str = "$text",
+    predicate: str = "remembers_text",
+    object_: str | None = None,
+) -> str:
+    intent = MemoryIntent(
+        intent_id=f"intent:{key}",
+        memory_space_id=SPACE,
+        source_event_id=f"turn:{key}",
+        authority="extracted_user",
+        intent_type="fact",
+        raw_claim=text,
+        operation_hint="add",
+        subject=subject,
+        predicate=predicate,
+        object=object_ or text,
+        attributes={"audience": "owner"},
+    )
+    targets = {"drawer", "kg"} if graph is not None else {"drawer"}
+    registration = await ledger.register(intent, targets=targets)
+    backend.docs[f"{SPACE}::{key}"] = MemoryWireRecord(
+        memory_space_id=SPACE,
+        key=key,
+        value=text,
+        metadata={
+            "memory_space_id": SPACE,
+            "wing": "Wing_Profile",
+            "source_turn_id": f"canonical:{registration.projection_id}",
+            "assertion_id": registration.assertion_id,
+            "evidence_id": intent.intent_id,
+            "projection_id": registration.projection_id,
+        },
+    )
+    if graph is not None:
+        await graph.add_triple(
+            subject=subject,
+            predicate=predicate,
+            object=object_ or text,
+            audience="owner",
+            source_turn_id=f"canonical:{registration.projection_id}",
+            assertion_id=registration.assertion_id,
+            evidence_id=intent.intent_id,
+            projection_id=registration.projection_id,
+        )
+    await ledger.mark_projected(SPACE, registration.assertion_id, targets=targets)
+    return registration.assertion_id
+
+
+async def _seed_graph_canonical(
+    ledger: CanonicalFactLedger,
+    graph,
+    *,
+    intent_id: str,
+    subject: str,
+    predicate: str,
+    object_: str,
+) -> str:
+    intent = MemoryIntent(
+        intent_id=intent_id,
+        memory_space_id=SPACE,
+        source_event_id=f"turn:{intent_id}",
+        authority="extracted_user",
+        intent_type="fact",
+        raw_claim=f"{subject} {predicate} {object_}",
+        operation_hint="add",
+        subject=subject,
+        predicate=predicate,
+        object=object_,
+        attributes={"audience": "owner"},
+    )
+    registration = await ledger.register(intent, targets={"kg"})
+    await graph.add_triple(
+        subject=subject,
+        predicate=predicate,
+        object=object_,
+        audience="owner",
+        source_turn_id=f"canonical:{registration.projection_id}",
+        assertion_id=registration.assertion_id,
+        evidence_id=intent.intent_id,
+        projection_id=registration.projection_id,
+    )
+    await ledger.mark_projected(SPACE, registration.assertion_id, targets={"kg"})
+    return registration.assertion_id
 
 
 def test_extract_privacy_target_removes_command_language() -> None:
@@ -53,9 +146,12 @@ async def test_find_forget_candidates_is_tenant_scoped_and_content_based() -> No
     assert [candidate.key for candidate in candidates] == ["drawer_tea"]
 
 
-async def test_privacy_delete_removes_candidate_and_verifies_invisible() -> None:
+async def test_privacy_delete_removes_candidate_and_verifies_invisible(tmp_path) -> None:
     backend = FakeMemoryBackend()
-    _seed(backend, "drawer_tea", "用户现在喜欢乌龙茶，不再喝绿茶")
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_canonical(
+        backend, ledger, "drawer_tea", "用户现在喜欢乌龙茶，不再喝绿茶"
+    )
     _seed(backend, "drawer_city", "用户住在常州")
 
     result = await apply_privacy_actions(
@@ -68,6 +164,7 @@ async def test_privacy_delete_removes_candidate_and_verifies_invisible() -> None
                 reason="explicit user request",
             )
         ],
+        canonical_facts=ledger,
     )
 
     assert result.deleted_keys == ["drawer_tea"]
@@ -75,9 +172,10 @@ async def test_privacy_delete_removes_candidate_and_verifies_invisible() -> None
     assert await backend.get(SPACE, "drawer_city") is not None
 
 
-async def test_archive_topic_keeps_drawer_but_blocks_recall() -> None:
+async def test_archive_topic_keeps_drawer_but_blocks_recall(tmp_path) -> None:
     backend = FakeMemoryBackend()
-    _seed(backend, "drawer_tea", "用户喜欢喝绿茶")
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_canonical(backend, ledger, "drawer_tea", "用户喜欢喝绿茶")
 
     result = await apply_privacy_actions(
         backend,
@@ -89,6 +187,7 @@ async def test_archive_topic_keeps_drawer_but_blocks_recall() -> None:
                 reason="explicit user request",
             )
         ],
+        canonical_facts=ledger,
     )
 
     assert result.archived_keys == ["drawer_tea"]
@@ -99,7 +198,7 @@ async def test_archive_topic_keeps_drawer_but_blocks_recall() -> None:
     assert not RecallPolicyRegistry.default().visible(archived, context=context)
 
 
-async def test_multiple_delete_candidates_require_confirmation_without_mutation() -> None:
+async def test_multiple_delete_candidates_are_safely_archived(tmp_path) -> None:
     class TrackingBackend(FakeMemoryBackend):
         def __init__(self) -> None:
             super().__init__()
@@ -110,8 +209,9 @@ async def test_multiple_delete_candidates_require_confirmation_without_mutation(
             return await super().delete_many(memory_space_id, keys)
 
     backend = TrackingBackend()
-    _seed(backend, "drawer_tea_1", "绿茶口味偏好")
-    _seed(backend, "drawer_tea_2", "不再购买绿茶")
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_canonical(backend, ledger, "drawer_tea_1", "绿茶口味偏好")
+    await _seed_canonical(backend, ledger, "drawer_tea_2", "不再购买绿茶")
 
     result = await apply_privacy_actions(
         backend,
@@ -123,10 +223,12 @@ async def test_multiple_delete_candidates_require_confirmation_without_mutation(
                 reason="explicit user request",
             )
         ],
+        canonical_facts=ledger,
     )
 
     assert result.deleted_keys == []
     assert backend.delete_many_calls == []
+    assert sorted(result.archived_keys) == ["drawer_tea_1", "drawer_tea_2"]
     assert [
         item["drawer_id"]
         for item in result.confirmation_required["删掉绿茶"]
@@ -204,7 +306,7 @@ def graph(tmp_path):
     made.close()
 
 
-async def test_a_spoken_delete_reaches_the_graph(graph) -> None:
+async def test_a_spoken_delete_reaches_the_graph(graph, tmp_path) -> None:
     """The path a person actually takes to be forgotten.
 
     Saying "忘掉…" runs through the steward, which needs no tool call and no
@@ -214,10 +316,16 @@ async def test_a_spoken_delete_reaches_the_graph(graph) -> None:
     """
 
     backend = FakeMemoryBackend()
-    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
-    await graph.add_triple(
-        subject="用户", predicate="likes", object="绿茶",
-        audience="owner", source_turn_id="turn-tea",
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_canonical(
+        backend,
+        ledger,
+        "drawer_tea",
+        "用户喜欢绿茶",
+        graph=graph,
+        subject="用户",
+        predicate="likes",
+        object_="绿茶",
     )
 
     result = await apply_privacy_actions(
@@ -231,6 +339,7 @@ async def test_a_spoken_delete_reaches_the_graph(graph) -> None:
             )
         ],
         kg=graph,
+        canonical_facts=ledger,
     )
 
     assert result.deleted_keys == ["drawer_tea"]
@@ -238,12 +347,88 @@ async def test_a_spoken_delete_reaches_the_graph(graph) -> None:
     assert (await graph.stats())["triples_total"] == 0
 
 
-async def test_a_spoken_archive_ends_the_triple_without_deleting_it(graph) -> None:
+async def test_hard_forget_is_ledger_first_and_blocks_replay(graph, tmp_path) -> None:
     backend = FakeMemoryBackend()
-    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    intent = MemoryIntent(
+        intent_id="intent:tea",
+        memory_space_id=SPACE,
+        source_event_id="turn-tea",
+        authority="extracted_user",
+        intent_type="preference",
+        raw_claim="用户喜欢绿茶",
+        operation_hint="add",
+        subject="用户",
+        predicate="likes",
+        object="绿茶",
+        confidence=0.99,
+        attributes={"audience": "owner"},
+    )
+    registration = await ledger.register(intent, targets={"drawer", "kg"})
+    drawer_id = "drawer_tea"
+    backend.docs[f"{SPACE}::{drawer_id}"] = MemoryWireRecord(
+        memory_space_id=SPACE,
+        key=drawer_id,
+        value=intent.raw_claim,
+        metadata={
+            "memory_space_id": SPACE,
+            "source_turn_id": intent.source_event_id,
+            "assertion_id": registration.assertion_id,
+            "evidence_id": intent.intent_id,
+            "projection_id": registration.projection_id,
+        },
+    )
     await graph.add_triple(
-        subject="用户", predicate="likes", object="绿茶",
-        audience="owner", source_turn_id="turn-tea",
+        subject=intent.subject or "",
+        predicate=intent.predicate or "",
+        object=intent.object or "",
+        audience="owner",
+        source_turn_id=f"canonical:{registration.projection_id}",
+        assertion_id=registration.assertion_id,
+        evidence_id=intent.intent_id,
+        projection_id=registration.projection_id,
+    )
+    await ledger.mark_projected(
+        SPACE, registration.assertion_id, targets={"drawer", "kg"}
+    )
+
+    changed, statements = await forget_exact_projections(
+        backend,
+        graph,
+        ledger,
+        SPACE,
+        [drawer_id],
+        hard=True,
+    )
+
+    assert changed == [drawer_id]
+    assert statements == 1
+    assert await backend.get(SPACE, drawer_id) is None
+    assert (await graph.stats())["triples_total"] == 0
+    forgotten = await ledger.get_fact(SPACE, "owner", "用户", "likes", "绿茶")
+    assert forgotten is not None
+    assert forgotten.state == "forgotten"
+    assert forgotten.subject.startswith("[forgotten:fact:")
+    assert forgotten.predicate == forgotten.object == "[forgotten]"
+    assert await ledger.evidence_count(registration.assertion_id) == 0
+    with pytest.raises(CanonicalFactInactive, match="forgotten"):
+        await ledger.register(intent, targets={"drawer", "kg"})
+
+
+async def test_a_spoken_archive_ends_the_triple_without_deleting_it(
+    graph, tmp_path
+) -> None:
+    backend = FakeMemoryBackend()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_canonical(
+        backend,
+        ledger,
+        "drawer_tea",
+        "用户喜欢绿茶",
+        graph=graph,
+        subject="用户",
+        predicate="likes",
+        object_="绿茶",
     )
 
     result = await apply_privacy_actions(
@@ -257,6 +442,7 @@ async def test_a_spoken_archive_ends_the_triple_without_deleting_it(graph) -> No
             )
         ],
         kg=graph,
+        canonical_facts=ledger,
     )
 
     assert result.archived_keys == ["drawer_tea"]
@@ -266,7 +452,9 @@ async def test_a_spoken_archive_ends_the_triple_without_deleting_it(graph) -> No
     assert stats["triples_active"] == 0
 
 
-async def test_an_ambiguous_delete_is_archived_rather_than_abandoned(graph) -> None:
+async def test_an_ambiguous_delete_is_archived_rather_than_abandoned(
+    graph, tmp_path
+) -> None:
     """It used to find the memories and then decline, telling nobody.
 
     A delete matching several drawers recorded ``confirmation_required`` and did
@@ -283,11 +471,17 @@ async def test_an_ambiguous_delete_is_archived_rather_than_abandoned(graph) -> N
     """
 
     backend = FakeMemoryBackend()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
     for index, key in enumerate(("drawer_tea_1", "drawer_tea_2")):
-        _seed_with_turn(backend, key, f"用户喜欢绿茶{index}", turn_id=f"turn-{index}")
-        await graph.add_triple(
-            subject="用户", predicate="likes", object=f"绿茶{index}",
-            audience="owner", source_turn_id=f"turn-{index}",
+        await _seed_canonical(
+            backend,
+            ledger,
+            key,
+            f"用户喜欢绿茶{index}",
+            graph=graph,
+            subject="用户",
+            predicate="likes",
+            object_=f"绿茶{index}",
         )
 
     result = await apply_privacy_actions(
@@ -301,6 +495,7 @@ async def test_an_ambiguous_delete_is_archived_rather_than_abandoned(graph) -> N
             )
         ],
         kg=graph,
+        canonical_facts=ledger,
     )
 
     assert result.deleted_keys == [], "nothing irreversible on a guess"
@@ -316,9 +511,10 @@ async def test_an_ambiguous_delete_is_archived_rather_than_abandoned(graph) -> N
     assert stats["triples_total"] == 2, "and none of them were deleted"
 
 
-async def test_a_space_without_a_graph_still_forgets_its_drawers() -> None:
+async def test_a_space_without_a_graph_still_forgets_its_drawers(tmp_path) -> None:
     backend = FakeMemoryBackend()
-    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_canonical(backend, ledger, "drawer_tea", "用户喜欢绿茶")
 
     result = await apply_privacy_actions(
         backend,
@@ -330,6 +526,7 @@ async def test_a_space_without_a_graph_still_forgets_its_drawers() -> None:
                 reason="explicit user request",
             )
         ],
+        canonical_facts=ledger,
     )
 
     assert result.deleted_keys == ["drawer_tea"]
@@ -361,82 +558,9 @@ def test_every_caller_hands_the_graph_to_the_privacy_handler() -> None:
     assert "kg" in inspect.signature(common.apply_privacy_actions).parameters
 
 
-async def test_the_turn_lookup_uses_one_round_trip_not_one_per_drawer() -> None:
-    """A privacy command carries up to a hundred drawer ids.
-
-    As a loop over ``get`` that was a hundred calls, each crossing the space
-    lock, to answer a single question before the deletion could start. Invisible
-    on a laptop and not on a four-core board sharing itself with Chroma.
-    """
-
-    backend = FakeMemoryBackend()
-    for index in range(25):
-        _seed_with_turn(
-            backend, f"drawer_{index}", f"记忆{index}", turn_id=f"turn-{index % 5}"
-        )
-
-    calls = {"get": 0, "get_many": 0}
-    original_get = backend.get
-    original_many = backend.get_many
-
-    async def _counted_get(space, key):
-        calls["get"] += 1
-        return await original_get(space, key)
-
-    async def _counted_many(space, keys):
-        calls["get_many"] += 1
-        return await original_many(space, keys)
-
-    backend.get = _counted_get
-    backend.get_many = _counted_many
-
-    turns = await source_turns_for_drawers(
-        backend, SPACE, [f"drawer_{i}" for i in range(25)]
-    )
-
-    assert calls == {"get": 0, "get_many": 1}
-    # Five distinct turns behind twenty-five drawers, deduplicated and ordered.
-    assert turns == [f"turn-{i}" for i in range(5)]
-
-
-async def test_a_backend_without_the_batch_still_answers() -> None:
-    """The plural is an optimisation, not a requirement of the port."""
-
-    class _SingularOnly:
-        def __init__(self, inner):
-            self._inner = inner
-
-        async def get(self, space, key):
-            return await self._inner.get(space, key)
-
-    backend = FakeMemoryBackend()
-    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
-
-    assert await source_turns_for_drawers(
-        _SingularOnly(backend), SPACE, ["drawer_tea", "drawer_gone"]
-    ) == ["turn-tea"]
-
-
-async def test_a_locked_backend_does_not_hide_the_batch() -> None:
-    """The wrapper is what production uses, so the fast path must survive it.
-
-    ``LockedBackend`` has no ``__getattr__``: anything it does not declare is
-    simply absent, and the caller probing for ``get_many`` would quietly fall
-    back to N round trips in every real deployment while the tests — which use a
-    bare fake — kept exercising the batch.
-    """
-
-    from eidolon.memory.adapters.locked_backend import LockedBackend
-
-    backend = FakeMemoryBackend()
-    _seed_with_turn(backend, "drawer_tea", "用户喜欢绿茶", turn_id="turn-tea")
-    locked = LockedBackend(backend)
-
-    assert hasattr(locked, "get_many")
-    assert await source_turns_for_drawers(locked, SPACE, ["drawer_tea"]) == ["turn-tea"]
-
-
-async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(graph) -> None:
+async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(
+    graph, tmp_path
+) -> None:
     """The hole the two independent write gates open.
 
     ``min_importance_to_write`` is 3 and ``min_confidence_to_write`` is 0.6, so an
@@ -447,13 +571,22 @@ async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(graph) ->
     """
 
     backend = FakeMemoryBackend()  # no drawers at all
-    await graph.add_triple(
-        subject="用户", predicate="likes", object="绿茶",
-        audience="owner", source_turn_id="turn-tea",
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await _seed_graph_canonical(
+        ledger,
+        graph,
+        intent_id="intent:tea",
+        subject="用户",
+        predicate="likes",
+        object_="绿茶",
     )
-    await graph.add_triple(
-        subject="用户", predicate="likes", object="咖啡",
-        audience="owner", source_turn_id="turn-coffee",
+    await _seed_graph_canonical(
+        ledger,
+        graph,
+        intent_id="intent:coffee",
+        subject="用户",
+        predicate="likes",
+        object_="咖啡",
     )
 
     result = await apply_privacy_actions(
@@ -467,6 +600,7 @@ async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(graph) ->
             )
         ],
         kg=graph,
+        canonical_facts=ledger,
     )
 
     assert result.unmatched_targets == [], "it used to report that it found nothing"
@@ -480,7 +614,9 @@ async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(graph) ->
     assert (await graph.stats())["triples_total"] == 2
 
 
-async def test_forgetting_a_graph_fact_does_not_take_its_turn_mates(graph) -> None:
+async def test_forgetting_a_graph_fact_does_not_take_its_turn_mates(
+    graph, tmp_path
+) -> None:
     """One turn can carry several facts and only one of them was asked about.
 
     Turn-scoped forgetting is right when a drawer is the thing matched — the
@@ -489,11 +625,15 @@ async def test_forgetting_a_graph_fact_does_not_take_its_turn_mates(graph) -> No
     """
 
     backend = FakeMemoryBackend()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
     for obj in ("杭州", "北京"):
-        await graph.add_triple(
+        await _seed_graph_canonical(
+            ledger,
+            graph,
+            intent_id=f"intent:{obj}",
             subject="妈妈" if obj == "杭州" else "爸爸",
-            predicate="lives_in", object=obj,
-            audience="owner", source_turn_id="one-turn-two-facts",
+            predicate="lives_in",
+            object_=obj,
         )
 
     await apply_privacy_actions(
@@ -505,6 +645,7 @@ async def test_forgetting_a_graph_fact_does_not_take_its_turn_mates(graph) -> No
             )
         ],
         kg=graph,
+        canonical_facts=ledger,
     )
 
     assert (await graph.stats())["triples_active"] == 1

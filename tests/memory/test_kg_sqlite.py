@@ -88,6 +88,42 @@ async def test_invalidating_twice_changes_nothing_the_second_time(graph) -> None
     ) == 0
 
 
+async def test_same_instant_reactivation_uses_projection_identity(graph) -> None:
+    """A new activation is not a replay even when wall-clock time is identical."""
+
+    instant = "2026-08-29T12:00:00.000000Z"
+    first = await graph.add_triple(
+        subject="alice",
+        predicate="likes",
+        object="tea",
+        audience=OWNER,
+        valid_from=instant,
+        projection_id="fact:tea:activation:1",
+        assertion_id="fact:tea",
+    )
+    assert await graph.invalidate(
+        subject="alice",
+        predicate="likes",
+        object="tea",
+        ended=instant,
+    ) == 1
+    second = await graph.add_triple(
+        subject="alice",
+        predicate="likes",
+        object="tea",
+        audience=OWNER,
+        valid_from=instant,
+        projection_id="fact:tea:activation:2",
+        assertion_id="fact:tea",
+    )
+
+    assert second != first
+    current = await graph.query_entity(
+        "alice", audiences=(OWNER,), as_of="2026-08-29T12:00:00.000001Z"
+    )
+    assert [(row.predicate, row.object) for row in current] == [("likes", "tea")]
+
+
 async def test_invalidating_something_absent_is_reported_not_raised(graph) -> None:
     """Zero rows is a legitimate answer, not a failure."""
 
@@ -557,7 +593,9 @@ async def test_concurrent_writes_do_not_collide(graph) -> None:
 async def test_a_python_utc_timestamp_is_normalised(graph) -> None:
     """Callers upstream send datetime.isoformat(), which has microseconds."""
 
-    assert canonical_temporal("2026-06-28T11:41:17.964620+00:00") == "2026-06-28T11:41:17Z"
+    assert canonical_temporal("2026-06-28T11:41:17.964620+00:00") == (
+        "2026-06-28T11:41:17.964620Z"
+    )
 
     await graph.add_triple(
         subject="alice", predicate="likes", object="green", audience=OWNER,
@@ -565,7 +603,7 @@ async def test_a_python_utc_timestamp_is_normalised(graph) -> None:
     )
     found = await graph.query_entity("alice", audiences=(OWNER,))
 
-    assert found[0].valid_from == "2026-06-28T11:41:17Z"
+    assert found[0].valid_from == "2026-06-28T11:41:17.964620Z"
 
 
 async def test_entity_names_are_listed_once_each(graph) -> None:
@@ -789,14 +827,7 @@ async def test_a_hard_forget_keeps_appending_to_one_day(graph, tmp_path) -> None
     assert (await graph.stats())["triples_total"] == 0
 
 
-async def test_a_hard_forget_leaves_the_entities(graph) -> None:
-    """Stated because it is a limit on the promise, not an oversight.
-
-    An entity can be named by statements from turns nobody asked to forget, and
-    proving otherwise costs a query per entity. Collecting orphans belongs to a
-    sweep. So a hard forget removes what was said, not the fact that a name was
-    once known.
-    """
+async def test_a_hard_forget_removes_orphan_entities(graph) -> None:
 
     await graph.add_triple(
         subject="张丽", predicate="lives_in", object="杭州",
@@ -807,7 +838,7 @@ async def test_a_hard_forget_leaves_the_entities(graph) -> None:
     await graph.forget_source_turns(["turn-1"], hard=True)
 
     assert (await graph.stats())["triples_total"] == 0
-    assert (await graph.stats())["entities"] == before
+    assert (await graph.stats())["entities"] < before
 
 
 async def test_an_alias_resolves_when_the_caller_passes_a_display_name(graph) -> None:

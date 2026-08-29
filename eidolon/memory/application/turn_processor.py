@@ -1,9 +1,9 @@
 """Process JetStream messages: ConversationTurn + MemoryCommand (KG plan §4.4).
 
 Used by ``agent_runner``'s in-process NATS subscriber. Steward runs in-process
-returning a ``StewardDecision``; this module is responsible for applying that
-decision to chroma drawers + KG triples + privacy actions, with the right
-fail-mode for each (G7 KG failure does not block chat ack).
+returning a ``StewardDecision``; this module registers every accepted fact in
+the canonical ledger and then applies its drawer/KG projections. A projection
+failure is retryable and is never acknowledged as if every projection agreed.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from typing import Any, Protocol
 
 from eidolon_memory_contracts import (
     OWNER_AUDIENCE,
-    AudienceMutationCommand,
     ConsolidatorIngestThemeCommand,
     ConversationTurnPayload,
     DeviceSyncBatchPayload,
@@ -35,22 +34,17 @@ from eidolon.memory.application.canonical_invalidation import (
 )
 from eidolon.memory.application.explicit_intents import (
     MemoryIntentRejected,
+    _projection_room_token,
     apply_explicit_intent,
 )
-from eidolon.memory.application.forget import (
-    archive_exact_drawers,
-    assign_audience_to_exact_drawers,
-    assign_graph_audience_for_drawers,
-    delete_exact_drawers,
-    forget_graph_for_drawers,
-)
+from eidolon.memory.application.forget import forget_exact_projections
 from eidolon.memory.application.ingest import (
     ingest_memory_fragment,
     ingest_memory_fragments,
 )
 from eidolon.memory.application.memory_intents import memory_intents_from_decision
 from eidolon.memory.application.scope_policy import (
-    derived_triple_audience,
+    MissingInteractionIdentity,
     interaction_audience,
 )
 from eidolon.memory.application.steward.common import (
@@ -214,8 +208,71 @@ def _stamped_for_turn(
     return stamped.model_copy(update={"occurred_at": turn_ts})
 
 
+def _canonical_drawer(
+    fragment: MemoryFragment,
+    *,
+    assertion_id: str,
+    evidence_id: str,
+    projection_id: str,
+) -> MemoryFragment:
+    """Bind one Chroma projection to its ledger assertion/outbox identity."""
+
+    return fragment.model_copy(
+        update={
+            "memory_id": f"canonical:{projection_id}",
+            "source_turn_id": f"canonical:{projection_id}",
+            "metadata": {
+                **fragment.metadata,
+                "assertion_id": assertion_id,
+                "evidence_id": evidence_id,
+                "projection_id": projection_id,
+                "source": "canonical-natural",
+            },
+        }
+    )
+
+
+def _drawer_for_triple(
+    triple: Any,
+    *,
+    turn: ConversationTurnPayload,
+    turn_ts: str,
+    assertion_id: str,
+    evidence_id: str,
+    projection_id: str,
+) -> MemoryFragment:
+    """Create the text/vector projection of one structured natural assertion."""
+
+    base = MemoryFragment(
+        memory_space_id=turn.context.memory_space_id,
+        source_turn_id=turn.turn_id,
+        wing="Wing_Profile",
+        room=f"fact_{triple.predicate}_{_projection_room_token(projection_id)}",
+        content=f"{triple.subject} {triple.predicate} {triple.object}",
+        memory_type=(
+            "preference"
+            if triple.predicate in {"likes", "dislikes", "prefers"}
+            else "fact"
+        ),
+        importance=4,
+        confidence=triple.confidence,
+        occurred_at=triple.valid_from or turn_ts,
+    )
+    stamped = _stamped_for_turn(base, turn=turn, turn_ts=turn_ts)
+    return _canonical_drawer(
+        stamped,
+        assertion_id=assertion_id,
+        evidence_id=evidence_id,
+        projection_id=projection_id,
+    )
+
+
 async def _apply_privacy(
-    backend: Any, memory_space_id: str, actions: list, kg: Any = None
+    backend: Any,
+    memory_space_id: str,
+    actions: list,
+    kg: Any = None,
+    canonical_facts: CanonicalFactWriter | None = None,
 ) -> None:
     """Wrapper for the steward's privacy-action handler (delete / archive).
 
@@ -231,6 +288,7 @@ async def _apply_privacy(
         memory_space_id=memory_space_id,
         actions=actions,
         kg=kg,
+        canonical_facts=canonical_facts,
     )
 
 
@@ -265,11 +323,10 @@ async def process_turn_message(
 ) -> None:
     """Decode + validate one turn, run steward, apply fragments + KG, ack / nak / DLQ.
 
-    Failure model (G7 from KG plan §4.4):
-      * fragment write fails → NAK / DLQ (chroma is source of truth for chat)
-      * auxiliary KG write fails → log + ack (chat conversation must not stall)
-      * persisted canonical invalidation fails → NAK / DLQ (safe deterministic replay)
-      * privacy-action fails → log + ack (don't redeliver delete requests)
+    Failure model:
+      * ledger registration or a required projection fails → NAK / DLQ
+      * deterministic redelivery resumes pending projections
+      * a ledger-first privacy action is never applied to only one projection
     """
     deliveries = delivery_count(msg)
     try:
@@ -309,6 +366,26 @@ async def process_turn_message(
             got=memory_space_id,
             turn_id=turn.turn_id,
         )
+        await msg.ack()
+        return
+
+    try:
+        turn_audience = interaction_audience(turn.context)
+    except MissingInteractionIdentity as exc:
+        # Identity is part of the immutable message, so retry cannot repair it.
+        # Preserve the rejected payload for diagnosis, then acknowledge without
+        # ever running extraction or writing an Owner-visible fallback.
+        log.error(
+            "turn_processor_identity_missing",
+            turn_id=turn.turn_id,
+            memory_space_id=memory_space_id,
+            error=str(exc),
+        )
+        await _record_dlq(dlq_writer, settings, msg, str(exc), deliveries)
+        if audit_sink is not None:
+            await audit_sink.record_rejected(
+                turn, trace_id=trace_id, reason=str(exc), deliveries=deliveries
+            )
         await msg.ack()
         return
 
@@ -386,25 +463,102 @@ async def process_turn_message(
             await msg.nak()
         return
 
+    if explicit_evidence_exists:
+        # The authoritative explicit command already owns long-term memory for
+        # this turn. Running a second natural projection would create a rival
+        # assertion whose correction/deletion lifecycle can diverge. Privacy
+        # actions are retained because they mutate prior facts, not this one.
+        decision = decision.model_copy(
+            update={"fragments": [], "triples": [], "invalidations": [], "mentions": []}
+        )
+        memory_intents = [
+            intent
+            for intent in memory_intents
+            if intent.attributes.get("source_kind") == "privacy"
+        ]
+
+    memory_intents = [
+        intent.model_copy(
+            update={"attributes": {**intent.attributes, "audience": turn_audience}}
+        )
+        if intent.attributes.get("source_kind") in {
+            "fragment",
+            "triple",
+            "invalidation",
+        }
+        else intent
+        for intent in memory_intents
+    ]
+
     turn_ts = turn.timestamp  # used as default valid_from / ended for triples
 
     # ── fragments + privacy (failure here NAKs — chroma is source of truth) ─
     fragments_written = 0
     try:
         # Privacy actions first; they may purge before we attempt new writes.
-        await _apply_privacy(backend, memory_space_id, decision.privacy_actions, kg)
-        if decision.should_write and not explicit_evidence_exists:
-            # Stamped first, written once. Writing them one at a time took the
-            # space's writer lock per fragment and made three Chroma calls each —
-            # eighteen for a six-fragment turn, 55ms measured, against 10.6ms for a
-            # single batched upsert. It also left a recall arriving mid-turn waiting
-            # on whichever of the six held the lock.
-            stamped = [
-                _stamped_for_turn(fragment, turn=turn, turn_ts=turn_ts)
-                for fragment in decision.fragments
-            ]
-            await ingest_memory_fragments(backend, stamped)
-            fragments_written = len(stamped)
+        await _apply_privacy(
+            backend,
+            memory_space_id,
+            decision.privacy_actions,
+            kg,
+            canonical_facts,
+        )
+        # Structured assertions project their own canonical drawer beside the
+        # KG row below. Only fragment-only decisions are handled here; otherwise
+        # writing the model's prose as another source creates two independently
+        # correctable versions of the same fact.
+        if (
+            decision.should_write
+            and not explicit_evidence_exists
+            and (not decision.triples or kg is None)
+        ):
+            if canonical_facts is None:
+                raise RuntimeError("natural long-term memory requires its fact ledger")
+            fragment_intents = {
+                int(intent.attributes["source_index"]): intent
+                for intent in memory_intents
+                if intent.attributes.get("source_kind") == "fragment"
+            }
+            pending: list[tuple[MemoryFragment, Any]] = []
+            for index, fragment in enumerate(decision.fragments):
+                intent = fragment_intents[index]
+                registration = await canonical_facts.register(
+                    intent, targets={"drawer"}
+                )
+                if registration.state != "active":
+                    continue
+                projection_id = registration.projection_id or registration.assertion_id
+                if "drawer" not in registration.pending_targets:
+                    existing_drawer = await backend.get_by_source_turn_id(
+                        memory_space_id, f"canonical:{projection_id}"
+                    )
+                    if existing_drawer is not None:
+                        continue
+                    await canonical_facts.mark_projection_pending(
+                        memory_space_id,
+                        registration.assertion_id,
+                        targets={"drawer"},
+                    )
+                stamped = _stamped_for_turn(fragment, turn=turn, turn_ts=turn_ts)
+                pending.append(
+                    (
+                        _canonical_drawer(
+                            stamped,
+                            assertion_id=registration.assertion_id,
+                            evidence_id=intent.intent_id,
+                            projection_id=projection_id,
+                        ),
+                        registration,
+                    )
+                )
+            await ingest_memory_fragments(backend, [item[0] for item in pending])
+            for _, registration in pending:
+                await canonical_facts.mark_projected(
+                    memory_space_id,
+                    registration.assertion_id,
+                    targets={"drawer"},
+                )
+            fragments_written = len(pending)
     except Exception as exc:
         log.error(
             "turn_processor_fragment_failed",
@@ -432,7 +586,7 @@ async def process_turn_message(
     kg_skipped_low_confidence = 0
     kg_exact_noop = 0
     kg_failures: list[str] = []
-    canonical_invalidation_failures: list[str] = []
+    canonical_projection_failures: list[str] = []
     min_conf = settings.kg.min_confidence_to_write if kg is not None else 1.0
 
     if kg is not None:
@@ -449,11 +603,10 @@ async def process_turn_message(
                 invalidation_intents[source_index] = intent
         for index, inv in enumerate(decision.invalidations):
             intent = invalidation_intents.get(index)
-            audience = derived_triple_audience(inv.predicate, turn.context)
+            audience = turn_audience
             try:
                 if (
-                    audience == OWNER_AUDIENCE
-                    and canonical_facts is not None
+                    canonical_facts is not None
                     and intent is not None
                 ):
                     if intent.occurred_at is None:
@@ -489,7 +642,7 @@ async def process_turn_message(
                     and decision_store is not None
                     and intent is not None
                 ):
-                    canonical_invalidation_failures.append(str(exc))
+                    canonical_projection_failures.append(str(exc))
                 log.warning("kg_invalidate_failed", error=str(exc))
 
         triple_intents: dict[int, MemoryIntent] = {}
@@ -507,71 +660,116 @@ async def process_turn_message(
                 continue
             try:
                 intent = triple_intents.get(index)
-                audience = derived_triple_audience(t.predicate, turn.context)
-                registration = None
-                if (
-                    audience == OWNER_AUDIENCE
-                    and canonical_facts is not None
-                    and intent is not None
-                ):
-                    exact = await canonical_facts.get_fact(
-                        intent.memory_space_id,
-                        intent.subject or "",
-                        intent.predicate or "",
-                        intent.object or "",
+                audience = turn_audience
+                if canonical_facts is None or intent is None:
+                    raise RuntimeError(
+                        "structured natural memory requires its fact ledger"
                     )
-                    if exact is not None and exact.state != "active":
-                        # A current fact may become true again after an earlier
-                        # correction. Reuse the canonical ledger's existing
-                        # reactivation transition rather than either rejecting
-                        # the new evidence forever or creating a second fact id.
-                        # The steward has already supplied a complete,
-                        # high-confidence triple; this is not inferred from the
-                        # fragment text.
-                        intent = intent.model_copy(
-                            update={
-                                "operation_hint": "update",
-                                "attributes": {
-                                    **intent.attributes,
-                                    "reason": "steward reasserted exact fact",
-                                },
-                            }
-                        )
-                        registration = await canonical_facts.register_reactivation(
-                            intent,
-                            targets={"kg"},
-                        )
-                    else:
-                        registration = await canonical_facts.register(
-                            intent,
-                            targets={"kg"},
-                        )
-                    if registration.state != "active":
-                        if not registration.reactivation_pending:
-                            kg_exact_noop += 1
-                            continue
-                    kg_pending = "kg" in registration.pending_targets
-                    should_verify = (
-                        not kg_pending
-                        or not registration.evidence_created
-                        or registration.evidence_count > 1
+                exact = await canonical_facts.get_fact(
+                    intent.memory_space_id,
+                    audience,
+                    intent.subject or "",
+                    intent.predicate or "",
+                    intent.object or "",
+                )
+                if exact is not None and exact.state != "active":
+                    # A current fact may become true again after an earlier
+                    # correction. Reuse the canonical ledger's existing
+                    # reactivation transition rather than either rejecting
+                    # the new evidence forever or creating a second fact id.
+                    # The steward has already supplied a complete,
+                    # high-confidence triple; this is not inferred from the
+                    # fragment text.
+                    intent = intent.model_copy(
+                        update={
+                            "operation_hint": "update",
+                            "attributes": {
+                                **intent.attributes,
+                                "reason": "steward reasserted exact fact",
+                            },
+                        }
                     )
-                    if should_verify:
-                        if await _canonical_kg_visible(kg, intent):
-                            if kg_pending:
-                                await canonical_facts.mark_projected(
-                                    memory_space_id,
-                                    registration.assertion_id,
-                                    targets={"kg"},
-                                )
-                            kg_exact_noop += 1
-                            continue
-                        if not kg_pending:
-                            await canonical_facts.mark_projection_pending(
+                    registration = await canonical_facts.register_reactivation(
+                        intent,
+                        targets={"drawer", "kg"},
+                    )
+                else:
+                    registration = await canonical_facts.register(
+                        intent,
+                        targets={"drawer", "kg"},
+                    )
+                if registration.state != "active" and not registration.reactivation_pending:
+                    kg_exact_noop += 1
+                    continue
+                projection_id = registration.projection_id or registration.assertion_id
+
+                drawer_pending = "drawer" in registration.pending_targets
+                if not drawer_pending or not registration.evidence_created:
+                    existing_drawer = await backend.get_by_source_turn_id(
+                        memory_space_id, f"canonical:{projection_id}"
+                    )
+                    if existing_drawer is not None:
+                        if drawer_pending:
+                            await canonical_facts.mark_projected(
+                                memory_space_id,
+                                registration.assertion_id,
+                                targets={"drawer"},
+                            )
+                        drawer_pending = False
+                    elif not drawer_pending:
+                        await canonical_facts.mark_projection_pending(
+                            memory_space_id,
+                            registration.assertion_id,
+                            targets={"drawer"},
+                        )
+                        drawer_pending = True
+                if drawer_pending:
+                    await ingest_memory_fragment(
+                        backend,
+                        _drawer_for_triple(
+                            t,
+                            turn=turn,
+                            turn_ts=turn_ts,
+                            assertion_id=registration.assertion_id,
+                            evidence_id=intent.intent_id,
+                            projection_id=projection_id,
+                        ),
+                    )
+                    await canonical_facts.mark_projected(
+                        memory_space_id,
+                        registration.assertion_id,
+                        targets={"drawer"},
+                    )
+                    fragments_written += 1
+
+                kg_pending = "kg" in registration.pending_targets
+                should_verify = (
+                    not kg_pending
+                    or not registration.evidence_created
+                    or registration.evidence_count > 1
+                )
+                if should_verify:
+                    if await _canonical_kg_visible(kg, intent):
+                        if kg_pending:
+                            await canonical_facts.mark_projected(
                                 memory_space_id,
                                 registration.assertion_id,
                                 targets={"kg"},
                             )
+                        if registration.reactivation_pending:
+                            await canonical_facts.mark_reactivated(
+                                memory_space_id,
+                                intent.intent_id,
+                                targets={"drawer", "kg"},
+                            )
+                        kg_exact_noop += 1
+                        continue
+                    if not kg_pending:
+                        await canonical_facts.mark_projection_pending(
+                            memory_space_id,
+                            registration.assertion_id,
+                            targets={"kg"},
+                        )
                 await kg.add_triple(
                     audience=audience,
                     subject=t.subject,
@@ -581,28 +779,28 @@ async def process_turn_message(
                     valid_to=t.valid_to,
                     confidence=t.confidence,
                     source_turn_id=(
-                        f"canonical:{registration.assertion_id}:"
-                        f"evidence:{intent.intent_id}"
-                        if registration is not None and intent is not None
-                        else turn.turn_id
+                        f"canonical:{projection_id}"
                     ),
+                    assertion_id=registration.assertion_id,
+                    evidence_id=intent.intent_id,
+                    projection_id=projection_id,
                     adapter_name="steward-llm",
                 )
-                if registration is not None:
-                    await canonical_facts.mark_projected(
+                await canonical_facts.mark_projected(
+                    memory_space_id,
+                    registration.assertion_id,
+                    targets={"kg"},
+                )
+                if registration.reactivation_pending:
+                    await canonical_facts.mark_reactivated(
                         memory_space_id,
-                        registration.assertion_id,
-                        targets={"kg"},
+                        intent.intent_id,
+                        targets={"drawer", "kg"},
                     )
-                    if registration.reactivation_pending and intent is not None:
-                        await canonical_facts.mark_reactivated(
-                            memory_space_id,
-                            intent.intent_id,
-                            targets={"kg"},
-                        )
                 kg_triples_added += 1
             except Exception as exc:
                 kg_failures.append(f"add:{exc}")
+                canonical_projection_failures.append(str(exc))
                 log.warning("kg_add_triple_failed", error=str(exc))
 
         # Phase 3 — entity_mentions write. Runs AFTER triples so the
@@ -612,7 +810,7 @@ async def process_turn_message(
         mentions_written, mentions_rejected = await _write_mentions(
             kg,
             decision,
-            audience=interaction_audience(turn.context),
+            audience=turn_audience,
             kg_failures=kg_failures,
         )
 
@@ -640,14 +838,14 @@ async def process_turn_message(
         kg_exact_noop=kg_exact_noop,
         kg_failures=len(kg_failures),
         kg_failure_sample=kg_failures[:2],
-        canonical_invalidation_failures=len(canonical_invalidation_failures),
+        canonical_projection_failures=len(canonical_projection_failures),
         privacy_actions=len(decision.privacy_actions),
         mentions=mentions_written if kg is not None else 0,
         mentions_rejected=mentions_rejected if kg is not None else 0,
     )
-    if canonical_invalidation_failures:
-        error = "canonical invalidation projection failed: " + "; ".join(
-            canonical_invalidation_failures[:2]
+    if canonical_projection_failures:
+        error = "canonical projection failed: " + "; ".join(
+            canonical_projection_failures[:2]
         )
         if deliveries >= max_deliveries:
             await _record_dlq(dlq_writer, settings, msg, error, deliveries)
@@ -687,7 +885,7 @@ async def _canonical_kg_visible(kg: Any, intent: MemoryIntent) -> bool:
     """Verify that an assertion marked projected still has an active KG row."""
     rows = await kg.query_entity(
         intent.subject,
-        audiences=(OWNER_AUDIENCE,),
+        audiences=(str(intent.attributes["audience"]),),
         direction="outgoing",
         include_sensitive=True,
     )
@@ -815,6 +1013,21 @@ async def process_command_message(
         await msg.ack()
         return
 
+    status_get = getattr(command_status, "get", None)
+    if status_get is not None:
+        existing_status = await status_get(cmd.request_id)
+        if existing_status is not None and existing_status.status in {
+            "applied",
+            "failed",
+        }:
+            log.info(
+                "cmd_terminal_redelivery_ack",
+                request_id=cmd.request_id,
+                status=existing_status.status,
+            )
+            await msg.ack()
+            return
+
     if kg is None and isinstance(cmd, (KgAddTripleCommand, KgInvalidateCommand)):
         # The graph is switched off for this deployment. Say so, rather than
         # leaving the caller to time out waiting for a terminal status.
@@ -914,21 +1127,14 @@ async def process_command_message(
             # produced the fact it had just agreed to forget.
             #
             # Before the vector mutation, deliberately — see the helper.
-            forgotten = await forget_graph_for_drawers(
+            changed, forgotten = await forget_exact_projections(
                 backend,
                 kg,
+                canonical_facts,
                 cmd.memory_space_id,
                 cmd.drawer_ids,
                 hard=cmd.action == "delete",
             )
-            if cmd.action == "delete":
-                changed = await delete_exact_drawers(
-                    backend, cmd.memory_space_id, cmd.drawer_ids
-                )
-            else:
-                changed = await archive_exact_drawers(
-                    backend, cmd.memory_space_id, cmd.drawer_ids
-                )
             resource_id = f"{cmd.action}:{len(changed)}:{cmd.preview_id}"
             log.info(
                 "cmd_privacy_mutation_ok",
@@ -941,32 +1147,6 @@ async def process_command_message(
                 # triples are ordinary, but a forget that touched drawers and no
                 # statements on a graph-enabled space is worth looking at.
                 kg_statements_forgotten=forgotten,
-            )
-        elif isinstance(cmd, AudienceMutationCommand):
-            # Both stores, for the same reason a forget reaches both: the drawer
-            # is what a person sees and the triples are what the next prompt is
-            # built from. Moving only the drawer would make the product agree to
-            # keep something between two people and then tell the third.
-            #
-            # Unlike a forget, nothing becomes unrecallable — the statement stays
-            # valid and is recalled in full by the Companion it now belongs to.
-            moved_statements = await assign_graph_audience_for_drawers(
-                backend, kg, cmd.memory_space_id, cmd.drawer_ids, cmd.audience
-            )
-            changed = await assign_audience_to_exact_drawers(
-                backend, cmd.memory_space_id, cmd.drawer_ids, cmd.audience
-            )
-            resource_id = f"audience:{cmd.audience}:{len(changed)}"
-            log.info(
-                "cmd_audience_mutation_ok",
-                request_id=cmd.request_id,
-                audience=cmd.audience,
-                drawer_count=len(changed),
-                # Asked for and moved, separately. They differ when a drawer was
-                # forgotten between the page being read and the button being
-                # pressed, which is ordinary and not a failure.
-                asked_for=len(cmd.drawer_ids),
-                kg_statements_moved=moved_statements,
             )
         elif isinstance(cmd, DeviceSyncBatchPayload):
             log.info(
@@ -1090,6 +1270,7 @@ async def process_sync_message(
     expected_memory_space_id: str,
     decision_store: ExtractionDecisionStore | None = None,
     kg: Any = None,
+    canonical_facts: CanonicalFactWriter | None = None,
 ) -> None:
     """Handle ``DeviceSyncBatchPayload`` from ``eidolon.memory.sync.<memory_space_token>``."""
     del settings
@@ -1145,6 +1326,7 @@ async def process_sync_message(
                 expected_memory_space_id,
                 decision.privacy_actions,
                 kg,
+                canonical_facts,
             )
             for fragment in decision.fragments if decision.should_write else []:
                 stamped = _stamped_for_turn(

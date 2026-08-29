@@ -20,6 +20,7 @@ from eidolon.memory.application.turn_processor import process_turn_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.space_lock import SpaceLock
+from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 
 
 def _ctx(device_id: str, session_id: str = "s") -> MemoryActorContext:
@@ -57,13 +58,14 @@ class _Msg:
 
 
 @pytest.mark.asyncio
-async def test_persona_shared_but_device_memory_stays_current_device_only() -> None:
+async def test_persona_shared_but_device_memory_stays_current_device_only(tmp_path) -> None:
     settings = load_memory_settings()
     backend = FakeMemoryBackend()
 
     backend.working_memory = WorkingMemoryRing(maxlen=5, lock=SpaceLock())
     steward = RuleBasedSteward(settings)
     memory_space_id = _ctx("device-a").memory_space_id
+    canonical_facts = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
 
     for payload in [
         _turn("我喜欢乌龙茶", device_id="device-a"),
@@ -78,6 +80,7 @@ async def test_persona_shared_but_device_memory_stays_current_device_only() -> N
             settings=settings,
             max_deliveries=3,
             expected_memory_space_id=memory_space_id,
+            canonical_facts=canonical_facts,
         )
         assert msg.acked and not msg.nacked
 

@@ -40,11 +40,13 @@ def stack(tmp_path: Path):
     from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
     from eidolon.memory.adapters.locked_backend import LockedBackend
     from eidolon.memory.config.memory_settings import load_memory_settings
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 
     backend = LockedBackend(FakeMemoryBackend())
     kg = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE_FOR_TESTS, lock=backend.lock,)
     settings = load_memory_settings()
-    yield backend, kg, settings
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    yield backend, kg, settings, canonical
     kg.close()
 
 
@@ -112,7 +114,7 @@ async def test_turn_to_recall_closed_loop(stack) -> None:
     from eidolon.memory.domain.kg import KgTripleAction
     from eidolon.memory.domain.steward import StewardDecision
 
-    backend, kg, settings = stack
+    backend, kg, settings, canonical = stack
 
     fragment = MemoryFragment(
         fragment_id="f1",
@@ -147,6 +149,7 @@ async def test_turn_to_recall_closed_loop(stack) -> None:
         settings=settings,
         max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
     assert msg.ack_calls == ["ack"]
 
@@ -184,7 +187,7 @@ async def test_admin_command_to_recall_closed_loop(stack) -> None:
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.application.turn_processor import process_command_message
 
-    backend, kg, settings = stack
+    backend, kg, settings, _canonical = stack
 
     cmd = KgAddTripleCommand(
         request_id=uuid.uuid4().hex,
@@ -232,7 +235,7 @@ async def test_change_of_mind_invalidation_visible_via_recall(stack) -> None:
     from eidolon.memory.domain.kg import KgInvalidationAction, KgTripleAction
     from eidolon.memory.domain.steward import StewardDecision
 
-    backend, kg, settings = stack
+    backend, kg, settings, canonical = stack
 
     # Seed: likes coffee
     seed_decision = StewardDecision(
@@ -245,6 +248,7 @@ async def test_change_of_mind_invalidation_visible_via_recall(stack) -> None:
         msg1, steward=_stub_steward(seed_decision),
         backend=backend, kg=kg, settings=settings,
         max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
     assert msg1.ack_calls == ["ack"]
 
@@ -263,6 +267,7 @@ async def test_change_of_mind_invalidation_visible_via_recall(stack) -> None:
         msg2, steward=_stub_steward(change_decision),
         backend=backend, kg=kg, settings=settings,
         max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
     assert msg2.ack_calls == ["ack"]
     fused = await recall_with_kg_fusion(
@@ -290,7 +295,7 @@ async def test_sensitive_predicate_hidden_from_default_recall(stack) -> None:
     from eidolon.memory.domain.kg import KgTripleAction
     from eidolon.memory.domain.steward import StewardDecision
 
-    backend, kg, settings = stack
+    backend, kg, settings, canonical = stack
 
     decision = StewardDecision(
         should_write=True, reason="health",
@@ -304,6 +309,7 @@ async def test_sensitive_predicate_hidden_from_default_recall(stack) -> None:
         msg, steward=_stub_steward(decision),
         backend=backend, kg=kg, settings=settings,
         max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
     assert msg.ack_calls == ["ack"]
     # default — sensitive filtered
@@ -343,7 +349,7 @@ async def test_replay_does_not_duplicate_in_recall(stack) -> None:
     from eidolon.memory.domain.kg import KgTripleAction
     from eidolon.memory.domain.steward import StewardDecision
 
-    backend, kg, settings = stack
+    backend, kg, settings, canonical = stack
 
     decision = StewardDecision(
         should_write=True, reason="",
@@ -357,7 +363,8 @@ async def test_replay_does_not_duplicate_in_recall(stack) -> None:
         await process_turn_message(
             msg, steward=steward,
             backend=backend, kg=kg, settings=settings,
-            max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+                max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+                canonical_facts=canonical,
         )
         assert msg.ack_calls == ["ack"]
     fused = await recall_with_kg_fusion(

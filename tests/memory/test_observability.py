@@ -26,7 +26,11 @@ def _settings(**kg) -> MemorySettings:
 
 
 def _context() -> MemoryActorContext:
-    return MemoryActorContext(memory_realm_id=SPACE, owner_id="alice")
+    return MemoryActorContext(
+        memory_realm_id=SPACE,
+        owner_id="alice",
+        companion_id="default",
+    )
 
 
 def _samples(name: str) -> dict[tuple, float]:

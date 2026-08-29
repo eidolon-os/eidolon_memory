@@ -136,46 +136,6 @@ class PrivacyMutationCommand(_BaseMemoryCommand):
         return cleaned
 
 
-class AudienceMutationCommand(_BaseMemoryCommand):
-    """Move exact drawers to another audience, on the Owner's explicit say-so.
-
-    Its own kind rather than another ``action`` on
-    :class:`PrivacyMutationCommand`, because the two change different facts. A
-    privacy mutation answers "may this be recalled at all"; this answers "by
-    which of my Eidolons" — and a memory marked private to one companion is
-    still recalled, in full, by that one. Overloading the privacy command would
-    make a route that reads ``action`` have to know which of two questions it
-    was looking at.
-
-    Exact drawer ids and nothing else. The person picked these off a page that
-    showed them; there is no wording to resolve, so unlike a forget there is
-    nothing here that could match something they never saw. That is also why
-    this needs no confirmation token: the command *is* the set.
-    """
-
-    kind: Literal["audience_mutation"] = "audience_mutation"
-    drawer_ids: list[str] = Field(min_length=1, max_length=100)
-    #: ``owner`` or ``companion:<id>``. Validated against the contract's own
-    #: vocabulary rather than pattern-matched here, so one place decides what an
-    #: audience is.
-    audience: str = Field(min_length=1, max_length=160)
-
-    @field_validator("drawer_ids")
-    @classmethod
-    def _valid_drawer_ids(cls, values: list[str]) -> list[str]:
-        cleaned = list(dict.fromkeys(value.strip() for value in values if value.strip()))
-        if not cleaned or any(not value.startswith("drawer_") for value in cleaned):
-            raise ValueError("drawer_ids must contain MemPalace drawer IDs")
-        return cleaned
-
-    @field_validator("audience")
-    @classmethod
-    def _known_audience(cls, value: str) -> str:
-        from eidolon_memory_contracts.audience import validate_audience
-
-        return validate_audience(value)
-
-
 class DeviceSyncEvent(EidolonWireModel):
     """One offline memory event replayed from a device outbox."""
 
@@ -199,7 +159,6 @@ MemoryCommandPayload = (
     | ConsolidatorIngestThemeCommand
     | MemoryIntentCommand
     | PrivacyMutationCommand
-    | AudienceMutationCommand
     | DeviceSyncBatchPayload
 )
 """Discriminated union; route on the ``kind`` field."""

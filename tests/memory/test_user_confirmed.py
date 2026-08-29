@@ -78,11 +78,13 @@ def _intent_command(
             operation_hint="confirm",
             confidence=confidence,
             attributes=attributes
-            or {
+            if attributes is not None
+            else {
                 "wing": "Wing_Profile",
                 "memory_type": "preference",
                 "importance": 5,
                 "tags": ["beverage"],
+                "source_instance_id": "companion-default",
             },
         ),
     )
@@ -129,6 +131,7 @@ def _correction_command(
             subject="user",
             predicate="likes",
             object="oolong",
+            attributes={"source_instance_id": "companion-default"},
         ),
     )
 
@@ -167,11 +170,12 @@ def test_cmd_rejects_cross_realm_intent():
 # ─── explicit intent projection ───────────────────────────────────────────
 
 
-async def test_ingest_writes_verbatim_drawer_with_source_marker():
+async def test_ingest_writes_verbatim_drawer_with_source_marker(tmp_path):
     """The drawer the user wrote MUST land verbatim, NOT paraphrased."""
     backend = LockedBackend(FakeMemoryBackend())
     cmd = _intent_command(request_id="abc123")
-    await apply_explicit_intent(backend, None, cmd)
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await apply_explicit_intent(backend, None, cmd, canonical_facts=canonical)
 
     docs = list(backend._inner.docs.values())
     assert len(docs) == 1
@@ -179,7 +183,9 @@ async def test_ingest_writes_verbatim_drawer_with_source_marker():
     assert rec.value == "我喝乌龙茶不喝咖啡", "verbatim text was altered"
     assert rec.metadata.get("wing") == "Wing_Profile"
     assert rec.metadata.get("memory_type") == "preference"
-    assert rec.metadata.get("source_turn_id") == "turn-1"
+    assert rec.metadata.get("source_turn_id", "").startswith("canonical:fact:")
+    assert rec.metadata["assertion_id"]
+    assert rec.metadata["evidence_id"] == "intent:abc123"
 
     # Contract: the metadata PASSED in through ingest carries the source
     # marker that recall keys off. FakeBackend overrides ``source`` with
@@ -192,7 +198,7 @@ async def test_ingest_writes_verbatim_drawer_with_source_marker():
     assert "user-confirmed" in passed_meta.get("tags", [])
 
 
-async def test_confirmed_interaction_is_private_to_its_companion_by_default():
+async def test_confirmed_interaction_is_private_to_its_companion_by_default(tmp_path):
     backend = LockedBackend(FakeMemoryBackend())
     cmd = _intent_command(
         request_id="companion-private",
@@ -203,22 +209,27 @@ async def test_confirmed_interaction_is_private_to_its_companion_by_default():
         },
     )
 
-    await apply_explicit_intent(backend, None, cmd)
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await apply_explicit_intent(backend, None, cmd, canonical_facts=canonical)
 
     _, _, _, metadata = backend._inner.ingests[-1]
     assert metadata["audience"] == companion_audience("companion-a")
 
 
-async def test_confirmed_admin_fact_without_interaction_identity_stays_owner_shared():
+async def test_confirmed_admin_fact_without_interaction_identity_stays_owner_shared(tmp_path):
     backend = LockedBackend(FakeMemoryBackend())
+    command = _intent_command(request_id="owner-admin", attributes={}).model_copy(
+        update={"issuer": "admin"}
+    )
 
-    await apply_explicit_intent(backend, None, _intent_command(request_id="owner-admin"))
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await apply_explicit_intent(backend, None, command, canonical_facts=canonical)
 
     _, _, _, metadata = backend._inner.ingests[-1]
     assert metadata["audience"] == "owner"
 
 
-async def test_confirmed_council_interaction_uses_participant_scope():
+async def test_confirmed_council_interaction_uses_participant_scope(tmp_path):
     backend = LockedBackend(FakeMemoryBackend())
     cmd = _intent_command(
         request_id="council-private",
@@ -230,22 +241,24 @@ async def test_confirmed_council_interaction_uses_participant_scope():
         },
     )
 
-    await apply_explicit_intent(backend, None, cmd)
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await apply_explicit_intent(backend, None, cmd, canonical_facts=canonical)
 
     _, _, _, metadata = backend._inner.ingests[-1]
     assert metadata["audience"] == council_audience("planning-council")
 
 
-async def test_ingest_idempotent_on_redelivery():
+async def test_ingest_idempotent_on_redelivery(tmp_path):
     """Same intent_id → same fragment_id → chroma dedups."""
     backend = LockedBackend(FakeMemoryBackend())
     cmd = _intent_command(request_id="dedup-key", text="x")
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
     for _ in range(4):
-        await apply_explicit_intent(backend, None, cmd)
+        await apply_explicit_intent(backend, None, cmd, canonical_facts=canonical)
     assert len(backend._inner.docs) == 1
 
 
-async def test_structured_intent_projects_drawer_and_kg_with_same_source_event():
+async def test_structured_intent_projects_drawer_and_kg_with_same_source_event(tmp_path):
     backend = LockedBackend(FakeMemoryBackend())
     kg = SimpleNamespace(add_triple=AsyncMock(return_value="triple-1"))
     base = _intent_command(request_id="structured")
@@ -262,24 +275,37 @@ async def test_structured_intent_projects_drawer_and_kg_with_same_source_event()
         }
     )
 
-    resource_id = await apply_explicit_intent(backend, kg, cmd)
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    resource_id = await apply_explicit_intent(
+        backend, kg, cmd, canonical_facts=canonical
+    )
 
-    assert resource_id == "memoryintent:intent:structured"
+    assertion_id = canonical_assertion_id(
+        MEMORY_SPACE_ID,
+        companion_audience("companion-default"),
+        "user",
+        "likes",
+        "oolong",
+    )
+    assert resource_id == f"memoryintent:{assertion_id}"
     assert len(backend._inner.docs) == 1
     kg.add_triple.assert_awaited_once_with(
-        audience="owner",
+        audience=companion_audience("companion-default"),
         subject="user",
         predicate="likes",
         object="oolong",
         valid_from="2026-05-26T00:00:00Z",
         valid_to=None,
         confidence=0.99,
-        source_turn_id="turn-1",
+        source_turn_id=f"canonical:{assertion_id}",
+        assertion_id=assertion_id,
+        evidence_id="intent:structured",
+        projection_id=assertion_id,
         adapter_name="user-confirmed",
     )
 
 
-async def test_relationship_projection_is_not_promoted_out_of_companion_scope():
+async def test_relationship_projection_is_not_promoted_out_of_companion_scope(tmp_path):
     backend = LockedBackend(FakeMemoryBackend())
     kg = SimpleNamespace(add_triple=AsyncMock(return_value="triple-1"))
     base = _intent_command(
@@ -302,7 +328,8 @@ async def test_relationship_projection_is_not_promoted_out_of_companion_scope():
         }
     )
 
-    await apply_explicit_intent(backend, kg, cmd)
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    await apply_explicit_intent(backend, kg, cmd, canonical_facts=canonical)
 
     assert kg.add_triple.await_args.kwargs["audience"] == companion_audience(
         "companion-a"
@@ -497,7 +524,13 @@ async def test_exact_correction_uses_canonical_lifecycle_and_is_replay_safe(
     drawer = await backend.get_by_source_turn_id(
         MEMORY_SPACE_ID,
         "canonical:"
-        + canonical_assertion_id(MEMORY_SPACE_ID, "user", "likes", "oolong"),
+        + canonical_assertion_id(
+            MEMORY_SPACE_ID,
+            companion_audience("companion-default"),
+            "user",
+            "likes",
+            "oolong",
+        ),
     )
     assert drawer is not None
     assert drawer.metadata["privacy"] == "do_not_recall"
@@ -580,7 +613,7 @@ async def test_correction_without_exact_triple_fails_closed(tmp_path):
 # ─── Cmd dispatcher routes the kind ───────────────────────────────────────
 
 
-async def test_process_command_message_dispatches_user_confirm():
+async def test_process_command_message_dispatches_user_confirm(tmp_path):
     """The wire-level cmd payload reaches the explicit intent applier
     through ``process_command_message``'s elif branch."""
     backend = LockedBackend(FakeMemoryBackend())
@@ -592,9 +625,11 @@ async def test_process_command_message_dispatches_user_confirm():
         ack=AsyncMock(),
     )
     settings = load_memory_settings()
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
     await process_command_message(
         msg, backend=backend, kg=None, settings=settings,
         expected_memory_space_id=MEMORY_SPACE_ID,
+        canonical_facts=canonical,
     )
     docs = list(backend._inner.docs.values())
     assert len(docs) == 1

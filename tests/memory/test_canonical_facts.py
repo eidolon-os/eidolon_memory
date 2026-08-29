@@ -38,6 +38,7 @@ def _intent(
         object=object_,
         tool_call_id=f"call:{intent_id}",
         confidence=0.99,
+        attributes={"audience": "owner"},
     )
 
 
@@ -55,7 +56,7 @@ def _invalidation(intent_id: str = "intent:invalidate-1") -> MemoryIntent:
         object="乌龙茶",
         occurred_at="2026-06-02T00:00:00Z",
         confidence=1.0,
-        attributes={"reason": "changed preference"},
+        attributes={"reason": "changed preference", "audience": "owner"},
     )
 
 
@@ -136,7 +137,7 @@ async def test_single_slot_rejects_parallel_active_values(tmp_path: Path) -> Non
     with pytest.raises(CanonicalFactConflict, match="single predicate slot"):
         await ledger.register(second, targets={"kg"})
 
-    active = await ledger.active_for_slot(MEMORY_SPACE_ID, "self", "lives_in")
+    active = await ledger.active_for_slot(MEMORY_SPACE_ID, "owner", "self", "lives_in")
     assert [fact.object for fact in active] == ["常州"]
 
 
@@ -167,7 +168,7 @@ async def test_reactivation_stays_inactive_until_new_projections_are_visible(
     assert pending.reactivation_pending is True
     assert pending.projection_id == f"{pending.assertion_id}:activation:2"
     assert (await ledger.get_fact(
-        MEMORY_SPACE_ID, "self", "likes", "乌龙茶"
+        MEMORY_SPACE_ID, "owner", "self", "likes", "乌龙茶"
     )).state == "invalidated"
     with pytest.raises(RuntimeError, match="projections are still pending"):
         await ledger.mark_reactivated(MEMORY_SPACE_ID, reactivation.intent_id)
@@ -180,7 +181,7 @@ async def test_reactivation_stays_inactive_until_new_projections_are_visible(
     await ledger.mark_reactivated(MEMORY_SPACE_ID, reactivation.intent_id)
 
     active = await ledger.get_fact(
-        MEMORY_SPACE_ID, "self", "likes", "乌龙茶"
+        MEMORY_SPACE_ID, "owner", "self", "likes", "乌龙茶"
     )
     assert active is not None
     assert active.state == "active"
@@ -268,6 +269,7 @@ async def test_a_file_from_before_the_split_projection_columns_is_refused(
     intent = _intent("intent:1")
     assertion_id = canonical_assertion_id(
         MEMORY_SPACE_ID,
+        "owner",
         intent.subject,
         intent.predicate,
         intent.object,

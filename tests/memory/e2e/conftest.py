@@ -808,6 +808,7 @@ async def nats_publish_user_confirm(
     predicate: str | None = None,
     object_value: str | None = None,
     operation_hint: str = "confirm",
+    companion_id: str = "e2e",
 ) -> str:
     """Publish an explicit ``MemoryIntentCommand`` to the cmd subject.
 
@@ -834,6 +835,7 @@ async def nats_publish_user_confirm(
                     "wing": wing,
                     "memory_type": memory_type,
                     "importance": 5,
+                    "source_instance_id": companion_id,
                 },
             },
         }
@@ -862,6 +864,7 @@ async def nats_publish_exact_correction(
     object_value: str,
     text: str,
     request_id: str | None = None,
+    companion_id: str = "e2e",
 ) -> str:
     """Publish a business-level exact correction through ``MemoryIntent``."""
     payload = _base_cmd(user_id, "memory_intent", request_id)
@@ -881,6 +884,7 @@ async def nats_publish_exact_correction(
                 "object": object_value,
                 "occurred_at": payload["issued_at"],
                 "confidence": 1.0,
+                "attributes": {"source_instance_id": companion_id},
             },
         }
     )
@@ -902,10 +906,11 @@ async def nats_publish_commitment(
     beneficiaries: list[str] | None = None,
     participants: list[str] | None = None,
     due_at: str | None = None,
+    companion_id: str = "e2e",
 ) -> str:
     """Publish one explicit structured commitment revision."""
     payload = _base_cmd(user_id, "memory_intent", request_id)
-    attributes: dict[str, Any] = {}
+    attributes: dict[str, Any] = {"source_instance_id": companion_id}
     if beneficiaries is not None:
         attributes["beneficiaries"] = beneficiaries
     if participants is not None:

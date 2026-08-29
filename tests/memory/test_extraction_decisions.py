@@ -26,6 +26,7 @@ from eidolon.memory.domain.extraction_decision import (
 )
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.steward import StewardDecision
+from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 
 MEMORY_SPACE_ID = "r:alice:default"
@@ -127,6 +128,7 @@ async def test_projection_retry_reuses_persisted_decision_without_rerunning_stew
 
     backend = LockedBackend(FailFirstProjection())
     store = ExtractionDecisionLedger(tmp_path / "extraction_decisions.sqlite3")
+    canonical_path = tmp_path / "canonical.sqlite3"
     settings = load_memory_settings()
 
     first = _msg(turn, deliveries=1)
@@ -138,6 +140,7 @@ async def test_projection_retry_reuses_persisted_decision_without_rerunning_stew
         max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
         decision_store=store,
+        canonical_facts=CanonicalFactLedger(canonical_path),
     )
     first.nak.assert_awaited_once()
 
@@ -150,6 +153,7 @@ async def test_projection_retry_reuses_persisted_decision_without_rerunning_stew
         max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
         decision_store=ExtractionDecisionLedger(store.path),
+        canonical_facts=CanonicalFactLedger(canonical_path),
     )
 
     steward.decide.assert_awaited_once()
@@ -172,6 +176,7 @@ async def test_same_turn_redelivered_100_times_has_one_extraction(tmp_path: Path
     backend = LockedBackend(FakeMemoryBackend())
     settings = load_memory_settings()
     path = tmp_path / "extraction_decisions.sqlite3"
+    canonical_path = tmp_path / "canonical.sqlite3"
 
     for delivery in range(1, 101):
         msg = _msg(turn, deliveries=delivery)
@@ -183,6 +188,7 @@ async def test_same_turn_redelivered_100_times_has_one_extraction(tmp_path: Path
             max_deliveries=101,
             expected_memory_space_id=MEMORY_SPACE_ID,
             decision_store=ExtractionDecisionLedger(path),
+            canonical_facts=CanonicalFactLedger(canonical_path),
         )
         msg.ack.assert_awaited_once()
 

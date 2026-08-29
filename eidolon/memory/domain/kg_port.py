@@ -63,6 +63,9 @@ class KnowledgeGraphPort(Protocol):
         valid_to: str | None = None,
         confidence: float = 1.0,
         source_turn_id: str | None = None,
+        assertion_id: str | None = None,
+        evidence_id: str | None = None,
+        projection_id: str | None = None,
         adapter_name: str | None = None,
         sensitive: bool | None = None,
     ) -> str:
@@ -133,6 +136,16 @@ class KnowledgeGraphPort(Protocol):
         number of statements affected; zero is a legitimate answer for a turn that
         produced no triples.
         """
+        ...
+
+    async def forget_assertions(
+        self,
+        assertion_ids: Sequence[str],
+        *,
+        hard: bool = False,
+        ended: str | None = None,
+    ) -> int:
+        """Forget every projection of stable canonical assertions."""
         ...
 
     async def supersede(

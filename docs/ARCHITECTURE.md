@@ -66,7 +66,7 @@ EmbeddingPort ─────── OnnxSentenceEmbedder    进程内 ONNX,9 个
                   ├── HttpEmbedder            OpenAI 兼容的 /v1/embeddings
                   └── MemPalaceEmbedder       把 mempalace 自己那两个包成同一个形状
 
-                     ChromaEmbeddingFunction  把任一 port 装成 chroma 的 EF
+                     MemPalace 3.8 public API 显式接收 document/query vectors
 
 WarmableBackend      能力协议——存储自己回答能不能预热
 RoomGraphBackend     能力协议——存储自己回答能不能枚举房间
@@ -78,7 +78,7 @@ RoomGraphBackend     能力协议——存储自己回答能不能枚举房间
 `MemorySpaceRouter` 是把 space 从进程身份变回参数的那个东西——没有它，一个进程只能服务
 一个 space。
 
-`KnowledgeGraphPort` 存在的理由，2026-08-07 按 mempalace 3.6.0 的源码重新核过一遍，
+`KnowledgeGraphPort` 存在的理由，2026-08-29 按 mempalace 3.8.0 的源码重新核过一遍，
 **结论不变但其中一条当时说错了**：
 
 - **成立**：他们的 schema **没有** `space_id`、`audience`、`sensitive`。我们是多租户加两层
@@ -115,9 +115,10 @@ backend 的名字。两条在写出来时都抓到了真实违规。
 
 ## ledger 是什么
 
-字面是**账本**。在这里它指**记忆本体之外的记录**——记忆本体是向量库和图（"她喜欢乌龙茶"
-这件事本身），ledger 记的是围绕它发生过什么：谁确认过、什么时候被推翻、哪条命令处理到
-哪一步、哪个 turn 处理失败了。
+字面是**账本**。`canonical_facts` 是长期事实的事实源：assertion、evidence、audience 和生命周期
+先写入这里；Chroma drawer 与 temporal KG 都是带 assertion/evidence/projection identity 的
+可补偿投影。其余 ledger 记录抽取、命令、同步和承诺状态。不存在“自然 turn 的 Chroma 事实”
+与“显式 fact 的 ledger 事实”两套互相竞争的真相。
 
 6 个 ledger，共 **10 张表**：
 
@@ -140,17 +141,18 @@ backend 的名字。两条在写出来时都抓到了真实违规。
 register_invalidation()              ← ledger 记下失效请求
   ↓ 若 state == "applied" 则早返回     ← 幂等守卫，防止重复归档
   ↓
-用 registration.projection_id 定位向量库里那条 drawer
+用 assertion_id / projection_id 定位所有投影
   ↓
 archive_many()   ← 归档它，从此不再被召回
 kg.invalidate()  ← 图里的三元组同时失效
   ↓
-mark_invalidated()                   ← ledger 标记完成
+mark_invalidated()                   ← 两个投影完成后 ledger 标记完成
 ```
 
 **`projection_id` 是"该归档哪一条"的唯一线索**，它只存在于这个 ledger 里。所以
-`canonical_facts` 不可用时这条链根本不会启动——旧 drawer 不被归档，用户纠正过的事实继续
-被召回。用户会读作"它没在听"。这是为什么这个 ledger 是产品行为而不是记账。
+`canonical_facts` 不可用时事实写入和删除都 fail closed。隐私删除同样先写 tombstone/outbox，
+再按 assertion_id 删除 KG 和 drawer；硬删除会抹去 ledger 的明文 evidence，并保留不含事实内容
+的 opaque tombstone 阻止备份或旧事件重放复活。
 
 `commitments` 同理：它是 `eidolon_memory_commitments` 这个对外工具的唯一数据源。没有它，
 "你答应过我什么"的回答是空的，而不是"我不知道"。
@@ -186,10 +188,16 @@ ledger。曾有一段时间 sync ledger 被构造两次——router 一个、订
 
 ---
 
-## embedder：为什么这一层是我们的
+## embedder：公开接口与模型契约
 
-mempalace 用一个硬编码的 if/else 选 embedder，两个名字，没有 registry、没有 entry point、
-没有配置钩子——和它的图层同一个形状，也是我们自己写图的同一个理由。
+Eidolon 只拥有 BGE-small-zh 的 document/query 向量生成服务；不再向 MemPalace 注入私有
+embedder、embedding function 或 cache。MemPalace 3.8 的公开 `BaseCollection.upsert` 与
+`query(query_embeddings=...)` 接收显式 512 维向量，collection identity 使用官方
+`openai-compat` provider 配置。若公开接口不再满足 identity、维度或前缀契约，启动直接失败，
+不增加私有 workaround。
+
+MemPalace 3.8 的公开 collection API 接收显式 document/query vectors，并提供公开的
+OpenAI-compatible provider；Eidolon 不再写入它的私有 provider/cache。
 
 ### 抽象层与实现层，以及那条缝在哪里
 
@@ -201,16 +209,12 @@ domain/embedding_port.py          EmbeddingPort、EmbedderIdentity、EmbeddingEr
         ├── infrastructure/http_embedder.py             OpenAI 兼容 /v1/embeddings
         └── infrastructure/mempalace_embedder.py        mempalace 自己那两个
         │
-        ├── infrastructure/embedder_factory.py          配置 → 实现,唯一一处
-        └── infrastructure/chroma_embedding_function.py  port → chroma 的 EF
+        └── infrastructure/embedder_factory.py          配置 → 实现,唯一一处
 ```
 
-**Port 里不再有 chroma 的形状。** 之前 `name()`、`__call__`、`embed_query`、
-`embed_documents` 都在 encoder 上，于是"是一个 embedder"和"是一个 chroma embedding
-function"是同一个义务——第二个实现得去满足一个它根本不说话的向量库。现在 chroma 那套只在
-`ChromaEmbeddingFunction` 里，包住任意一个 port。`__call__` 的形参必须叫 `input`：
-mempalace 的 `probe_dimension` 是按关键字调的（`ef(input=["probe"])`），改名就是新建
-palace 定宽度那一刻的 `TypeError`。
+**Port 里没有 Chroma 的形状。** Adapter 通过 MemPalace 3.8 的公开 `embeddings` 与
+`query_embeddings` 参数传入向量；MemPalace 的 `openai-compat` 只负责 collection 的公开
+provider/identity 契约。读写路径不再依赖私有 `_EF_CACHE` 或 provider 解析函数。
 
 **换实现只改 `embedding.provider`**，别的什么都不动。已经真跑过一遍：对着一个 OpenAI 兼容
 端点端到端建出 palace，chroma 把声明的宽度持久化下来，再用 `provider: local` 去读，被
@@ -469,11 +473,9 @@ encode 铺到多线程，放进来更多只会把看得见的队列变成看不�
 Run 期间放开 GIL，重叠的请求是把 JSON 解析和 HTTP 组帧铺在别人的计算**旁边**而不是后面。
 16 并发下 8 之后就平了（233 → 226），再高只多攒住在途请求体，板子省不出这个内存。
 
-迁移不需要重建 palace，但需要显式写一行 `collection_name`：远端 embedder 的集合名是带前缀
-的（`http_bge_base_zh`），这是刻意的守卫，防止两个实现共用一个集合——远端的 "bge-base-zh"
-不是任何人对同一份权重的承诺。本地服务这一种情况权重确实同一份（实测最大分量差 2.9e-08，
-余弦 1.000000），所以把名字改回 `bge_base_zh_v15`，既有集合直接打开。漏写这行 chroma 会
-拒绝——那是守卫在起作用，不是 bug。
+3.8 部署使用全新 Palace 和 `bge_small_zh_v15`（512 维）identity；不迁移、不重解释旧向量。
+旧 Palace 保留但不挂载，销毁需要独立明确授权。collection identity 不匹配时 Chroma 拒绝打开，
+这是守卫在起作用，不是兼容层要绕过的错误。
 
 嵌入式存储有一个硬后果：**一份 palace 只能被一个进程持有**（chroma 没有服务端并发控制，
 SQLite ledger 是单写者）。所以第二个持有者被拒绝，这条由测试断言。注意它约束的是

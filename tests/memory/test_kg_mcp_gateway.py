@@ -313,6 +313,7 @@ async def test_canonical_stats_read_does_not_wait_for_backend_lock(tmp_path: Pat
             subject="self",
             predicate="likes",
             object="tea",
+            attributes={"audience": "owner"},
         ),
         targets={"kg"},
     )
@@ -361,6 +362,7 @@ async def test_canonical_history_tool_is_realm_bound_and_redacts_sensitive(
             subject="self",
             predicate="lives_in",
             object="常州",
+            attributes={"audience": "owner"},
         ),
         targets={"kg"},
     )
@@ -460,7 +462,11 @@ async def test_user_confirm_reports_accepted_not_applied_when_worker_is_silent(
         t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_user_confirm"
     )
 
-    result = await tool.fn(text="我喜欢乌龙茶", wait_applied_seconds=0.01)
+    result = await tool.fn(
+        text="我喜欢乌龙茶",
+        source_instance_id="companion-a",
+        wait_applied_seconds=0.01,
+    )
 
     assert result["status"] == "accepted"
     record = await ledger.get(result["request_id"])
@@ -484,6 +490,7 @@ async def test_user_confirm_accepts_idempotency_key_and_auto_routes_event(
 
     result = await tool.fn(
         text="明天我要去北京",
+        source_instance_id="companion-a",
         request_id="turn-1.memory-1",
         wait_applied_seconds=0.01,
     )
@@ -507,7 +514,11 @@ async def test_user_confirm_publish_failure_is_truthfully_failed(mcp_with_kg) ->
         t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_user_confirm"
     )
 
-    result = await tool.fn(text="我喜欢乌龙茶", wait_applied_seconds=0.01)
+    result = await tool.fn(
+        text="我喜欢乌龙茶",
+        source_instance_id="companion-a",
+        wait_applied_seconds=0.01,
+    )
 
     assert result["status"] == "failed"
     assert "NATS unavailable" in result["error"]
