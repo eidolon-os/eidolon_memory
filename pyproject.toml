@@ -7,7 +7,7 @@ name = "eidolon-memory"
 version = "0.1.0"
 description = "Eidolon semantic memory — MCP, NATS writes, JetStream"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
 dependencies = [
     "eidolon-memory-contracts",
@@ -65,7 +65,7 @@ include = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]
