@@ -648,7 +648,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help=(
             "Override palace directory "
-            "(default $EIDOLON_STATE_ROOT/memory/mempalaces/<memory_space_id>)"
+            "(default $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<memory_space_id>)"
         ),
     )
     # Whose memory this space is. Not a scope check — the space is already the

@@ -152,7 +152,7 @@ class RuntimeConfig(BaseModel):
     so the repo only ships code.
     """
 
-    palaces_root: str = ""  # default $EIDOLON_STATE_ROOT/memory/mempalaces
+    palaces_root: str = ""  # default $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8
     # Per-Realm SQLite/Chroma temporary files. Empty keeps them beside the
     # Palace root under ``.process-tmp``; env EIDOLON_MEMORY_PROCESS_TMP_ROOT
     # wins. The supervisor activates this before the child imports Chroma.

@@ -136,7 +136,7 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 │   一份 ONNX 会话给整块板,上面每个 agent 用 provider: http 指过来       │
 │   两个用户起就比每进程各带一份权重更省,并发下也更快                     │
 │                                                                    │
-│  palace 物理隔离: $EIDOLON_STATE_ROOT/memory/mempalaces/<id>/    │
+│  palace 物理隔离: $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<id>/ │
 └────────────────────────────────────────────────────────────────────┘
                               ▲             ▲
                               │             │
@@ -717,7 +717,7 @@ supervisor:
 ### 8.3 Palace 目录布局
 
 ```
-$EIDOLON_STATE_ROOT/memory/mempalaces/<memory_space_id>/
+$EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<memory_space_id>/
   ├─ chroma.sqlite3              # 向量 + 元数据 (chromadb, WAL)
   ├─ chroma.sqlite3-wal
   ├─ knowledge_graph.sqlite3     # bi-temporal KG (mempalace.KnowledgeGraph)
