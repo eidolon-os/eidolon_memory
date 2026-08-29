@@ -19,7 +19,10 @@ from eidolon.memory.infrastructure.mempalace_backend import (
     mempalace_backend_env,
     selected_mempalace_backend,
 )
-from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
+from eidolon.memory.infrastructure.palace_init import (
+    configure_shared_mempalace_home,
+    ensure_palace_initialized,
+)
 
 WINGS = [
     "Wing_Profile",
@@ -45,6 +48,7 @@ def _settings(args: argparse.Namespace) -> MemorySettings:
         {
             "mempalace": {
                 "backend": args.backend,
+                "offline_embedding": args.offline_embedding,
                 "qdrant_url": args.qdrant_url,
                 "qdrant_namespace": args.qdrant_namespace,
                 "qdrant_timeout_seconds": args.qdrant_timeout,
@@ -85,6 +89,7 @@ async def _seed(backend: Any, count: int) -> None:
                 "scope": "global",
                 "visibility": "all_devices",
                 "source_file": f"seed/concurrency/{idx}.txt",
+                "audience": "companion:benchmark",
             },
         )
 
@@ -105,6 +110,8 @@ async def _run_search(
         context=MemoryActorContext(
             memory_realm_id="bench",
             memory_space_id="bench",
+            owner_id="benchmark-owner",
+            companion_id="benchmark",
         ),
         top_k=top_k,
         wing=None,
@@ -120,6 +127,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     apply_mempalace_backend_env(settings)
     backend_name = selected_mempalace_backend(settings)
     palace = Path(args.palace).expanduser().resolve()
+    configure_shared_mempalace_home(palace.parent)
     ensure_palace_initialized(
         "bench",
         palace,
@@ -159,6 +167,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                             "scope": "global",
                             "visibility": "all_devices",
                             "source_file": f"stress/concurrency/{idx}.txt",
+                            "audience": "companion:benchmark",
                         },
                     )
                 else:
@@ -197,6 +206,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 "count": len(values),
                 "p50": _percentile(values, 0.50),
                 "p95": _percentile(values, 0.95),
+                "p99": _percentile(values, 0.99),
                 "mean": statistics.fmean(values) if values else 0.0,
             }
             for key, values in latencies.items()
@@ -214,6 +224,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=40)
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--raw", action="store_true", help="Bypass LockedBackend.")
+    parser.add_argument(
+        "--offline-embedding",
+        action="store_true",
+        help="Use deterministic 512-dimension vectors for storage/concurrency only.",
+    )
     parser.add_argument("--qdrant-url", default="http://127.0.0.1:6333")
     parser.add_argument("--qdrant-namespace", default="eidolon-concurrency")
     parser.add_argument("--qdrant-timeout", type=float, default=10.0)

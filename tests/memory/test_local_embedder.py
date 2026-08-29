@@ -11,8 +11,7 @@ configured embedder is what made every quality figure this project published
 before 2026-08-03 measure the wrong thing, for four probe runs, with nothing
 anywhere reporting a problem.
 
-The file is in three parts: the port and its three implementations, the Chroma
-shape that wraps any of them, and installing one into MemPalace.
+The file covers the port, its three implementations, and configuration transport.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ from eidolon.memory.domain.embedding_port import (
     is_local_model,
     local_model_spec,
 )
-from eidolon.memory.infrastructure.chroma_embedding_function import ChromaEmbeddingFunction
 from eidolon.memory.infrastructure.embedder_factory import build_embedder
 from eidolon.memory.infrastructure.http_embedder import HttpEmbedder
 from eidolon.memory.infrastructure.mempalace_embedder import MemPalaceEmbedder
@@ -564,82 +562,6 @@ def test_a_width_that_cannot_be_declared_is_refused_at_construction() -> None:
         )
 
 
-# ── the Chroma shape, once, around any port ───────────────────────────────────
-
-
-class _StubPort:
-    """A port that records which side it was asked for."""
-
-    def __init__(self) -> None:
-        self.documents: list[list[str]] = []
-        self.queries: list[list[str]] = []
-
-    def identity(self):
-        from eidolon.memory.domain.embedding_port import EmbedderIdentity
-
-        return EmbedderIdentity(name="stub_v1", dimension=2)
-
-    def embed_documents(self, texts):
-        self.documents.append(list(texts))
-        return [[1.0, 0.0] for _ in texts]
-
-    def embed_queries(self, texts):
-        self.queries.append(list(texts))
-        return [[0.0, 1.0] for _ in texts]
-
-
-def test_the_chroma_adapter_wraps_any_port() -> None:
-    """Which is what makes a second implementation cost nothing here."""
-
-    port = _StubPort()
-    ef = ChromaEmbeddingFunction(port)
-
-    assert ef.name() == "stub_v1"
-    assert ef.dimension == 2
-    assert ef(["a"]) == [[1.0, 0.0]]
-    assert ef.embed_documents(["b"]) == [[1.0, 0.0]]
-    assert ef.embed_query(["c"]) == [[0.0, 1.0]]
-    assert port.documents == [["a"], ["b"]]
-    assert port.queries == [["c"]]
-
-
-def test_the_adapter_takes_input_by_keyword() -> None:
-    """MemPalace's ``probe_dimension`` calls ``ef(input=["probe"])``.
-
-    Renaming the parameter is a ``TypeError`` at the moment a fresh palace is
-    deciding its vector width — which is both the least recoverable moment and the
-    one nothing else exercises.
-    """
-
-    ef = ChromaEmbeddingFunction(_StubPort())
-
-    assert ef(input=["probe"]) == [[1.0, 0.0]]
-
-
-def test_the_adapter_counts_a_bare_string_as_one_text() -> None:
-    """Chroma really does pass one, and iterating it would return one garbage
-    vector per character without error. The opposite of what the port does, and
-    for the opposite reason: here the caller is not ours."""
-
-    port = _StubPort()
-    ChromaEmbeddingFunction(port)("一句话")
-
-    assert port.documents == [["一句话"]]
-
-
-def test_the_adapter_embeds_nothing_for_no_documents() -> None:
-    """Chroma calls the embedding function with no documents during setup, and
-    that call must not pay for a model download."""
-
-    port = _StubPort()
-    ef = ChromaEmbeddingFunction(port)
-
-    assert ef([]) == []
-    assert ef(None) == []
-    assert ef.embed_query([]) == []
-    assert port.documents == [] and port.queries == []
-
-
 # ── the factory: one config change, a different implementation ─────────────────
 
 
@@ -887,207 +809,6 @@ def test_the_offline_vector_width_follows_the_configured_embedder() -> None:
     )
 
 
-# ── installing it into MemPalace ──────────────────────────────────────────────
-#
-# MemPalace picks its encoder with a hardcoded if/else and offers no registry.
-# What it has is a process-level cache keyed on (model, providers), and seeding
-# that is the only extension surface. These tests are about the ways that can fail
-# without anyone noticing.
-
-
-@pytest.fixture
-def restore_upstream_cache():
-    """Save and restore MemPalace's process-level embedder cache.
-
-    Process-global, so a test that seeds it and does not clean up decides what
-    every later test resolves.
-    """
-
-    import mempalace.embedding as upstream
-
-    from eidolon.memory.infrastructure.embedder_factory import reset_active_embedder
-
-    before = dict(upstream._EF_CACHE)
-    before_dims = dict(upstream._DIM_CACHE)
-    try:
-        yield upstream
-    finally:
-        # Reassigned rather than cleared in place: one test deletes ``_EF_CACHE``
-        # entirely to check that a missing upstream symbol raises, and this
-        # fixture tears down before ``monkeypatch`` puts it back.
-        upstream._EF_CACHE = before
-        upstream._DIM_CACHE = before_dims
-        reset_active_embedder()
-
-
-def test_a_mempalace_model_registers_nothing(monkeypatch, restore_upstream_cache) -> None:
-    """Configuring one of theirs is not an error and must not install ours.
-
-    The model is set here rather than read from the ambient environment, because
-    MemPalace is configured process-globally and anything that opened a router
-    earlier in the session has already written to it. An earlier version of this
-    test asserted against whatever was left over, and passed or failed by test
-    order.
-    """
-
-    from eidolon.memory.infrastructure import embedder_registration
-
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_MODEL", "minilm")
-    monkeypatch.delenv("EIDOLON_EMBEDDING_CONFIG", raising=False)
-
-    assert embedder_registration.register_embedder() is None
-
-
-def test_registration_is_resolved_by_the_public_function(
-    monkeypatch, restore_upstream_cache
-) -> None:
-    """The point of the whole exercise.
-
-    A key computed differently from MemPalace's own would leave the entry in a
-    slot nothing reads — the palace would then be built with minilm and nothing
-    would say so. So this asserts through ``get_embedding_function()``, which is
-    what every MemPalace consumer actually calls, including its internals.
-    """
-
-    from eidolon.memory.infrastructure.embedder_registration import register_embedder
-
-    upstream = restore_upstream_cache
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_MODEL", "bge-small-zh")
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_DEVICE", "cpu")
-    monkeypatch.delenv("EIDOLON_EMBEDDING_CONFIG", raising=False)
-
-    assert register_embedder() == "bge-small-zh"
-
-    resolved = upstream.get_embedding_function()
-    assert isinstance(resolved, ChromaEmbeddingFunction)
-    assert isinstance(resolved.port, OnnxSentenceEmbedder)
-    assert resolved.name() == "bge_small_zh_v15"
-
-    # And MemPalace's identity, which is what gets written to the palace marker
-    # the benchmark preflight checks.
-    assert upstream.current_model_name() == "bge-small-zh"
-
-
-def test_a_hosted_embedder_installs_the_same_way(monkeypatch, restore_upstream_cache) -> None:
-    """The seam's actual claim: switching implementations is a config change.
-
-    Nothing in the registration path knows which implementation it is holding.
-    Upstream's cache is keyed on a model *name* and it accepts any string it does
-    not recognise, so the name is a label and what sits behind it is ours.
-    """
-
-    from eidolon.memory.infrastructure.embedder_factory import active_embedder
-    from eidolon.memory.infrastructure.embedder_registration import register_embedder
-
-    upstream = restore_upstream_cache
-    config = EmbeddingConfig.model_validate(
-        {
-            "provider": "http",
-            "model": "hosted-bge-m3",
-            "http": {"base_url": "https://embeddings.invalid/v1", "dimension": 1024},
-        }
-    )
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_MODEL", "hosted-bge-m3")
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_DEVICE", "cpu")
-
-    assert register_embedder(config) == "hosted-bge-m3"
-
-    resolved = upstream.get_embedding_function()
-    assert isinstance(resolved.port, HttpEmbedder)
-    assert resolved.name() == "http_hosted_bge_m3"
-    assert resolved.dimension == 1024
-    # And our own read path holds the same instance, not a second one — which for
-    # the local implementation would be a second copy of the weights.
-    assert active_embedder() is resolved.port
-
-
-def test_the_two_places_the_model_name_comes_from_must_agree(
-    monkeypatch, restore_upstream_cache
-) -> None:
-    """One is the cache key MemPalace looks up; the other decides what we put in it.
-
-    They diverge when the environment was not applied from these settings — a bench
-    that copied some sections of its child's config and not others, for instance,
-    which is how the parent and the child came to disagree about the embedder once
-    already.
-    """
-
-    from eidolon.memory.infrastructure.embedder_registration import (
-        EmbedderRegistrationError,
-        register_embedder,
-    )
-
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_MODEL", "bge-base-zh")
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_DEVICE", "cpu")
-
-    with pytest.raises(EmbedderRegistrationError, match="while embedding.model is"):
-        register_embedder(EmbeddingConfig(provider="local", model="bge-small-zh"))
-
-
-def test_registering_twice_reuses_the_first_instance(
-    monkeypatch, restore_upstream_cache
-) -> None:
-    """Six call sites reach the hook; a second call must not build a second
-    session."""
-
-    from eidolon.memory.infrastructure.embedder_registration import register_embedder
-
-    upstream = restore_upstream_cache
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_MODEL", "bge-small-zh")
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_DEVICE", "cpu")
-    monkeypatch.delenv("EIDOLON_EMBEDDING_CONFIG", raising=False)
-
-    register_embedder()
-    first = upstream.get_embedding_function()
-    register_embedder()
-
-    assert upstream.get_embedding_function() is first
-
-
-def test_a_missing_upstream_symbol_raises_instead_of_falling_back(
-    monkeypatch, restore_upstream_cache
-) -> None:
-    """A fallback here means running on MemPalace's English-only default.
-
-    Elsewhere we give upstream internals local fallbacks (see
-    ``mempalace_compat``). Not here: degrading silently is the failure being
-    prevented, so an upstream rename must stop the process.
-    """
-
-    from eidolon.memory.infrastructure.embedder_registration import (
-        EmbedderRegistrationError,
-        register_embedder,
-    )
-
-    upstream = restore_upstream_cache
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_MODEL", "bge-small-zh")
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_DEVICE", "cpu")
-    monkeypatch.delenv("EIDOLON_EMBEDDING_CONFIG", raising=False)
-    monkeypatch.delattr(upstream, "_EF_CACHE")
-
-    with pytest.raises(EmbedderRegistrationError, match="no longer exposes"):
-        register_embedder()
-
-
-def test_a_key_that_does_not_match_is_reported(monkeypatch, restore_upstream_cache) -> None:
-    """If our key ever diverges from MemPalace's, the entry is unreachable.
-
-    Simulated by making the verification resolve something else, because the
-    real divergence would come from an upstream change we cannot produce here.
-    """
-
-    from eidolon.memory.infrastructure import embedder_registration
-
-    upstream = restore_upstream_cache
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_MODEL", "bge-small-zh")
-    monkeypatch.setenv("MEMPALACE_EMBEDDING_DEVICE", "cpu")
-    monkeypatch.delenv("EIDOLON_EMBEDDING_CONFIG", raising=False)
-    monkeypatch.setattr(upstream, "get_embedding_function", lambda *a, **k: object())
-
-    with pytest.raises(embedder_registration.EmbedderRegistrationError, match="resolved"):
-        embedder_registration.register_embedder()
-
-
 # ── carrying the choice to a child process ────────────────────────────────────
 
 
@@ -1119,7 +840,8 @@ def test_the_whole_section_travels_in_one_variable() -> None:
 
     env = mempalace_backend_env(settings, base={})
 
-    assert env["MEMPALACE_EMBEDDING_MODEL"] == "hosted-bge-m3"
+    assert env["MEMPALACE_EMBEDDING_MODEL"] == "openai-compat"
+    assert env["MEMPALACE_EMBEDDING_API_MODEL"] == "hosted-bge-m3"
     assert "https://embeddings.invalid/v1" in env["EIDOLON_EMBEDDING_CONFIG"]
 
 
@@ -1171,6 +893,25 @@ def test_an_environment_without_our_variable_still_describes_itself(monkeypatch)
 
 
 # ── the read path holds the port ──────────────────────────────────────────────
+
+
+class _StubPort:
+    def __init__(self) -> None:
+        self.documents: list[list[str]] = []
+        self.queries: list[list[str]] = []
+
+    def identity(self):
+        from eidolon.memory.domain.embedding_port import EmbedderIdentity
+
+        return EmbedderIdentity(name="stub_v1", dimension=2)
+
+    def embed_documents(self, texts):
+        self.documents.append(list(texts))
+        return [[1.0, 0.0] for _ in texts]
+
+    def embed_queries(self, texts):
+        self.queries.append(list(texts))
+        return [[0.0, 1.0] for _ in texts]
 
 
 def test_the_query_path_embeds_on_the_query_side(monkeypatch) -> None:

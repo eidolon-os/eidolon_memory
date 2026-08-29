@@ -10,19 +10,17 @@ embedding:
   # one — Chroma persists the embedder on the collection — so switching means
   # deleting palaces_root.
   #
-  # This machine runs bge-large-zh; the Pi runs bge-base-zh. Measured on a Pi 5
-  # over 1000 C-MTEB VideoRetrieval queries (benchmarks/results/bge-base-pi5):
-  # large scores MRR 0.813 against base's 0.787, for 626 MB on disk against 198
-  # and 104 ms/doc against 32. A laptop can pay that and the board cannot, which
-  # is the whole reason the two differ.
-  # EIDOLON_MEMORY_EMBEDDING_MODEL overrides this, so a Host chooses its
-  # encoder without anyone rewriting this file.
-  provider: local
-  model: bge-large-zh
-  device: cpu
-  # Empty: bge downloads through the normal HF cache. The directory that used to
-  # be here holds embeddinggemma's files, which this model does not read.
-  model_dir: ''
+  # MemPalace 3.8 exposes an OpenAI-compatible provider and explicit vector APIs.
+  # All Memory processes use the existing single embedding service; no process
+  # injects Eidolon providers into MemPalace internals or loads another copy of
+  # the model. BGE-small-zh uses no query/document prefix in this deployment.
+  provider: http
+  model: bge-small-zh
+  http:
+    base_url: http://127.0.0.1:8760/v1
+    model: bge-small-zh
+    dimension: 512
+    collection_name: bge_small_zh_v15
 nats:
   url: nats://127.0.0.1:4222
 llm:

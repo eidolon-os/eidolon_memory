@@ -27,7 +27,6 @@ from eidolon.memory.domain.room_graph import RoomGraphSnapshot, RoomNode
 from eidolon.memory.domain.wire import MemoryWireRecord, parse_memory_datetime
 from eidolon.memory.infrastructure.embedder_factory import active_embedder
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
-from eidolon.memory.infrastructure.mempalace_hnsw import probe_hnsw_safety
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
@@ -81,7 +80,7 @@ class MemPalacePythonBackend(MemoryBackend):
             from mempalace.palace import get_collection
             from mempalace.palace_graph import build_graph, graph_stats
 
-            collection = get_collection(self._palace, create=False)
+            collection = get_collection(self._palace, create=False, read_only=True)
             if collection is None:
                 return None
             raw_nodes, _raw_edges = build_graph(col=collection)
@@ -119,9 +118,6 @@ class MemPalacePythonBackend(MemoryBackend):
         await asyncio.to_thread(self._warm_read_path_sync, tuple(wings))
 
     def _warm_read_path_sync(self, wings: tuple[str, ...]) -> None:
-        from mempalace.palace import get_closets_collection
-        from mempalace.searcher import search_memories
-
         log.info("warm_embedding_start", palace=self._palace)
         # Through the port, and on the query side, because what this is warming is
         # the read path: a first call pays the model load, and for a hosted
@@ -129,14 +125,19 @@ class MemPalacePythonBackend(MemoryBackend):
         # leave the query-side prefix cold, which for E5 is a different code path.
         active_embedder().embed_queries(["eidolon memory warmup"])
 
-        get_closets_collection(self._palace, create=True)
-
         for wing_id in wings:
-            data = search_memories("warmup", palace_path=self._palace, wing=wing_id, n_results=1)
-            if isinstance(data, dict) and data.get("error"):
-                log.warning("warm_search_failed", wing=wing_id, error=data.get("error"))
-            else:
+            try:
+                search_memories_shared_embedding(
+                    "warmup",
+                    self._palace,
+                    wings=[wing_id],
+                    room=None,
+                    n_results=1,
+                    skip_closets=True,
+                )
                 log.info("warm_search_ok", wing=wing_id)
+            except MemoryBackendUnavailable as exc:
+                log.warning("warm_search_failed", wing=wing_id, error=str(exc))
 
         log.info("warm_complete", palace=self._palace, wings=len(wings))
 
@@ -172,7 +173,7 @@ class MemPalacePythonBackend(MemoryBackend):
             # searcher would invoke the real embedder, which is the thing this
             # mode exists to avoid; ranking is not meaningful here anyway.
             try:
-                collection = _get_collection(self._palace, create=False)
+                collection = _get_read_collection(self._palace)
                 where: dict[str, Any] = {"wing": wing}
                 if room:
                     where = {"$and": [where, {"room": room}]}
@@ -195,53 +196,20 @@ class MemPalacePythonBackend(MemoryBackend):
             except Exception as exc:
                 raise MemoryBackendUnavailable(str(exc)) from exc
 
-        if audiences is not None:
-            raw = search_memories_shared_embedding(
-                query,
-                self._palace,
-                wings=[wing],
-                room=room,
-                audiences=audiences,
-                n_results=n_results,
-                skip_closets=False,
-            )
-            records = parse_search_tool_payload(
-                {"results": raw},
-                default_memory_space_id=self._memory_space_id,
-            )
-            return apply_recall_policy(records, self._settings)
-
-        try:
-            from mempalace.searcher import search_memories
-        except ImportError as exc:
-            raise MemoryBackendUnavailable("mempalace package is not installed") from exc
-
-        hnsw_safety = probe_hnsw_safety(self._palace)
-        if hnsw_safety.vector_disabled:
-            log.warning(
-                "mempalace_hnsw_vector_disabled",
-                palace=self._palace,
-                status=hnsw_safety.status,
-                reason=hnsw_safety.message,
-            )
-        data = search_memories(
-            query=query,
-            palace_path=self._palace,
-            wing=wing,
+        raw = search_memories_shared_embedding(
+            query,
+            self._palace,
+            wings=[wing],
             room=room,
+            audiences=audiences,
             n_results=n_results,
-            vector_disabled=hnsw_safety.vector_disabled,
+            skip_closets=False,
         )
-        if isinstance(data, dict) and data.get("error"):
-            raise MemoryBackendUnavailable(str(data.get("error")))
         records = parse_search_tool_payload(
-            data,
+            {"results": raw},
             default_memory_space_id=self._memory_space_id,
         )
-        return apply_recall_policy(
-            self._hydrate_hit_metadata(records),
-            self._settings,
-        )
+        return apply_recall_policy(records, self._settings)
 
     async def search_scoped(
         self,
@@ -274,6 +242,34 @@ class MemPalacePythonBackend(MemoryBackend):
         audiences: tuple[str, ...] | None = None,
         skip_closets: bool = False,
     ) -> list[MemoryWireRecord]:
+        if self._settings.mempalace.offline_embedding:
+            try:
+                collection = _get_read_collection(self._palace)
+                filters: list[dict[str, Any]] = [{"wing": {"$in": list(wings)}}]
+                if room:
+                    filters.append({"room": room})
+                if audiences is not None:
+                    filters.append({"audience": {"$in": list(audiences)}})
+                where = filters[0] if len(filters) == 1 else {"$and": filters}
+                result = collection.query(
+                    query_embeddings=[
+                        _deterministic_embedding(
+                            query, dim=_offline_embedding_dim(self._settings)
+                        )
+                    ],
+                    n_results=n_results,
+                    where=where,
+                    include=["documents", "metadatas", "distances"],
+                )
+                return apply_recall_policy(
+                    _records_from_query_result(result), self._settings
+                )
+            except ImportError as exc:
+                raise MemoryBackendUnavailable(
+                    "mempalace package is not installed"
+                ) from exc
+            except Exception as exc:
+                raise MemoryBackendUnavailable(str(exc)) from exc
         raw = search_memories_shared_embedding(
             query,
             self._palace,
@@ -291,75 +287,6 @@ class MemPalacePythonBackend(MemoryBackend):
         # Chroma's stored metadata directly, so privacy/provenance are already
         # present and no second collection.get hydration round is required.
         return apply_recall_policy(records, self._settings)
-
-    def _hydrate_hit_metadata(
-        self,
-        records: list[MemoryWireRecord],
-    ) -> list[MemoryWireRecord]:
-        """Batch-load metadata only for current hits, independent of Realm size.
-
-        MemPalace 3.5's public search payload drops drawer IDs and custom
-        metadata. Eidolon-owned drawers have deterministic IDs, so one bounded
-        ``get(ids=...)`` restores privacy/provenance without caching every
-        archived drawer accumulated over the user's lifetime.
-        """
-        if not records:
-            return []
-        try:
-            collection = _get_collection(self._palace, create=False)
-            expected = [
-                (
-                    _drawer_id(
-                        str(record.metadata.get("wing") or ""),
-                        str(record.metadata.get("room") or record.key or ""),
-                        str(
-                            record.metadata.pop(
-                                "_raw_search_text",
-                                _drawer_content_text(record.value),
-                            )
-                        ),
-                    ),
-                    record,
-                )
-                for record in records
-            ]
-            result = collection.get(
-                ids=list(dict.fromkeys(drawer_id for drawer_id, _record in expected)),
-                include=["metadatas"],
-            )
-            ids = _ids(result)
-            metadatas = _metadatas(result)
-            if len(ids) != len(metadatas):
-                raise MemoryBackendUnavailable("hit metadata query returned inconsistent rows")
-            stored = dict(zip(ids, metadatas, strict=True))
-            hydrated: list[MemoryWireRecord] = []
-            for drawer_id, record in expected:
-                metadata = stored.get(drawer_id)
-                if metadata is None:
-                    log.warning(
-                        "mempalace_hit_metadata_unverified",
-                        drawer_id=drawer_id,
-                        wing=record.metadata.get("wing"),
-                        room=record.metadata.get("room"),
-                    )
-                    record.metadata = {
-                        **record.metadata,
-                        "_storage_metadata_verified": False,
-                    }
-                else:
-                    record.metadata = {
-                        **record.metadata,
-                        **metadata,
-                        "_storage_metadata_verified": True,
-                    }
-                hydrated.append(record)
-            return hydrated
-        except Exception as exc:
-            # Privacy policy is fail-closed: metadata verification failure must
-            # degrade recall, never expose a potentially archived drawer.
-            raise MemoryBackendUnavailable(
-                f"failed to verify memory hit metadata: {exc}"
-            ) from exc
 
     async def ingest_text(
         self,
@@ -434,7 +361,7 @@ class MemPalacePythonBackend(MemoryBackend):
         if not rows:
             return
         try:
-            collection = _get_collection(self._palace, create=True)
+            collection = _get_write_collection(self._palace, create=True)
         except ImportError as exc:
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
 
@@ -467,6 +394,15 @@ class MemPalacePythonBackend(MemoryBackend):
                 dim = _offline_embedding_dim(self._settings)
                 upsert_kwargs["embeddings"] = [
                     _deterministic_embedding(r[1], dim=dim) for r in fresh
+                ]
+            else:
+                embeddings = active_embedder().embed_documents([r[1] for r in fresh])
+                if len(embeddings) != len(fresh) or any(not row for row in embeddings):
+                    raise MemoryBackendWriteFailed(
+                        "configured embedder returned an incomplete document batch"
+                    )
+                upsert_kwargs["embeddings"] = [
+                    [float(value) for value in row] for row in embeddings
                 ]
             collection.upsert(**upsert_kwargs)
 
@@ -530,7 +466,7 @@ class MemPalacePythonBackend(MemoryBackend):
     async def get(self, memory_space_id: str, key: str) -> MemoryWireRecord | None:
         del memory_space_id
         try:
-            collection = _get_collection(self._palace, create=False)
+            collection = _get_read_collection(self._palace)
             result = collection.get(ids=[key], include=["documents", "metadatas"])
         except ImportError as exc:
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
@@ -562,7 +498,7 @@ class MemPalacePythonBackend(MemoryBackend):
         if not wanted:
             return []
         try:
-            collection = _get_collection(self._palace, create=False)
+            collection = _get_read_collection(self._palace)
             result = collection.get(ids=wanted, include=["documents", "metadatas"])
         except ImportError as exc:
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
@@ -587,7 +523,7 @@ class MemPalacePythonBackend(MemoryBackend):
         clause; order is backend-defined).
         """
         try:
-            collection = _get_collection(self._palace, create=False)
+            collection = _get_read_collection(self._palace)
         except ImportError as exc:
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
 
@@ -636,7 +572,7 @@ class MemPalacePythonBackend(MemoryBackend):
         if not tenant or not turn:
             return None
         try:
-            collection = _get_collection(self._palace, create=False)
+            collection = _get_read_collection(self._palace)
         except ImportError as exc:
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
 
@@ -676,7 +612,7 @@ class MemPalacePythonBackend(MemoryBackend):
     async def delete_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
         unique_ids = _validated_privacy_drawer_ids(keys)
         try:
-            collection = _get_collection(self._palace, create=False)
+            collection = _get_write_collection(self._palace, create=False)
             existing = collection.get(ids=unique_ids, include=["documents", "metadatas"])
             _assert_privacy_batch_tenant(
                 existing,
@@ -699,7 +635,7 @@ class MemPalacePythonBackend(MemoryBackend):
     async def archive_many(self, memory_space_id: str, keys: list[str]) -> list[str]:
         unique_ids = _validated_privacy_drawer_ids(keys)
         try:
-            collection = _get_collection(self._palace, create=False)
+            collection = _get_write_collection(self._palace, create=False)
             existing = collection.get(ids=unique_ids, include=["documents", "metadatas"])
             _assert_privacy_batch_tenant(
                 existing,
@@ -763,7 +699,7 @@ class MemPalacePythonBackend(MemoryBackend):
         unique_ids = _validated_privacy_drawer_ids(keys)
         target = validate_audience(audience)
         try:
-            collection = _get_collection(self._palace, create=False)
+            collection = _get_write_collection(self._palace, create=False)
             existing = collection.get(ids=unique_ids, include=["documents", "metadatas"])
             _assert_privacy_batch_tenant(
                 existing,
@@ -847,7 +783,13 @@ def apply_recall_policy(
     return filtered[: settings.recall.top_k]
 
 
-def _get_collection(palace_path: str, *, create: bool):
+def _get_read_collection(palace_path: str):
+    from mempalace.palace import get_collection
+
+    return get_collection(palace_path, create=False, read_only=True)
+
+
+def _get_write_collection(palace_path: str, *, create: bool):
     from mempalace.palace import get_collection
 
     return get_collection(palace_path, create=create)

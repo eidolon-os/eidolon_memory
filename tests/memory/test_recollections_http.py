@@ -175,10 +175,19 @@ def test_a_runner_is_spawned_with_the_environment_it_needs_to_embed(
     from eidolon.memory.config.memory_settings import MemorySettings
     from eidolon.memory.entrypoints import supervisor as supervisor_module
 
-    settings = MemorySettings()
-    settings.embedding.provider = "local"
-    settings.embedding.model = "bge-base-zh"
-    settings.embedding.model_dir = "/var/lib/eidolon/models/bge-base-zh"
+    settings = MemorySettings.model_validate(
+        {
+            "embedding": {
+                "provider": "http",
+                "model": "bge-small-zh",
+                "http": {
+                    "base_url": "http://127.0.0.1:8099/v1",
+                    "model": "bge-small-zh-v1.5",
+                    "dimension": 512,
+                },
+            }
+        }
+    )
 
     subject = supervisor_module.Supervisor.__new__(supervisor_module.Supervisor)
     subject._settings = settings
@@ -186,14 +195,11 @@ def test_a_runner_is_spawned_with_the_environment_it_needs_to_embed(
     environment = subject._child_environment(Path("/tmp/palace"), "r_1")
 
     # The names the child's own factory reads, not the ones settings use.
-    assert environment["MEMPALACE_EMBEDDING_MODEL_DIR"] == (
-        "/var/lib/eidolon/models/bge-base-zh"
-    )
-    assert environment["MEMPALACE_EMBEDDING_MODEL"] == "bge-base-zh"
-    # MemPalace 3.6+ puts its cross-process Chroma write lock below HOME.
-    # The systemd account deliberately inherits /nonexistent, so a runner that
-    # does not override it is read-only by accident while still reporting ready.
-    assert environment["HOME"] == "/tmp/palace"
+    assert environment["MEMPALACE_EMBEDDING_MODEL"] == "openai-compat"
+    assert environment["MEMPALACE_EMBEDDING_API_MODEL"] == "bge-small-zh-v1.5"
+    # MemPalace keys locks by Palace path. One shared writable HOME is required
+    # so every process contending for the same Palace sees the same lock file.
+    assert environment["HOME"] == "/tmp/.mempalace-home"
     assert environment["MEMPALACE_PALACE_PATH"] == "/tmp/palace"
     # And still its own temp isolation, which is what it used to have alone.
     assert environment["TMPDIR"] == environment["SQLITE_TMPDIR"]

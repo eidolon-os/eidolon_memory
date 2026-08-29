@@ -14,11 +14,10 @@ is precisely when the embedder matters — it fixes the vector width and the nam
 Chroma persists. The whole section travels as one JSON variable rather than as a
 field per setting, so adding a setting does not also mean remembering to plumb it.
 
-``active_embedder`` is the process's encoder, for our own read path. It used to
-reach ``mempalace.embedding.get_embedding_function()``, which meant our query
-embedding was resolved through a library whose choice of embedder we had already
-had to override. Seeding that cache remains right for MemPalace's *internal* ingest
-and search, which we do not control; our own calls have no reason to go through it.
+``active_embedder`` is the process's encoder for explicit document and query
+vectors. MemPalace 3.8 exposes those parameters on its public collection API, so
+the storage layer no longer installs anything into MemPalace's private provider
+cache.
 """
 
 from __future__ import annotations
@@ -53,10 +52,7 @@ def build_embedder(
 ) -> EmbeddingPort:
     """The implementation ``config`` selects.
 
-    ``preferred_providers`` is passed through for the local implementation only,
-    and comes from MemPalace's own device resolution rather than from our
-    ``device`` string — see ``embedder_registration``, where the same resolution
-    also has to produce a matching cache key.
+    ``preferred_providers`` is passed through for the local implementation only.
     """
 
     provider = config.resolved_provider()

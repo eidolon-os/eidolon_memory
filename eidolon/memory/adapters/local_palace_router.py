@@ -44,6 +44,7 @@ from eidolon.memory.config.palace_directory import (
     LEDGERS_DIR_SUFFIX,
     resolve_ledgers_for_memory_space,
     resolve_palace_for_memory_space,
+    resolve_palaces_root,
 )
 from eidolon.memory.domain.space_runtime import (
     MemorySpaceRuntime,
@@ -69,7 +70,10 @@ from eidolon.memory.infrastructure.mempalace_backend import (
     vector_sqlite_integrity_targets,
 )
 from eidolon.memory.infrastructure.nats.names import nats_safe_name
-from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
+from eidolon.memory.infrastructure.palace_init import (
+    configure_shared_mempalace_home,
+    ensure_palace_initialized,
+)
 from eidolon.memory.infrastructure.sync_ledger import SyncLedger
 from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
@@ -153,6 +157,7 @@ class LocalPalaceRouter:
         palace_path_override: str | None = None,
     ) -> None:
         self._settings = settings
+        configure_shared_mempalace_home(resolve_palaces_root(settings))
         apply_mempalace_backend_env(settings)
         # None means "any space this deployment is asked about". A list restricts
         # to a shard, which is how a supervisor splits spaces across processes to

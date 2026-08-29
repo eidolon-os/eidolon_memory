@@ -184,7 +184,10 @@ def _build_supervisor(tmp_path: Path, *, eager_init: bool = False) -> Supervisor
         update={
             "runtime": settings.runtime.model_copy(
                 update={"palaces_root": str(tmp_path / "palaces")}
-            )
+            ),
+            "mempalace": settings.mempalace.model_copy(
+                update={"offline_embedding": True}
+            ),
         }
     )
     return Supervisor(settings, eager_init=eager_init)
@@ -250,6 +253,7 @@ async def test_rebuild_memory_index_uses_sqlite_reembed_mode(
         "model": "embeddinggemma",
         "device": "cpu",
     }
+    raw["mempalace"]["offline_embedding"] = False
     sup._settings = type(sup._settings).model_validate(raw)
     user = UserEntry(
         id=ALICE_SPACE,

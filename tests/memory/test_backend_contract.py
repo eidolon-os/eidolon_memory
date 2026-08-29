@@ -132,7 +132,7 @@ def test_search_sync_disables_vector_when_hnsw_diverged(
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.probe_hnsw_safety",
+        "eidolon.memory.adapters.mempalace_fast_search.probe_hnsw_safety",
         lambda *_args, **_kwargs: SimpleNamespace(
             vector_disabled=True,
             status="diverged",
@@ -162,7 +162,7 @@ def test_search_sync_keeps_vector_for_inconclusive_probe(
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.probe_hnsw_safety",
+        "eidolon.memory.adapters.mempalace_fast_search.probe_hnsw_safety",
         lambda *_args, **_kwargs: SimpleNamespace(
             vector_disabled=False,
             status="unknown",
@@ -170,15 +170,26 @@ def test_search_sync_keeps_vector_for_inconclusive_probe(
         ),
     )
 
-    def _search_memories(**kwargs):
-        captured.update(kwargs)
-        return {"results": []}
+    monkeypatch.setattr(
+        "eidolon.memory.adapters.mempalace_fast_search.embed_query_vector",
+        lambda _query: [1.0, 0.0],
+    )
 
-    monkeypatch.setattr("mempalace.searcher.search_memories", _search_memories)
+    def _query(_collection, **kwargs):
+        captured.update(kwargs)
+        return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    monkeypatch.setattr(
+        "eidolon.memory.adapters.mempalace_fast_search._query_collection", _query
+    )
+    monkeypatch.setattr(
+        "mempalace.palace.get_collection",
+        lambda *_args, **_kwargs: SimpleNamespace(distance_metric="cosine"),
+    )
 
     backend = MemPalacePythonBackend(load_memory_settings(), "/tmp/palace")
     assert backend.search_sync("hello", wing="Wing_Profile") == []
-    assert captured["vector_disabled"] is False
+    assert captured["query_embeddings"] == [[1.0, 0.0]]
 
 
 def test_chroma_search_rehydrates_archived_privacy_before_recall(
@@ -186,47 +197,22 @@ def test_chroma_search_rehydrates_archived_privacy_before_recall(
 ) -> None:
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
     monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.probe_hnsw_safety",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            vector_disabled=False,
-            status="ok",
-            message="",
-        ),
-    )
-    monkeypatch.setattr(
-        "mempalace.searcher.search_memories",
-        lambda **_kwargs: {
-            "results": [
+        "eidolon.memory.adapters.mempalace_python_backend.search_memories_shared_embedding",
+        lambda *_args, **_kwargs: [
                 {
                     "text": "我喜欢喝绿茶",
                     "wing": "Wing_Profile",
                     "room": "tea",
                     "similarity": 0.99,
+                    "metadata": {
+                        "wing": "Wing_Profile",
+                        "room": "tea",
+                        "privacy": "do_not_recall",
+                        "memory_space_id": "default.alice.default",
+                        "_storage_metadata_verified": True,
+                    },
                 }
-            ]
-        },
-    )
-
-    class _RestrictedCollection:
-        def get(self, *, ids, include):
-            del include
-            if ids == [_drawer_id("Wing_Profile", "tea", "我喜欢喝绿茶")]:
-                return {
-                    "ids": ids,
-                    "metadatas": [
-                        {
-                            "wing": "Wing_Profile",
-                            "room": "tea",
-                            "privacy": "do_not_recall",
-                            "memory_space_id": "default.alice.default",
-                        }
-                    ],
-                }
-            return {"ids": [], "metadatas": []}
-
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend._get_collection",
-        lambda *_args, **_kwargs: _RestrictedCollection(),
+            ],
     )
     backend = MemPalacePythonBackend(
         load_memory_settings(),
@@ -241,48 +227,30 @@ def test_chroma_search_metadata_hydration_is_bounded_to_current_hits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.probe_hnsw_safety",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            vector_disabled=False,
-            status="ok",
-            message="",
-        ),
-    )
-    monkeypatch.setattr(
-        "mempalace.searcher.search_memories",
-        lambda **_kwargs: {
-            "results": [
-                {
-                    "text": "我住在常州",
+    calls = 0
+
+    def _search(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return [
+            {
+                "text": "我住在常州",
+                "wing": "Wing_Profile",
+                "room": "home",
+                "similarity": 0.99,
+                "metadata": {
                     "wing": "Wing_Profile",
                     "room": "home",
-                    "similarity": 0.99,
-                }
-            ]
-        },
-    )
-    requested: list[str] = []
-
-    class _HitCollection:
-        def get(self, *, ids, include):
-            del include
-            requested.extend(ids)
-            return {
-                "ids": ids,
-                "metadatas": [
-                    {
-                        "wing": "Wing_Profile",
-                        "room": "home",
-                        "privacy": "normal",
-                        "memory_space_id": "default.alice.default",
-                    }
-                ],
+                    "privacy": "normal",
+                    "memory_space_id": "default.alice.default",
+                    "_storage_metadata_verified": True,
+                },
             }
+        ]
 
     monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend._get_collection",
-        lambda *_args, **_kwargs: _HitCollection(),
+        "eidolon.memory.adapters.mempalace_python_backend.search_memories_shared_embedding",
+        _search,
     )
     backend = MemPalacePythonBackend(
         load_memory_settings(),
@@ -293,7 +261,7 @@ def test_chroma_search_metadata_hydration_is_bounded_to_current_hits(
     hits = backend.search_sync("常州", wing="Wing_Profile")
 
     assert [hit.value for hit in hits] == ["我住在常州"]
-    assert requested == [_drawer_id("Wing_Profile", "home", "我住在常州")]
+    assert calls == 1
 
 
 def test_chroma_search_drops_hit_when_storage_metadata_cannot_be_verified(
@@ -301,35 +269,16 @@ def test_chroma_search_drops_hit_when_storage_metadata_cannot_be_verified(
 ) -> None:
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
     monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.probe_hnsw_safety",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            vector_disabled=False,
-            status="ok",
-            message="",
-        ),
-    )
-    monkeypatch.setattr(
-        "mempalace.searcher.search_memories",
-        lambda **_kwargs: {
-            "results": [
+        "eidolon.memory.adapters.mempalace_python_backend.search_memories_shared_embedding",
+        lambda *_args, **_kwargs: [
                 {
                     "text": "无法验证来源的旧记录",
                     "wing": "Wing_Profile",
                     "room": "legacy",
                     "similarity": 0.99,
+                    "metadata": {"_storage_metadata_verified": False},
                 }
-            ]
-        },
-    )
-
-    class _MissingCollection:
-        def get(self, *, ids, include):
-            del ids, include
-            return {"ids": [], "metadatas": []}
-
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend._get_collection",
-        lambda *_args, **_kwargs: _MissingCollection(),
+            ],
     )
     backend = MemPalacePythonBackend(
         load_memory_settings(),
@@ -344,49 +293,24 @@ def test_chroma_search_reconstructs_json_drawer_id_from_exact_raw_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.probe_hnsw_safety",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            vector_disabled=False,
-            status="ok",
-            message="",
-        ),
-    )
     raw_text = '{"topic": "长期偏好", "items": ["茶", "散步"]}'
     monkeypatch.setattr(
-        "mempalace.searcher.search_memories",
-        lambda **_kwargs: {
-            "results": [
+        "eidolon.memory.adapters.mempalace_python_backend.search_memories_shared_embedding",
+        lambda *_args, **_kwargs: [
                 {
                     "text": raw_text,
                     "wing": "Wing_Theme",
                     "room": "theme",
                     "similarity": 0.99,
-                }
-            ]
-        },
-    )
-    expected_id = _drawer_id("Wing_Theme", "theme", raw_text)
-
-    class _JsonCollection:
-        def get(self, *, ids, include):
-            del include
-            assert ids == [expected_id]
-            return {
-                "ids": ids,
-                "metadatas": [
-                    {
+                    "metadata": {
                         "wing": "Wing_Theme",
                         "room": "theme",
                         "privacy": "normal",
                         "memory_space_id": "default.alice.default",
-                    }
-                ],
-            }
-
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend._get_collection",
-        lambda *_args, **_kwargs: _JsonCollection(),
+                        "_storage_metadata_verified": True,
+                    },
+                }
+            ],
     )
     backend = MemPalacePythonBackend(
         load_memory_settings(),

@@ -17,8 +17,34 @@ from eidolon.memory.infrastructure.mempalace_backend import (
 def test_default_backend_is_chroma() -> None:
     settings = MemorySettings()
     assert selected_mempalace_backend(settings) == "chroma"
+
+
+def test_local_embedder_requires_the_existing_http_service() -> None:
+    with pytest.raises(ValueError, match="embedding.provider=http"):
+        mempalace_backend_env(MemorySettings(), base={})
+
+
+def test_http_embedder_uses_mempalace_public_openai_provider() -> None:
+    settings = MemorySettings.model_validate(
+        {
+            "embedding": {
+                "provider": "http",
+                "model": "bge-small-zh",
+                "http": {
+                    "base_url": "http://127.0.0.1:8099/v1",
+                    "model": "bge-small-zh-v1.5",
+                    "dimension": 512,
+                },
+            }
+        }
+    )
+
     env = mempalace_backend_env(settings, base={})
+
     assert env["MEMPALACE_BACKEND"] == "chroma"
+    assert env["MEMPALACE_EMBEDDING_MODEL"] == "openai-compat"
+    assert env["MEMPALACE_EMBEDDING_API_URL"] == "http://127.0.0.1:8099/v1"
+    assert env["MEMPALACE_EMBEDDING_API_MODEL"] == "bge-small-zh-v1.5"
 
 
 def test_backends_we_do_not_run_are_refused() -> None:
@@ -56,7 +82,13 @@ def test_embedding_env_is_applied() -> None:
 
 def test_embedding_threads_env_is_applied() -> None:
     settings = MemorySettings.model_validate(
-        {"mempalace": {"embedding_threads": 3}}
+        {
+            "embedding": {
+                "provider": "mempalace",
+                "model": "minilm",
+                "threads": 3,
+            }
+        }
     )
 
     env = mempalace_backend_env(settings, base={})
@@ -65,7 +97,9 @@ def test_embedding_threads_env_is_applied() -> None:
 
 
 def test_embedding_threads_auto_leaves_native_default_unset() -> None:
-    settings = MemorySettings()
+    settings = MemorySettings.model_validate(
+        {"embedding": {"provider": "mempalace", "model": "minilm"}}
+    )
 
     env = mempalace_backend_env(settings, base={})
 

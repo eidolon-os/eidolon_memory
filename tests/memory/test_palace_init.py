@@ -12,12 +12,12 @@ from eidolon.memory.infrastructure.palace_init import (
 )
 
 
-def test_palace_environment_overrides_nonexistent_service_home(tmp_path: Path) -> None:
+def test_palace_environment_uses_one_shared_service_home(tmp_path: Path) -> None:
     palace = tmp_path / "palace"
 
     env = palace_environment({"HOME": "/nonexistent", "KEPT": "yes"}, palace)
 
-    assert env["HOME"] == str(palace)
+    assert env["HOME"] == str(tmp_path / ".mempalace-home")
     assert env["MEMPALACE_PALACE_PATH"] == str(palace)
     assert env["KEPT"] == "yes"
 
@@ -81,7 +81,7 @@ def test_the_palace_is_named_by_the_variable_the_cli_reads(
     assert env["MEMPALACE_PALACE_PATH"] == str(palace)
     # A child reaching for a home directory lands somewhere that exists rather
     # than at /nonexistent, whichever variable it happens to reach for.
-    assert env["HOME"] == str(palace)
+    assert env["HOME"] == str(palace.parent / ".mempalace-home")
     assert env["PATH"] == "/usr/bin"
 
 
@@ -112,8 +112,6 @@ def test_an_inherited_home_does_not_win(
         env={"HOME": "/nonexistent"},
     )
 
-    # Deferring to the inherited value was the first version of this fix, and
-    # on a Host it changed nothing: /nonexistent is precisely what systemd
-    # hands the service. The palace is the only place this subprocess has any
-    # business in.
-    assert seen["env"]["HOME"] == str(tmp_path / "palace")
+    # Do not defer to /nonexistent, but also do not isolate the lock directory
+    # per Palace: MemPalace already keys locks by Palace path.
+    assert seen["env"]["HOME"] == str(tmp_path / ".mempalace-home")
