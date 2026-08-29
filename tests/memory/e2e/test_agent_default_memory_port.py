@@ -13,6 +13,7 @@ process-local working-memory section.
 import asyncio
 import inspect
 import json
+import os
 import sys
 import time
 import uuid
@@ -23,10 +24,15 @@ import pytest
 
 # In the monorepo workspace, exercise the sibling Agent checkout directly.
 # Standalone eidolon-memory CI still skips cleanly through importorskip below.
-_AGENT_ROOT = Path(__file__).resolve().parents[4] / "eidolon_agent"
-_agent_path_added = _AGENT_ROOT.is_dir() and str(_AGENT_ROOT) not in sys.path
-if _agent_path_added:
-    sys.path.append(str(_AGENT_ROOT))
+_WORKSPACE_ROOT = Path(
+    os.environ.get("EIDOLON_WORKSPACE_ROOT", str(Path(__file__).resolve().parents[4]))
+).resolve()
+_SIBLING_ROOTS = (
+    _WORKSPACE_ROOT / "eidolon_sdk",
+    _WORKSPACE_ROOT / "eidolon_agent",
+)
+_added_paths = [str(path) for path in _SIBLING_ROOTS if path.is_dir() and str(path) not in sys.path]
+sys.path.extend(_added_paths)
 try:
     agent_settings = pytest.importorskip(
         "eidolon_agent.config.settings",
@@ -52,8 +58,8 @@ try:
         "eidolon_agent.domain.history.manager",
         reason="eidolon_agent package is required for the cross-repo agent memory e2e",
     )
-    agent_identity_types = pytest.importorskip(
-        "eidolon_agent.core.types.identity",
+    agent_turn_context = pytest.importorskip(
+        "eidolon_agent.core.types.turn_context",
         reason="eidolon_agent package is required for the cross-repo agent memory e2e",
     )
     agent_mcp_client = pytest.importorskip(
@@ -79,17 +85,15 @@ try:
 finally:
     # Do not let the sibling checkout's regular ``tests`` package shadow this
     # repository's namespace package during full-suite pytest collection.
-    if _agent_path_added:
-        sys.path.remove(str(_AGENT_ROOT))
+    for added_path in _added_paths:
+        sys.path.remove(added_path)
 
 MemoryEndpoint = agent_settings.MemoryEndpoint
 NatsSettings = agent_settings.NatsSettings
 MemoryQueryPlan = agent_memory_types.MemoryQueryPlan
 ContextCompiler = agent_context_compiler.ContextCompiler
 HistoryManager = agent_history_manager.HistoryManager
-CallerContext = agent_identity_types.CallerContext
-CallerKind = agent_identity_types.CallerKind
-Identity = agent_identity_types.Identity
+TurnContext = agent_turn_context.TurnContext
 NatsEventBus = agent_nats_bus.NatsEventBus
 MemoryRoutingTable = agent_discovery.MemoryRoutingTable
 McpClientPool = agent_mcp_client.McpClientPool
@@ -161,18 +165,16 @@ def _turn_input(
         turn_id=turn_id,
         conversation_id="conversation-e2e-commitment",
         session_id="session-e2e",
-        caller=CallerContext(
-            identity=Identity(
-                owner_id=owner_id,
-                companion_id=companion_id,
-                device_id="device-e2e",
-                memory_realm_id=memory_realm_id,
-                genome_id="genome-e2e",
-            ),
-            caller_kind=CallerKind.ADMIN_TEST,
+        context=TurnContext(
+            owner_id=owner_id,
+            companion_id=companion_id,
+            device_id="device-e2e",
+            memory_realm_id=memory_realm_id,
+            genome_id="genome-e2e",
             trace_id=f"trace-{turn_id}",
             request_id=f"request-{turn_id}",
         ),
+        input_modality="text",
         trigger=TurnTrigger.USER_UTTERANCE,
         text=text,
     )
@@ -189,7 +191,7 @@ def _active_commitment_section(system_prompt: str) -> str:
 async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runner) -> None:
     handle = live_agent_runner(
         user_id=MEMORY_SPACE_ID,
-        
+
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(
@@ -249,7 +251,7 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
     """Real NATS + Realm MCP: active is injected; fulfilled disappears."""
     handle = live_agent_runner(
         user_id="e2e_agent_commitment_context",
-        
+
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(
@@ -449,7 +451,7 @@ async def test_agent_memory_port_delete_is_previewed_and_terminally_applied(
 ) -> None:
     handle = live_agent_runner(
         user_id="e2e_agent_privacy_terminal",
-        
+
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(
@@ -561,7 +563,7 @@ async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_stat
 ) -> None:
     handle = live_agent_runner(
         user_id="e2e_agent_structured_intent",
-        
+
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(
@@ -675,20 +677,37 @@ async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_stat
             ]
             assert len(matching_triples) == 1
 
-            invalidated = _mcp_tool_json(
-                await session.call_tool(
-                    "eidolon_memory_kg_invalidate",
-                    {
-                        "subject": "self",
-                        "predicate": "likes",
-                        "object": marker,
-                        "wait_visible_seconds": 5.0,
-                    },
-                )
+            invalidation_request_id = await port.invalidate_fact(
+                "e2e",
+                "e2e",
+                handle.user_id,
+                "self",
+                "likes",
+                marker,
+                source_event_id=f"turn-invalidate-{marker}",
+                tool_call_id=f"call-invalidate-{marker}",
             )
-            assert invalidated.get("status") == "applied"
+            invalidated = None
 
-            repair_request_id = await port.assert_fact(
+            async def _invalidation_applied() -> bool:
+                nonlocal invalidated
+                invalidated = _mcp_tool_json(
+                    await session.call_tool(
+                        "eidolon_memory_command_status",
+                        {"request_id": invalidation_request_id},
+                    )
+                )
+                return (
+                    isinstance(invalidated, dict)
+                    and invalidated.get("status") == "applied"
+                )
+
+            assert await _wait_for_true(_invalidation_applied, timeout_s=30), invalidated
+            assert str(invalidated.get("resource_id", "")).startswith(
+                "invalidated:fact:"
+            )
+
+            repair_request_id = await port.reactivate_fact(
                 "e2e",
                 "e2e",
                 handle.user_id,
@@ -716,20 +735,28 @@ async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_stat
 
             assert await _wait_for_true(_repair_applied, timeout_s=30)
             assert str(repair_status.get("resource_id", "")).startswith(
-                "memoryintent:fact:"
+                "reactivated:fact:"
             )
 
             repaired_list = _mcp_tool_json(
                 await session.call_tool(
                     "eidolon_memory_list",
-                    {"limit": 100, "include_private": True},
+                    {"limit": 100, "include_private": False},
                 )
             )
+            repaired_records = (repaired_list or {}).get("records") or []
             repaired_values = [
                 str(record.get("value") or "")
-                for record in (repaired_list or {}).get("records") or []
+                for record in repaired_records
+                if (record.get("metadata") or {}).get("privacy") != "do_not_recall"
             ]
             assert repaired_values.count(f"self likes {marker}") == 1
+            archived_values = [
+                str(record.get("value") or "")
+                for record in repaired_records
+                if (record.get("metadata") or {}).get("privacy") == "do_not_recall"
+            ]
+            assert archived_values.count(f"self likes {marker}") == 1
 
             repaired_kg = _mcp_tool_json(
                 await session.call_tool(
