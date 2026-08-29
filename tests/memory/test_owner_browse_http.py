@@ -20,13 +20,15 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from eidolon_memory_contracts import OWNER_AUDIENCE, companion_audience
+from eidolon_memory_contracts import OWNER_AUDIENCE, ServiceStatus, companion_audience
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from eidolon.memory.domain.space_runtime import SpaceLedgers
 from eidolon.memory.domain.wings import CANONICAL_WINGS
 from eidolon.memory.entrypoints.owner_memory_http import (
     BROWSE_PATH,
+    STATUS_PATH,
     owner_memory_routes,
 )
 
@@ -79,8 +81,10 @@ class _Backend:
 
 class _Runtime:
     def __init__(self, backend: _Backend) -> None:
+        self.space_id = SPACE
         self.backend = backend
         self.palace_path = "/var/lib/eidolon/palaces/owner-one"
+        self.ledgers = SpaceLedgers()
 
 
 class _Service:
@@ -94,6 +98,20 @@ class _Service:
         if self.fails:
             raise RuntimeError("space is not resolvable")
         return self._runtime
+
+    async def status(self, context: Any) -> ServiceStatus:
+        self.contexts.append(context)
+        return ServiceStatus(
+            memory_space_id=SPACE,
+            ready=True,
+            details={
+                "data_readable": True,
+                "materialization_state": "ready",
+                "projection_pending": 0,
+                "last_materialized_at": "2026-08-29T12:00:00.123456Z",
+                "degraded_reason": "",
+            },
+        )
 
 
 class _Settings:
@@ -119,6 +137,27 @@ def _client(records: list[_Record], *, fails: bool = False):
 
 def _wing(body: dict, wing_id: str) -> dict | None:
     return next((w for w in body["wings"] if w["wing_id"] == wing_id), None)
+
+
+def test_status_names_realm_scope_and_storage_materialization() -> None:
+    http, service, _backend = _client([])
+    with http:
+        body = http.get(f"{STATUS_PATH}?companion_id={MOCHI}", headers=AUTH).json()
+
+    assert body == {
+        "contract_version": "1",
+        "operation": "memory.status",
+        "memory_realm_id": SPACE,
+        "memory_space_id": SPACE,
+        "audience_scope": f"companion:{MOCHI}",
+        "ready": True,
+        "data_readable": True,
+        "materialization_state": "ready",
+        "projection_pending": 0,
+        "last_materialized_at": "2026-08-29T12:00:00.123456Z",
+        "degraded_reason": "",
+    }
+    assert service.contexts[-1].companion_id == MOCHI
 
 
 def test_the_owner_sees_their_memory_by_wing_and_room() -> None:
@@ -236,11 +275,17 @@ def test_the_answer_carries_no_operator_vocabulary() -> None:
         "contract_version",
         "operation",
         "memory_space_id",
+        "audience_scope",
+        "materialization",
         "wings",
         "entry_count",
         "withheld_count",
         "truncated",
     }
+    assert body["audience_scope"] == "owner"
+    assert body["materialization"]["data_readable"] is True
+    assert body["materialization"]["ready"] is False
+    assert body["materialization"]["materialization_state"] == "degraded"
 
 
 def test_an_empty_wing_is_not_shown() -> None:

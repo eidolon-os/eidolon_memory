@@ -393,7 +393,10 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         settings_doc: dict[str, Any] = {
             "steward": {"mode": steward_mode},
             "mcp_http": {"host": "127.0.0.1", "port": port},
-            "mempalace": {"embedding_threads": 1},
+            # Exercise the real Chroma/MemPalace path without a model server.
+            # This is the supported test provider: deterministic explicit
+            # vectors, never the removed private embedder/cache injection.
+            "mempalace": {"embedding_threads": 1, "offline_embedding": True},
             "nats": {"url": live_nats},
             "runtime": {"palaces_root": str(palace_root), "run_dir": str(run_dir)},
         }

@@ -42,11 +42,13 @@ class CanonicalFactStats:
     reactivations_pending: int
     invalidations_pending: int
     supersessions_pending: int
+    forget_projections_pending: int
     drawer_not_projected: int
     drawer_projected: int
     kg_not_projected: int
     kg_projected: int
     database_bytes: int
+    last_materialized_at: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

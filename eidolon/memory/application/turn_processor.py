@@ -1021,10 +1021,7 @@ async def process_command_message(
     status_get = getattr(command_status, "get", None)
     if status_get is not None:
         existing_status = await status_get(cmd.request_id)
-        if existing_status is not None and existing_status.status in {
-            "applied",
-            "failed",
-        }:
+        if existing_status is not None and existing_status.status == "applied":
             log.info(
                 "cmd_terminal_redelivery_ack",
                 request_id=cmd.request_id,
@@ -1032,6 +1029,11 @@ async def process_command_message(
             )
             await msg.ack()
             return
+        # A failed command is intentionally retryable only after an explicit
+        # republish (for example the operator DLQ replay). JetStream already
+        # ACKed its terminal delivery, so this cannot create an automatic loop;
+        # keeping failed → applied possible is the recovery contract recorded
+        # by CommandStatusLedger.
 
     if kg is None and isinstance(cmd, (KgAddTripleCommand, KgInvalidateCommand)):
         # The graph is switched off for this deployment. Say so, rather than

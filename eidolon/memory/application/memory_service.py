@@ -65,6 +65,7 @@ from eidolon.memory.application.forget import (
     extract_privacy_target,
     find_forget_candidates,
 )
+from eidolon.memory.application.materialization import inspect_materialization
 from eidolon.memory.application.privacy_confirmation import PrivacyConfirmationSigner
 from eidolon.memory.application.public_recall import (
     recall_with_kg_fusion,
@@ -754,17 +755,15 @@ class MemoryService:
         """
 
         runtime = await self._runtime(ctx)
-        return ServiceStatus(
-            memory_space_id=ctx.memory_realm_id,
-            ready=True,
-            # Whether a graph is configured belongs in details, not in a top-level
-            # field: the contract's point is that a caller cannot discover it and
-            # branch on it. Operators read this; clients must not.
-            details={
+        status = await inspect_materialization(runtime)
+        status.details.update(
+            {
+                # Operator-only diagnostics, not client capability flags.
                 "graph_configured": runtime.has_kg,
                 "spaces_held": len(await self.held_spaces()),
-            },
+            }
         )
+        return status
 
     async def held_spaces(self) -> list[str]:
         """Which spaces this instance currently holds handles for.

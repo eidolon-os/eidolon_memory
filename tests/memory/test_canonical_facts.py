@@ -337,7 +337,9 @@ async def test_stats_report_capacity_and_projection_state(tmp_path: Path) -> Non
 
     assert stats.assertions_total == 2
     assert stats.evidence_total == 2
-    assert stats.drawer_not_projected == 2
+    # The first assertion only requested KG. An unrequested projection is not
+    # backlog and must not keep materialization permanently degraded.
+    assert stats.drawer_not_projected == 1
     assert stats.drawer_projected == 0
     assert stats.kg_not_projected == 1
     assert stats.kg_projected == 1
