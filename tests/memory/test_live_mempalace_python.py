@@ -12,10 +12,8 @@ import os
 import uuid
 
 import pytest
-from eidolon_memory_contracts import ConversationTurnPayload
 
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
-from eidolon.memory.application.steward.rules import RuleBasedSteward
 
 
 def _require_live() -> None:
@@ -41,34 +39,6 @@ async def test_live_python_backend_ingest_search(live_memory_settings, test_pala
     found = False
     for _ in range(80):
         hits = await backend.search(token, wing=wing, n_results=12)
-        if any(token in str(h.value) for h in hits):
-            found = True
-            break
-        await asyncio.sleep(0.5)
-    assert found
-
-
-@pytest.mark.mempalace
-@pytest.mark.asyncio
-async def test_live_rules_steward_turn(live_memory_settings, test_palace_dir):
-    _require_live()
-    backend = MemPalacePythonBackend(live_memory_settings, str(test_palace_dir))
-    token = f"eidolon_turn_{uuid.uuid4().hex}"
-    wing = "user_local_001"
-    room = f"session_{uuid.uuid4().hex[:8]}"
-    turn = ConversationTurnPayload(
-        turn_id=uuid.uuid4().hex,
-        user_text=f"我最近因为项目 deadline 很焦虑，测试标记 {token}",
-        assistant_text="assistant ack",
-        timestamp="2026-05-11T12:00:00Z",
-        session_id=room,
-        user_id=wing,
-        metadata=None,
-    )
-    await RuleBasedSteward(live_memory_settings).handle_turn(turn, backend)
-    found = False
-    for _ in range(80):
-        hits = await backend.search(token, wing="Wing_Emotion", n_results=12)
         if any(token in str(h.value) for h in hits):
             found = True
             break

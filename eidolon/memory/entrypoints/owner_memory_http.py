@@ -182,9 +182,9 @@ def browse_handler(
     recalled — including their own privacy wing, and (once anything is marked
     companion-private) another Companion's statements.
 
-    ``companion_id`` selects an audience exactly as it does for recollections:
-    absent means the Owner layer, present adds that Companion's own. It cannot
-    widen what this space can see.
+    ``companion_id`` selects one Companion view. Without it this authenticated
+    route shows Owner Shared only. This is an explicit privileged read mode,
+    never an identity fallback on the ordinary Agent MCP surface.
     """
 
     policy = RecallPolicyRegistry.default()
@@ -209,7 +209,11 @@ def browse_handler(
             browse = await build_owner_browse(
                 runtime.backend,
                 settings,
-                visible=lambda record: policy.visible(record, context=context),
+                visible=lambda record: policy.visible(
+                    record,
+                    context=context,
+                    owner_shared_only=companion_id is None,
+                ),
                 max_records=scan,
                 max_titles_per_room=TITLES_PER_ROOM,
             )
@@ -365,7 +369,11 @@ def entries_handler(
             runtime = await service.runtime_for(context)
             entries = await build_owner_entries(
                 runtime.backend,
-                visible=lambda record: policy.visible(record, context=context),
+                visible=lambda record: policy.visible(
+                    record,
+                    context=context,
+                    owner_shared_only=companion_id is None,
+                ),
                 since=since,
                 limit=limit,
                 max_records=DEFAULT_SCAN,

@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from eidolon_memory_contracts import OWNER_AUDIENCE, readable_audiences
+from eidolon_memory_contracts import OWNER_AUDIENCE
 
 from eidolon.memory.application.forget import (
     assertion_ids_for_drawers,
@@ -177,6 +177,7 @@ async def apply_privacy_actions(
     *,
     memory_space_id: str,
     actions: list[PrivacyAction],
+    audiences: tuple[str, ...],
     kg: Any = None,
     canonical_facts: Any = None,
 ) -> PrivacyActionResult:
@@ -213,7 +214,7 @@ async def apply_privacy_actions(
             # reliable sentence becomes a triple and no drawer, and forgetting it
             # used to scan drawers, find nothing, and quietly do nothing.
             statements = await find_forget_statements(
-                kg, action.target, audiences=readable_audiences(None)
+                kg, action.target, audiences=audiences
             )
             if not candidates and not statements:
                 result.unmatched_targets.append(action.target)

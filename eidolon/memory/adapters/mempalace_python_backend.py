@@ -220,6 +220,7 @@ class MemPalacePythonBackend(MemoryBackend):
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
         skip_closets: bool = False,
+        diagnostics: dict[str, float] | None = None,
     ) -> list[MemoryWireRecord]:
         """Adapter-owned multi-wing search with one query embedding."""
         return await asyncio.to_thread(
@@ -230,6 +231,7 @@ class MemPalacePythonBackend(MemoryBackend):
             room=room,
             audiences=audiences,
             skip_closets=skip_closets,
+            diagnostics=diagnostics,
         )
 
     def search_scoped_sync(
@@ -241,6 +243,7 @@ class MemPalacePythonBackend(MemoryBackend):
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
         skip_closets: bool = False,
+        diagnostics: dict[str, float] | None = None,
     ) -> list[MemoryWireRecord]:
         if self._settings.mempalace.offline_embedding:
             try:
@@ -278,6 +281,7 @@ class MemPalacePythonBackend(MemoryBackend):
             audiences=audiences,
             n_results=n_results,
             skip_closets=skip_closets,
+            diagnostics=diagnostics,
         )
         records = parse_search_tool_payload(
             {"results": raw},

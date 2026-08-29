@@ -381,7 +381,9 @@ async def test_recall_needs_no_more_than_the_hot_path_fields() -> None:
         backend,
         load_memory_settings(),
         query="colour",
-        context=MemoryActorContext(memory_realm_id=space, owner_id="alice"),
+        context=MemoryActorContext(
+            memory_realm_id=space, owner_id="alice", companion_id="default"
+        ),
         top_k=5,
         kg=None,
         for_voice=False,

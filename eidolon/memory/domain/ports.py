@@ -87,6 +87,7 @@ class ScopedMemoryReader(Protocol):
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
         skip_closets: bool = False,
+        diagnostics: dict[str, float] | None = None,
     ) -> list[MemoryWireRecord]:
         """Search multiple wings while reusing backend-owned query work."""
 

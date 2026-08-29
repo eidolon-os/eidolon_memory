@@ -19,6 +19,7 @@ from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 
 SPACE = "default.alice.default"
+OWNER_READ_SCOPE = ("owner",)
 
 
 def test_default_forget_page_size_matches_55k_memory_latency_curve() -> None:
@@ -157,6 +158,7 @@ async def test_privacy_delete_removes_candidate_and_verifies_invisible(tmp_path)
     result = await apply_privacy_actions(
         backend,
         memory_space_id=SPACE,
+        audiences=OWNER_READ_SCOPE,
         actions=[
             PrivacyAction(
                 action="delete_request",
@@ -180,6 +182,7 @@ async def test_archive_topic_keeps_drawer_but_blocks_recall(tmp_path) -> None:
     result = await apply_privacy_actions(
         backend,
         memory_space_id=SPACE,
+        audiences=OWNER_READ_SCOPE,
         actions=[
             PrivacyAction(
                 action="archive_topic",
@@ -216,6 +219,7 @@ async def test_multiple_delete_candidates_are_safely_archived(tmp_path) -> None:
     result = await apply_privacy_actions(
         backend,
         memory_space_id=SPACE,
+        audiences=OWNER_READ_SCOPE,
         actions=[
             PrivacyAction(
                 action="delete_request",
@@ -331,6 +335,7 @@ async def test_a_spoken_delete_reaches_the_graph(graph, tmp_path) -> None:
     result = await apply_privacy_actions(
         backend,
         memory_space_id=SPACE,
+        audiences=OWNER_READ_SCOPE,
         actions=[
             PrivacyAction(
                 action="delete_request",
@@ -434,6 +439,7 @@ async def test_a_spoken_archive_ends_the_triple_without_deleting_it(
     result = await apply_privacy_actions(
         backend,
         memory_space_id=SPACE,
+        audiences=OWNER_READ_SCOPE,
         actions=[
             PrivacyAction(
                 action="archive_topic",
@@ -487,6 +493,7 @@ async def test_an_ambiguous_delete_is_archived_rather_than_abandoned(
     result = await apply_privacy_actions(
         backend,
         memory_space_id=SPACE,
+        audiences=OWNER_READ_SCOPE,
         actions=[
             PrivacyAction(
                 action="delete_request",
@@ -519,6 +526,7 @@ async def test_a_space_without_a_graph_still_forgets_its_drawers(tmp_path) -> No
     result = await apply_privacy_actions(
         backend,
         memory_space_id=SPACE,
+        audiences=OWNER_READ_SCOPE,
         actions=[
             PrivacyAction(
                 action="delete_request",
@@ -592,6 +600,7 @@ async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(
     result = await apply_privacy_actions(
         backend,
         memory_space_id=SPACE,
+        audiences=OWNER_READ_SCOPE,
         actions=[
             PrivacyAction(
                 action="delete_request",
@@ -639,6 +648,7 @@ async def test_forgetting_a_graph_fact_does_not_take_its_turn_mates(
     await apply_privacy_actions(
         backend,
         memory_space_id=SPACE,
+        audiences=OWNER_READ_SCOPE,
         actions=[
             PrivacyAction(
                 action="delete_request", target="妈妈 住在 杭州", reason="user"

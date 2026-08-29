@@ -169,19 +169,13 @@ async def test_the_vector_leg_applies_the_same_rule_record_by_record() -> None:
     assert not _visible(mochis, None)
 
 
-async def test_a_record_written_before_the_field_existed_is_owner_memory() -> None:
-    """An upgrade must not hide what was already being recalled.
-
-    Every production write puts statements in the owner layer today, so records
-    with no audience at all are the overwhelming majority on any existing Host.
-    Treating them as private-to-nobody would empty a person's memory on the day
-    this axis starts being read.
-    """
+async def test_an_absent_record_audience_is_owner_shared_but_still_needs_identity() -> None:
+    """The record default must not weaken the interaction identity boundary."""
     legacy = _Record(text="用户喜欢乌龙茶", audience=None)
 
     assert _visible(legacy, MOCHI)
     assert _visible(legacy, NORI)
-    assert _visible(legacy, None)
+    assert not _visible(legacy, None)
 
 
 async def test_the_space_is_still_checked_alongside_the_audience() -> None:

@@ -12,6 +12,7 @@ from eidolon.memory.application.public_recall import (
     search_all_wings_mcp_style,
 )
 from eidolon.memory.application.recall_renderer import group_recall_context
+from eidolon.memory.application.scope_policy import MissingInteractionIdentity
 from eidolon.memory.config.memory_settings import get_memory_settings
 
 MEMORY_SPACE_ID = "default.alice.default"
@@ -69,6 +70,26 @@ async def test_search_all_wings_matches_mcp_visibility():
         room=None,
     )
     assert out2 == []
+
+
+@pytest.mark.asyncio
+async def test_ordinary_recall_without_companion_or_council_fails_closed():
+    context = MemoryActorContext(
+        memory_realm_id=MEMORY_SPACE_ID,
+        memory_space_id=MEMORY_SPACE_ID,
+        owner_id="alice",
+    )
+
+    with pytest.raises(MissingInteractionIdentity):
+        await search_all_wings_mcp_style(
+            FakeMemoryBackend(),
+            get_memory_settings(),
+            query="tea",
+            context=context,
+            top_k=5,
+            wing=None,
+            room=None,
+        )
 
 
 @pytest.mark.asyncio

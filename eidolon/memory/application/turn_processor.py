@@ -24,6 +24,7 @@ from eidolon_memory_contracts import (
     MemoryIntent,
     MemoryIntentCommand,
     PrivacyMutationCommand,
+    envelope_memory_payload,
     parse_conversation_turn,
     parse_memory_command,
 )
@@ -46,6 +47,7 @@ from eidolon.memory.application.memory_intents import memory_intents_from_decisi
 from eidolon.memory.application.scope_policy import (
     MissingInteractionIdentity,
     interaction_audience,
+    interaction_readable_audiences,
 )
 from eidolon.memory.application.steward.common import (
     apply_privacy_actions,
@@ -271,6 +273,7 @@ async def _apply_privacy(
     backend: Any,
     memory_space_id: str,
     actions: list,
+    audiences: tuple[str, ...],
     kg: Any = None,
     canonical_facts: CanonicalFactWriter | None = None,
 ) -> None:
@@ -287,6 +290,7 @@ async def _apply_privacy(
         backend,
         memory_space_id=memory_space_id,
         actions=actions,
+        audiences=audiences,
         kg=kg,
         canonical_facts=canonical_facts,
     )
@@ -500,6 +504,7 @@ async def process_turn_message(
             backend,
             memory_space_id,
             decision.privacy_actions,
+            interaction_readable_audiences(turn.context),
             kg,
             canonical_facts,
         )
@@ -1273,7 +1278,6 @@ async def process_sync_message(
     canonical_facts: CanonicalFactWriter | None = None,
 ) -> None:
     """Handle ``DeviceSyncBatchPayload`` from ``eidolon.memory.sync.<memory_space_token>``."""
-    del settings
     try:
         raw = json.loads(msg.data.decode("utf-8"))
         command = parse_memory_command(raw)
@@ -1312,29 +1316,26 @@ async def process_sync_message(
             if turn.context.device_id != batch.device_id:
                 raise ValueError("sync event turn device_id mismatch")
 
-            ring = getattr(backend, "working_memory", None)
-            if ring is not None:
-                await ring.append(turn)
-
-            decision, _memory_intents = await _decide_once(
-                steward,
-                turn,
-                decision_store,
+            # Offline delivery is only a transport variant of an ordinary turn.
+            # Feed it through the exact same ledger/outbox processor so sync can
+            # never become a second fact source or skip KG/privacy projections.
+            turn_msg = _SyncTurnMessage(turn)
+            observer = _SyncTurnObserver()
+            await process_turn_message(
+                turn_msg,
+                steward=steward,
+                backend=backend,
+                kg=kg,
+                settings=settings,
+                max_deliveries=settings.nats.worker_max_deliveries,
+                expected_memory_space_id=expected_memory_space_id,
+                audit_sink=observer,
+                decision_store=decision_store,
+                canonical_facts=canonical_facts,
             )
-            await _apply_privacy(
-                backend,
-                expected_memory_space_id,
-                decision.privacy_actions,
-                kg,
-                canonical_facts,
-            )
-            for fragment in decision.fragments if decision.should_write else []:
-                stamped = _stamped_for_turn(
-                    fragment,
-                    turn=turn,
-                    turn_ts=turn.timestamp,
-                )
-                await ingest_memory_fragment(backend, stamped)
+            if turn_msg.nacked or not observer.absorbed:
+                reason = observer.rejection_reason or "turn projection was not absorbed"
+                raise RuntimeError(reason)
             await ledger.mark_synced(
                 event_id=event.event_id,
                 device_id=batch.device_id,
@@ -1357,6 +1358,38 @@ async def process_sync_message(
         failed=failed,
     )
     await msg.ack()
+
+
+class _SyncTurnMessage:
+    """Minimal NATS message facade for the shared turn processor."""
+
+    def __init__(self, turn: ConversationTurnPayload) -> None:
+        envelope = envelope_memory_payload(turn, trace_id=turn.turn_id)
+        self.data = json.dumps(envelope.model_dump(mode="json")).encode("utf-8")
+        self.subject = "eidolon.memory.sync.turn"
+        self.metadata = None
+        self.acked = False
+        self.nacked = False
+
+    async def ack(self) -> None:
+        self.acked = True
+
+    async def nak(self) -> None:
+        self.nacked = True
+
+
+class _SyncTurnObserver:
+    """Distinguish absorbed turns from terminal rejections on an ACK."""
+
+    def __init__(self) -> None:
+        self.absorbed = False
+        self.rejection_reason = ""
+
+    async def record_absorbed(self, *_args: Any, **_kwargs: Any) -> None:
+        self.absorbed = True
+
+    async def record_rejected(self, *_args: Any, **kwargs: Any) -> None:
+        self.rejection_reason = str(kwargs.get("reason") or "turn rejected")
 
 
 async def _ingest_theme(backend: Any, cmd: ConsolidatorIngestThemeCommand) -> str:

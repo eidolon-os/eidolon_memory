@@ -18,6 +18,7 @@ from eidolon_memory_contracts import (
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import recall_with_kg_fusion
+from eidolon.memory.application.scope_policy import MissingInteractionIdentity
 from eidolon.memory.application.steward.common import finalize_fragments
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.fragments import MemoryFragment
@@ -238,8 +239,8 @@ async def test_one_companions_memory_is_invisible_to_another() -> None:
     assert await _recall(backend, COMP_B, query="frog prince") == []
 
 
-async def test_an_unidentified_caller_sees_only_the_owner_layer() -> None:
-    """Fail closed: without a companion id, the companion layer is not theirs."""
+async def test_an_unidentified_ordinary_caller_cannot_read_memory() -> None:
+    """Missing interaction identity cannot degrade into Owner Shared access."""
 
     backend = FakeMemoryBackend()
     await backend.ingest_fragment(_fragment("likes green", audience=OWNER_AUDIENCE))
@@ -247,9 +248,8 @@ async def test_an_unidentified_caller_sees_only_the_owner_layer() -> None:
         _fragment("frog prince", audience=companion_audience(COMP_A), room="nickname")
     )
 
-    recalled = await _recall(backend, None, query="green frog prince")
-
-    assert recalled == ["likes green"]
+    with pytest.raises(MissingInteractionIdentity):
+        await _recall(backend, None, query="green frog prince")
 
 
 async def test_a_memory_written_before_the_field_existed_stays_recallable() -> None:

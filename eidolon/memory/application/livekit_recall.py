@@ -86,10 +86,26 @@ class LiveKitRecallService:
                 "records": [wire_record_to_public_dict(r) for r in vector_records],
                 "kg_triples": [t.model_dump(mode="json") for t in kg_records],
                 "degraded": bool(fused.get("degraded", False)),
+                "degraded_reason": fused.get("degraded_reason"),
+                "trace": dict(fused.get("trace") or {}),
             }
         except TimeoutError:
             log.warning("livekit_recall_degraded", reason="timeout", query_len=len(query))
-            return {"context": "", "records": [], "kg_triples": [], "degraded": True}
+            return {
+                "context": "",
+                "records": [],
+                "kg_triples": [],
+                "degraded": True,
+                "degraded_reason": "timeout",
+                "trace": {},
+            }
         except Exception as exc:
             log.warning("livekit_recall_degraded", reason="error", error=str(exc))
-            return {"context": "", "records": [], "kg_triples": [], "degraded": True}
+            return {
+                "context": "",
+                "records": [],
+                "kg_triples": [],
+                "degraded": True,
+                "degraded_reason": str(exc),
+                "trace": {},
+            }
