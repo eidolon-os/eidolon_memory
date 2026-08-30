@@ -107,6 +107,29 @@ def _audience_gate(mcp: Any, surface: str):
     return tool
 
 
+def _actor_context_for_surface(
+    context: dict[str, Any],
+    *,
+    surface: str,
+) -> MemoryActorContext:
+    """Validate actor context at the trust boundary that serves it.
+
+    Council storage remains available to the operator surface for contract and
+    projection work, but the conversational Agent surface has no authoritative
+    participant-scope adapter yet. Accepting a bare ``council_id`` there would
+    let a caller mint its own audience. Keep the product feature closed until
+    that authority exists instead of treating a string as proof.
+    """
+
+    ctx = MemoryActorContext.model_validate(context)
+    if surface == "agent" and ctx.council_id:
+        raise ValueError(
+            "Council memory requires an authoritative participant-scope adapter; "
+            "bare council_id is not accepted on the Agent surface"
+        )
+    return ctx
+
+
 async def _all_audiences(kg: Any) -> tuple[str, ...]:
     """Every audience a space's graph actually contains.
 
@@ -219,7 +242,7 @@ def build_control_plane_mcp(
         recall_context, which answers a different question — "what is relevant to
         this turn" rather than "what do you remember about this".
         """
-        ctx = MemoryActorContext.model_validate(context)
+        ctx = _actor_context_for_surface(context, surface=surface)
         runtime = await service.runtime_for(ctx)
         records = await search_all_wings_mcp_style(
             runtime.backend,
@@ -259,7 +282,7 @@ def build_control_plane_mcp(
         grant itself. The operator surface keeps the explicit parameter, where
         turning it on is a human act.
         """
-        ctx = MemoryActorContext.model_validate(context)
+        ctx = _actor_context_for_surface(context, surface=surface)
         subjects = tuple(
             value.strip()
             for value in (kg_subjects or [])
@@ -388,7 +411,7 @@ def build_control_plane_mcp(
         and prevents callers from selecting another Palace or audience. A runtime
         without a commitment ledger returns an explicit degraded result.
         """
-        ctx = MemoryActorContext.model_validate(context)
+        ctx = _actor_context_for_surface(context, surface=surface)
         result = await service.read_active_commitments(
             ctx,
             limit=max(1, min(limit, 10)),

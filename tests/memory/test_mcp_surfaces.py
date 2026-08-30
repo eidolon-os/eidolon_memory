@@ -367,3 +367,46 @@ def test_the_agent_cannot_widen_its_own_visibility() -> None:
     assert "audiences" not in properties
     # The derived input is still there — removing the axis, not the context.
     assert "context" in properties
+
+
+async def test_agent_surface_rejects_bare_council_scope() -> None:
+    """A Council id is an audience selector, not proof of participation."""
+
+    search = next(
+        tool
+        for tool in _build("agent")._tool_manager.list_tools()
+        if tool.name == "eidolon_memory_search"
+    )
+
+    with pytest.raises(ValueError, match="authoritative participant-scope adapter"):
+        await search.fn(
+            query="计划",
+            context={
+                "memory_realm_id": "default.alice.default",
+                "owner_id": "alice",
+                "companion_id": "default",
+                "council_id": "caller-minted-council",
+            },
+        )
+
+
+async def test_operator_surface_keeps_council_projection_access() -> None:
+    """Closing the product entrance must not delete the storage contract."""
+
+    search = next(
+        tool
+        for tool in _build("all")._tool_manager.list_tools()
+        if tool.name == "eidolon_memory_search"
+    )
+
+    result = await search.fn(
+        query="计划",
+        context={
+            "memory_realm_id": "default.alice.default",
+            "owner_id": "alice",
+            "companion_id": "default",
+            "council_id": "operator-inspected-council",
+        },
+    )
+
+    assert result == []
