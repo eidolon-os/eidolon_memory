@@ -84,3 +84,24 @@ def test_exact_utterance_is_suppressed_for_every_projection_source() -> None:
         )
         == []
     )
+
+
+def test_same_device_fact_is_visible_after_a_new_interaction_session() -> None:
+    settings = MemorySettings(
+        recall=RecallPolicy(exclude_current_session=True, exclude_recent_minutes=0),
+    )
+    record = MemoryWireRecord(
+        memory_space_id="realm-1",
+        key="preference_plant",
+        value="用户给书房绿植取名为青蓝9号",
+        metadata={
+            "session_id": "esp32-dispatch-00000002",
+            "source_device_id": "box-3",
+        },
+    )
+
+    assert filter_voice_recall_hits(
+        [record],
+        settings,
+        session_id="esp32-dispatch-00000003",
+    ) == [record]
