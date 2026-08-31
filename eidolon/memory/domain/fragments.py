@@ -59,6 +59,7 @@ class MemoryFragment(BaseEidolonModel):
     wing: str
     room: str
     content: str
+    evidence_quote: str = ""
     memory_type: MemoryType
     importance: int = Field(ge=1, le=5)
     confidence: float = Field(ge=0.0, le=1.0)

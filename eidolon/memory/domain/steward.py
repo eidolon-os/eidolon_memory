@@ -19,6 +19,7 @@ class PrivacyAction(BaseEidolonModel):
     action: PrivacyActionName
     target: str
     reason: str
+    evidence_quote: str = ""
 
 
 class EntityMention(BaseEidolonModel):
@@ -49,7 +50,8 @@ class StewardDecision(BaseEidolonModel):
 
     KG plan §4.2: ``triples`` and ``invalidations`` are populated by the
     LiteLLM steward when the user's turn provides clear, ground-truth facts
-    or explicit change-of-mind. The rule-based steward leaves them empty.
+    or explicit change-of-mind. All durable actions come from the configured
+    semantic steward; there is no keyword-based fallback authority.
 
     Phase 3 adds ``mentions``: pydantic default ``[]`` keeps JetStream replay
     safe on payloads from older runs that didn't carry the field.

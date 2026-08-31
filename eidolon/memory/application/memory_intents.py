@@ -87,12 +87,11 @@ def memory_intents_from_decision(
             "privacy": fragment.privacy,
             "scope": fragment.scope,
             "visibility": fragment.visibility,
+            "evidence_quote": fragment.evidence_quote,
         }
         intents.append(
             MemoryIntent(
-                intent_id=_intent_id(
-                    memory_space_id, source_event_id, "fragment", index, payload
-                ),
+                intent_id=_intent_id(memory_space_id, source_event_id, "fragment", index, payload),
                 memory_space_id=memory_space_id,
                 source_event_id=source_event_id,
                 authority="extracted_user",
@@ -112,9 +111,7 @@ def memory_intents_from_decision(
         payload = triple.model_dump(mode="json")
         intents.append(
             MemoryIntent(
-                intent_id=_intent_id(
-                    memory_space_id, source_event_id, "triple", index, payload
-                ),
+                intent_id=_intent_id(memory_space_id, source_event_id, "triple", index, payload),
                 memory_space_id=memory_space_id,
                 source_event_id=source_event_id,
                 authority="extracted_user",
@@ -130,6 +127,7 @@ def memory_intents_from_decision(
                     "source_kind": "triple",
                     "source_index": index,
                     "valid_to": triple.valid_to,
+                    "evidence_quote": triple.evidence_quote,
                 },
             )
         )
@@ -159,6 +157,7 @@ def memory_intents_from_decision(
                     "source_kind": "invalidation",
                     "source_index": index,
                     "reason": invalidation.reason,
+                    "evidence_quote": invalidation.evidence_quote,
                 },
             )
         )
@@ -167,9 +166,7 @@ def memory_intents_from_decision(
         payload = action.model_dump(mode="json")
         intents.append(
             MemoryIntent(
-                intent_id=_intent_id(
-                    memory_space_id, source_event_id, "privacy", index, payload
-                ),
+                intent_id=_intent_id(memory_space_id, source_event_id, "privacy", index, payload),
                 memory_space_id=memory_space_id,
                 source_event_id=source_event_id,
                 authority="extracted_user",
@@ -183,6 +180,7 @@ def memory_intents_from_decision(
                     "source_index": index,
                     "privacy_action": action.action,
                     "reason": action.reason,
+                    "evidence_quote": action.evidence_quote,
                 },
             )
         )

@@ -2,7 +2,7 @@
 
 The agent_runner drains turns and commands on one NATS connection. Turns are
 processed serially and each spends seconds in the steward (LLM in prod), so a
-burst of turns used to block command processing (admin KG edits, user-confirmed
+burst of turns used to block command processing (admin KG edits, assertion
 facts, consolidator theme writes) for minutes — commands sat unapplied behind
 the turn backlog. The fix runs each subject's drain in its own task; since the
 steward's slow work happens outside the per-operation backend lock, a command
@@ -39,11 +39,10 @@ async def _triples_total(session) -> int:
     return int(payload.get("triples_total") or 0) if isinstance(payload, dict) else 0
 
 
-async def test_command_applied_promptly_while_turn_backlog_churns(
-    live_agent_runner, mcp_session
-):
+async def test_command_applied_promptly_while_turn_backlog_churns(live_agent_runner, mcp_session):
     handle = live_agent_runner(
-        user_id="e2e_cmd_starve", steward_mode="noop",
+        user_id="e2e_cmd_starve",
+        steward_mode="noop",
         env_overrides={"EIDOLON_MEMORY_TEST_TURN_DELAY_S": str(_TURN_DELAY_S)},
     )
 
@@ -68,8 +67,12 @@ async def test_command_applied_promptly_while_turn_backlog_churns(
 
         # Publish a KG-add command while the turn backlog is still draining.
         await nats_publish_kg_add_triple(
-            handle.nats_url, user_id=handle.user_id,
-            subject="self", predicate="likes", obj="oolong", confidence=0.95,
+            handle.nats_url,
+            user_id=handle.user_id,
+            subject="self",
+            predicate="likes",
+            obj="oolong",
+            confidence=0.95,
         )
 
         # The command must land promptly — NOT wait for the ~30s turn backlog.

@@ -82,7 +82,6 @@ class RecallPolicy(BaseModel):
 class StewardConfig(BaseModel):
     mode: str = "llm"
     prompt_template_path: str = ""
-    fallback_to_rules: bool = True
     max_fragments_per_turn: int = 6
     min_importance_to_write: int = 3
 
@@ -596,9 +595,7 @@ class McpHttpConfig(BaseModel):
         # environment. A real secret committed in yaml is the thing this
         # prevents, and it prevents it the same way for both.
         api_val = (data.get("api_service_token") or "").strip()
-        api_env = (
-            data.get("api_service_token_env") or "EIDOLON_MEMORY_API_TOKEN"
-        ).strip()
+        api_env = (data.get("api_service_token_env") or "EIDOLON_MEMORY_API_TOKEN").strip()
         if api_val and api_val != api_env:
             raise ValueError(
                 "mcp_http.api_service_token must be empty or the placeholder "

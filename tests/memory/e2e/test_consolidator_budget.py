@@ -13,7 +13,7 @@ import pytest
 
 from tests.memory.e2e.conftest import (
     mcp_tool_json,
-    nats_publish_user_confirm,
+    nats_publish_assertion,
     tail_file,
     wait_for_visible,
 )
@@ -110,7 +110,6 @@ async def test_consolidator_exits_on_budget_and_publishes_completed_wing(
     with _slow_completion_server() as (api_base, completion_server):
         handle = live_agent_runner(
             user_id="e2e_consolidator_budget",
-            
             steward_mode="noop",
             extra_settings={
                 "llm": {
@@ -129,7 +128,7 @@ async def test_consolidator_exits_on_budget_and_publishes_completed_wing(
             ("Wing_Emotion", "散步后情绪会平静一些"),
         ]
         for wing, text in facts:
-            await nats_publish_user_confirm(
+            await nats_publish_assertion(
                 handle.nats_url,
                 user_id=handle.user_id,
                 text=text,
@@ -138,6 +137,7 @@ async def test_consolidator_exits_on_budget_and_publishes_completed_wing(
             )
 
         async with mcp_session(handle.mcp_url) as session:
+
             async def _facts_landed(s) -> bool:
                 payload = mcp_tool_json(
                     await s.call_tool(

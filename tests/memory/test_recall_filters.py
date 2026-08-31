@@ -29,7 +29,7 @@ def test_exclude_duplicate_utterance() -> None:
     assert out == []
 
 
-def test_fresh_natural_turn_is_suppressed_but_user_confirmed_is_visible() -> None:
+def test_fresh_same_session_records_are_suppressed_without_source_exceptions() -> None:
     settings = MemorySettings(
         recall=RecallPolicy(exclude_current_session=True, exclude_recent_minutes=5),
     )
@@ -44,40 +44,43 @@ def test_fresh_natural_turn_is_suppressed_but_user_confirmed_is_visible() -> Non
             "source": "steward-llm",
         },
     )
-    confirmed = MemoryWireRecord(
+    command_projection = MemoryWireRecord(
         memory_space_id="realm-1",
-        key="userconfirm:fact-1",
+        key="assertion:fact-1",
         value="owner likes 火龙果",
         metadata={
             "session_id": "session-1",
             "filed_at": now,
-            "source": "user-confirmed",
-            "room": "userconfirm:fact-1",
+            "source": "assertion-ledger",
+            "room": "assertion:fact-1",
         },
     )
 
     out = filter_voice_recall_hits(
-        [natural, confirmed],
+        [natural, command_projection],
         settings,
         session_id="session-1",
     )
 
-    assert out == [confirmed]
+    assert out == []
 
 
-def test_user_confirmed_exact_utterance_is_not_mistaken_for_chat_echo() -> None:
+def test_exact_utterance_is_suppressed_for_every_projection_source() -> None:
     settings = MemorySettings(
         recall=RecallPolicy(exclude_current_session=False, exclude_recent_minutes=0),
     )
-    confirmed = MemoryWireRecord(
+    record = MemoryWireRecord(
         memory_space_id="realm-1",
-        key="userconfirm:fact-1",
+        key="assertion:fact-1",
         value="owner likes 火龙果",
-        metadata={"source": "user-confirmed"},
+        metadata={"source": "assertion-ledger"},
     )
 
-    assert filter_voice_recall_hits(
-        [confirmed],
-        settings,
-        user_utterance="owner likes 火龙果",
-    ) == [confirmed]
+    assert (
+        filter_voice_recall_hits(
+            [record],
+            settings,
+            user_utterance="owner likes 火龙果",
+        )
+        == []
+    )

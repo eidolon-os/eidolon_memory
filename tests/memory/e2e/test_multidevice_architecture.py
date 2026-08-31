@@ -15,11 +15,12 @@ from eidolon_memory_contracts import (
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import search_all_wings_mcp_style
 from eidolon.memory.application.recall_renderer import group_recall_context
-from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.application.turn_processor import process_turn_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
+from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.space_lock import SpaceLock
+from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 
 
@@ -57,13 +58,38 @@ class _Msg:
         self.nacked = True
 
 
+class _ScopeSteward:
+    extraction_version = "test:scope"
+
+    async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
+        device_scoped = "麦克风" in turn.user_text
+        return StewardDecision(
+            should_write=True,
+            fragments=[
+                MemoryFragment(
+                    memory_space_id=turn.context.memory_space_id,
+                    source_turn_id=turn.turn_id,
+                    scope="device" if device_scoped else "persona",
+                    visibility="current_device" if device_scoped else "all_devices",
+                    wing="Wing_Life",
+                    room="device" if device_scoped else "preference",
+                    content=turn.user_text,
+                    evidence_quote=turn.user_text,
+                    memory_type="device" if device_scoped else "preference",
+                    importance=4,
+                    confidence=0.9,
+                )
+            ],
+        )
+
+
 @pytest.mark.asyncio
 async def test_persona_shared_but_device_memory_stays_current_device_only(tmp_path) -> None:
     settings = load_memory_settings()
     backend = FakeMemoryBackend()
 
     backend.working_memory = WorkingMemoryRing(maxlen=5, lock=SpaceLock())
-    steward = RuleBasedSteward(settings)
+    steward = _ScopeSteward()
     memory_space_id = _ctx("device-a").memory_space_id
     canonical_facts = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
 
@@ -84,28 +110,19 @@ async def test_persona_shared_but_device_memory_stays_current_device_only(tmp_pa
         )
         assert msg.acked and not msg.nacked
 
-    device_b_records = await search_all_wings_mcp_style(
-        backend,
-        settings,
-        query="用户",
-        context=_ctx("device-b"),
-        top_k=10,
-        wing=None,
-        room=None,
-    )
-    rendered_b = group_recall_context(device_b_records)
-    assert "乌龙茶" in rendered_b
-    assert "麦克风需要校准" not in rendered_b
+    async def _recall(query: str, device_id: str) -> str:
+        records = await search_all_wings_mcp_style(
+            backend,
+            settings,
+            query=query,
+            context=_ctx(device_id),
+            top_k=10,
+            wing=None,
+            room=None,
+        )
+        return group_recall_context(records)
 
-    device_a_records = await search_all_wings_mcp_style(
-        backend,
-        settings,
-        query="用户",
-        context=_ctx("device-a"),
-        top_k=10,
-        wing=None,
-        room=None,
-    )
-    rendered_a = group_recall_context(device_a_records)
-    assert "乌龙茶" in rendered_a
-    assert "麦克风需要校准" in rendered_a
+    assert "乌龙茶" in await _recall("乌龙茶", "device-b")
+    assert "麦克风需要校准" not in await _recall("麦克风", "device-b")
+    assert "乌龙茶" in await _recall("乌龙茶", "device-a")
+    assert "麦克风需要校准" in await _recall("麦克风", "device-a")

@@ -110,17 +110,15 @@ def test_rerank_lifts_lexical_match_above_cosine_noise():
     bottom toward the top, but cosine 仍主导信号——期望 lexical match 进 top-2
     且其位置严格优于原 cosine rank。"""
     hits = [
-        _rec("用户最近在听 Acquired 播客"),     # cosine #1 (irrelevant to query)
-        _rec("用户最近在思考人生"),             # cosine #2 (also irrelevant)
-        _rec("用户喝乌龙茶不喝咖啡"),           # cosine #3 (DIRECTLY matches query)
+        _rec("用户最近在听 Acquired 播客"),  # cosine #1 (irrelevant to query)
+        _rec("用户最近在思考人生"),  # cosine #2 (also irrelevant)
+        _rec("用户喝乌龙茶不喝咖啡"),  # cosine #3 (DIRECTLY matches query)
     ]
     out = rerank_bm25_rrf("我喝什么茶", hits, top_k=3)
     lexical = "用户喝乌龙茶不喝咖啡"
     values = [r.value for r in out]
     # Lexical match must reach top-2 after fusion (RRF k=60 不会硬抢 cosine #1)
-    assert lexical in values[:2], (
-        f"expected lexical match in top-2, got: {values}"
-    )
+    assert lexical in values[:2], f"expected lexical match in top-2, got: {values}"
     # And it must have moved UP relative to cosine: original idx 2 → new idx < 2
     assert values.index(lexical) < 2, (
         f"BM25 should lift lexical match from cosine #3 toward top, got: {values}"
@@ -129,7 +127,7 @@ def test_rerank_lifts_lexical_match_above_cosine_noise():
 
 def test_rerank_preserves_metadata():
     """Metadata travel verbatim through rerank — Phase 4 themes / Phase 5
-    user-confirmed will read metadata fields downstream."""
+    downstream ranking will read metadata fields."""
     hits = [
         MemoryWireRecord(
             memory_space_id="default.u1.default",
@@ -153,9 +151,7 @@ def test_rerank_deterministic_same_input_same_order():
 
 def test_rerank_falls_back_to_cosine_when_bm25_unavailable(monkeypatch):
     """Defensive降级:模块加载时 rank-bm25 缺失,rerank 应等价于截断 cosine。"""
-    monkeypatch.setattr(
-        "eidolon.memory.application.recall_rerank._BM25_AVAILABLE", False
-    )
+    monkeypatch.setattr("eidolon.memory.application.recall_rerank._BM25_AVAILABLE", False)
     hits = [_rec(f"doc-{i}") for i in range(5)]
     out = rerank_bm25_rrf("anything", hits, top_k=3)
     assert [r.value for r in out] == ["doc-0", "doc-1", "doc-2"]

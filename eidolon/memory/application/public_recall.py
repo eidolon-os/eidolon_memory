@@ -9,10 +9,7 @@ import re
 import time
 from typing import Any
 
-from eidolon_memory_contracts import (
-    USER_CONFIRMED_ROOM_PREFIX,
-    MemoryActorContext,
-)
+from eidolon_memory_contracts import MemoryActorContext
 
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
 from eidolon.memory.application.kg_recall import expand_from_recalled, query_kg_for_recall
@@ -29,24 +26,6 @@ from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
-
-
-def _is_user_confirmed(rec: MemoryWireRecord) -> bool:
-    """True if ``rec`` is a Phase 5.2 user-confirmed drawer.
-
-    Two signals because the metadata that survives differs by read path:
-      - ``metadata.source == "user-confirmed"`` survives ``get_all`` /
-        FakeMemoryBackend, but mempalace's vector search drops custom
-        metadata.
-      - ``room`` (prefixed ``userconfirm:``) is a first-class field that
-        mempalace search DOES return — the reliable signal on the recall
-        hot path. Checking both keeps the pin correct across every backend.
-    """
-    meta = rec.metadata or {}
-    if meta.get("source") == "user-confirmed":
-        return True
-    room = str(meta.get("room") or rec.key or "")
-    return room.startswith(USER_CONFIRMED_ROOM_PREFIX)
 
 
 def wire_record_to_public_dict(rec: MemoryWireRecord) -> dict[str, Any]:
@@ -355,6 +334,7 @@ async def recall_with_kg_fusion(
             if for_voice
             else settings.recall.kg_timeout_seconds_normal
         )
+
         async def _kg_seed_path() -> list:
             kg_started = time.perf_counter()
             result = await _kg_path_with_timeout(
@@ -408,18 +388,6 @@ async def recall_with_kg_fusion(
             rrf_k=settings.recall.rerank_rrf_k,
         )
 
-    # Phase 5.2 — pin user-confirmed drawers to the top of vector_records.
-    # These are facts the user explicitly told us to remember verbatim
-    # (via the ``eidolon_memory_user_confirm`` MCP tool, NOT via steward
-    # LLM extraction) — they outrank cosine/BM25 signal by policy. They
-    # still flow through the regular wing fan-out + rerank, so this pin
-    # is purely a re-ordering inside the already-returned set.
-    if vector_records:
-        confirmed = [r for r in vector_records if _is_user_confirmed(r)]
-        if confirmed:
-            others = [r for r in vector_records if not _is_user_confirmed(r)]
-            vector_records = confirmed + others
-
     registry = RecallPolicyRegistry.default()
     vector_records = registry.rank(
         vector_records,
@@ -452,8 +420,7 @@ async def recall_with_kg_fusion(
         # information — the drawer text says it, in the person's own words. Drop
         # it and let the budget go to the hop.
         already_shown={
-            str((record.metadata or {}).get("source_turn_id") or "")
-            for record in vector_records
+            str((record.metadata or {}).get("source_turn_id") or "") for record in vector_records
         },
         limit=settings.recall.kg_max_entities * settings.recall.kg_max_triples_per_entity,
     )
@@ -652,8 +619,7 @@ async def _expand_with_timeout(
         return []
     turn_ids = list(
         dict.fromkeys(
-            str((record.metadata or {}).get("source_turn_id") or "")
-            for record in records
+            str((record.metadata or {}).get("source_turn_id") or "") for record in records
         )
     )
     turn_ids = [turn for turn in turn_ids if turn]
@@ -688,9 +654,7 @@ async def _expand_with_timeout(
         )
         return []
     except Exception as exc:  # noqa: BLE001 - the graph is never allowed to break recall
-        log.warning(
-            "kg_expand_failed", error=str(exc), error_type=type(exc).__name__
-        )
+        log.warning("kg_expand_failed", error=str(exc), error_type=type(exc).__name__)
         return []
 
 
@@ -730,9 +694,7 @@ async def _kg_path_with_timeout(
                     audiences=audiences,
                     cap=max_entities - len(candidates),
                 )
-                candidates.extend(
-                    name for name in from_phrase if name not in set(candidates)
-                )
+                candidates.extend(name for name in from_phrase if name not in set(candidates))
             if not candidates:
                 log.debug(
                     "kg_recall_result",
@@ -821,9 +783,7 @@ async def search_all_wings_mcp_style(
                 room=room,
                 audiences=audiences,
                 n_results=top_k,
-                skip_closets=(
-                    settings.runtime.read.voice_skip_closets if for_voice else False
-                ),
+                skip_closets=(settings.runtime.read.voice_skip_closets if for_voice else False),
                 diagnostics=diagnostics,
             )
             hits = [

@@ -15,7 +15,7 @@ import pytest
 
 from tests.memory.e2e.conftest import (
     mcp_tool_json,
-    nats_publish_user_confirm,
+    nats_publish_assertion,
     tail_file,
     wait_for_visible,
 )
@@ -44,7 +44,6 @@ async def test_second_agent_for_same_realm_is_rejected_before_serving(
 ) -> None:
     owner = live_agent_runner(
         user_id="e2e_single_owner",
-        
         steward_mode="noop",
     )
     duplicate_log = owner.log_path.with_name("duplicate-agent.log")
@@ -93,25 +92,23 @@ async def test_parallel_realms_keep_ports_palaces_and_records_isolated(
 ) -> None:
     realm_a = live_agent_runner(
         user_id="e2e_parallel_realm_a",
-        
         steward_mode="noop",
     )
     realm_b = live_agent_runner(
         user_id="e2e_parallel_realm_b",
-        
         steward_mode="noop",
     )
     marker_a = f"realm-a-{uuid.uuid4().hex}"
     marker_b = f"realm-b-{uuid.uuid4().hex}"
 
     await asyncio.gather(
-        nats_publish_user_confirm(
+        nats_publish_assertion(
             realm_a.nats_url,
             user_id=realm_a.user_id,
             text=marker_a,
             request_id=f"request-{marker_a}",
         ),
-        nats_publish_user_confirm(
+        nats_publish_assertion(
             realm_b.nats_url,
             user_id=realm_b.user_id,
             text=marker_b,
@@ -119,9 +116,7 @@ async def test_parallel_realms_keep_ports_palaces_and_records_isolated(
         ),
     )
 
-    async with mcp_session(realm_a.mcp_url) as session_a, mcp_session(
-        realm_b.mcp_url
-    ) as session_b:
+    async with mcp_session(realm_a.mcp_url) as session_a, mcp_session(realm_b.mcp_url) as session_b:
         assert await wait_for_visible(
             session_a,
             predicate=lambda s: _marker_count(s, marker_a),
@@ -147,7 +142,6 @@ async def test_concurrent_redelivery_is_idempotent_and_unique_writes_remain_visi
 ) -> None:
     handle = live_agent_runner(
         user_id="e2e_concurrent_replay",
-        
         steward_mode="noop",
     )
     replay_marker = f"replay-{uuid.uuid4().hex}"
@@ -155,7 +149,7 @@ async def test_concurrent_redelivery_is_idempotent_and_unique_writes_remain_visi
 
     await asyncio.gather(
         *(
-            nats_publish_user_confirm(
+            nats_publish_assertion(
                 handle.nats_url,
                 user_id=handle.user_id,
                 text=replay_marker,
@@ -168,7 +162,7 @@ async def test_concurrent_redelivery_is_idempotent_and_unique_writes_remain_visi
     unique_markers = [f"unique-{uuid.uuid4().hex}" for _ in range(8)]
     await asyncio.gather(
         *(
-            nats_publish_user_confirm(
+            nats_publish_assertion(
                 handle.nats_url,
                 user_id=handle.user_id,
                 text=marker,

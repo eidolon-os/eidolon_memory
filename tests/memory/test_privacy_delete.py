@@ -7,9 +7,9 @@ from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.forget import (
     DEFAULT_FORGET_PAGE_SIZE,
     ForgetResolutionLimitExceeded,
-    extract_privacy_target,
     find_forget_candidates,
     forget_exact_projections,
+    normalize_privacy_target,
 )
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.steward.common import apply_privacy_actions
@@ -126,9 +126,8 @@ async def _seed_graph_canonical(
     return registration.assertion_id
 
 
-def test_extract_privacy_target_removes_command_language() -> None:
-    assert extract_privacy_target("请帮我删掉我喜欢喝绿茶的记忆") == "我喜欢喝绿茶"
-    assert extract_privacy_target("忘掉我住在上海") == "我住在上海"
+def test_normalize_privacy_target_only_trims_boundaries() -> None:
+    assert normalize_privacy_target("  我喜欢喝绿茶。 ") == "我喜欢喝绿茶"
 
 
 async def test_find_forget_candidates_is_tenant_scoped_and_content_based() -> None:
@@ -150,9 +149,7 @@ async def test_find_forget_candidates_is_tenant_scoped_and_content_based() -> No
 async def test_privacy_delete_removes_candidate_and_verifies_invisible(tmp_path) -> None:
     backend = FakeMemoryBackend()
     ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
-    await _seed_canonical(
-        backend, ledger, "drawer_tea", "用户现在喜欢乌龙茶，不再喝绿茶"
-    )
+    await _seed_canonical(backend, ledger, "drawer_tea", "用户现在喜欢乌龙茶，不再喝绿茶")
     _seed(backend, "drawer_city", "用户住在常州")
 
     result = await apply_privacy_actions(
@@ -162,7 +159,7 @@ async def test_privacy_delete_removes_candidate_and_verifies_invisible(tmp_path)
         actions=[
             PrivacyAction(
                 action="delete_request",
-                target="请删掉绿茶的记忆",
+                target="绿茶",
                 reason="explicit user request",
             )
         ],
@@ -186,7 +183,7 @@ async def test_archive_topic_keeps_drawer_but_blocks_recall(tmp_path) -> None:
         actions=[
             PrivacyAction(
                 action="archive_topic",
-                target="以后别再提绿茶",
+                target="绿茶",
                 reason="explicit user request",
             )
         ],
@@ -223,7 +220,7 @@ async def test_multiple_delete_candidates_are_safely_archived(tmp_path) -> None:
         actions=[
             PrivacyAction(
                 action="delete_request",
-                target="删掉绿茶",
+                target="绿茶",
                 reason="explicit user request",
             )
         ],
@@ -233,10 +230,10 @@ async def test_multiple_delete_candidates_are_safely_archived(tmp_path) -> None:
     assert result.deleted_keys == []
     assert backend.delete_many_calls == []
     assert sorted(result.archived_keys) == ["drawer_tea_1", "drawer_tea_2"]
-    assert [
-        item["drawer_id"]
-        for item in result.confirmation_required["删掉绿茶"]
-    ] == ["drawer_tea_1", "drawer_tea_2"]
+    assert [item["drawer_id"] for item in result.confirmation_required["绿茶"]] == [
+        "drawer_tea_1",
+        "drawer_tea_2",
+    ]
 
 
 async def test_candidate_resolution_pages_through_multi_year_history() -> None:
@@ -339,7 +336,7 @@ async def test_a_spoken_delete_reaches_the_graph(graph, tmp_path) -> None:
         actions=[
             PrivacyAction(
                 action="delete_request",
-                target="请删掉绿茶的记忆",
+                target="绿茶",
                 reason="explicit user request",
             )
         ],
@@ -393,9 +390,7 @@ async def test_hard_forget_is_ledger_first_and_blocks_replay(graph, tmp_path) ->
         evidence_id=intent.intent_id,
         projection_id=registration.projection_id,
     )
-    await ledger.mark_projected(
-        SPACE, registration.assertion_id, targets={"drawer", "kg"}
-    )
+    await ledger.mark_projected(SPACE, registration.assertion_id, targets={"drawer", "kg"})
 
     changed, statements = await forget_exact_projections(
         backend,
@@ -420,9 +415,7 @@ async def test_hard_forget_is_ledger_first_and_blocks_replay(graph, tmp_path) ->
         await ledger.register(intent, targets={"drawer", "kg"})
 
 
-async def test_a_spoken_archive_ends_the_triple_without_deleting_it(
-    graph, tmp_path
-) -> None:
+async def test_a_spoken_archive_ends_the_triple_without_deleting_it(graph, tmp_path) -> None:
     backend = FakeMemoryBackend()
     ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
     await _seed_canonical(
@@ -458,9 +451,7 @@ async def test_a_spoken_archive_ends_the_triple_without_deleting_it(
     assert stats["triples_active"] == 0
 
 
-async def test_an_ambiguous_delete_is_archived_rather_than_abandoned(
-    graph, tmp_path
-) -> None:
+async def test_an_ambiguous_delete_is_archived_rather_than_abandoned(graph, tmp_path) -> None:
     """It used to find the memories and then decline, telling nobody.
 
     A delete matching several drawers recorded ``confirmation_required`` and did
@@ -530,7 +521,7 @@ async def test_a_space_without_a_graph_still_forgets_its_drawers(tmp_path) -> No
         actions=[
             PrivacyAction(
                 action="delete_request",
-                target="请删掉绿茶的记忆",
+                target="绿茶",
                 reason="explicit user request",
             )
         ],
@@ -553,9 +544,9 @@ def test_every_caller_hands_the_graph_to_the_privacy_handler() -> None:
     import inspect
 
     from eidolon.memory.application import turn_processor
-    from eidolon.memory.application.steward import common, llm, rules
+    from eidolon.memory.application.steward import common, llm
 
-    for module in (turn_processor, llm, rules):
+    for module in (turn_processor, llm):
         source = inspect.getsource(module)
         for index, line in enumerate(source.splitlines()):
             if "apply_privacy_actions(" not in line or "def " in line:
@@ -566,9 +557,7 @@ def test_every_caller_hands_the_graph_to_the_privacy_handler() -> None:
     assert "kg" in inspect.signature(common.apply_privacy_actions).parameters
 
 
-async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(
-    graph, tmp_path
-) -> None:
+async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(graph, tmp_path) -> None:
     """The hole the two independent write gates open.
 
     ``min_importance_to_write`` is 3 and ``min_confidence_to_write`` is 0.6, so an
@@ -623,9 +612,7 @@ async def test_a_fact_that_only_the_graph_holds_can_still_be_forgotten(
     assert (await graph.stats())["triples_total"] == 2
 
 
-async def test_forgetting_a_graph_fact_does_not_take_its_turn_mates(
-    graph, tmp_path
-) -> None:
+async def test_forgetting_a_graph_fact_does_not_take_its_turn_mates(graph, tmp_path) -> None:
     """One turn can carry several facts and only one of them was asked about.
 
     Turn-scoped forgetting is right when a drawer is the thing matched — the
@@ -649,16 +636,10 @@ async def test_forgetting_a_graph_fact_does_not_take_its_turn_mates(
         backend,
         memory_space_id=SPACE,
         audiences=OWNER_READ_SCOPE,
-        actions=[
-            PrivacyAction(
-                action="delete_request", target="妈妈 住在 杭州", reason="user"
-            )
-        ],
+        actions=[PrivacyAction(action="delete_request", target="妈妈 住在 杭州", reason="user")],
         kg=graph,
         canonical_facts=ledger,
     )
 
     assert (await graph.stats())["triples_active"] == 1
-    assert [r.object for r in await graph.query_entity("爸爸", audiences=("owner",))] == [
-        "北京"
-    ]
+    assert [r.object for r in await graph.query_entity("爸爸", audiences=("owner",))] == ["北京"]

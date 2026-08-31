@@ -27,7 +27,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from eidolon.memory.adapters.kg_sqlite import now_iso as _now_iso
-from eidolon.memory.application.explicit_writes import publish_with_status
+from eidolon.memory.application.command_delivery import publish_with_status
 from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     find_forget_candidates,
@@ -116,9 +116,7 @@ def status_handler(
                 "operation": "memory.status",
                 "memory_realm_id": memory_space_id,
                 "memory_space_id": memory_space_id,
-                "audience_scope": (
-                    f"companion:{companion_id}" if companion_id else "owner"
-                ),
+                "audience_scope": (f"companion:{companion_id}" if companion_id else "owner"),
                 "ready": status.ready,
                 **status.details,
             }
@@ -189,9 +187,7 @@ def graph_handler(
                 "memory_space_id": memory_space_id,
                 "nodes": [
                     {"node_id": name, "label": name, "degree": count}
-                    for name, count in sorted(
-                        degree.items(), key=lambda item: (-item[1], item[0])
-                    )
+                    for name, count in sorted(degree.items(), key=lambda item: (-item[1], item[0]))
                 ],
                 "edges": [
                     {
@@ -237,9 +233,7 @@ def browse_handler(
         try:
             scan = int(request.query_params.get("max_records", DEFAULT_SCAN))
         except ValueError:
-            return JSONResponse(
-                {"detail": "max_records must be a number"}, status_code=422
-            )
+            return JSONResponse({"detail": "max_records must be a number"}, status_code=422)
         scan = max(1, min(scan, MAXIMUM_SCAN))
 
         context = actor_context(
@@ -276,9 +270,7 @@ def browse_handler(
                 "contract_version": "1",
                 "operation": "memory.browse",
                 "memory_space_id": memory_space_id,
-                "audience_scope": (
-                    f"companion:{companion_id}" if companion_id else "owner"
-                ),
+                "audience_scope": (f"companion:{companion_id}" if companion_id else "owner"),
                 "materialization": {
                     "ready": materialization.ready,
                     **materialization.details,
@@ -388,11 +380,7 @@ def entries_handler(
             # arrives here mangled. Saying so turns a confusing afternoon into
             # a one-line fix; the alternative — repairing it — would be this
             # boundary guessing at a caller's encoding.
-            hint = (
-                " (an unencoded + in the offset arrives as a space)"
-                if " " in raw_since
-                else ""
-            )
+            hint = " (an unencoded + in the offset arrives as a space)" if " " in raw_since else ""
             return JSONResponse(
                 {"detail": f"since must be an ISO 8601 instant{hint}"},
                 status_code=422,
@@ -401,9 +389,7 @@ def entries_handler(
             # A naive instant would be compared against timezone-aware record
             # times and raise; asking for the offset is better than guessing UTC
             # and answering for the wrong day.
-            return JSONResponse(
-                {"detail": "since must carry a timezone offset"}, status_code=422
-            )
+            return JSONResponse({"detail": "since must carry a timezone offset"}, status_code=422)
         try:
             limit = int(request.query_params.get("limit", DEFAULT_ENTRIES))
         except ValueError:
@@ -476,9 +462,7 @@ def forget_preview_handler(
             return JSONResponse({"detail": "target is required"}, status_code=422)
         action = (request.query_params.get("action") or "delete").strip()
         if action not in {"archive", "delete"}:
-            return JSONResponse(
-                {"detail": "action must be archive or delete"}, status_code=422
-            )
+            return JSONResponse({"detail": "action must be archive or delete"}, status_code=422)
 
         context = actor_context(
             memory_space_id=memory_space_id,
@@ -491,9 +475,7 @@ def forget_preview_handler(
                 runtime.backend,
                 memory_space_id,
                 target,
-                commitments=getattr(
-                    getattr(runtime, "ledgers", None), "commitments", None
-                ),
+                commitments=getattr(getattr(runtime, "ledgers", None), "commitments", None),
             )
         except ForgetResolutionLimitExceeded as exc:
             # Too many matches to show, so nothing is offered to confirm. A
@@ -539,14 +521,10 @@ def forget_preview_handler(
                 candidate.key for candidate in candidates if candidate.key.startswith("drawer_")
             ],
             commitment_ids=[
-                candidate.key
-                for candidate in candidates
-                if candidate.key.startswith("commitment:")
+                candidate.key for candidate in candidates if candidate.key.startswith("commitment:")
             ],
         )
-        ambiguous = len(candidates) > 1 or any(
-            candidate.score < 1.0 for candidate in candidates
-        )
+        ambiguous = len(candidates) > 1 or any(candidate.score < 1.0 for candidate in candidates)
         return JSONResponse(
             {
                 "contract_version": "1",
@@ -587,13 +565,9 @@ def forget_confirm_handler(
     async def handle(request: Request) -> Response:
         token = (request.query_params.get("confirmation_token") or "").strip()
         if not token:
-            return JSONResponse(
-                {"detail": "confirmation_token is required"}, status_code=422
-            )
+            return JSONResponse({"detail": "confirmation_token is required"}, status_code=422)
         try:
-            proof = service.privacy_signer.verify(
-                token, expected_memory_space_id=memory_space_id
-            )
+            proof = service.privacy_signer.verify(token, expected_memory_space_id=memory_space_id)
         except ValueError as exc:
             # Forged, expired, or minted for another space. All three are the
             # same answer to the caller: this token cannot be acted on.

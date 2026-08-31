@@ -108,9 +108,7 @@ async def _publish_corpus(handle, corpus: list[dict], n: int) -> None:
         )
 
 
-async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
-    live_agent_runner, mcp_session
-):
+async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(live_agent_runner, mcp_session):
     """End-to-end: with rerank on, top-1 ground-truth hit rate must not
     regress vs cosine-only; the integration must be stable through NATS-write
     + MCP-read on a realistic 30-turn workload.
@@ -122,7 +120,8 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
     )
 
     h_on = live_agent_runner(
-        user_id="e2e_p1_on", steward_mode="rules",
+        user_id="e2e_p1_on",
+        steward_mode="test-verbatim",
     )
     ctx_on = e2e_actor_context(h_on.user_id)
 
@@ -145,7 +144,8 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(
         n_on = await _wait_for_fragments(s_on, "rerank_on")
 
     h_off = live_agent_runner(
-        user_id="e2e_p1_off", steward_mode="rules",
+        user_id="e2e_p1_off",
+        steward_mode="test-verbatim",
         extra_settings={"recall": {"rerank_enabled": False}},
     )
     ctx_off = e2e_actor_context(h_off.user_id)
@@ -230,16 +230,14 @@ async def test_normal_shared_embedding_preserves_realistic_top3_quality(
 
     legacy = live_agent_runner(
         user_id="e2e_normal_legacy",
-        
-        steward_mode="rules",
+        steward_mode="test-verbatim",
         extra_settings={
             "runtime": {"read": {"normal_shared_query_embedding": False}},
         },
     )
     shared = live_agent_runner(
         user_id="e2e_normal_shared",
-        
-        steward_mode="rules",
+        steward_mode="test-verbatim",
         extra_settings={
             "runtime": {"read": {"normal_shared_query_embedding": True}},
         },
@@ -248,17 +246,13 @@ async def test_normal_shared_embedding_preserves_realistic_top3_quality(
     async def _seed_and_wait(handle) -> list[str]:
         await _publish_corpus(handle, corpus, len(corpus))
         async with mcp_session(handle.mcp_url) as session:
+
             async def _ready(s):
                 return await _list_fragment_count(s) >= 5
 
             assert await wait_for_visible(session, predicate=_ready, timeout_s=90)
-            listed = mcp_tool_json(
-                await session.call_tool("eidolon_memory_list", {"limit": 1000})
-            )
-            return [
-                str(row.get("value", ""))
-                for row in (listed or {}).get("records") or []
-            ]
+            listed = mcp_tool_json(await session.call_tool("eidolon_memory_list", {"limit": 1000}))
+            return [str(row.get("value", "")) for row in (listed or {}).get("records") or []]
 
     # Keep embedded Chroma writers/readers for the two Palaces sequential.
     legacy_values = await _seed_and_wait(legacy)

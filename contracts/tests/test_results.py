@@ -110,10 +110,6 @@ def test_contracts_are_runtime_checkable_against_duck_typed_clients() -> None:
 
     class Writer:
         async def publish_turn(self, turn, *, trace_id=None): ...
-        async def write_confirmed_fact(
-            self, ctx, text, *, source_event_id, tool_call_id,
-            confidence=0.99, tags=(), wait_applied_seconds=0.75,
-        ): ...
         async def confirm_forget(self, ctx, confirmation_token, *, wait_applied_seconds=2.0): ...
 
     assert isinstance(Reader(), MemoryReadContract)

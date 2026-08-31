@@ -13,10 +13,10 @@ import pytest
 from eidolon.memory.entrypoints.mcp_server import AGENT_SURFACE_TOOLS
 from tests.memory.e2e.conftest import (
     mcp_tool_json,
+    nats_publish_assertion,
     nats_publish_commitment,
     nats_publish_exact_correction,
     nats_publish_kg_add_triple,
-    nats_publish_user_confirm,
 )
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e, pytest.mark.live_realm]
@@ -65,9 +65,7 @@ async def _wait_for_canary(
     latest_triples: list[dict] = []
     for _ in range(attempts):
         latest_records, latest_triples = await _snapshot(session)
-        drawer_ok = any(
-            drawer_marker == str(record.get("value", "")) for record in latest_records
-        )
+        drawer_ok = any(drawer_marker == str(record.get("value", "")) for record in latest_records)
         kg_ok = any(kg_marker == str(record.get("object", "")) for record in latest_triples)
         if drawer_ok and kg_ok:
             return
@@ -113,18 +111,14 @@ async def _wait_for_agent_turn(
 ) -> dict:
     latest_status = 0
     for _ in range(100):
-        response = await client.get(
-            f"{agent_admin_url}/api/admin/conversations/turns/{turn_id}"
-        )
+        response = await client.get(f"{agent_admin_url}/api/admin/conversations/turns/{turn_id}")
         latest_status = response.status_code
         if latest_status == 200:
             return response.json()
         if latest_status != 404:
             response.raise_for_status()
         await asyncio.sleep(0.1)
-    raise AssertionError(
-        f"agent turn {turn_id} was not persisted; latest HTTP {latest_status}"
-    )
+    raise AssertionError(f"agent turn {turn_id} was not persisted; latest HTTP {latest_status}")
 
 
 async def test_live_mcp_surface_ownership(mcp_session) -> None:
@@ -165,7 +159,7 @@ async def test_live_realms_empty_write_visible_and_isolated(mcp_session) -> None
                 assert triples == [], f"Realm {realm_id} KG was not empty after reset"
                 if empty_only:
                     continue
-                await nats_publish_user_confirm(
+                await nats_publish_assertion(
                     nats_url,
                     user_id=realm_id,
                     text=drawer_marker,
@@ -221,10 +215,8 @@ async def test_live_exact_canonical_dedup_evidence_and_isolation(mcp_session) ->
     marker = f"live-canonical-{uuid.uuid4().hex[:12]}"
 
     async with mcp_session(_ops_mcp_url(target_port)) as session:
-        before = mcp_tool_json(
-            await session.call_tool("eidolon_memory_canonical_stats", {})
-        )
-        first_id = await nats_publish_user_confirm(
+        before = mcp_tool_json(await session.call_tool("eidolon_memory_canonical_stats", {}))
+        first_id = await nats_publish_assertion(
             nats_url,
             user_id=target_realm,
             text=f"self likes {marker}",
@@ -233,7 +225,7 @@ async def test_live_exact_canonical_dedup_evidence_and_isolation(mcp_session) ->
             predicate="likes",
             object_value=marker,
         )
-        second_id = await nats_publish_user_confirm(
+        second_id = await nats_publish_assertion(
             nats_url,
             user_id=target_realm,
             text=f"self likes {marker}",
@@ -248,9 +240,7 @@ async def test_live_exact_canonical_dedup_evidence_and_isolation(mcp_session) ->
         assert second["status"] == "applied", second
         assert str(second.get("resource_id") or "").endswith(":evidence:2")
 
-        after = mcp_tool_json(
-            await session.call_tool("eidolon_memory_canonical_stats", {})
-        )
+        after = mcp_tool_json(await session.call_tool("eidolon_memory_canonical_stats", {}))
         assert after["assertions_total"] == before["assertions_total"] + 1
         assert after["evidence_total"] == before["evidence_total"] + 2
         assert after["kg_not_projected"] == 0
@@ -289,10 +279,8 @@ async def test_live_exact_canonical_invalidation_archives_current_projection(
     marker = f"live-invalidation-{uuid.uuid4().hex[:12]}"
 
     async with mcp_session(_ops_mcp_url(port)) as session:
-        before = mcp_tool_json(
-            await session.call_tool("eidolon_memory_canonical_stats", {})
-        )
-        add_id = await nats_publish_user_confirm(
+        before = mcp_tool_json(await session.call_tool("eidolon_memory_canonical_stats", {}))
+        add_id = await nats_publish_assertion(
             nats_url,
             user_id=realm_id,
             text=f"self likes {marker}",
@@ -315,9 +303,7 @@ async def test_live_exact_canonical_invalidation_archives_current_projection(
         correction = await _wait_for_command(session, correction_id)
         assert correction["status"] == "applied", correction
 
-        after = mcp_tool_json(
-            await session.call_tool("eidolon_memory_canonical_stats", {})
-        )
+        after = mcp_tool_json(await session.call_tool("eidolon_memory_canonical_stats", {}))
         assert after["assertions_total"] == before["assertions_total"] + 1
         assert after["assertions_invalidated"] == before["assertions_invalidated"] + 1
         assert after["invalidations_total"] == before["invalidations_total"] + 1
@@ -344,10 +330,7 @@ async def test_live_exact_canonical_invalidation_archives_current_projection(
                 },
             )
         )
-        assert not any(
-            row.get("object") == marker
-            for row in (current or {}).get("triples") or []
-        )
+        assert not any(row.get("object") == marker for row in (current or {}).get("triples") or [])
 
 
 async def test_live_explicit_single_slot_update_retains_superseded_history(
@@ -368,10 +351,8 @@ async def test_live_explicit_single_slot_update_retains_superseded_history(
     new_city = f"new-city:{marker}"
 
     async with mcp_session(_ops_mcp_url(port)) as session:
-        before = mcp_tool_json(
-            await session.call_tool("eidolon_memory_canonical_stats", {})
-        )
-        add_id = await nats_publish_user_confirm(
+        before = mcp_tool_json(await session.call_tool("eidolon_memory_canonical_stats", {}))
+        add_id = await nats_publish_assertion(
             nats_url,
             user_id=realm_id,
             text=f"{subject} lives in {old_city}",
@@ -382,7 +363,7 @@ async def test_live_explicit_single_slot_update_retains_superseded_history(
         )
         assert (await _wait_for_command(session, add_id))["status"] == "applied"
 
-        update_id = await nats_publish_user_confirm(
+        update_id = await nats_publish_assertion(
             nats_url,
             user_id=realm_id,
             text=f"{subject} now lives in {new_city}",
@@ -395,9 +376,7 @@ async def test_live_explicit_single_slot_update_retains_superseded_history(
         update = await _wait_for_command(session, update_id)
         assert update["status"] == "applied", update
 
-        after = mcp_tool_json(
-            await session.call_tool("eidolon_memory_canonical_stats", {})
-        )
+        after = mcp_tool_json(await session.call_tool("eidolon_memory_canonical_stats", {}))
         assert after["assertions_total"] == before["assertions_total"] + 2
         assert after["assertions_active"] == before["assertions_active"] + 1
         assert after["assertions_superseded"] == before["assertions_superseded"] + 1
@@ -405,9 +384,7 @@ async def test_live_explicit_single_slot_update_retains_superseded_history(
         assert after["invalidations_total"] == before["invalidations_total"]
 
         records, historical = await _snapshot(session)
-        old_drawer = next(
-            row for row in records if old_city in str(row.get("value") or "")
-        )
+        old_drawer = next(row for row in records if old_city in str(row.get("value") or ""))
         assert (old_drawer.get("metadata") or {}).get("privacy") == "do_not_recall"
         old_rows = [
             row
@@ -456,10 +433,8 @@ async def test_live_exact_fact_reactivation_creates_new_validity_period(
     object_value = f"topic:reactivation:{marker}"
 
     async with mcp_session(_ops_mcp_url(port)) as session:
-        before = mcp_tool_json(
-            await session.call_tool("eidolon_memory_canonical_stats", {})
-        )
-        add_id = await nats_publish_user_confirm(
+        before = mcp_tool_json(await session.call_tool("eidolon_memory_canonical_stats", {}))
+        add_id = await nats_publish_assertion(
             nats_url,
             user_id=realm_id,
             text=f"{subject} likes {object_value}",
@@ -479,11 +454,9 @@ async def test_live_exact_fact_reactivation_creates_new_validity_period(
             text=f"{subject} no longer likes {object_value}",
             request_id=f"live-reactivation-end-{uuid.uuid4().hex}",
         )
-        assert (
-            await _wait_for_command(session, correction_id)
-        )["status"] == "applied"
+        assert (await _wait_for_command(session, correction_id))["status"] == "applied"
 
-        reactivation_id = await nats_publish_user_confirm(
+        reactivation_id = await nats_publish_assertion(
             nats_url,
             user_id=realm_id,
             text=f"{subject} likes {object_value} again",
@@ -497,9 +470,7 @@ async def test_live_exact_fact_reactivation_creates_new_validity_period(
         assert reactivated["status"] == "applied", reactivated
         assert str(reactivated.get("resource_id") or "").startswith("reactivated:")
 
-        after = mcp_tool_json(
-            await session.call_tool("eidolon_memory_canonical_stats", {})
-        )
+        after = mcp_tool_json(await session.call_tool("eidolon_memory_canonical_stats", {}))
         assert after["assertions_total"] == before["assertions_total"] + 1
         assert after["assertions_active"] == before["assertions_active"] + 1
         assert after["reactivations_total"] == before["reactivations_total"] + 1
@@ -526,14 +497,12 @@ async def test_live_exact_fact_reactivation_creates_new_validity_period(
         assert len(fact["evidence"]) == 2
 
         records, triples = await _snapshot(session)
-        drawers = [
-            row for row in records if object_value in str(row.get("value") or "")
-        ]
+        drawers = [row for row in records if object_value in str(row.get("value") or "")]
         assert len(drawers) == 2
-        assert sum(
-            (row.get("metadata") or {}).get("privacy") == "do_not_recall"
-            for row in drawers
-        ) == 1
+        assert (
+            sum((row.get("metadata") or {}).get("privacy") == "do_not_recall" for row in drawers)
+            == 1
+        )
         exact_rows = [
             row
             for row in triples
@@ -594,13 +563,9 @@ async def test_live_commitment_supplement_and_fulfilment_lifecycle(
         supplemented = await _wait_for_command(session, supplement_id)
         assert supplemented["status"] == "applied", supplemented
 
-        current = mcp_tool_json(
-            await session.call_tool("eidolon_memory_commitments", {})
-        )
+        current = mcp_tool_json(await session.call_tool("eidolon_memory_commitments", {}))
         commitment = next(
-            row
-            for row in current["commitments"]
-            if row["commitment_id"] == commitment_id
+            row for row in current["commitments"] if row["commitment_id"] == commitment_id
         )
         assert commitment["status"] == "confirmed"
         assert commitment["revision"] == 2
@@ -625,13 +590,8 @@ async def test_live_commitment_supplement_and_fulfilment_lifecycle(
         fulfilled = await _wait_for_command(session, fulfil_id)
         assert fulfilled["status"] == "applied", fulfilled
 
-        current = mcp_tool_json(
-            await session.call_tool("eidolon_memory_commitments", {})
-        )
-        assert not any(
-            row["commitment_id"] == commitment_id
-            for row in current["commitments"]
-        )
+        current = mcp_tool_json(await session.call_tool("eidolon_memory_commitments", {}))
+        assert not any(row["commitment_id"] == commitment_id for row in current["commitments"])
         history = mcp_tool_json(
             await session.call_tool(
                 "eidolon_memory_commitment_history",
@@ -648,10 +608,7 @@ async def test_live_commitment_supplement_and_fulfilment_lifecycle(
         records, triples = await _snapshot(session)
         drawers = [row for row in records if marker in str(row.get("value") or "")]
         assert len(drawers) == 2
-        assert all(
-            (row.get("metadata") or {}).get("privacy") == "do_not_recall"
-            for row in drawers
-        )
+        assert all((row.get("metadata") or {}).get("privacy") == "do_not_recall" for row in drawers)
         assert not any(
             row.get("subject") == subject
             and row.get("predicate") == "promised"
@@ -700,9 +657,7 @@ async def test_live_commitment_reaches_agent_product_context(mcp_session) -> Non
             )
             created = await _wait_for_command(session, create_id)
             assert created["status"] == "applied", created
-            commitment_id = str(created.get("resource_id") or "").split(
-                ":revision:", 1
-            )[0]
+            commitment_id = str(created.get("resource_id") or "").split(":revision:", 1)[0]
             assert commitment_id.startswith("commitment:")
 
             async with httpx.AsyncClient(timeout=90.0, trust_env=False) as client:
@@ -735,10 +690,7 @@ async def test_live_commitment_reaches_agent_product_context(mcp_session) -> Non
                 if row["kind"] == "commitment"
             ]
             assert len(commitment_segments) == 1
-            assert (
-                commitment_segments[0]["metadata"]["actionability"]
-                == "must_not_execute"
-            )
+            assert commitment_segments[0]["metadata"]["actionability"] == "must_not_execute"
         finally:
             if commitment_id:
                 fulfil_id = await nats_publish_commitment(

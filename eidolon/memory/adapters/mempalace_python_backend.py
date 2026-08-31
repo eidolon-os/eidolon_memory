@@ -194,9 +194,7 @@ class MemPalacePythonBackend(MemoryBackend):
                     where = {"$and": [where, audience_filter]}
                 result = collection.query(
                     query_embeddings=[
-                        _deterministic_embedding(
-                            query, dim=_offline_embedding_dim(self._settings)
-                        )
+                        _deterministic_embedding(query, dim=_offline_embedding_dim(self._settings))
                     ],
                     n_results=n_results,
                     where=where,
@@ -268,21 +266,15 @@ class MemPalacePythonBackend(MemoryBackend):
                 where = filters[0] if len(filters) == 1 else {"$and": filters}
                 result = collection.query(
                     query_embeddings=[
-                        _deterministic_embedding(
-                            query, dim=_offline_embedding_dim(self._settings)
-                        )
+                        _deterministic_embedding(query, dim=_offline_embedding_dim(self._settings))
                     ],
                     n_results=n_results,
                     where=where,
                     include=["documents", "metadatas", "distances"],
                 )
-                return apply_recall_policy(
-                    _records_from_query_result(result), self._settings
-                )
+                return apply_recall_policy(_records_from_query_result(result), self._settings)
             except ImportError as exc:
-                raise MemoryBackendUnavailable(
-                    "mempalace package is not installed"
-                ) from exc
+                raise MemoryBackendUnavailable("mempalace package is not installed") from exc
             except Exception as exc:
                 raise MemoryBackendUnavailable(str(exc)) from exc
         raw = search_memories_shared_embedding(
@@ -356,9 +348,7 @@ class MemPalacePythonBackend(MemoryBackend):
         )
         return _drawer_id(wing, room, content), content, meta
 
-    async def _write_drawers(
-        self, rows: list[tuple[str, str, dict[str, Any]]]
-    ) -> None:
+    async def _write_drawers(self, rows: list[tuple[str, str, dict[str, Any]]]) -> None:
         """Write any number of drawers in one pass over the store.
 
         Three Chroma calls regardless of how many rows: one ``get`` to find which
@@ -492,9 +482,7 @@ class MemPalacePythonBackend(MemoryBackend):
             return None
         return _record_from_get_result(result, 0, drawer_id=key)
 
-    async def get_many(
-        self, memory_space_id: str, keys: list[str]
-    ) -> list[MemoryWireRecord]:
+    async def get_many(self, memory_space_id: str, keys: list[str]) -> list[MemoryWireRecord]:
         """Fetch a batch of drawers in one call.
 
         Chroma's ``get`` has always taken a list of ids; ``get`` above passes a
@@ -677,14 +665,11 @@ class MemPalacePythonBackend(MemoryBackend):
             collection.update(ids=existing_ids, metadatas=updated)
 
             verified = collection.get(ids=existing_ids, include=["metadatas"])
-            verified_by_id = dict(
-                zip(_ids(verified), _metadatas(verified), strict=False)
-            )
+            verified_by_id = dict(zip(_ids(verified), _metadatas(verified), strict=False))
             failed = [
                 drawer_id
                 for drawer_id in existing_ids
-                if str(verified_by_id.get(drawer_id, {}).get("privacy"))
-                != "do_not_recall"
+                if str(verified_by_id.get(drawer_id, {}).get("privacy")) != "do_not_recall"
             ]
             if failed:
                 msg = f"drawers remain recallable after archive: {failed!r}"
@@ -908,7 +893,7 @@ def _record_from_get_result(result: Any, index: int, *, drawer_id: str) -> Memor
         memory_space_id=memory_space_id,
         key=drawer_id or room,
         value=content,
-        # Preserve the *stored* ``source`` (e.g. "user-confirmed",
+        # Preserve the *stored* ``source`` (for example an assertion projection,
         # "consolidator") — it's the write-time provenance that recall
         # ranking + theme rendering key off. Only default to
         # "mempalace-python" when the drawer carried no source at all.

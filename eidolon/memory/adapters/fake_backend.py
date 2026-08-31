@@ -48,9 +48,10 @@ class FakeMemoryBackend:
                 continue
             if room and rec.key != room:
                 continue
-            if audiences is not None and str(
-                rec.metadata.get("audience") or "owner"
-            ) not in audiences:
+            if (
+                audiences is not None
+                and str(rec.metadata.get("audience") or "owner") not in audiences
+            ):
                 continue
             blob = json.dumps(rec.value, ensure_ascii=False).lower() if rec.value else ""
             if q in blob or q in rec.key.lower():
@@ -69,7 +70,7 @@ class FakeMemoryBackend:
         now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         # Default ``source="fake"`` only when the caller didn't set one — don't
         # silently discard caller-provided metadata (e.g. Phase 5.2 writes
-        # ``source="user-confirmed"``, which recall ranking keys off). ``wing``
+        # custom projection metadata used by recall ranking). ``wing``
         # and ``room`` remain authoritative (the adapter owns placement).
         raw_meta = dict(metadata or {})
         occurred_at = str(raw_meta.get("occurred_at") or raw_meta.get("memory_time") or now_iso)
@@ -137,9 +138,7 @@ class FakeMemoryBackend:
         did = self._doc_id(memory_space_id, key)
         return self.docs.get(did)
 
-    async def get_many(
-        self, memory_space_id: str, keys: list[str]
-    ) -> list[MemoryWireRecord]:
+    async def get_many(self, memory_space_id: str, keys: list[str]) -> list[MemoryWireRecord]:
         """Missing ids omitted, matching the real store rather than the loop."""
 
         found = (self.docs.get(self._doc_id(memory_space_id, key)) for key in keys)

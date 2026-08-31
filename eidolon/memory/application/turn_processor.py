@@ -255,9 +255,7 @@ def _drawer_for_triple(
         room=f"fact_{triple.predicate}_{_projection_room_token(projection_id)}",
         content=f"{triple.subject} {triple.predicate} {triple.object}",
         memory_type=(
-            "preference"
-            if triple.predicate in {"likes", "dislikes", "prefers"}
-            else "fact"
+            "preference" if triple.predicate in {"likes", "dislikes", "prefers"} else "fact"
         ),
         importance=4,
         confidence=triple.confidence,
@@ -363,10 +361,7 @@ async def process_turn_message(
     )
 
     memory_space_id = turn.context.memory_space_id
-    if (
-        expected_memory_space_id is not None
-        and memory_space_id != expected_memory_space_id
-    ):
+    if expected_memory_space_id is not None and memory_space_id != expected_memory_space_id:
         log.error(
             "turn_processor_memory_space_mismatch",
             expected=expected_memory_space_id,
@@ -408,34 +403,6 @@ async def process_turn_message(
         except Exception as exc:  # noqa: BLE001 - defensive: never break turn ack
             log.warning("working_memory_append_failed", error=str(exc))
 
-    # The explicit verbatim command is authoritative evidence for a source
-    # turn, but it is not a replacement for the steward's derived projections.
-    # We still run one normal decision so KG facts, invalidations, mentions and
-    # privacy actions are produced. Only the duplicate fragment projection is
-    # suppressed, after the service verifies the evidence rather than trusting
-    # caller metadata.
-    explicit_evidence_exists = False
-    try:
-        existing = await backend.get_by_source_turn_id(memory_space_id, turn.turn_id)
-    except Exception as exc:  # noqa: BLE001 - dedup lookup must not lose the turn
-        log.warning(
-            "turn_processor_explicit_dedup_lookup_failed",
-            turn_id=turn.turn_id,
-            error=str(exc),
-        )
-    else:
-        if (
-            existing is not None
-            and isinstance(existing.metadata, dict)
-            and existing.metadata.get("source") == "user-confirmed"
-        ):
-            explicit_evidence_exists = True
-            log.info(
-                "turn_processor_projecting_after_explicit_write",
-                turn_id=turn.turn_id,
-                memory_space_id=memory_space_id,
-            )
-
     # ── decide ─────────────────────────────────────────────────────────────
     steward_started = time.perf_counter()
     try:
@@ -470,25 +437,10 @@ async def process_turn_message(
             await msg.nak()
         return
 
-    if explicit_evidence_exists:
-        # The authoritative explicit command already owns long-term memory for
-        # this turn. Running a second natural projection would create a rival
-        # assertion whose correction/deletion lifecycle can diverge. Privacy
-        # actions are retained because they mutate prior facts, not this one.
-        decision = decision.model_copy(
-            update={"fragments": [], "triples": [], "invalidations": [], "mentions": []}
-        )
-        memory_intents = [
-            intent
-            for intent in memory_intents
-            if intent.attributes.get("source_kind") == "privacy"
-        ]
-
     memory_intents = [
-        intent.model_copy(
-            update={"attributes": {**intent.attributes, "audience": turn_audience}}
-        )
-        if intent.attributes.get("source_kind") in {
+        intent.model_copy(update={"attributes": {**intent.attributes, "audience": turn_audience}})
+        if intent.attributes.get("source_kind")
+        in {
             "fragment",
             "triple",
             "invalidation",
@@ -515,11 +467,7 @@ async def process_turn_message(
         # KG row below. Only fragment-only decisions are handled here; otherwise
         # writing the model's prose as another source creates two independently
         # correctable versions of the same fact.
-        if (
-            decision.should_write
-            and not explicit_evidence_exists
-            and (not decision.triples or kg is None)
-        ):
+        if decision.should_write and (not decision.triples or kg is None):
             if canonical_facts is None:
                 raise RuntimeError("natural long-term memory requires its fact ledger")
             fragment_intents = {
@@ -530,9 +478,7 @@ async def process_turn_message(
             pending: list[tuple[MemoryFragment, Any]] = []
             for index, fragment in enumerate(decision.fragments):
                 intent = fragment_intents[index]
-                registration = await canonical_facts.register(
-                    intent, targets={"drawer"}
-                )
+                registration = await canonical_facts.register(intent, targets={"drawer"})
                 if registration.state != "active":
                     continue
                 projection_id = registration.projection_id or registration.assertion_id
@@ -613,10 +559,7 @@ async def process_turn_message(
             intent = invalidation_intents.get(index)
             audience = turn_audience
             try:
-                if (
-                    canonical_facts is not None
-                    and intent is not None
-                ):
+                if canonical_facts is not None and intent is not None:
                     if intent.occurred_at is None:
                         intent = intent.model_copy(update={"occurred_at": turn_ts})
                     result = await invalidate_exact_canonical_fact(
@@ -670,9 +613,7 @@ async def process_turn_message(
                 intent = triple_intents.get(index)
                 audience = turn_audience
                 if canonical_facts is None or intent is None:
-                    raise RuntimeError(
-                        "structured natural memory requires its fact ledger"
-                    )
+                    raise RuntimeError("structured natural memory requires its fact ledger")
                 exact = await canonical_facts.get_fact(
                     intent.memory_space_id,
                     audience,
@@ -786,9 +727,7 @@ async def process_turn_message(
                     valid_from=t.valid_from or turn_ts,
                     valid_to=t.valid_to,
                     confidence=t.confidence,
-                    source_turn_id=(
-                        f"canonical:{projection_id}"
-                    ),
+                    source_turn_id=(f"canonical:{projection_id}"),
                     assertion_id=registration.assertion_id,
                     evidence_id=intent.intent_id,
                     projection_id=projection_id,
@@ -826,9 +765,7 @@ async def process_turn_message(
     # distinction that matters: a steady stream of skipped turns is either a
     # quiet conversation or a broken classifier, and the ratio is what tells
     # them apart.
-    metrics.TURNS_TOTAL.labels(
-        outcome="wrote" if decision.should_write else "skipped"
-    ).inc()
+    metrics.TURNS_TOTAL.labels(outcome="wrote" if decision.should_write else "skipped").inc()
 
     # G8: one structured line per turn — operators can grep this without
     # parsing the whole log stream.
@@ -852,9 +789,7 @@ async def process_turn_message(
         mentions_rejected=mentions_rejected if kg is not None else 0,
     )
     if canonical_projection_failures:
-        error = "canonical projection failed: " + "; ".join(
-            canonical_projection_failures[:2]
-        )
+        error = "canonical projection failed: " + "; ".join(canonical_projection_failures[:2])
         if deliveries >= max_deliveries:
             await _record_dlq(dlq_writer, settings, msg, error, deliveries)
             if audit_sink is not None:
@@ -932,7 +867,7 @@ async def _write_mentions(
     # Entities asserted by this turn = the only entity_ids we'll accept
     # mentions for. Mentions referencing unrelated entity_ids are LLM noise.
     triple_entities: set[str] = set()
-    for t in (decision.triples or []):
+    for t in decision.triples or []:
         if t.subject:
             triple_entities.add(t.subject)
         if t.object:
@@ -945,7 +880,8 @@ async def _write_mentions(
             rejected += 1
             log.warning(
                 "kg_mention_rejected_unknown_entity",
-                entity=m.entity_id, alias=m.alias,
+                entity=m.entity_id,
+                alias=m.alias,
             )
             continue
         try:
@@ -961,7 +897,9 @@ async def _write_mentions(
             kg_failures.append(f"mention:{exc}")
             log.warning(
                 "kg_mention_write_failed",
-                entity=m.entity_id, alias=m.alias, error=str(exc),
+                entity=m.entity_id,
+                alias=m.alias,
+                error=str(exc),
             )
     return written, rejected
 
@@ -1001,10 +939,7 @@ async def process_command_message(
         await msg.ack()
         return
 
-    if (
-        expected_memory_space_id is not None
-        and cmd.memory_space_id != expected_memory_space_id
-    ):
+    if expected_memory_space_id is not None and cmd.memory_space_id != expected_memory_space_id:
         log.error(
             "cmd_memory_space_mismatch",
             expected=expected_memory_space_id,
@@ -1153,15 +1088,13 @@ async def process_command_message(
             if cmd.commitment_ids:
                 if commitments is None:
                     raise RuntimeError("commitment privacy mutation requires its ledger")
-                commitment_changed, commitment_forgotten = (
-                    await forget_commitment_projections(
-                        backend,
-                        kg,
-                        commitments,
-                        cmd.memory_space_id,
-                        cmd.commitment_ids,
-                        hard=cmd.action == "delete",
-                    )
+                commitment_changed, commitment_forgotten = await forget_commitment_projections(
+                    backend,
+                    kg,
+                    commitments,
+                    cmd.memory_space_id,
+                    cmd.commitment_ids,
+                    hard=cmd.action == "delete",
                 )
                 changed.extend(commitment_changed)
                 forgotten += commitment_forgotten
@@ -1444,7 +1377,7 @@ async def _ingest_theme(backend: Any, cmd: ConsolidatorIngestThemeCommand) -> st
         wing="Wing_Theme",
         room=f"theme:{cmd.request_id[:16]}",
         content=cmd.text,
-        memory_type="profile",   # closest existing type for high-level summaries
+        memory_type="profile",  # closest existing type for high-level summaries
         importance=4,
         confidence=cmd.confidence,
         occurred_at=cmd.issued_at,

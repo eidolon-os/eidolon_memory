@@ -66,7 +66,7 @@ def parse_search_tool_payload(
                 "similarity": round(similarity, 4),
             }
         )
-        # Preserve the stored write-time ``source`` (e.g. "user-confirmed",
+        # Preserve the stored write-time ``source`` (for example an assertion,
         # "consolidator") that recall ranking + theme rendering key off.
         # Only stamp "mcp" when the hit carried no source — "mcp" is just
         # "this came back via the search tool", redundant when real

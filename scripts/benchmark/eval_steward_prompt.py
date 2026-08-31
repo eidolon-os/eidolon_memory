@@ -96,10 +96,7 @@ def _mention_diff(expected: list, actual: list) -> dict[str, list[dict[str, str]
     actual_keys = {_mention_key(item) for item in actual}
 
     def rows(keys: set[tuple[str, str]]) -> list[dict[str, str]]:
-        return [
-            {"entity_id": entity_id, "alias": alias}
-            for entity_id, alias in sorted(keys)
-        ]
+        return [{"entity_id": entity_id, "alias": alias} for entity_id, alias in sorted(keys)]
 
     return {
         "expected": rows(expected_keys),
@@ -175,9 +172,7 @@ async def _run_one(sample: dict, steward, user_id: str) -> dict:
 
     expect = sample["expect"]
     tp_t, fp_t, fn_t = _confusion(expect.get("triples", []), decision.triples)
-    tp_i, fp_i, fn_i = _confusion(
-        expect.get("invalidations", []), decision.invalidations
-    )
+    tp_i, fp_i, fn_i = _confusion(expect.get("invalidations", []), decision.invalidations)
     # Phase 3 — mentions scored independently. Samples without an "mentions"
     # key are treated as expecting none (so a steward that outputs nothing
     # there is correct, not penalised).
@@ -200,9 +195,7 @@ async def _run_one(sample: dict, steward, user_id: str) -> dict:
         "triples": {"tp": tp_t, "fp": fp_t, "fn": fn_t},
         "triple_diff": _triple_diff(expect.get("triples", []), decision.triples),
         "invalidations": {"tp": tp_i, "fp": fp_i, "fn": fn_i},
-        "invalidation_diff": _triple_diff(
-            expect.get("invalidations", []), decision.invalidations
-        ),
+        "invalidation_diff": _triple_diff(expect.get("invalidations", []), decision.invalidations),
         "mentions": {"tp": tp_m, "fp": fp_m, "fn": fn_m},
         "mention_diff": _mention_diff(
             expect.get("mentions", []), getattr(decision, "mentions", None) or []
@@ -276,7 +269,8 @@ def _aggregate(results: list[dict], *, requested_count: int | None = None) -> di
         "pass_coverage": requested > 0 and len(results) == requested,
     }
     gates["overall_pass"] = all(
-        gates[k] for k in (
+        gates[k]
+        for k in (
             "pass_triples_precision",
             "pass_triples_recall",
             "pass_invalidations_precision",
@@ -300,21 +294,16 @@ def _category_breakdown(results: list[dict]) -> dict[str, dict]:
 
     report: dict[str, dict] = {}
     for category, items in sorted(grouped.items()):
-        triples = {
-            key: sum(item["triples"][key] for item in items)
-            for key in ("tp", "fp", "fn")
-        }
+        triples = {key: sum(item["triples"][key] for item in items) for key in ("tp", "fp", "fn")}
         invalidations = {
-            key: sum(item["invalidations"][key] for item in items)
-            for key in ("tp", "fp", "fn")
+            key: sum(item["invalidations"][key] for item in items) for key in ("tp", "fp", "fn")
         }
         t_hallucination, t_omission = _error_rates(**triples)
         i_hallucination, i_omission = _error_rates(**invalidations)
         report[category] = {
             "samples": len(items),
             "should_write_accuracy": round(
-                sum(bool(item.get("should_write_ok")) for item in items)
-                / max(1, len(items)),
+                sum(bool(item.get("should_write_ok")) for item in items) / max(1, len(items)),
                 3,
             ),
             "triple_hallucination_rate": round(t_hallucination, 3),
@@ -330,15 +319,10 @@ async def _amain(args) -> int:
     from eidolon.memory.config.memory_settings import get_memory_settings
 
     settings = get_memory_settings()
-    # A live LLM evaluation must never silently grade RuleBasedSteward output.
-    # Production may keep its availability fallback; the offline evaluator
-    # fails closed so network/model outages cannot masquerade as quality data.
+    # The evaluator uses the same semantic-only extraction policy as production.
+    # Network/model failures are errors, never substitute decisions.
     eval_settings = settings.model_copy(
-        update={
-            "steward": settings.steward.model_copy(
-                update={"mode": "llm", "fallback_to_rules": False}
-            )
-        }
+        update={"steward": settings.steward.model_copy(update={"mode": "llm"})}
     )
     steward = create_steward(eval_settings)
     user_id = args.user_id
@@ -354,7 +338,7 @@ async def _amain(args) -> int:
     except ValueError as exc:
         print(f"[eval] invalid dataset: {exc}")
         return 2
-    print(f"[eval] {len(samples)} samples; LLM={eval_settings.llm.model}; fallback=disabled")
+    print(f"[eval] {len(samples)} samples; LLM={eval_settings.llm.model}")
 
     results = []
     errors: list[dict[str, str]] = []

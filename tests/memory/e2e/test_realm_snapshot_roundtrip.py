@@ -36,7 +36,7 @@ from eidolon.memory.infrastructure.realm_snapshot import (
 from tests.memory.e2e.conftest import (
     e2e_actor_context,
     mcp_tool_json,
-    nats_publish_user_confirm,
+    nats_publish_assertion,
     wait_for_visible,
 )
 
@@ -63,10 +63,10 @@ async def test_a_destroyed_realm_recalls_the_same_after_being_restored(
     mcp_session,
     tmp_path,
 ) -> None:
-    handle = live_agent_runner(user_id=REALM, steward_mode="rules")
+    handle = live_agent_runner(user_id=REALM, steward_mode="test-verbatim")
     context = e2e_actor_context(handle.user_id)
 
-    await nats_publish_user_confirm(
+    await nats_publish_assertion(
         handle.nats_url,
         user_id=handle.user_id,
         text=FACT,
@@ -75,12 +75,12 @@ async def test_a_destroyed_realm_recalls_the_same_after_being_restored(
     )
 
     async with mcp_session(handle.mcp_url) as session:
+
         async def _recallable(s) -> bool:
             return FACT in await _recall_values(s, context, "乌龙茶")
 
         assert await wait_for_visible(session, predicate=_recallable, timeout_s=60), (
-            "the fact never became recallable, so there is nothing to prove about "
-            "restoring it"
+            "the fact never became recallable, so there is nothing to prove about restoring it"
         )
         before = await _recall_values(session, context, "乌龙茶")
 
@@ -119,8 +119,9 @@ async def test_a_destroyed_realm_recalls_the_same_after_being_restored(
     )
     assert restored["file_count"] == len(snapshot.entries)
 
-    revived = live_agent_runner(user_id=REALM, steward_mode="rules", keep_palace=True)
+    revived = live_agent_runner(user_id=REALM, steward_mode="test-verbatim", keep_palace=True)
     async with mcp_session(revived.mcp_url) as session:
+
         async def _recallable_again(s) -> bool:
             return FACT in await _recall_values(s, context, "乌龙茶")
 

@@ -419,12 +419,12 @@ def test_spawn_uses_current_memory_space_cli(
         palace_root=tmp_path / "palaces",
         settings_path=tmp_path / "settings.yaml",
         log_path=tmp_path / "agent.log",
-        steward_mode="rules",
+        steward_mode="test-verbatim",
     )
 
     assert captured["argv"][1:3] == ["--memory-space-id", "r:quality:bench"]
     settings = quality_bench.yaml.safe_load((tmp_path / "settings.yaml").read_text())
-    assert settings["steward"]["mode"] == "rules"
+    assert settings["steward"]["mode"] == "test-verbatim"
 
 
 def test_readiness_probe_ignores_proxy_environment(
