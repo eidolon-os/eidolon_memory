@@ -8,17 +8,22 @@ result is claimed by this local gate.
 
 | Category | Result | Notes |
 |---|---|---|
-| Memory non-E2E | **1131 passed, 5 skipped** | Three additional loopback-bind cases were denied by the workspace sandbox; the complete preflight file passed **10/10** outside that sandbox |
-| Memory real-process E2E | **18 passed, 9 skipped, 3 deselected** | Real NATS, Memory subprocesses, Chroma, restart, redelivery, privacy and snapshot/restore; skipped cases require a live Pi Realm |
+| Memory non-E2E | **1134 passed, 5 skipped** | Final `main`, including the public-provider and privacy hardening commits |
+| Memory real-process E2E | **21 passed, 8 skipped, 3 deselected** | Real NATS, Memory subprocesses, Chroma, restart, redelivery, privacy, snapshot/restore and shared/per-wing read-path parity; skipped cases require a live Pi Realm or external LLM |
 | Configuration / embedder contract | **141 passed** | Includes public-only MemPalace provider configuration and the BGE provider contract |
 | Standalone wire contracts | **61 passed** | Isolated environment with no Memory storage stack installed |
 | Changed-file Ruff / compile | **passed** | No private compatibility module or process-wide model-download patch remains |
 
-Cross-repository gates run against the same source set: Agent **601 passed,
-1 skipped** plus its loopback product-acceptance file **2/2** outside the
-sandbox; Channel **1602 passed, 9 skipped, 25 deselected**; Mobile **671 passed,
-5 skipped**. Mobile had unrelated device-commissioning work in progress and was
-tested read-only.
+Cross-repository gates run against the final merged source set: Agent **604
+passed, 1 skipped** and its live contract harness **12/12**; Channel **1637
+passed, 7 skipped, 25 deselected**; Mobile **671 passed, 5 skipped**. Mobile had
+unrelated device-commissioning work in progress and was tested read-only.
+
+The deterministic real-process recall gate uses exact projected text. Its
+offline hash embedder intentionally has no semantic meaning, so paraphrase
+quality is measured only by the real-embedder benchmark; the E2E gate proves
+transport, scope, Chroma and ranking-path parity without pretending that a hash
+vector measures product recall quality.
 
 ## Historical 3.6 baseline
 
