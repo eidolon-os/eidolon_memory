@@ -1,22 +1,12 @@
-"""Phase 1 e2e — BM25 + cosine RRF rerank improves recall hit rate.
+"""Real-process contracts for the two Chroma recall paths.
 
-Story:
-    1. Spawn TWO isolated agent_runners against the same corpus:
-       - ``rerank_on``  : default (rerank_enabled=True, rrf_k=60)
-       - ``rerank_off`` : same data, rerank_enabled=False
-    2. Drive each via NATS publish of the 40-turn companion corpus, waiting
-       for one realm to finish ingest before writing the next. This test is
-       about rerank quality, not backend write concurrency.
-       Use steward.mode="rules" so deterministic fragments hit chroma.
-    3. Wait for both palaces to ingest ≥ 30 fragments via MCP `list`.
-    4. For every ``expected_recall_queries`` entry across the corpus, ask
-       both agents via MCP `recall_context` and check whether the matching
-       fragment surfaces in top-3.
-    5. Assert: rerank_on top-1 hit rate ≥ rerank_off + 5pp **OR** rerank_on
-       is non-worse and ≥ baseline floor (defensive: the rules steward
-       generates short fragments where BM25 may not have huge headroom).
-
-Marker: ``@pytest.mark.e2e``
+The E2E fixture deliberately uses the offline hash embedder: it exercises real
+NATS, subprocess, Chroma, scope and rerank wiring without loading a model.  Hash
+vectors have no semantic meaning, so this module must not claim product recall
+quality from paraphrased questions.  Instead it verifies a property the offline
+provider can prove: exact projected text remains reachable, and the shared-query
+path is equivalent to the per-wing path.  Semantic quality belongs to the real
+embedder benchmark, not to this deterministic plumbing gate.
 """
 
 from __future__ import annotations
@@ -58,20 +48,17 @@ async def _recall_top_values(session, context, *, query: str, top_k: int = 3) ->
     return [str(r.get("value", "")) for r in records[:top_k]]
 
 
-def _ground_truth_queries(corpus: list[dict]) -> list[tuple[str, str]]:
-    """Flatten (query, expected_fragment_value) pairs.
-
-    ``expected_fragment_value`` = the turn's user_text. The rules steward
-    distills the user_text into a fragment whose ``value`` is the same text
-    (or a short paraphrase of it). Matching = does any returned top-3
-    fragment substring-overlap with the user_text from the expected turn?
-    """
+def _exact_projection_queries(corpus: list[dict]) -> list[tuple[str, str]]:
+    """Return one exact, semantically neutral recall case per positive turn."""
     pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for entry in corpus:
         expected_text = entry["user_text"]
-        for q in entry.get("expected_recall_queries", []):
-            if q.get("should_match"):
-                pairs.append((q["query"], expected_text))
+        if expected_text in seen:
+            continue
+        if any(q.get("should_match") for q in entry.get("expected_recall_queries", [])):
+            pairs.append((expected_text, expected_text))
+            seen.add(expected_text)
     return pairs
 
 
@@ -108,16 +95,14 @@ async def _publish_corpus(handle, corpus: list[dict], n: int) -> None:
         )
 
 
-async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(live_agent_runner, mcp_session):
-    """End-to-end: with rerank on, top-1 ground-truth hit rate must not
-    regress vs cosine-only; the integration must be stable through NATS-write
-    + MCP-read on a realistic 30-turn workload.
-    """
+async def test_rerank_pipeline_preserves_exact_projection_recall(
+    live_agent_runner,
+    mcp_session,
+):
+    """Rerank on/off both keep exact projected text reachable through E2E."""
     corpus = load_companion_corpus()
-    ground_truth = _ground_truth_queries(corpus)
-    assert len(ground_truth) >= 12, (
-        f"corpus must yield ≥12 ground-truth queries, got {len(ground_truth)}"
-    )
+    exact_cases = _exact_projection_queries(corpus)
+    assert len(exact_cases) >= 12
 
     h_on = live_agent_runner(
         user_id="e2e_p1_on",
@@ -125,18 +110,21 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(live_agent_runner, mcp_
     )
     ctx_on = e2e_actor_context(h_on.user_id)
 
-    # Rules steward filters by importance, so the fragment count will be
-    # smaller than the corpus (~7-9). Keep write/read phases sequential: the
-    # embedded Chroma backend is intentionally single-realm/single-flight.
-    MIN_FRAGMENTS = 5
+    # Verbatim test stewardship writes every non-empty turn. Waiting for the
+    # complete corpus makes this a recall contract instead of a race against
+    # the asynchronous writer.
+    expected_fragments = len(corpus)
 
     async def _wait_for_fragments(session, label: str) -> int:
         async def _ready(s):
-            return await _list_fragment_count(s) >= MIN_FRAGMENTS
+            return await _list_fragment_count(s) >= expected_fragments
 
         ok = await wait_for_visible(session, predicate=_ready, timeout_s=90)
         count = await _list_fragment_count(session)
-        assert ok, f"{label} palace did not reach {MIN_FRAGMENTS} fragments (got {count})"
+        assert ok, (
+            f"{label} palace did not reach {expected_fragments} fragments "
+            f"(got {count})"
+        )
         return count
 
     await _publish_corpus(h_on, corpus, len(corpus))
@@ -158,7 +146,7 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(live_agent_runner, mcp_
         hits_top1 = 0
         hits_top3 = 0
         async with mcp_session(mcp_url) as session:
-            for query, expected in ground_truth:
+            for query, expected in exact_cases:
                 rows = await _recall_top_values(session, context, query=query, top_k=3)
                 if rows and _matches(rows[:1], expected):
                     hits_top1 += 1
@@ -172,7 +160,7 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(live_agent_runner, mcp_
     hits_on_top1, hits_on_top3 = await _score(h_on.mcp_url, ctx_on)
     hits_off_top1, hits_off_top3 = await _score(h_off.mcp_url, ctx_off)
 
-    total = len(ground_truth)
+    total = len(exact_cases)
     rate_on_1 = hits_on_top1 / total
     rate_off_1 = hits_off_top1 / total
     rate_on_3 = hits_on_top3 / total
@@ -186,24 +174,9 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(live_agent_runner, mcp_
     )
     print(report)
 
-    # Defensive assertions — the headline plan target is +15pp, but rules
-    # steward on a small corpus has limited headroom. Two-tier check:
-    # (a) rerank must not REGRESS top-1 hit rate
-    # (b) rerank's top-3 hit rate must be ≥ 50% (sanity floor)
-    # The headline plan target (+15pp top-1) requires the LLM steward — the
-    # rules steward writes verbatim user_text fragments where BM25 has
-    # little headroom to differentiate. So the strict assertions here are:
-    #
-    #   (a) rerank wire-up does not REGRESS top-1 hit rate vs cosine-only
-    #   (b) rerank wire-up does not REGRESS top-3 hit rate vs cosine-only
-    #   (c) top-3 hit rate is ≥ top-1 hit rate (recall sanity — degenerate
-    #       paths would have all 3 slots return junk)
-    #   (d) some non-zero hit rate ground-truthed against the corpus
-    #
-    # Quality uplift (+15pp) is gated to the Phase 3 e2e (entity mentions)
-    # where the LLM steward generates richer fragments. The value of THIS
-    # e2e is contractual: NATS-write → MCP-read with rerank in the pipeline
-    # behaves correctly on a realistic 40-turn workload.
+    # This is a wiring contract, not a semantic quality benchmark. Exact text
+    # must be found in top-3 on both sides; rerank may move one near-duplicate
+    # at top-1, but cannot make the projection unreachable.
     assert rate_on_1 >= rate_off_1 - 0.05, (
         f"rerank regressed top-1: on={rate_on_1:.2%} < off={rate_off_1:.2%}\n{report}"
     )
@@ -213,20 +186,18 @@ async def test_rerank_lifts_top1_hit_rate_vs_cosine_only(live_agent_runner, mcp_
     assert rate_on_3 >= rate_on_1, (
         f"recall path broken: top-3 {rate_on_3:.2%} < top-1 {rate_on_1:.2%}\n{report}"
     )
-    assert rate_on_1 > 0.0, (
-        f"rerank_on returned zero ground-truth hits — pipeline likely "
-        f"broken (no fragments reachable via recall)\n{report}"
-    )
+    assert hits_on_top3 == total, report
+    assert hits_off_top3 == total, report
 
 
-async def test_normal_shared_embedding_preserves_realistic_top3_quality(
+async def test_normal_shared_embedding_matches_legacy_exact_recall(
     live_agent_runner,
     mcp_session,
 ) -> None:
     """The normal fast path must not buy latency by losing companion facts."""
     corpus = load_companion_corpus()
-    ground_truth = _ground_truth_queries(corpus)
-    assert len(ground_truth) >= 12
+    exact_cases = _exact_projection_queries(corpus)
+    assert len(exact_cases) >= 12
 
     legacy = live_agent_runner(
         user_id="e2e_normal_legacy",
@@ -248,7 +219,7 @@ async def test_normal_shared_embedding_preserves_realistic_top3_quality(
         async with mcp_session(handle.mcp_url) as session:
 
             async def _ready(s):
-                return await _list_fragment_count(s) >= 5
+                return await _list_fragment_count(s) >= len(corpus)
 
             assert await wait_for_visible(session, predicate=_ready, timeout_s=90)
             listed = mcp_tool_json(await session.call_tool("eidolon_memory_list", {"limit": 1000}))
@@ -257,19 +228,15 @@ async def test_normal_shared_embedding_preserves_realistic_top3_quality(
     # Keep embedded Chroma writers/readers for the two Palaces sequential.
     legacy_values = await _seed_and_wait(legacy)
     shared_values = await _seed_and_wait(shared)
-    eligible = [
-        (query, expected)
-        for query, expected in ground_truth
-        if _matches(legacy_values, expected) and _matches(shared_values, expected)
-    ]
-    assert len(eligible) >= 5, "rules steward did not persist enough shared ground truth"
+    assert all(_matches(legacy_values, expected) for _, expected in exact_cases)
+    assert all(_matches(shared_values, expected) for _, expected in exact_cases)
 
     async def _score(handle) -> tuple[int, int]:
         top1 = 0
         top3 = 0
         context = e2e_actor_context(handle.user_id)
         async with mcp_session(handle.mcp_url) as session:
-            for query, expected in eligible:
+            for query, expected in exact_cases:
                 rows = await _recall_top_values(session, context, query=query, top_k=3)
                 top1 += int(bool(rows) and _matches(rows[:1], expected))
                 top3 += int(_matches(rows, expected))
@@ -277,15 +244,16 @@ async def test_normal_shared_embedding_preserves_realistic_top3_quality(
 
     legacy_top1, legacy_top3 = await _score(legacy)
     shared_top1, shared_top3 = await _score(shared)
-    total = len(eligible)
+    total = len(exact_cases)
     report = (
         f"normal legacy top1/top3={legacy_top1}/{legacy_top3}; "
         f"shared={shared_top1}/{shared_top3}; total={total}"
     )
 
-    # Allow one-query noise on the small deterministic corpus, but reject a
-    # material ranking regression or a fast path that returns mostly junk.
+    # The same explicit query vector must remain reachable through both public
+    # paths. Semantic paraphrase quality is measured with the real embedder.
     tolerance = max(1, int(total * 0.05))
     assert shared_top1 >= legacy_top1 - tolerance, report
     assert shared_top3 >= legacy_top3 - tolerance, report
-    assert shared_top3 > 0, report
+    assert legacy_top3 == total, report
+    assert shared_top3 == total, report
