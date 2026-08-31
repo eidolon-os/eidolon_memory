@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         CanonicalFactRecord,
         CanonicalFactRegistration,
         CanonicalFactStats,
+        CanonicalForgetPlan,
         ProjectionTarget,
     )
     from eidolon.memory.domain.command_status import CommandStatusRecord, CommandStatusStats
@@ -276,6 +277,12 @@ class ExtractionDecisionStore(Protocol):
         record: ExtractionDecisionRecord,
     ) -> ExtractionDecisionRecord: ...
 
+    async def redact_source_events(
+        self,
+        memory_space_id: str,
+        source_event_ids: list[str],
+    ) -> int: ...
+
 
 @runtime_checkable
 class CanonicalFactReader(Protocol):
@@ -313,7 +320,13 @@ class CanonicalFactWriter(Protocol):
         hard: bool,
         reason: str,
         targets: set[ProjectionTarget],
-    ) -> list[str]: ...
+    ) -> list[CanonicalForgetPlan]: ...
+
+    async def scrub_forgotten_content(
+        self,
+        memory_space_id: str,
+        assertion_ids: list[str],
+    ) -> None: ...
 
     async def mark_forget_projected(
         self,

@@ -83,6 +83,7 @@ class CommitmentForgetPlan(BaseEidolonModel):
     memory_space_id: str
     commitment_id: str
     revision_count: int = Field(ge=1)
+    source_event_ids: list[str] = Field(default_factory=list)
     hard: bool
 
 

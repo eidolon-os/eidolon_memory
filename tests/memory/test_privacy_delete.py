@@ -14,9 +14,11 @@ from eidolon.memory.application.forget import (
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.steward.common import apply_privacy_actions
 from eidolon.memory.domain.canonical_fact import CanonicalFactInactive
-from eidolon.memory.domain.steward import PrivacyAction
+from eidolon.memory.domain.extraction_decision import ExtractionDecisionRecord
+from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
+from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 
 SPACE = "default.alice.default"
 OWNER_READ_SCOPE = ("owner",)
@@ -164,6 +166,7 @@ async def test_privacy_delete_removes_candidate_and_verifies_invisible(tmp_path)
             )
         ],
         canonical_facts=ledger,
+        decision_store=ExtractionDecisionLedger(tmp_path / "decisions.sqlite3"),
     )
 
     assert result.deleted_keys == ["drawer_tea"]
@@ -342,6 +345,7 @@ async def test_a_spoken_delete_reaches_the_graph(graph, tmp_path) -> None:
         ],
         kg=graph,
         canonical_facts=ledger,
+        decision_store=ExtractionDecisionLedger(tmp_path / "decisions.sqlite3"),
     )
 
     assert result.deleted_keys == ["drawer_tea"]
@@ -391,6 +395,17 @@ async def test_hard_forget_is_ledger_first_and_blocks_replay(graph, tmp_path) ->
         projection_id=registration.projection_id,
     )
     await ledger.mark_projected(SPACE, registration.assertion_id, targets={"drawer", "kg"})
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    await decisions.put_if_absent(
+        ExtractionDecisionRecord(
+            memory_space_id=SPACE,
+            source_turn_id=intent.source_event_id,
+            extractor_version="test:v1",
+            input_hash="private-input-hash",
+            decision=StewardDecision(should_write=True, reason="durable extraction"),
+            intents=[intent],
+        )
+    )
 
     changed, statements = await forget_exact_projections(
         backend,
@@ -399,6 +414,7 @@ async def test_hard_forget_is_ledger_first_and_blocks_replay(graph, tmp_path) ->
         SPACE,
         [drawer_id],
         hard=True,
+        decision_store=decisions,
     )
 
     assert changed == [drawer_id]
@@ -411,8 +427,61 @@ async def test_hard_forget_is_ledger_first_and_blocks_replay(graph, tmp_path) ->
     assert forgotten.subject.startswith("[forgotten:fact:")
     assert forgotten.predicate == forgotten.object == "[forgotten]"
     assert await ledger.evidence_count(registration.assertion_id) == 0
+    redacted = await decisions.get(SPACE, intent.source_event_id, "test:v1")
+    assert redacted is not None and redacted.redacted is True
+    assert intent.raw_claim.encode() not in decisions.path.read_bytes()
     with pytest.raises(CanonicalFactInactive, match="forgotten"):
         await ledger.register(intent, targets={"drawer", "kg"})
+
+
+async def test_hard_forget_keeps_evidence_and_projections_until_source_is_redacted(
+    graph, tmp_path
+) -> None:
+    backend = FakeMemoryBackend()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    assertion_id = await _seed_canonical(
+        backend,
+        ledger,
+        "drawer_private",
+        "用户的私密识别词是紫色彗星",
+        graph=graph,
+    )
+
+    class UnavailableDecisionLedger:
+        async def redact_source_events(self, memory_space_id, source_event_ids):
+            raise RuntimeError("decision ledger unavailable")
+
+    with pytest.raises(RuntimeError, match="decision ledger unavailable"):
+        await forget_exact_projections(
+            backend,
+            graph,
+            ledger,
+            SPACE,
+            ["drawer_private"],
+            hard=True,
+            decision_store=UnavailableDecisionLedger(),
+        )
+
+    assert await backend.get(SPACE, "drawer_private") is not None
+    assert (await graph.stats())["triples_total"] == 1
+    assert await ledger.evidence_count(assertion_id) == 1
+
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    changed, statements = await forget_exact_projections(
+        backend,
+        graph,
+        ledger,
+        SPACE,
+        ["drawer_private"],
+        hard=True,
+        decision_store=decisions,
+    )
+
+    assert changed == ["drawer_private"]
+    assert statements == 1
+    assert await ledger.evidence_count(assertion_id) == 0
+    tombstone = await decisions.get(SPACE, "turn:drawer_private", "future:v1")
+    assert tombstone is not None and tombstone.redacted is True
 
 
 async def test_a_spoken_archive_ends_the_triple_without_deleting_it(graph, tmp_path) -> None:
@@ -526,6 +595,7 @@ async def test_a_space_without_a_graph_still_forgets_its_drawers(tmp_path) -> No
             )
         ],
         canonical_facts=ledger,
+        decision_store=ExtractionDecisionLedger(tmp_path / "decisions.sqlite3"),
     )
 
     assert result.deleted_keys == ["drawer_tea"]

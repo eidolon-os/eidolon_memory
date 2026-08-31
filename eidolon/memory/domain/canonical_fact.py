@@ -54,6 +54,15 @@ class CanonicalFactStats:
         return asdict(self)
 
 
+class CanonicalForgetPlan(BaseEidolonModel):
+    """Durable fact tombstone plus the source decisions that must be erased."""
+
+    memory_space_id: str
+    assertion_id: str
+    source_event_ids: list[str] = Field(default_factory=list)
+    hard: bool
+
+
 class CanonicalFactRegistration(BaseEidolonModel):
     assertion_id: str
     memory_space_id: str

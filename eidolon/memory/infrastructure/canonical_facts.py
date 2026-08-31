@@ -19,6 +19,7 @@ from eidolon.memory.domain.canonical_fact import (
     CanonicalFactRegistration,
     CanonicalFactStats,
     CanonicalFactTransitionRecord,
+    CanonicalForgetPlan,
     ProjectionTarget,
     canonical_assertion_id,
     canonical_intent_audience,
@@ -56,6 +57,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA secure_delete=ON")
         return conn
 
     def _initialize(self) -> None:
@@ -93,7 +95,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
         hard: bool,
         reason: str,
         targets: set[ProjectionTarget],
-    ) -> list[str]:
+    ) -> list[CanonicalForgetPlan]:
         return await self._write(
             self._begin_forget_sync,
             memory_space_id,
@@ -102,6 +104,21 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             reason,
             targets,
         )
+
+    async def scrub_forgotten_content(
+        self,
+        memory_space_id: str,
+        assertion_ids: list[str],
+    ) -> None:
+        await self._write(
+            self._scrub_forgotten_content_sync,
+            memory_space_id,
+            assertion_ids,
+        )
+        with self._connect() as conn:
+            checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint is not None and int(checkpoint[0]) != 0:
+            raise RuntimeError("canonical privacy checkpoint remained busy")
 
     async def mark_forget_projected(
         self,
@@ -452,14 +469,14 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
         hard: bool,
         reason: str,
         targets: set[ProjectionTarget],
-    ) -> list[str]:
+    ) -> list[CanonicalForgetPlan]:
         wanted = list(dict.fromkeys(value.strip() for value in assertion_ids if value.strip()))
         if not wanted:
             return []
         if not targets or not targets.issubset(_TARGET_COLUMNS):
             raise ValueError("canonical forget requires known projection targets")
         now = datetime.now(UTC).isoformat()
-        found: list[str] = []
+        plans: list[CanonicalForgetPlan] = []
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             for assertion_id in wanted:
@@ -481,6 +498,33 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     "SELECT * FROM canonical_forgets WHERE assertion_id = ?",
                     (assertion_id,),
                 ).fetchone()
+                effective_hard = hard or (
+                    existing is not None and bool(existing["hard"])
+                )
+                source_event_ids: list[str] = []
+                if effective_hard:
+                    source_rows = conn.execute(
+                        """
+                        SELECT source_event_id FROM canonical_evidence
+                        WHERE memory_space_id = ? AND assertion_id = ?
+                        UNION
+                        SELECT source_event_id FROM canonical_invalidations
+                        WHERE memory_space_id = ? AND assertion_id = ?
+                        UNION
+                        SELECT source_event_id FROM canonical_reactivations
+                        WHERE memory_space_id = ? AND assertion_id = ?
+                        ORDER BY source_event_id
+                        """,
+                        (
+                            memory_space_id,
+                            assertion_id,
+                            memory_space_id,
+                            assertion_id,
+                            memory_space_id,
+                            assertion_id,
+                        ),
+                    ).fetchall()
+                    source_event_ids = [str(row[0]) for row in source_rows]
                 if existing is None:
                     drawer_state = "pending" if "drawer" in targets else "not_required"
                     kg_state = "pending" if "kg" in targets else "not_required"
@@ -544,34 +588,73 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                         memory_space_id,
                     ),
                 )
-                if hard:
-                    # Keep only the opaque assertion id tombstone. It blocks a
-                    # replay from recreating the fact without retaining the
-                    # person's claim in ledger backups.
-                    conn.execute(
-                        "DELETE FROM canonical_evidence WHERE assertion_id = ?",
-                        (assertion_id,),
+                plans.append(
+                    CanonicalForgetPlan(
+                        memory_space_id=memory_space_id,
+                        assertion_id=assertion_id,
+                        source_event_ids=source_event_ids,
+                        hard=effective_hard,
                     )
-                    conn.execute(
-                        "DELETE FROM canonical_invalidations WHERE assertion_id = ?",
-                        (assertion_id,),
-                    )
-                    conn.execute(
-                        "DELETE FROM canonical_reactivations WHERE assertion_id = ?",
-                        (assertion_id,),
-                    )
-                    conn.execute(
-                        """
-                        UPDATE canonical_assertions
-                        SET subject = ?, predicate = '[forgotten]',
-                            object_value = '[forgotten]', evidence_count = 0,
-                            last_confirmed_at = ?
-                        WHERE assertion_id = ?
-                        """,
-                        (f"[forgotten:{assertion_id}]", now, assertion_id),
-                    )
-                found.append(assertion_id)
-        return found
+                )
+        return plans
+
+    def _scrub_forgotten_content_sync(
+        self,
+        memory_space_id: str,
+        assertion_ids: list[str],
+    ) -> None:
+        wanted = list(dict.fromkeys(value.strip() for value in assertion_ids if value.strip()))
+        if not wanted:
+            return
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for assertion_id in wanted:
+                row = conn.execute(
+                    """
+                    SELECT hard FROM canonical_forgets
+                    WHERE assertion_id = ? AND memory_space_id = ?
+                    """,
+                    (assertion_id, memory_space_id),
+                ).fetchone()
+                if row is None or not bool(row["hard"]):
+                    raise RuntimeError("canonical content scrub requires a hard-forget tombstone")
+                conn.execute(
+                    """
+                    DELETE FROM canonical_evidence
+                    WHERE assertion_id = ? AND memory_space_id = ?
+                    """,
+                    (assertion_id, memory_space_id),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM canonical_invalidations
+                    WHERE assertion_id = ? AND memory_space_id = ?
+                    """,
+                    (assertion_id, memory_space_id),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM canonical_reactivations
+                    WHERE assertion_id = ? AND memory_space_id = ?
+                    """,
+                    (assertion_id, memory_space_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE canonical_assertions
+                    SET subject = ?, predicate = '[forgotten]',
+                        object_value = '[forgotten]', evidence_count = 0,
+                        last_confirmed_at = ?
+                    WHERE assertion_id = ? AND memory_space_id = ? AND state = 'forgotten'
+                    """,
+                    (
+                        f"[forgotten:{assertion_id}]",
+                        now,
+                        assertion_id,
+                        memory_space_id,
+                    ),
+                )
 
     def _mark_forget_projected_sync(
         self,

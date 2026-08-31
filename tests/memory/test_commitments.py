@@ -12,8 +12,12 @@ from eidolon.memory.application.forget import (
     find_forget_candidates,
     forget_commitment_projections,
 )
+from eidolon.memory.application.steward.common import apply_privacy_actions
 from eidolon.memory.domain.commitment import CommitmentConflict
+from eidolon.memory.domain.extraction_decision import ExtractionDecisionRecord
+from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
 from eidolon.memory.infrastructure.commitments import CommitmentLedger
+from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 
 SPACE = "r:alice:default"
 
@@ -132,6 +136,9 @@ class _CommitmentKG:
             for s, p, o in self.rows
             if s == subject
         ]
+
+    async def match_entities_for_query(self, *_args, **_kwargs):
+        return []
 
     async def add_triple(self, **kwargs):
         self.add_calls += 1
@@ -370,6 +377,7 @@ async def test_commitment_delete_is_ledger_first_and_replay_safe(tmp_path) -> No
         SPACE,
         [commitment_id],
         hard=True,
+        decision_store=ExtractionDecisionLedger(tmp_path / "decisions.sqlite3"),
     )
 
     assert len(drawers) == 1
@@ -389,6 +397,59 @@ async def test_commitment_delete_is_ledger_first_and_replay_safe(tmp_path) -> No
                 action="去海边看日出 canary",
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_spoken_privacy_action_deletes_commitment_through_the_same_ledger(
+    tmp_path,
+) -> None:
+    commitments = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _CommitmentKG()
+    intent = _intent(
+        "intent:spoken-privacy",
+        operation="confirm",
+        action="去莫干山看萤火虫 canary",
+    )
+    resource = await apply_explicit_intent(
+        backend,
+        kg,
+        _command(intent),
+        commitments=commitments,
+    )
+    commitment_id = resource.split(":revision:", 1)[0]
+    await decisions.put_if_absent(
+        ExtractionDecisionRecord(
+            memory_space_id=SPACE,
+            source_turn_id=intent.source_event_id,
+            extractor_version="test:v1",
+            input_hash="spoken-commitment",
+            decision=StewardDecision(should_write=True, reason="commitment"),
+            intents=[intent],
+        )
+    )
+
+    result = await apply_privacy_actions(
+        backend,
+        memory_space_id=SPACE,
+        actions=[
+            PrivacyAction(
+                action="delete_request",
+                target="去莫干山看萤火虫 canary",
+                reason="user request",
+            )
+        ],
+        audiences=("owner",),
+        kg=kg,
+        commitments=commitments,
+        decision_store=decisions,
+    )
+
+    assert result.deleted_keys == [commitment_id]
+    assert await commitments.get(SPACE, commitment_id) is None
+    redacted = await decisions.get(SPACE, intent.source_event_id, "test:v1")
+    assert redacted is not None and redacted.redacted is True
 
 
 @pytest.mark.asyncio
@@ -487,7 +548,13 @@ async def test_archived_commitment_can_be_previewed_then_hard_deleted(tmp_path) 
     assert [row.key for row in archived] == [commitment_id]
 
     await forget_commitment_projections(
-        backend, kg, commitments, SPACE, [commitment_id], hard=True
+        backend,
+        kg,
+        commitments,
+        SPACE,
+        [commitment_id],
+        hard=True,
+        decision_store=ExtractionDecisionLedger(tmp_path / "decisions.sqlite3"),
     )
 
     assert await backend.get_all(SPACE) == []

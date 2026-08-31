@@ -26,6 +26,7 @@ class ExtractionDecisionRecord(BaseEidolonModel):
     input_hash: str
     decision: StewardDecision
     intents: list[MemoryIntent] = Field(default_factory=list)
+    redacted: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
