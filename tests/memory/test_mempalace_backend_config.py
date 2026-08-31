@@ -61,23 +61,34 @@ def test_backends_we_do_not_run_are_refused() -> None:
             selected_mempalace_backend(settings)
 
 
-def test_embedding_env_is_applied() -> None:
+def test_native_embedding_env_uses_only_public_settings() -> None:
     settings = MemorySettings.model_validate(
         {
             "mempalace": {
                 "embedding_model": "embeddinggemma",
                 "embedding_device": "coreml",
-                "embedding_model_dir": "/models/embeddinggemma",
             }
         }
     )
 
     env = mempalace_backend_env(settings, base={})
 
-    assert settings.mempalace.embedding_model_dir == "/models/embeddinggemma"
     assert env["MEMPALACE_EMBEDDING_MODEL"] == "embeddinggemma"
     assert env["MEMPALACE_EMBEDDING_DEVICE"] == "coreml"
-    assert env["MEMPALACE_EMBEDDING_MODEL_DIR"] == "/models/embeddinggemma"
+    assert "MEMPALACE_EMBEDDING_MODEL_DIR" not in env
+
+
+def test_native_embedding_rejects_unsupported_local_model_directory() -> None:
+    with pytest.raises(ValueError, match="no public local model-directory interface"):
+        MemorySettings.model_validate(
+            {
+                "embedding": {
+                    "provider": "mempalace",
+                    "model": "embeddinggemma",
+                    "model_dir": "/models/embeddinggemma",
+                }
+            }
+        )
 
 
 def test_embedding_threads_env_is_applied() -> None:

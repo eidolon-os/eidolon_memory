@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Any
 
 from eidolon.memory.adapters.mempalace_query_embedding import embed_query_vector
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
-from eidolon.memory.infrastructure.mempalace_compat import (
-    collection_metric,
-    distance_similarity,
-    first_result_list,
-)
 from eidolon.memory.infrastructure.mempalace_hnsw import probe_hnsw_safety
 
 
@@ -67,7 +63,7 @@ def search_memories_shared_embedding(
             read_only=True,
         )
         _record_ms(diagnostics, "storage_open_ms", open_started)
-        metric = collection_metric(drawers_col)
+        metric = str(drawers_col.distance_metric)
         where = _combined_where(wings, room, audiences)
         limit = max(n_results * max(3, len(wings) * 3), n_results)
         query_started = time.perf_counter()
@@ -226,7 +222,22 @@ def _query_collection(
 
 
 def _distance_to_similarity(distance: float | None, metric: str = "cosine") -> float:
-    return distance_similarity(distance, metric)
+    """Normalize the public collection distance into the Agent score contract."""
+
+    if distance is None:
+        return 0.0
+    if metric == "l2":
+        return 1.0 / (1.0 + max(0.0, float(distance)))
+    if metric == "ip":
+        return 1.0 / (1.0 + math.exp(min(60.0, float(distance))))
+    return max(0.0, 1.0 - float(distance))
+
+
+def _first_batch(result: Any, field: str) -> list[Any]:
+    """Read one query batch from MemPalace's public typed result."""
+
+    batches = getattr(result, field)
+    return list(batches[0]) if batches else []
 
 
 def _apply_distance_boost(distance: float, boost: float, metric: str) -> float:
@@ -282,9 +293,9 @@ def _closet_boosts(
         out: dict[str, tuple] = {}
         for rank, (cdoc, cmeta, cdist) in enumerate(
             zip(
-                first_result_list(closet_results, "documents"),
-                first_result_list(closet_results, "metadatas"),
-                first_result_list(closet_results, "distances"),
+                _first_batch(closet_results, "documents"),
+                _first_batch(closet_results, "metadatas"),
+                _first_batch(closet_results, "distances"),
             )
         ):
             cmeta = cmeta or {}
@@ -319,9 +330,9 @@ def _score_results(
 
     scored: list[dict[str, Any]] = []
     for doc, meta, dist in zip(
-        first_result_list(drawer_results, "documents"),
-        first_result_list(drawer_results, "metadatas"),
-        first_result_list(drawer_results, "distances"),
+        _first_batch(drawer_results, "documents"),
+        _first_batch(drawer_results, "metadatas"),
+        _first_batch(drawer_results, "distances"),
     ):
         # These metadata came from the same Chroma query as the vector hit, not
         # from MemPalace's older lossy public search payload. Mark that provenance

@@ -5,11 +5,9 @@ for them when they are the configured choice. Without this the read path needed 
 branch — our port when the model is ours, ``get_embedding_function()`` when it is
 theirs — and that branch is exactly the thing the port exists to remove.
 
-Note the direction. Elsewhere we hand MemPalace *our* encoder by seeding its
-process-level cache. Here the traffic goes the other way: MemPalace's own
-embedding function is wrapped so our code can call it through the same two
-methods. Both are needed, because both sides of that boundary have consumers we
-do not control.
+This adapter only wraps MemPalace's public native embedding function so Eidolon
+can call it through the same port as its other providers. Eidolon never seeds or
+mutates MemPalace's process-level cache.
 
 There is no query/document asymmetry to honour: neither of their embedders has
 one. ``embeddinggemma`` applies a single prefix to everything, on both sides, and

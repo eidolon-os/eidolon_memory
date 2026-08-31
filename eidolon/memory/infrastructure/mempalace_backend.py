@@ -152,12 +152,13 @@ def mempalace_backend_env(
     elif provider == "mempalace":
         env.pop(_OFFLINE_EMBEDDING_ENV, None)
         env["MEMPALACE_EMBEDDING_MODEL"] = embedding.model.strip().lower()
+        # MemPalace 3.8 has no public model-directory setting. Configuration
+        # validation rejects one rather than installing a process-wide download
+        # hook or exporting an environment variable upstream never reads.
+        env.pop("MEMPALACE_EMBEDDING_MODEL_DIR", None)
         embedding_device = embedding.device.strip().lower()
         if embedding_device:
             env["MEMPALACE_EMBEDDING_DEVICE"] = embedding_device
-        model_dir = embedding.model_dir.strip()
-        if model_dir:
-            env["MEMPALACE_EMBEDDING_MODEL_DIR"] = str(Path(model_dir).expanduser())
         if embedding.threads > 0:
             env["MEMPALACE_EMBEDDING_THREADS"] = str(embedding.threads)
     else:
