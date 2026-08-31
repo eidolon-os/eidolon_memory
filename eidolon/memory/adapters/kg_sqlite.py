@@ -234,6 +234,7 @@ class SqliteKnowledgeGraph:
         connection.row_factory = sqlite3.Row
         # Per connection, not per database, unlike journal_mode.
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA secure_delete=ON")
         self._local.conn = connection
         with self._connections_guard:
             self._open_connections.append(connection)
@@ -630,6 +631,7 @@ class SqliteKnowledgeGraph:
             (self._space_id, *keys),
         ).fetchall()
         if not doomed:
+            self._privacy_checkpoint(connection)
             return 0
 
         # Write an opaque deletion receipt before removal. It proves which stable
@@ -684,7 +686,14 @@ class SqliteKnowledgeGraph:
                 f"in space {self._space_id}"
             )
 
+        self._privacy_checkpoint(connection)
+
         return len(doomed)
+
+    def _privacy_checkpoint(self, connection: sqlite3.Connection) -> None:
+        checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint is not None and int(checkpoint[0]) != 0:
+            raise RuntimeError("knowledge-graph privacy checkpoint remained busy")
 
     def _record_forgotten(self, rows: Sequence[sqlite3.Row], ended_at: str) -> None:
         """Append opaque deletion receipts, and prove they landed.

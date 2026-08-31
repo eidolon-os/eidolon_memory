@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -103,6 +104,74 @@ async def test_decision_ledger_survives_reopen_and_rejects_changed_input(tmp_pat
     )
     with pytest.raises(ExtractionDecisionConflict):
         await reopened.put_if_absent(changed)
+
+
+@pytest.mark.asyncio
+async def test_privacy_tombstone_erases_decisions_and_blocks_every_extractor_version(
+    tmp_path: Path,
+) -> None:
+    turn = _turn(user_text="不可恢复的紫色彗星")
+    path = tmp_path / "extraction_decisions.sqlite3"
+    store = ExtractionDecisionLedger(path)
+    original = ExtractionDecisionRecord(
+        memory_space_id=MEMORY_SPACE_ID,
+        source_turn_id=turn.turn_id,
+        extractor_version="rules:v1",
+        input_hash=extraction_input_hash(turn),
+        decision=_decision(turn),
+    )
+    await store.put_if_absent(original)
+
+    assert await store.redact_source_events(MEMORY_SPACE_ID, [turn.turn_id]) == 1
+    assert await store.redact_source_events(MEMORY_SPACE_ID, [turn.turn_id]) == 0
+
+    for version in ("rules:v1", "llm:v99"):
+        redacted = await store.get(MEMORY_SPACE_ID, turn.turn_id, version)
+        assert redacted is not None
+        assert redacted.redacted is True
+        assert redacted.input_hash == ""
+        assert redacted.intents == []
+        assert redacted.decision.should_write is False
+
+    replay = original.model_copy(update={"extractor_version": "llm:v99"})
+    assert (await store.put_if_absent(replay)).redacted is True
+    assert "不可恢复的紫色彗星".encode() not in path.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_privacy_redelivery_finishes_a_checkpoint_blocked_by_a_reader(
+    tmp_path: Path,
+) -> None:
+    """A committed delete is not complete while its old bytes remain in WAL."""
+
+    turn = _turn(user_text="只存在于待清理日志里的蓝色流星")
+    path = tmp_path / "extraction_decisions.sqlite3"
+    store = ExtractionDecisionLedger(path)
+    await store.put_if_absent(
+        ExtractionDecisionRecord(
+            memory_space_id=MEMORY_SPACE_ID,
+            source_turn_id=turn.turn_id,
+            extractor_version="rules:v1",
+            input_hash=extraction_input_hash(turn),
+            decision=_decision(turn),
+        )
+    )
+
+    reader = sqlite3.connect(path)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM extraction_decisions").fetchall()
+    try:
+        with pytest.raises(RuntimeError, match="checkpoint remained busy"):
+            await store.redact_source_events(MEMORY_SPACE_ID, [turn.turn_id])
+    finally:
+        reader.close()
+
+    # The row deletion and tombstone committed before the checkpoint reported
+    # busy. Redelivery therefore changes no logical rows, but must still retry
+    # the physical WAL truncation.
+    assert await store.redact_source_events(MEMORY_SPACE_ID, [turn.turn_id]) == 0
+    wal = path.with_name(f"{path.name}-wal")
+    assert not wal.exists() or wal.stat().st_size == 0
 
 
 @pytest.mark.asyncio

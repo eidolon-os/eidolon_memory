@@ -451,6 +451,7 @@ async def _nats_subscriber_loop(
                     dlq_writer=dlq,
                     decision_store=decision_store,
                     canonical_facts=canonical_facts,
+                    commitments=commitments,
                 )
 
             def _cmd_handler(m):
@@ -464,6 +465,7 @@ async def _nats_subscriber_loop(
                     dlq_writer=dlq,
                     canonical_facts=canonical_facts,
                     commitments=commitments,
+                    decision_store=decision_store,
                 )
 
             def _sync_handler(m):
@@ -477,6 +479,7 @@ async def _nats_subscriber_loop(
                     decision_store=decision_store,
                     kg=kg,
                     canonical_facts=canonical_facts,
+                    commitments=commitments,
                 )
 
             workers = [

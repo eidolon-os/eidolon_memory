@@ -115,14 +115,14 @@ async def test_forget_tracks_only_required_projection_targets(tmp_path: Path) ->
         targets={"drawer"},
     )
 
-    assert forgotten == [registration.assertion_id]
+    assert [plan.assertion_id for plan in forgotten] == [registration.assertion_id]
     pending = await inspect_materialization(_runtime(backend, ledger))
     assert pending.ready is False
     assert pending.details["projection_pending"] == 1
 
     await ledger.mark_forget_projected(
         SPACE,
-        forgotten,
+        [plan.assertion_id for plan in forgotten],
         targets={"drawer"},
     )
     ready = await inspect_materialization(_runtime(backend, ledger))
@@ -138,7 +138,7 @@ async def test_forget_tracks_only_required_projection_targets(tmp_path: Path) ->
         targets={"drawer"},
     )
     replay_status = await inspect_materialization(_runtime(backend, ledger))
-    assert repeated == [registration.assertion_id]
+    assert [plan.assertion_id for plan in repeated] == [registration.assertion_id]
     assert replay_status.ready is True
     assert replay_status.details["projection_pending"] == 0
 

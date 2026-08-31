@@ -7,9 +7,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from eidolon.memory.application.kg_recall import plain_triple_sentence
+from eidolon.memory.domain.kg_port import KnowledgeGraphPort
 from eidolon.memory.domain.ports import (
+    CanonicalFactWriter,
     CommitmentReader,
     CommitmentWriter,
+    ExtractionDecisionStore,
     MemoryAdmin,
     MemoryPrivacyAdmin,
 )
@@ -328,12 +331,13 @@ def _refers_to(target: str, sentence: str) -> bool:
 
 async def forget_exact_projections(
     backend: MemoryAdmin,
-    kg: Any,
-    canonical_facts: Any,
+    kg: KnowledgeGraphPort | None,
+    canonical_facts: CanonicalFactWriter | None,
     memory_space_id: str,
     drawer_ids: list[str],
     *,
     hard: bool,
+    decision_store: ExtractionDecisionStore | None = None,
 ) -> tuple[list[str], int]:
     """Ledger-first deletion of one exact projection set.
 
@@ -348,15 +352,34 @@ async def forget_exact_projections(
     if canonical_facts is None:
         raise RuntimeError("canonical drawer forget requires its fact ledger")
     targets = {"drawer", "kg"} if kg is not None else {"drawer"}
-    ledger_assertions = await canonical_facts.begin_forget(
+    plans = await canonical_facts.begin_forget(
         memory_space_id,
         assertion_ids,
         hard=hard,
         reason="user privacy request",
         targets=targets,
     )
+    ledger_assertions = [plan.assertion_id for plan in plans]
     if set(ledger_assertions) != set(assertion_ids):
         raise RuntimeError("drawer projection points to a missing canonical assertion")
+    if hard:
+        source_event_ids = list(
+            dict.fromkeys(
+                source_event_id
+                for plan in plans
+                for source_event_id in plan.source_event_ids
+            )
+        )
+        if source_event_ids:
+            if decision_store is None:
+                raise RuntimeError(
+                    "hard privacy delete requires its extraction decision ledger"
+                )
+            await decision_store.redact_source_events(memory_space_id, source_event_ids)
+        await canonical_facts.scrub_forgotten_content(
+            memory_space_id,
+            ledger_assertions,
+        )
 
     statements = 0
     if kg is not None:
@@ -379,12 +402,13 @@ async def forget_exact_projections(
 
 async def forget_commitment_projections(
     backend: MemoryAdmin,
-    kg: Any,
+    kg: KnowledgeGraphPort | None,
     commitments: CommitmentWriter,
     memory_space_id: str,
     commitment_ids: list[str],
     *,
     hard: bool,
+    decision_store: ExtractionDecisionStore | None = None,
 ) -> tuple[list[str], int]:
     """Tombstone commitment content before removing either projection.
 
@@ -399,6 +423,18 @@ async def forget_commitment_projections(
     plans = await commitments.begin_forget(memory_space_id, wanted, hard=hard)
     if {plan.commitment_id for plan in plans} != set(wanted):
         raise RuntimeError("commitment privacy ledger did not accept every target")
+    source_event_ids = list(
+        dict.fromkeys(
+            source_event_id
+            for plan in plans
+            if plan.hard
+            for source_event_id in plan.source_event_ids
+        )
+    )
+    if source_event_ids:
+        if decision_store is None:
+            raise RuntimeError("hard privacy delete requires its extraction decision ledger")
+        await decision_store.redact_source_events(memory_space_id, source_event_ids)
 
     statements = 0
     if kg is not None:
@@ -426,9 +462,54 @@ async def forget_commitment_projections(
     return changed, statements
 
 
+async def forget_resolved_projections(
+    backend: MemoryAdmin,
+    kg: KnowledgeGraphPort | None,
+    canonical_facts: CanonicalFactWriter | None,
+    commitments: CommitmentWriter | None,
+    decision_store: ExtractionDecisionStore | None,
+    memory_space_id: str,
+    *,
+    drawer_ids: list[str],
+    commitment_ids: list[str],
+    hard: bool,
+) -> tuple[list[str], int]:
+    """Run one resolved privacy mutation through each aggregate's own ledger."""
+
+    changed: list[str] = []
+    statements = 0
+    if drawer_ids:
+        drawer_changed, drawer_statements = await forget_exact_projections(
+            backend,
+            kg,
+            canonical_facts,
+            memory_space_id,
+            drawer_ids,
+            hard=hard,
+            decision_store=decision_store,
+        )
+        changed.extend(drawer_changed)
+        statements += drawer_statements
+    if commitment_ids:
+        if commitments is None:
+            raise RuntimeError("commitment privacy mutation requires its ledger")
+        commitment_changed, commitment_statements = await forget_commitment_projections(
+            backend,
+            kg,
+            commitments,
+            memory_space_id,
+            commitment_ids,
+            hard=hard,
+            decision_store=decision_store,
+        )
+        changed.extend(commitment_changed)
+        statements += commitment_statements
+    return changed, statements
+
+
 async def forget_graph_assertions(
-    kg: Any,
-    canonical_facts: Any,
+    kg: KnowledgeGraphPort,
+    canonical_facts: CanonicalFactWriter | None,
     memory_space_id: str,
     assertion_ids: list[str],
 ) -> int:
@@ -439,13 +520,14 @@ async def forget_graph_assertions(
         raise RuntimeError("privacy mutation refused a non-canonical graph projection")
     if canonical_facts is None:
         raise RuntimeError("canonical graph forget requires its fact ledger")
-    ledger_assertions = await canonical_facts.begin_forget(
+    plans = await canonical_facts.begin_forget(
         memory_space_id,
         wanted,
         hard=False,
         reason="user privacy request",
         targets={"kg"},
     )
+    ledger_assertions = [plan.assertion_id for plan in plans]
     if set(ledger_assertions) != set(wanted):
         raise RuntimeError("graph projection points to a missing canonical assertion")
     changed = await kg.forget_assertions(ledger_assertions, hard=False)

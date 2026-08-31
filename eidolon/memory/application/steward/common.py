@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from eidolon_memory_contracts import OWNER_AUDIENCE
 
@@ -13,8 +13,8 @@ from eidolon.memory.application.forget import (
     assertion_ids_for_drawers,
     find_forget_candidates,
     find_forget_statements,
-    forget_exact_projections,
     forget_graph_assertions,
+    forget_resolved_projections,
 )
 from eidolon.memory.application.scope_policy import interaction_audience
 from eidolon.memory.domain.errors import MemoryBackendUnsupported
@@ -22,7 +22,13 @@ from eidolon.memory.support.logging import get_logger
 
 if TYPE_CHECKING:
     from eidolon.memory.domain.fragments import MemoryFragment
-    from eidolon.memory.domain.ports import MemoryBackend
+    from eidolon.memory.domain.kg_port import KnowledgeGraphPort
+    from eidolon.memory.domain.ports import (
+        CanonicalFactWriter,
+        CommitmentStore,
+        ExtractionDecisionStore,
+        MemoryBackend,
+    )
     from eidolon.memory.domain.steward import PrivacyAction
 
 log = get_logger(__name__)
@@ -178,8 +184,10 @@ async def apply_privacy_actions(
     memory_space_id: str,
     actions: list[PrivacyAction],
     audiences: tuple[str, ...],
-    kg: Any = None,
-    canonical_facts: Any = None,
+    kg: KnowledgeGraphPort | None = None,
+    canonical_facts: CanonicalFactWriter | None = None,
+    commitments: CommitmentStore | None = None,
+    decision_store: ExtractionDecisionStore | None = None,
 ) -> PrivacyActionResult:
     """Resolve targets, then run a serialized and verified privacy batch.
 
@@ -207,6 +215,7 @@ async def apply_privacy_actions(
                 backend,
                 memory_space_id,
                 action.target,
+                commitments=commitments,
             )
             # Both stores are asked, because a fact can live in only one of them.
             # The write gates are independent — ``min_importance_to_write`` of 3
@@ -242,15 +251,25 @@ async def apply_privacy_actions(
                 )
                 continue
             keys = [candidate.key for candidate in candidates]
+            drawer_keys = [key for key in keys if key.startswith("drawer_")]
+            commitment_ids = [key for key in keys if key.startswith("commitment:")]
             drawer_assertion_ids = set(
-                await assertion_ids_for_drawers(backend, memory_space_id, keys)
+                await assertion_ids_for_drawers(backend, memory_space_id, drawer_keys)
             )
             if action.action == "archive_topic":
-                archived, statements_forgotten = await forget_exact_projections(
-                    backend, kg, canonical_facts, memory_space_id, keys, hard=False
+                _, statements_forgotten = await forget_resolved_projections(
+                    backend,
+                    kg,
+                    canonical_facts,
+                    commitments,
+                    decision_store,
+                    memory_space_id,
+                    drawer_ids=drawer_keys,
+                    commitment_ids=commitment_ids,
+                    hard=False,
                 )
                 result.statements_forgotten += statements_forgotten
-                result.archived_keys.extend(archived)
+                result.archived_keys.extend(keys)
             elif len(candidates) > 1:
                 # **An ambiguous delete is archived, not abandoned.**
                 #
@@ -272,12 +291,20 @@ async def apply_privacy_actions(
                 # a constant nobody can calibrate, and the failure mode of
                 # getting it wrong is deleting a memory the person wanted.
                 # Choosing the reversible action needs no constant at all.
-                archived, statements_forgotten = await forget_exact_projections(
-                    backend, kg, canonical_facts, memory_space_id, keys, hard=False
+                _, statements_forgotten = await forget_resolved_projections(
+                    backend,
+                    kg,
+                    canonical_facts,
+                    commitments,
+                    decision_store,
+                    memory_space_id,
+                    drawer_ids=drawer_keys,
+                    commitment_ids=commitment_ids,
+                    hard=False,
                 )
                 result.statements_forgotten += statements_forgotten
-                result.archived_keys.extend(archived)
-                result.downgraded_to_archive[action.target] = list(archived)
+                result.archived_keys.extend(keys)
+                result.downgraded_to_archive[action.target] = list(keys)
                 result.confirmation_required[action.target] = [
                     candidate.to_dict() for candidate in candidates
                 ]
@@ -285,16 +312,24 @@ async def apply_privacy_actions(
                     "privacy_delete_downgraded_to_archive",
                     target=action.target,
                     candidate_count=len(candidates),
-                    archived_count=len(archived),
+                    archived_count=len(keys),
                 )
             else:
-                # Exactly one match, so nothing is being guessed at. The graph
-                # goes first inside ``forget_exact_projections``.
-                deleted, statements_forgotten = await forget_exact_projections(
-                    backend, kg, canonical_facts, memory_space_id, keys, hard=True
+                # Exactly one match, so nothing is being guessed at. Its
+                # aggregate tombstone is durable before any projection changes.
+                _, statements_forgotten = await forget_resolved_projections(
+                    backend,
+                    kg,
+                    canonical_facts,
+                    commitments,
+                    decision_store,
+                    memory_space_id,
+                    drawer_ids=drawer_keys,
+                    commitment_ids=commitment_ids,
+                    hard=True,
                 )
                 result.statements_forgotten += statements_forgotten
-                result.deleted_keys.extend(deleted)
+                result.deleted_keys.extend(keys)
             graph_only_assertions = list(
                 dict.fromkeys(
                     str(statement.assertion_id or "")

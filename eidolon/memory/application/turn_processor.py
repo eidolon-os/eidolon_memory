@@ -39,8 +39,7 @@ from eidolon.memory.application.explicit_intents import (
     apply_explicit_intent,
 )
 from eidolon.memory.application.forget import (
-    forget_commitment_projections,
-    forget_exact_projections,
+    forget_resolved_projections,
 )
 from eidolon.memory.application.ingest import (
     ingest_memory_fragment,
@@ -108,6 +107,13 @@ async def _decide_once(
         extractor_version,
     )
     if existing is not None:
+        if existing.redacted:
+            log.info(
+                "turn_processor_decision_redacted",
+                memory_space_id=turn.context.memory_space_id,
+                turn_id=turn.turn_id,
+            )
+            return existing.decision, []
         if existing.input_hash != input_hash:
             raise ExtractionDecisionConflict(
                 "stored extraction decision input does not match redelivered turn"
@@ -141,6 +147,8 @@ async def _decide_once(
             intents=intents,
         )
     )
+    if stored.redacted:
+        return stored.decision, []
     log.info(
         "turn_processor_decision_persisted",
         memory_space_id=turn.context.memory_space_id,
@@ -277,7 +285,9 @@ async def _apply_privacy(
     audiences: tuple[str, ...],
     kg: Any = None,
     canonical_facts: CanonicalFactWriter | None = None,
-) -> None:
+    commitments: CommitmentWriter | None = None,
+    decision_store: ExtractionDecisionStore | None = None,
+) -> Any:
     """Wrapper for the steward's privacy-action handler (delete / archive).
 
     ``kg`` is threaded through because this is how a forget usually arrives —
@@ -286,14 +296,16 @@ async def _apply_privacy(
     """
 
     if not actions:
-        return
-    await apply_privacy_actions(
+        return None
+    return await apply_privacy_actions(
         backend,
         memory_space_id=memory_space_id,
         actions=actions,
         audiences=audiences,
         kg=kg,
         canonical_facts=canonical_facts,
+        commitments=commitments,
+        decision_store=decision_store,
     )
 
 
@@ -325,6 +337,7 @@ async def process_turn_message(
     dlq_writer: DlqWriter | None = None,
     decision_store: ExtractionDecisionStore | None = None,
     canonical_facts: CanonicalFactWriter | None = None,
+    commitments: CommitmentWriter | None = None,
 ) -> None:
     """Decode + validate one turn, run steward, apply fragments + KG, ack / nak / DLQ.
 
@@ -436,6 +449,7 @@ async def process_turn_message(
         else intent
         for intent in memory_intents
     ]
+    privacy_action_count = len(decision.privacy_actions)
 
     turn_ts = turn.timestamp  # used as default valid_from / ended for triples
 
@@ -450,7 +464,19 @@ async def process_turn_message(
             interaction_readable_audiences(turn.context),
             kg,
             canonical_facts,
+            commitments,
+            decision_store,
         )
+        if decision.privacy_actions:
+            if decision_store is None:
+                raise RuntimeError("privacy turns require the extraction decision ledger")
+            await decision_store.redact_source_events(memory_space_id, [turn.turn_id])
+            memory_intents = []
+            decision = StewardDecision(
+                should_write=False,
+                reason="privacy action applied",
+                produced_by="privacy:tombstone",
+            )
         # Structured assertions project their own canonical drawer beside the
         # KG row below. Only fragment-only decisions are handled here; otherwise
         # writing the model's prose as another source creates two independently
@@ -772,7 +798,7 @@ async def process_turn_message(
         kg_failures=len(kg_failures),
         kg_failure_sample=kg_failures[:2],
         canonical_projection_failures=len(canonical_projection_failures),
-        privacy_actions=len(decision.privacy_actions),
+        privacy_actions=privacy_action_count,
         mentions=mentions_written if kg is not None else 0,
         mentions_rejected=mentions_rejected if kg is not None else 0,
     )
@@ -903,6 +929,7 @@ async def process_command_message(
     dlq_writer: DlqWriter | None = None,
     canonical_facts: CanonicalFactWriter | None = None,
     commitments: CommitmentWriter | None = None,
+    decision_store: ExtractionDecisionStore | None = None,
 ) -> None:
     """Handle ``MemoryCommandPayload`` from ``eidolon.memory.cmd.<memory_space_token>``.
 
@@ -1060,32 +1087,17 @@ async def process_command_message(
             # produced the fact it had just agreed to forget.
             #
             # Before the vector mutation, deliberately — see the helper.
-            changed: list[str] = []
-            forgotten = 0
-            if cmd.drawer_ids:
-                drawer_changed, drawer_forgotten = await forget_exact_projections(
-                    backend,
-                    kg,
-                    canonical_facts,
-                    cmd.memory_space_id,
-                    cmd.drawer_ids,
-                    hard=cmd.action == "delete",
-                )
-                changed.extend(drawer_changed)
-                forgotten += drawer_forgotten
-            if cmd.commitment_ids:
-                if commitments is None:
-                    raise RuntimeError("commitment privacy mutation requires its ledger")
-                commitment_changed, commitment_forgotten = await forget_commitment_projections(
-                    backend,
-                    kg,
-                    commitments,
-                    cmd.memory_space_id,
-                    cmd.commitment_ids,
-                    hard=cmd.action == "delete",
-                )
-                changed.extend(commitment_changed)
-                forgotten += commitment_forgotten
+            changed, forgotten = await forget_resolved_projections(
+                backend,
+                kg,
+                canonical_facts,
+                commitments,
+                decision_store,
+                cmd.memory_space_id,
+                drawer_ids=cmd.drawer_ids,
+                commitment_ids=cmd.commitment_ids,
+                hard=cmd.action == "delete",
+            )
             resource_id = (
                 f"{cmd.action}:{len(cmd.drawer_ids) + len(cmd.commitment_ids)}:{cmd.preview_id}"
             )
@@ -1224,6 +1236,7 @@ async def process_sync_message(
     decision_store: ExtractionDecisionStore | None = None,
     kg: Any = None,
     canonical_facts: CanonicalFactWriter | None = None,
+    commitments: CommitmentWriter | None = None,
 ) -> None:
     """Handle ``DeviceSyncBatchPayload`` from ``eidolon.memory.sync.<memory_space_token>``."""
     try:
@@ -1280,6 +1293,7 @@ async def process_sync_message(
                 audit_sink=observer,
                 decision_store=decision_store,
                 canonical_facts=canonical_facts,
+                commitments=commitments,
             )
             if turn_msg.nacked or not observer.absorbed:
                 reason = observer.rejection_reason or "turn projection was not absorbed"

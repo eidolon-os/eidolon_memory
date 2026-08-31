@@ -11,6 +11,7 @@ import pytest
 from eidolon_memory_contracts import envelope_memory_payload, memory_command_subject
 
 from eidolon.memory.domain.space_lock import SpaceLock
+from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 
 CMD_SPACE = "default.alice.default"
 
@@ -170,6 +171,7 @@ async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -
         expected_memory_space_id=SPACE,
         command_status=ledger,
         canonical_facts=canonical,
+        decision_store=ExtractionDecisionLedger(tmp_path / "decisions.sqlite3"),
     )
 
     assert msg.ack_calls == ["ack"]
@@ -245,6 +247,7 @@ async def test_confirmed_commitment_delete_removes_ledger_drawer_and_kg(
         expected_memory_space_id=SPACE,
         command_status=status,
         commitments=commitments,
+        decision_store=ExtractionDecisionLedger(tmp_path / "decisions.sqlite3"),
     )
 
     assert msg.ack_calls == ["ack"]
@@ -638,6 +641,9 @@ async def _apply_privacy(msg, backend, kg, ledger, canonical) -> None:
         expected_memory_space_id=SPACE,
         command_status=ledger,
         canonical_facts=canonical,
+        decision_store=ExtractionDecisionLedger(
+            canonical.path.with_name("extraction_decisions.sqlite3")
+        ),
     )
 
 

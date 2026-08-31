@@ -100,6 +100,7 @@ def _stub_msg(payload: dict) -> SimpleNamespace:
 
 def _make_steward(decision):
     s = MagicMock()
+    s.extraction_version = "test:v1"
     s.decide = AsyncMock(return_value=decision)
     return s
 
@@ -351,9 +352,10 @@ async def test_invalidation_applies_before_new_triple(settings, backend, kg, can
 # ─── Privacy turn writes nothing into KG ─────────────────────────────────
 
 
-async def test_privacy_actions_skip_kg(settings, backend, kg, canonical):
+async def test_privacy_actions_skip_kg(settings, backend, kg, canonical, tmp_path):
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
+    from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 
     decision = StewardDecision(
         should_write=False,
@@ -365,7 +367,8 @@ async def test_privacy_actions_skip_kg(settings, backend, kg, canonical):
             PrivacyAction(action="do_not_store", target="recent topic", reason="user request"),
         ],
     )
-    msg = _stub_msg(_turn_payload())
+    msg = _stub_msg(_turn_payload(turn_id="privacy-do-not-store"))
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
     await process_turn_message(
         msg,
         steward=_make_steward(decision),
@@ -375,9 +378,17 @@ async def test_privacy_actions_skip_kg(settings, backend, kg, canonical):
         max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
         canonical_facts=canonical,
+        decision_store=decisions,
     )
     stats = await kg.stats()
     assert stats["triples_total"] == 0
+    assert msg.ack_calls == ["ack"]
+    redacted = await decisions.get(
+        MEMORY_SPACE_ID,
+        "privacy-do-not-store",
+        "test:v1",
+    )
+    assert redacted is not None and redacted.redacted is True
 
 
 # ─── G10: pydantic Literal rejects bad predicate in StewardDecision ──────

@@ -63,6 +63,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA secure_delete=ON")
         return conn
 
     def _initialize(self) -> None:
@@ -501,11 +502,24 @@ class CommitmentLedger(SerialisedSqliteWrites):
                             WHERE memory_space_id = ? AND commitment_id = ?""",
                             (memory_space_id, commitment_id),
                         )
+                source_rows = conn.execute(
+                    """
+                    SELECT DISTINCT revisions.source_event_id
+                    FROM commitment_revisions AS revisions
+                    JOIN commitments AS commitment
+                      ON commitment.commitment_id = revisions.commitment_id
+                    WHERE commitment.memory_space_id = ?
+                      AND revisions.commitment_id = ?
+                    ORDER BY revisions.source_event_id
+                    """,
+                    (memory_space_id, commitment_id),
+                ).fetchall()
                 plans.append(
                     CommitmentForgetPlan(
                         memory_space_id=memory_space_id,
                         commitment_id=commitment_id,
                         revision_count=revision_count,
+                        source_event_ids=[str(row[0]) for row in source_rows],
                         hard=hard or (privacy is not None and str(privacy[0]) == "delete"),
                     )
                 )
@@ -561,6 +575,10 @@ class CommitmentLedger(SerialisedSqliteWrites):
                     WHERE memory_space_id = ? AND commitment_id = ?""",
                     (memory_space_id, commitment_id),
                 )
+        with self._connect() as conn:
+            checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint is not None and int(checkpoint[0]) != 0:
+            raise RuntimeError("commitment privacy checkpoint remained busy")
 
 
 def _intent_fields(intent: MemoryIntent) -> dict[str, Any]:

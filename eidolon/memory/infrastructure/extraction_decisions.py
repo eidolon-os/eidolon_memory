@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 from eidolon_memory_contracts import MemoryIntent
@@ -33,6 +34,7 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
         conn = sqlite3.connect(self.path, timeout=5.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA secure_delete=ON")
         return conn
 
     def _initialize(self) -> None:
@@ -62,6 +64,16 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                     "ALTER TABLE extraction_decisions "
                     "ADD COLUMN intents_json TEXT NOT NULL DEFAULT '[]'"
                 )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS extraction_privacy_tombstones (
+                    memory_space_id TEXT NOT NULL,
+                    source_turn_id TEXT NOT NULL,
+                    redacted_at TEXT NOT NULL,
+                    PRIMARY KEY (memory_space_id, source_turn_id)
+                )
+                """
+            )
 
     async def get(
         self,
@@ -82,6 +94,26 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
     ) -> ExtractionDecisionRecord:
         return await self._write(self._put_if_absent_sync, record)
 
+    async def redact_source_events(
+        self,
+        memory_space_id: str,
+        source_event_ids: list[str],
+    ) -> int:
+        changed = await self._write(
+            self._redact_source_events_sync,
+            memory_space_id,
+            source_event_ids,
+        )
+        # Always retry the checkpoint, even when the tombstone already existed.
+        # A prior call can commit the deletion and then find a live reader holding
+        # the WAL. Its redelivery must finish erasing the WAL bytes rather than
+        # treating the durable tombstone as proof the physical step also finished.
+        with self._connect() as conn:
+            checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint is not None and int(checkpoint[0]) != 0:
+            raise RuntimeError("extraction privacy checkpoint remained busy")
+        return changed
+
     def _get_sync(
         self,
         memory_space_id: str,
@@ -89,6 +121,20 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
         extractor_version: str,
     ) -> ExtractionDecisionRecord | None:
         with self._connect() as conn:
+            tombstone = conn.execute(
+                """
+                SELECT redacted_at FROM extraction_privacy_tombstones
+                WHERE memory_space_id = ? AND source_turn_id = ?
+                """,
+                (memory_space_id, source_turn_id),
+            ).fetchone()
+            if tombstone is not None:
+                return self._redacted_record(
+                    memory_space_id,
+                    source_turn_id,
+                    extractor_version,
+                    str(tombstone["redacted_at"]),
+                )
             row = conn.execute(
                 """
                 SELECT * FROM extraction_decisions
@@ -104,6 +150,20 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
     ) -> ExtractionDecisionRecord:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            tombstone = conn.execute(
+                """
+                SELECT redacted_at FROM extraction_privacy_tombstones
+                WHERE memory_space_id = ? AND source_turn_id = ?
+                """,
+                (record.memory_space_id, record.source_turn_id),
+            ).fetchone()
+            if tombstone is not None:
+                return self._redacted_record(
+                    record.memory_space_id,
+                    record.source_turn_id,
+                    record.extractor_version,
+                    str(tombstone["redacted_at"]),
+                )
             row = conn.execute(
                 """
                 SELECT * FROM extraction_decisions
@@ -146,6 +206,61 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                     "extraction identity reused with different validated turn input"
                 )
             return stored
+
+    def _redact_source_events_sync(
+        self,
+        memory_space_id: str,
+        source_event_ids: list[str],
+    ) -> int:
+        wanted = list(
+            dict.fromkeys(value.strip() for value in source_event_ids if value.strip())
+        )
+        if not wanted:
+            return 0
+        now = datetime.now(UTC).isoformat()
+        changed = 0
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for source_event_id in wanted:
+                result = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO extraction_privacy_tombstones (
+                        memory_space_id, source_turn_id, redacted_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (memory_space_id, source_event_id, now),
+                )
+                changed += int(result.rowcount > 0)
+                conn.execute(
+                    """
+                    DELETE FROM extraction_decisions
+                    WHERE memory_space_id = ? AND source_turn_id = ?
+                    """,
+                    (memory_space_id, source_event_id),
+                )
+        return changed
+
+    @staticmethod
+    def _redacted_record(
+        memory_space_id: str,
+        source_turn_id: str,
+        extractor_version: str,
+        redacted_at: str,
+    ) -> ExtractionDecisionRecord:
+        return ExtractionDecisionRecord(
+            memory_space_id=memory_space_id,
+            source_turn_id=source_turn_id,
+            extractor_version=extractor_version,
+            input_hash="",
+            decision=StewardDecision(
+                should_write=False,
+                reason="source event was privacy-redacted",
+                produced_by="privacy:tombstone",
+            ),
+            intents=[],
+            redacted=True,
+            created_at=redacted_at,
+        )
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> ExtractionDecisionRecord:
