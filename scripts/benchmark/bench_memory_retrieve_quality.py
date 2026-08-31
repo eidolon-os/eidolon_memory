@@ -464,7 +464,6 @@ class QueryResult:
     elapsed_ms: float
     kg_hit: bool  # at least one expected_entities[i] surfaced
     vector_hit: bool  # at least one expected_vector_contains[i] surfaced
-    working_memory_hit: bool  # if expects_working_memory, did wm contain anything
     negative_violation: bool  # negative query but forbidden term/entity surfaced
     matched_signals: list[str] = field(default_factory=list)
     raw_kg_objects: list[str] = field(default_factory=list)
@@ -529,18 +528,6 @@ def _vector_values(records: list[Any]) -> list[str]:
     for r in records or []:
         if isinstance(r, dict) and r.get("value"):
             out.append(str(r["value"]))
-    return out
-
-
-def _wm_texts(wm: list[Any]) -> list[str]:
-    out: list[str] = []
-    for t in wm or []:
-        if not isinstance(t, dict):
-            continue
-        if t.get("user_text"):
-            out.append(str(t["user_text"]))
-        if t.get("assistant_text"):
-            out.append(str(t["assistant_text"]))
     return out
 
 
@@ -617,19 +604,16 @@ def _superseded_cleanly(context: str, expected: list[str], forbidden: list[str])
 def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
     kg = response.get("kg_triples") or []
     records = response.get("records") or []
-    wm = response.get("working_memory") or []
     context_text = str(response.get("context") or "")
     kg_blobs = _kg_objects(kg)
     kg_blob_lower = " ".join(kg_blobs).lower()
     vector_blob = " ".join(_vector_values(records))
-    wm_blob = " ".join(_wm_texts(wm))
 
     expected_entities = [e.lower() for e in (query.get("expected_entities") or [])]
     expected_contains = query.get("expected_vector_contains") or []
     expects_abstention = bool(query.get("expect_abstention", query.get("negative")))
     forbidden_entities = [e.lower() for e in (query.get("forbidden_entities") or [])]
     forbidden_contains = query.get("forbidden_contains") or []
-    expects_wm = bool(query.get("expects_working_memory"))
 
     matched: list[str] = []
     kg_hit = False
@@ -645,11 +629,6 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
             vector_hit = True
             matched.append(f"vec:{s}")
             break
-
-    wm_hit = False
-    if expects_wm and wm:
-        wm_hit = True
-        matched.append("wm:present")
 
     # A forbidden term that surfaced is a violation on any query, not only on one
     # expecting abstention. This used to be gated on ``expects_abstention``, which
@@ -674,7 +653,7 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
                 break
         if not violation:
             for term in forbidden_contains:
-                if term and (term in vector_blob or term in kg_blob_lower or term in wm_blob):
+                if term and (term in vector_blob or term in kg_blob_lower):
                     violation = True
                     matched.append(f"VIOLATE-vec:{term}")
                     break
@@ -682,18 +661,16 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
     evidence_groups = [
         bool(expected_entities),
         bool(expected_contains),
-        expects_wm,
     ]
     evidence_group_hits = [
         kg_hit if expected_entities else False,
         vector_hit if expected_contains else False,
-        wm_hit if expects_wm else False,
     ]
     groups_total = sum(evidence_groups)
     groups_hit = sum(
         hit for enabled, hit in zip(evidence_groups, evidence_group_hits, strict=True) if enabled
     )
-    returned_evidence_count = len(kg) + len(records) + len(wm)
+    returned_evidence_count = len(kg) + len(records)
     abstention_correct = None
     if expects_abstention:
         # At the retrieval boundary every returned row is unsupported evidence
@@ -709,7 +686,6 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
         elapsed_ms=round(elapsed_ms, 2),
         kg_hit=kg_hit,
         vector_hit=vector_hit,
-        working_memory_hit=wm_hit,
         negative_violation=violation,
         matched_signals=matched,
         raw_kg_objects=kg_blobs[:8],
@@ -738,9 +714,7 @@ def _validate_queries(queries: list[dict[str, Any]]) -> None:
 
         expects_abstention = bool(query.get("expect_abstention", query.get("negative")))
         has_positive_label = bool(
-            query.get("expected_entities")
-            or query.get("expected_vector_contains")
-            or query.get("expects_working_memory")
+            query.get("expected_entities") or query.get("expected_vector_contains")
         )
         if expects_abstention and has_positive_label:
             raise ValueError(f"{label}: abstention case cannot also require positive evidence")

@@ -19,7 +19,6 @@ from eidolon.memory.infrastructure.mempalace_backend import (
 )
 from eidolon.memory.infrastructure.palace_init import ensure_palace_initialized
 
-
 SEED_ROWS = [
     ("Wing_Profile", "tea", "The user prefers oolong tea and avoids coffee."),
     ("Wing_Profile", "schedule", "The user works best after 10 AM."),
@@ -53,16 +52,6 @@ def _settings(args: argparse.Namespace) -> MemorySettings:
             },
             "recall": {
                 "top_k": args.top_k,
-                "exclude_recent_minutes": 0,
-                "voice_wings": [
-                    "Wing_Profile",
-                    "Wing_Work",
-                    "Wing_Emotion",
-                    "Wing_Relationship",
-                    "Wing_Future",
-                    "Wing_Life",
-                    "Wing_Event",
-                ],
             },
         }
     )

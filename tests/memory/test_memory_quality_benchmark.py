@@ -261,7 +261,6 @@ def test_an_undated_old_fact_beside_the_current_one_is_ambiguous() -> None:
             "context": "记忆:\n- 米氮平晚上吃\n- 开了舍曲林，先吃三个月",
             "kg_triples": _kg(),
             "records": _records(),
-            "working_memory": [],
         },
         12.0,
     )
@@ -294,7 +293,6 @@ def test_the_old_fact_dated_earlier_is_not_a_violation() -> None:
             ),
             "kg_triples": _kg(),
             "records": _records(),
-            "working_memory": [],
         },
         12.0,
     )
@@ -313,7 +311,6 @@ def test_the_old_fact_dated_later_is_still_a_violation() -> None:
             "context": ("记忆:\n- [2025-11-28] 换成米氮平\n- [2026-03-22] 开了舍曲林，先吃三个月"),
             "kg_triples": _kg(),
             "records": _records(),
-            "working_memory": [],
         },
         12.0,
     )
@@ -329,7 +326,6 @@ def test_only_the_current_fact_present_is_correct() -> None:
             "context": "记忆:\n- [2026-03-22] 米氮平晚上吃，现在每天睡六个多小时",
             "kg_triples": _kg(),
             "records": [{"value": "米氮平晚上吃，现在每天睡六个多小时"}],
-            "working_memory": [],
         },
         12.0,
     )

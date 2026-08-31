@@ -18,7 +18,6 @@
 {"id":"pronoun-003","category":"pronoun","query":"我们和好了","expected_entities":["partner:王芳","partner","wife:王芳","wife"],"expected_vector_contains":["和好"],"negative":false}
 {"id":"time-001","category":"time","query":"最近几天我状态怎样","expected_entities":[],"expected_vector_contains":["焦虑","失眠","压力"],"negative":false}
 {"id":"time-002","category":"time","query":"上周聊了什么","expected_entities":[],"expected_vector_contains":["项目","王芳","铁锤"],"negative":false}
-{"id":"time-003","category":"time","query":"刚才说了什么","expected_entities":[],"expected_vector_contains":[],"negative":false,"expects_working_memory":true}
 {"id":"time-004","category":"time","query":"我答应了什么事情","expected_entities":[],"expected_vector_contains":["陪","医院","攒钱"],"negative":false}
 {"id":"time-005","category":"time","query":"我今天做了什么","expected_entities":[],"expected_vector_contains":["铁锤","医院","疫苗"],"negative":false}
 {"id":"topic-001","category":"topic","query":"我最近工作压力大吗","expected_entities":["project:OP-3091","project"],"expected_vector_contains":["OP-3091","甲方","压力"],"negative":false}

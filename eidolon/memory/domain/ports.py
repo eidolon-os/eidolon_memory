@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from eidolon_memory_contracts import MemoryIntent
 
-    from eidolon.memory.application.working_memory import WorkingMemoryRing
     from eidolon.memory.domain.canonical_fact import (
         CanonicalFactHistoryRecord,
         CanonicalFactInvalidation,
@@ -48,13 +47,9 @@ class MemoryReader(Protocol):
     Backends with single-owner state expose ``lock`` to share with the
     write path; otherwise ``lock`` is ``None`` (test fakes / pure in-mem).
 
-    ``working_memory`` is an optional Phase 2 ring attached at runtime by
-    agent_runner; recall code reads it via ``getattr(backend, "working_memory",
-    None)`` so backends that don't carry one (test fakes) stay decoupled.
     """
 
     lock: asyncio.Lock | None
-    working_memory: WorkingMemoryRing | None
 
     async def search(
         self,
@@ -395,9 +390,7 @@ class CanonicalFactStore(CanonicalFactReader, CanonicalFactWriter, Protocol):
 
 @runtime_checkable
 class CommitmentReader(Protocol):
-    async def get(
-        self, memory_space_id: str, commitment_id: str
-    ) -> CommitmentRecord | None: ...
+    async def get(self, memory_space_id: str, commitment_id: str) -> CommitmentRecord | None: ...
 
     async def list_current(
         self,

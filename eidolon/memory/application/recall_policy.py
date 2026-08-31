@@ -169,10 +169,7 @@ class RecallPolicyRegistry:
         scope = str(meta.get("scope") or "persona")
         source_device = str(meta.get("source_device_id") or "")
         target_device = str(meta.get("target_device_id") or "")
-        session_id = str(meta.get("session_id") or "")
-        if context.session_id and session_id and session_id == context.session_id:
-            score = 1.0
-        elif (
+        if (
             scope == "device"
             and bool(context.device_id)
             and context.device_id in {source_device, target_device}

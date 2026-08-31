@@ -391,18 +391,6 @@ async def process_turn_message(
         await msg.ack()
         return
 
-    # ── working memory: append BEFORE steward (G7 ordering) ────────────────
-    # Steward failures must not lose the raw turn from the ring — short-term
-    # continuity is independent of extraction quality. ``working_memory`` is
-    # ``None`` on backends that opt out (test fakes); the ring's own
-    # ``append`` is a no-op when ``maxlen=0``, so this branch is safe.
-    ring = getattr(backend, "working_memory", None)
-    if ring is not None:
-        try:
-            await ring.append(turn)
-        except Exception as exc:  # noqa: BLE001 - defensive: never break turn ack
-            log.warning("working_memory_append_failed", error=str(exc))
-
     # ── decide ─────────────────────────────────────────────────────────────
     steward_started = time.perf_counter()
     try:

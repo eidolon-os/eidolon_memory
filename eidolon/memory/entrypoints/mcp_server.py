@@ -295,7 +295,6 @@ def build_control_plane_mcp(
             "context": fused["context"],
             "kg_triples": fused["kg_triples"],
             "records": fused["records"],
-            "working_memory": fused["working_memory"],
             "degraded": fused["degraded"],
             "degraded_reason": fused["degraded_reason"],
             "trace": fused["trace"],

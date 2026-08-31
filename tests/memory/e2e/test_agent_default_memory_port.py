@@ -1,13 +1,13 @@
-"""Agent-side e2e for the default owner's memory read/write path.
+"""Agent-side E2E for durable Memory read/write and context compilation.
 
 This test intentionally uses the agent's public memory port adapter while the
 memory service runs as a real subprocess:
 
-    agent EidolonMemoryPort.write_turn -> NATS -> eidolon-memory-agent
-      -> MCP recall via agent McpClientPool -> rendered working-memory context
+    Agent HistoryFanout -> NATS -> Memory extraction/projection
+      -> Agent MCP recall -> ContextCompiler prompt
 
-It avoids LLM / long-term extraction assumptions by asserting against the
-process-local working-memory section.
+The deterministic test steward replaces only semantic extraction. Transport,
+durable projection, voice recall and Agent prompt assembly are real.
 """
 
 import asyncio
@@ -17,6 +17,7 @@ import os
 import sys
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -71,9 +72,9 @@ try:
         "eidolon_agent.infra.memory.mcp_client",
         reason="eidolon_agent package is required for the cross-repo agent memory e2e",
     )
-    agent_nats_pub = pytest.importorskip(
-        "eidolon_agent.infra.memory.nats_pub",
-        reason="eidolon_agent package is required for the cross-repo agent memory e2e",
+    agent_history_fanout = pytest.importorskip(
+        "eidolon_agent.domain.history.fanout",
+        reason="eidolon_agent package is required for the cross-repo Agent fanout e2e",
     )
     agent_port_adapter = pytest.importorskip(
         "eidolon_agent.infra.memory.port_adapter",
@@ -102,7 +103,7 @@ TurnContext = agent_turn_context.TurnContext
 NatsEventBus = agent_nats_bus.NatsEventBus
 MemoryRoutingTable = agent_discovery.MemoryRoutingTable
 McpClientPool = agent_mcp_client.McpClientPool
-MemoryNatsPublisher = agent_nats_pub.MemoryNatsPublisher
+HistoryFanout = agent_history_fanout.HistoryFanout
 EidolonMemoryPort = agent_port_adapter.EidolonMemoryPort
 PersonaRealizer = agent_persona_realizer.PersonaRealizer
 TurnInput = agent_turn_types.TurnInput
@@ -113,7 +114,6 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 MEMORY_SPACE_ID = "default.default.agent_e2e"
 OWNER_USER_ID = "default"
 COMPANION_ID = "agent_e2e"
-SESSION_ID = "agent-e2e-default"
 
 
 async def _wait_for_true(
@@ -153,11 +153,14 @@ def _turn_input(
     memory_realm_id: str,
     turn_id: str,
     text: str,
+    session_id: str = "session-e2e",
+    conversation_id: str = "conversation-e2e-commitment",
+    input_modality: str = "text",
 ) -> TurnInput:
     return TurnInput(
         turn_id=turn_id,
-        conversation_id="conversation-e2e-commitment",
-        session_id="session-e2e",
+        conversation_id=conversation_id,
+        session_id=session_id,
         context=TurnContext(
             owner_id=owner_id,
             companion_id=companion_id,
@@ -167,7 +170,7 @@ def _turn_input(
             trace_id=f"trace-{turn_id}",
             request_id=f"request-{turn_id}",
         ),
-        input_modality="text",
+        input_modality=input_modality,
         trigger=TurnTrigger.USER_UTTERANCE,
         text=text,
     )
@@ -198,10 +201,12 @@ def _latency_percentiles(values: list[float]) -> dict[str, float | int]:
     }
 
 
-async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runner) -> None:
+async def test_natural_turn_is_recalled_by_voice_after_device_reenters(
+    live_agent_runner,
+) -> None:
     handle = live_agent_runner(
         user_id=MEMORY_SPACE_ID,
-        steward_mode="noop",
+        steward_mode="test-verbatim",
     )
     routes = MemoryRoutingTable.from_static(
         endpoints=[
@@ -215,34 +220,37 @@ async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runn
     )
     bus = NatsEventBus(handle.nats_url)
     pool = McpClientPool(routes=routes)
-    port = EidolonMemoryPort(
-        pool=pool,
-        publisher=MemoryNatsPublisher(event_bus=bus, routes=routes),
-    )
+    port = EidolonMemoryPort(pool=pool)
+    fanout = HistoryFanout(event_bus=bus, memory_routes=routes)
     marker = f"agent-default-memory-e2e-{uuid.uuid4().hex[:8]}"
+    session_a = f"dispatch-a-{marker}"
+    session_b = f"dispatch-b-{marker}"
     try:
-        await port.write_turn(
-            OWNER_USER_ID,
-            COMPANION_ID,
-            MEMORY_SPACE_ID,
-            "default-device",
-            SESSION_ID,
-            f"turn-{marker}",
-            f"这只是端到端测试标记: {marker}, 不要长期记住。",
-            "好的, 我只在这次会话里保留它。",
+        write_status = await fanout.publish_turn(
+            owner_id=OWNER_USER_ID,
+            companion_id=COMPANION_ID,
+            memory_realm_id=MEMORY_SPACE_ID,
+            device_id="default-device",
+            session_id=session_a,
+            turn_id=f"turn-{marker}",
+            user_text=f"书房那盆绿植叫{marker}。",
+            assistant_text="听起来很有画面。",
+            timestamp_iso=datetime.now(UTC).isoformat(),
+            trace_id=f"trace-{marker}",
             metadata={"source": "agent-default-memory-e2e"},
         )
+        assert write_status.state == "published", write_status
 
         async def _recall_contains_marker() -> bool:
             result = await port.recall_context(
                 OWNER_USER_ID,
-                "刚才的端到端测试标记是什么?",
+                marker,
                 memory_realm_id=MEMORY_SPACE_ID,
-                plan=MemoryQueryPlan(semantic_k=5, voice=False),
+                plan=MemoryQueryPlan(semantic_k=5, voice=True),
                 timeout_s=5.0,
                 companion_id=COMPANION_ID,
                 device_id="default-device",
-                session_id=SESSION_ID,
+                session_id=session_b,
             )
             assert result.degraded is False
             return marker in result.context
@@ -251,7 +259,34 @@ async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runn
             _recall_contains_marker,
             timeout_s=30,
             poll_interval_s=0.5,
-        ), f"agent memory port did not recall the turn written for {MEMORY_SPACE_ID}"
+        ), "Agent did not recall session A's durable fact from voice session B"
+
+        compiler = ContextCompiler(
+            personas_service=_E2EPersonas(),
+            instance_locator=lambda _owner, companion, _conversation: (
+                companion,
+                "genome-e2e",
+            ),
+            history_manager=HistoryManager(),
+            memory_port=port,
+            memory_timeout_s=4.0,
+            active_commitment_limit=1,
+            active_commitment_timeout_s=0.5,
+            context_budget_mode="disabled",
+        )
+        turn = _turn_input(
+            owner_id=OWNER_USER_ID,
+            companion_id=COMPANION_ID,
+            memory_realm_id=MEMORY_SPACE_ID,
+            turn_id=f"recall-{marker}",
+            text=f"书房那盆绿植叫什么名字？{marker}",
+            session_id=session_b,
+            conversation_id="brain-conversation-stable-across-reentry",
+            input_modality="voice",
+        )
+        messages = await compiler.compile(turn)
+        assert marker in messages[0].content
+        assert turn.metadata["memory_trace"]["context_injected"] is True
     finally:
         await port.close()
         await bus.close()
@@ -273,12 +308,8 @@ async def test_agent_recall_latency_distribution(live_agent_runner) -> None:
         ],
         nats=NatsSettings(url=handle.nats_url),
     )
-    bus = NatsEventBus(handle.nats_url)
     pool = McpClientPool(routes=routes)
-    port = EidolonMemoryPort(
-        pool=pool,
-        publisher=MemoryNatsPublisher(event_bus=bus, routes=routes),
-    )
+    port = EidolonMemoryPort(pool=pool)
     marker = f"火龙果-{uuid.uuid4().hex[:8]}"
     owner_id = "owner-perf"
     companion_id = "companion-perf"
@@ -370,7 +401,6 @@ async def test_agent_recall_latency_distribution(live_agent_runner) -> None:
         assert metrics["compiler_total_ms"]["p95"] < 500
     finally:
         await port.close()
-        await bus.close()
 
 
 async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -> None:
@@ -389,12 +419,8 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         ],
         nats=NatsSettings(url=handle.nats_url),
     )
-    bus = NatsEventBus(handle.nats_url)
     pool = McpClientPool(routes=routes)
-    port = EidolonMemoryPort(
-        pool=pool,
-        publisher=MemoryNatsPublisher(event_bus=bus, routes=routes),
-    )
+    port = EidolonMemoryPort(pool=pool)
     marker = f"agent-commitment-context-{uuid.uuid4().hex[:8]}"
     later_marker = f"agent-commitment-later-{uuid.uuid4().hex[:8]}"
     owner_id = "owner-e2e"
@@ -558,4 +584,3 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         assert after_turn.metadata["commitment_context_trace"]["context_injected"] is True
     finally:
         await port.close()
-        await bus.close()

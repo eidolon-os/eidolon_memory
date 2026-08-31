@@ -39,8 +39,13 @@ from eidolon.memory.infrastructure.nats.query import NatsMemoryQueryClient
 
 def test_idempotency_hash_stable_for_same_input():
     """Same user/wing/window/drawer-set → same hash, every time."""
-    t1 = Theme(text="x", underlying_wing="Wing_Work", confidence=0.8,
-               source_drawer_ids=["d1", "d2", "d3"], audience="companion:mochi")
+    t1 = Theme(
+        text="x",
+        underlying_wing="Wing_Work",
+        confidence=0.8,
+        source_drawer_ids=["d1", "d2", "d3"],
+        audience="companion:mochi",
+    )
     t2 = Theme(
         text="DIFFERENT TEXT",
         underlying_wing="Wing_Work",
@@ -55,10 +60,20 @@ def test_idempotency_hash_stable_for_same_input():
 
 def test_idempotency_hash_changes_on_new_drawer():
     """Adding/removing a single drawer flips the hash."""
-    base = Theme(text="x", underlying_wing="Wing_Work", confidence=0.8,
-                 source_drawer_ids=["d1", "d2"], audience="companion:mochi")
-    extended = Theme(text="x", underlying_wing="Wing_Work", confidence=0.8,
-                     source_drawer_ids=["d1", "d2", "d3"], audience="companion:mochi")
+    base = Theme(
+        text="x",
+        underlying_wing="Wing_Work",
+        confidence=0.8,
+        source_drawer_ids=["d1", "d2"],
+        audience="companion:mochi",
+    )
+    extended = Theme(
+        text="x",
+        underlying_wing="Wing_Work",
+        confidence=0.8,
+        source_drawer_ids=["d1", "d2", "d3"],
+        audience="companion:mochi",
+    )
     h1 = base.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
     h2 = extended.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
     assert h1 != h2
@@ -66,16 +81,19 @@ def test_idempotency_hash_changes_on_new_drawer():
 
 def test_idempotency_hash_isolates_user_and_window():
     """Same drawers under different (user, window) → different hashes."""
-    t = Theme(text="x", underlying_wing="W", confidence=0.8,
-              source_drawer_ids=["d1"], audience="companion:mochi")
-    assert (
-        t.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
-        != t.idempotency_hash(memory_space_id="default.bob.mochi", window_days=30)
+    t = Theme(
+        text="x",
+        underlying_wing="W",
+        confidence=0.8,
+        source_drawer_ids=["d1"],
+        audience="companion:mochi",
     )
-    assert (
-        t.idempotency_hash(memory_space_id="default.alice.mochi", window_days=30)
-        != t.idempotency_hash(memory_space_id="default.alice.mochi", window_days=7)
-    )
+    assert t.idempotency_hash(
+        memory_space_id="default.alice.mochi", window_days=30
+    ) != t.idempotency_hash(memory_space_id="default.bob.mochi", window_days=30)
+    assert t.idempotency_hash(
+        memory_space_id="default.alice.mochi", window_days=30
+    ) != t.idempotency_hash(memory_space_id="default.alice.mochi", window_days=7)
 
 
 # ─── group_drawers_by_wing ────────────────────────────────────────────────
@@ -100,7 +118,7 @@ def test_group_drawers_filters_window():
     drawers = [
         _drawer(wing="Wing_Work", age_days=5),
         _drawer(wing="Wing_Work", age_days=10),
-        _drawer(wing="Wing_Work", age_days=45),   # outside 30d window
+        _drawer(wing="Wing_Work", age_days=45),  # outside 30d window
     ]
     grouped = group_drawers_by_audience_and_wing(drawers, window_days=30)
     assert len(grouped[("companion:mochi", "Wing_Work")]) == 2
@@ -122,7 +140,9 @@ def test_group_drawers_filters_to_themable_wings():
 def test_group_drawers_keeps_drawers_with_missing_timestamp():
     """Better to over-include than under-include for theme synthesis."""
     rec = {
-        "memory_space_id": "default.alice.mochi", "key": "k1", "value": "x",
+        "memory_space_id": "default.alice.mochi",
+        "key": "k1",
+        "value": "x",
         "created_at": None,
         "metadata": {"wing": "Wing_Life"},
     }
@@ -192,7 +212,8 @@ async def test_grouped_wing_synthesis_is_bounded_parallel_and_ordered(monkeypatc
     monkeypatch.setattr(consolidator, "synthesize_themes_for_wing", _fake_synthesize)
     grouped = {
         ("companion:mochi", f"Wing_{index}"): [
-            {"key": f"drawer_{index}"}, {"key": f"drawer_{index}_b"}
+            {"key": f"drawer_{index}"},
+            {"key": f"drawer_{index}_b"},
         ]
         for index in range(7)
     }
@@ -292,14 +313,24 @@ def test_consolidation_status_distinguishes_partial_from_total_failure():
 
     assert _consolidation_status([{"status": "completed"}]) == "completed"
     assert _consolidation_status([{"status": "skipped"}]) == "completed"
-    assert _consolidation_status([
-        {"status": "completed"},
-        {"status": "timed_out"},
-    ]) == "partial"
-    assert _consolidation_status([
-        {"status": "failed"},
-        {"status": "timed_out"},
-    ]) == "failed"
+    assert (
+        _consolidation_status(
+            [
+                {"status": "completed"},
+                {"status": "timed_out"},
+            ]
+        )
+        == "partial"
+    )
+    assert (
+        _consolidation_status(
+            [
+                {"status": "failed"},
+                {"status": "timed_out"},
+            ]
+        )
+        == "failed"
+    )
 
 
 async def test_query_client_wait_until_ready_retries_no_responders(monkeypatch):
@@ -345,7 +376,7 @@ def test_extract_themes_clean_json():
 
 
 def test_extract_themes_stripped_code_fence():
-    raw = "```json\n{\"themes\":[{\"text\":\"x\",\"confidence\":0.7}]}\n```"
+    raw = '```json\n{"themes":[{"text":"x","confidence":0.7}]}\n```'
     out = _extract_themes_from_llm_response(raw)
     assert len(out) == 1 and out[0]["text"] == "x"
 
@@ -409,9 +440,12 @@ async def test_ingest_theme_idempotent_on_redelivery():
     """Same request_id → same fragment_id → chroma layer dedups."""
     backend = LockedBackend(FakeMemoryBackend())
     cmd = ConsolidatorIngestThemeCommand(
-        request_id="dedup-key", memory_space_id="default.alice.mochi",
-        issued_at="2026-05-26T00:00:00Z", issuer="agent",
-        text="主题 A", underlying_wing="Wing_Work",
+        request_id="dedup-key",
+        memory_space_id="default.alice.mochi",
+        issued_at="2026-05-26T00:00:00Z",
+        issuer="agent",
+        text="主题 A",
+        underlying_wing="Wing_Work",
         audience="companion:mochi",
     )
     for _ in range(3):
@@ -427,7 +461,8 @@ async def test_ingest_theme_idempotent_on_redelivery():
 
 def _theme_record(text: str, *, underlying_wing: str = "Wing_Work") -> MemoryWireRecord:
     return MemoryWireRecord(
-        memory_space_id="default.alice.mochi", key=f"theme-{abs(hash(text)) % 10000}",
+        memory_space_id="default.alice.mochi",
+        key=f"theme-{abs(hash(text)) % 10000}",
         value=text,
         metadata={
             "wing": "Wing_Theme",
@@ -440,47 +475,20 @@ def _theme_record(text: str, *, underlying_wing: str = "Wing_Work") -> MemoryWir
 
 def _normal_record(text: str, *, memory_type: str = "preference") -> MemoryWireRecord:
     return MemoryWireRecord(
-        memory_space_id="default.alice.mochi", key=f"frag-{abs(hash(text)) % 10000}",
+        memory_space_id="default.alice.mochi",
+        key=f"frag-{abs(hash(text)) % 10000}",
         value=text,
         metadata={"memory_type": memory_type, "wing": "Wing_Profile"},
     )
 
 
 def test_renderer_themes_section_label_and_position():
-    """[主题] appears after [最近对话] but before vector groups."""
+    """[主题] appears before vector groups."""
     themes = [_theme_record("Theme A about work", underlying_wing="Wing_Work")]
     vectors = [_normal_record("vector content about life")]
-    out = group_recall_context(
-        records=themes + vectors,
-        kg_triples=None,
-        working_memory=None,
-    )
+    out = group_recall_context(records=themes + vectors, kg_triples=None)
     assert "[主题]" in out, out
-    # No working_memory → themes come first.
     assert out.index("[主题]") < out.index("生活方式与近况"), out
-
-
-def test_renderer_themes_after_working_memory_before_vector():
-    """[最近对话] → [主题] → vector groups."""
-    from eidolon_memory_contracts import ConversationTurnPayload
-    wm = [ConversationTurnPayload(
-        turn_id="t1", user_text="u", assistant_text="a",
-        timestamp="2026-05-26T00:00:00Z",
-        context=MemoryActorContext(
-            memory_realm_id="default.alice.mochi",
-            owner_id="alice",
-            companion_id="mochi",
-            device_id="device-1",
-            session_id="s",
-        ),
-    )]
-    themes = [_theme_record("Theme A")]
-    vectors = [_normal_record("vector content")]
-    out = group_recall_context(themes + vectors, working_memory=wm)
-    p_wm = out.find("[最近对话]")
-    p_theme = out.find("[主题]")
-    p_vec = out.find("生活方式与近况")
-    assert 0 == p_wm < p_theme < p_vec, (p_wm, p_theme, p_vec, out)
 
 
 def test_renderer_themes_show_underlying_wing_label():
@@ -509,7 +517,8 @@ def test_renderer_theme_detection_by_source_marker():
     """If ``metadata.wing`` is missing but ``source=consolidator`` is set,
     the record still routes to [主题] (defensive — survives wing renames)."""
     rec = MemoryWireRecord(
-        memory_space_id="default.alice.mochi", key="x",
+        memory_space_id="default.alice.mochi",
+        key="x",
         value="theme content",
         metadata={"source": "consolidator", "memory_type": "profile"},
     )
@@ -523,9 +532,12 @@ def test_renderer_theme_detection_by_source_marker():
 def test_consolidator_command_pydantic_defaults():
     """Optional synthesis fields keep defaults; audience is always explicit."""
     cmd = ConsolidatorIngestThemeCommand(
-        request_id="r", memory_space_id="default.alice.mochi",
-        issued_at="2026-05-26T00:00:00Z", issuer="agent",
-        text="theme", underlying_wing="Wing_Work",
+        request_id="r",
+        memory_space_id="default.alice.mochi",
+        issued_at="2026-05-26T00:00:00Z",
+        issuer="agent",
+        text="theme",
+        underlying_wing="Wing_Work",
         audience="companion:mochi",
     )
     assert cmd.window_days == 30
@@ -549,7 +561,7 @@ def test_wing_theme_excluded_from_default_fanout():
     from eidolon.memory.config.memory_settings import load_memory_settings
 
     settings = load_memory_settings()
-    wings = _resolve_wings(settings, wing=None, for_voice=False)
+    wings = _resolve_wings(settings, wing=None)
     assert "Wing_Theme" not in wings, (
         "Wing_Theme leaked into the competitive fan-out — it would evict "
         "specific facts from the shared top_k"
@@ -568,7 +580,7 @@ def test_explicit_wing_theme_request_still_allowed():
     from eidolon.memory.config.memory_settings import load_memory_settings
 
     settings = load_memory_settings()
-    assert _resolve_wings(settings, wing="Wing_Theme", for_voice=False) == ["Wing_Theme"]
+    assert _resolve_wings(settings, wing="Wing_Theme") == ["Wing_Theme"]
 
 
 async def test_fetch_themes_applies_similarity_floor():
@@ -587,18 +599,22 @@ async def test_fetch_themes_applies_similarity_floor():
 
     def _theme(val, sim):
         return MemoryWireRecord(
-            memory_space_id="default.alice.mochi", key=f"k-{val}", value=val,
+            memory_space_id="default.alice.mochi",
+            key=f"k-{val}",
+            value=val,
             metadata={"wing": "Wing_Theme", "similarity": sim},
         )
 
-    backend = SimpleNamespace(search=AsyncMock(return_value=[
-        _theme("relevant-high", 0.80),
-        _theme("borderline", 0.55),     # == floor → kept
-        _theme("irrelevant-low", 0.40), # < floor → dropped
-    ]))
-    context = MemoryActorContext(
-        memory_realm_id="default.alice.mochi", companion_id="mochi"
+    backend = SimpleNamespace(
+        search=AsyncMock(
+            return_value=[
+                _theme("relevant-high", 0.80),
+                _theme("borderline", 0.55),  # == floor → kept
+                _theme("irrelevant-low", 0.40),  # < floor → dropped
+            ]
+        )
     )
+    context = MemoryActorContext(memory_realm_id="default.alice.mochi", companion_id="mochi")
     out = await _fetch_themes(backend, "query", context, settings)
     vals = [r.value for r in out]
     assert vals == ["relevant-high", "borderline"], vals
@@ -614,12 +630,18 @@ async def test_fetch_themes_floor_zero_disables():
     settings = load_memory_settings().model_copy(deep=True)
     settings.recall.theme_top_k = 5
     settings.recall.theme_min_similarity = 0.0  # disabled
-    backend = SimpleNamespace(search=AsyncMock(return_value=[
-        MemoryWireRecord(memory_space_id="Wing_Theme", key="k", value="low",
-                         metadata={"wing": "Wing_Theme", "similarity": 0.1}),
-    ]))
-    context = MemoryActorContext(
-        memory_realm_id="default.alice.mochi", companion_id="mochi"
+    backend = SimpleNamespace(
+        search=AsyncMock(
+            return_value=[
+                MemoryWireRecord(
+                    memory_space_id="Wing_Theme",
+                    key="k",
+                    value="low",
+                    metadata={"wing": "Wing_Theme", "similarity": 0.1},
+                ),
+            ]
+        )
     )
+    context = MemoryActorContext(memory_realm_id="default.alice.mochi", companion_id="mochi")
     out = await _fetch_themes(backend, "q", context, settings)
     assert [r.value for r in out] == ["low"]

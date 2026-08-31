@@ -104,21 +104,6 @@ async def test_each_space_gets_its_own_lock(settings: MemorySettings) -> None:
         await router.aclose()
 
 
-async def test_the_working_memory_ring_shares_its_space_lock(
-    settings: MemorySettings,
-) -> None:
-    """One lock per space, so there is no ordering between two to get wrong."""
-
-    router = LocalPalaceRouter(settings)
-    try:
-        runtime = await router.resolve("alice")
-
-        assert runtime.backend.working_memory is not None
-        assert runtime.backend.working_memory._lock is runtime.backend.lock
-    finally:
-        await router.aclose()
-
-
 async def test_what_one_space_stores_is_invisible_to_another(
     settings: MemorySettings,
 ) -> None:
@@ -317,10 +302,7 @@ def test_both_claims_are_taken_and_the_space_filename_is_pinned(
 
         run_dir = resolve_run_dir(settings)
         by_space = run_dir / f"eidolon-memory-agent-{nats_safe_name('alice')}.lock"
-        by_palace = (
-            run_dir
-            / f"eidolon-memory-palace-{nats_safe_name(str(palace.resolve()))}.lock"
-        )
+        by_palace = run_dir / f"eidolon-memory-palace-{nats_safe_name(str(palace.resolve()))}.lock"
         assert by_space.is_file(), f"expected the space claim at {by_space}"
         assert by_palace.is_file(), f"expected the palace claim at {by_palace}"
     finally:

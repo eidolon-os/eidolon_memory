@@ -125,17 +125,7 @@ def _minted(
 
 
 class FusedRecall(dict):
-    """Recall output including material the read contract deliberately omits.
-
-    ``RecallResult`` carries no ``kg_triples`` and no ``working_memory``: either
-    would let a caller infer whether this deployment keeps a graph, which is the
-    knowledge the contract exists to withhold.
-
-    This exists because the MCP tool surface returns both today and a client
-    reads them. Keeping it as one named type, produced by one method, is what
-    stops that from becoming a second contract — when the client stops reading
-    those fields, this type and its method go, and nothing else changes.
-    """
+    """Prompt-ready recall plus projection evidence for the Agent boundary."""
 
 
 class MemoryService:
@@ -360,7 +350,6 @@ class MemoryService:
 
         records = fused["vector"]
         kg_records = fused["kg"]
-        turns = fused.get("working_memory") or []
 
         # Not recorded here. ``recall_with_kg_fusion`` already called
         # ``_record_recall`` on its way out, with the labels this layer cannot
@@ -376,13 +365,10 @@ class MemoryService:
         # inner recorder never ran, and that outcome would otherwise go unrecorded.
 
         result = FusedRecall()
-        result["context"] = group_recall_context(
-            records, kg_triples=kg_records, working_memory=turns
-        )
+        result["context"] = group_recall_context(records, kg_triples=kg_records)
         result["snippets"] = [_snippet(record) for record in records]
         result["records"] = [wire_record_to_public_dict(record) for record in records]
         result["kg_triples"] = [triple.model_dump(mode="json") for triple in kg_records]
-        result["working_memory"] = [turn.model_dump(mode="json") for turn in turns]
         # Read from the fusion rather than assumed: it catches a failed wing
         # search internally and returns an empty list, so "no results" and "we
         # could not look properly" are indistinguishable without this flag. To an
@@ -739,7 +725,6 @@ def _degraded_recall(reason: str, *, trace: dict[str, float] | None = None) -> F
     result["snippets"] = []
     result["records"] = []
     result["kg_triples"] = []
-    result["working_memory"] = []
     result["degraded"] = True
     result["degraded_reason"] = reason
     result["trace"] = dict(trace or {})

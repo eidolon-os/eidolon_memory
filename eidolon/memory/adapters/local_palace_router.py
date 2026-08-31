@@ -37,7 +37,6 @@ from typing import IO
 from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
-from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_run_dir
 from eidolon.memory.config.palace_directory import (
     LEDGER_FILENAMES,
@@ -191,9 +190,7 @@ class LocalPalaceRouter:
             return existing
 
         if not self.serves(space_id):
-            raise UnknownMemorySpace(
-                f"this deployment does not serve memory space {space_id!r}"
-            )
+            raise UnknownMemorySpace(f"this deployment does not serve memory space {space_id!r}")
 
         async with self._pool_lock:
             # Re-check: another caller may have built it while we waited.
@@ -244,13 +241,6 @@ class LocalPalaceRouter:
         backend = LockedBackend(
             MemPalacePythonBackend(self._settings, str(palace_path), memory_space_id=space_id)
         )
-        # The ring shares the backend's lock deliberately — one lock per space to
-        # reason about, and no ordering between two of them to get wrong.
-        backend.working_memory = WorkingMemoryRing(
-            maxlen=self._settings.runtime.working_memory_maxlen,
-            lock=backend.lock,
-        )
-
         kg = None
         if self._settings.kg.enabled:
             # Shares the vector store's lock: a turn writes to both, and one
@@ -275,9 +265,7 @@ class LocalPalaceRouter:
                     prune_every_writes=self._settings.command_status.prune_every_writes,
                 ),
                 dlq=DlqLedger(ledgers_path / "dlq.sqlite3", space_id=space_id),
-                decisions=ExtractionDecisionLedger(
-                    ledgers_path / "extraction_decisions.sqlite3"
-                ),
+                decisions=ExtractionDecisionLedger(ledgers_path / "extraction_decisions.sqlite3"),
                 canonical_facts=CanonicalFactLedger(ledgers_path / "canonical_facts.sqlite3"),
                 commitments=CommitmentLedger(ledgers_path / "commitments.sqlite3"),
                 sync=SyncLedger(ledgers_path / "sync_ledger.sqlite3", space_id=space_id),

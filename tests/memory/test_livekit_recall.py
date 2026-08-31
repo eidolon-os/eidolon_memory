@@ -1,4 +1,4 @@
-"""LiveKit recall fail-fast and voice filter (D1: direct backend, no PalaceReadSession)."""
+"""LiveKit recall fail-fast behavior (D1: direct backend, no PalaceReadSession)."""
 
 from __future__ import annotations
 
@@ -12,22 +12,17 @@ from eidolon_memory_contracts import MemoryActorContext
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.application.livekit_recall import LiveKitRecallService
-from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.config.memory_settings import (
     MemorySettings,
     RecallPolicy,
 )
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
-from eidolon.memory.domain.wire import MemoryWireRecord
 
 
 def _settings() -> MemorySettings:
     return MemorySettings(
         recall=RecallPolicy(
             livekit_timeout_seconds=0.2,
-            voice_wings=["Wing_Profile"],
-            exclude_current_session=True,
-            exclude_recent_minutes=0,
         ),
     )
 
@@ -133,24 +128,3 @@ async def test_livekit_timeout_keeps_realm_serialized_until_worker_finishes() ->
 
     release_worker.set()
     await write
-
-
-def test_filter_excludes_same_session() -> None:
-    settings = _settings()
-    hits = [
-        MemoryWireRecord(
-            memory_space_id="Wing_Profile",
-            key="k1",
-            value="same",
-            metadata={"session_id": "sess-a"},
-        ),
-        MemoryWireRecord(
-            memory_space_id="Wing_Profile",
-            key="k2",
-            value="old",
-            metadata={"session_id": "other"},
-        ),
-    ]
-    out = filter_voice_recall_hits(hits, settings, session_id="sess-a")
-    assert len(out) == 1
-    assert out[0].value == "old"

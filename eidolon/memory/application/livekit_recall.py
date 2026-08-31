@@ -74,7 +74,6 @@ class LiveKitRecallService:
                     top_k=k,
                     kg=self._kg,
                     for_voice=True,
-                    user_utterance=query,
                     palace_path=self._palace_path,
                 ),
                 timeout=timeout,

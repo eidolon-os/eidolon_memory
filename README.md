@@ -121,8 +121,7 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 │   │     ├─ NATS subscriber  agent.memory.conversation.turn.alice   │
 │   │     │                   agent.memory.cmd.alice                 │
 │   │     ├─ MemPalacePythonBackend × 1 (LockedBackend)             │
-│   │     │   ├─ chroma.sqlite3            (单 PersistentClient)    │
-│   │     │   └─ WorkingMemoryRing         (in-memory,共享 lock)    │
+│   │     │   └─ chroma.sqlite3            (单 PersistentClient)    │
 │   │     └─ SqliteKnowledgeGraph  (本服务自写,非 mempalace)         │
 │   │         └─ knowledge_graph.sqlite3   (statements + mentions)   │
 │   │                                                                │
@@ -168,8 +167,7 @@ application/   用例编排(无 IO 细节,只编排)
                        cmd 路径:kg_add / kg_invalidate / theme / assertion
   public_recall.py     读路径:recall_with_kg_fusion(融合中枢)
   recall_rerank.py     BM25 + cosine RRF rerank            (Phase 1)
-  recall_renderer.py   渲染 [最近对话]/[主题]/wing 分组/[知识图谱事实]
-  working_memory.py    WorkingMemoryRing 短期对话环          (Phase 2)
+  recall_renderer.py   渲染 [主题]/wing 分组/[知识图谱事实]
   kg_recall.py         KG 实体路由 + triple 转中文叙述
   steward/             noop | llm（test-verbatim 仅测试）
   livekit_recall.py    voice 300ms 预算封装
@@ -194,11 +192,11 @@ config/          settings.yaml + .env 加载
 support/         logging / pydantic base
 ```
 
-**解耦关键**:`application/` 只依赖 `domain/ports.py` 的 Protocol(`backend.lock`、
-`backend.working_memory`),从不 import 具体的 `LockedBackend`——所以测试可以塞
+**解耦关键**:`application/` 只依赖 `domain/ports.py` 的 Protocol(`backend.lock`),
+从不 import 具体的 `LockedBackend`——所以测试可以塞
 `FakeMemoryBackend`,生产塞 `MemPalacePythonBackend`,召回逻辑一行不改。
 
-### 2.3 写路径 — 两条 NATS subject,8 个逻辑分支
+### 2.3 写路径 — 两条 NATS subject,7 个逻辑分支
 
 ```
 NATS JetStream
@@ -207,16 +205,15 @@ NATS JetStream
  │     → turn_processor.process_turn_message
  │        1. JSON 解析失败            → ack 丢弃(不 NAK)
  │        2. user_id 不匹配           → ack 丢弃
- │        3. ★ working_memory.append(turn)  ← 先于 steward(G7:连续性≠抽取质量)
- │        4. steward.decide(turn):
+ │        3. steward.decide(turn):
  │             ├─ noop  → 测试/诊断时空 decision(只 ack)
  │             └─ llm   → LiteLLM 抽 fragments+triples+invalidations+mentions
  │                         (逐条校验 user evidence_quote；失败 → NAK 重试)
- │        5. fragment 写失败          → NAK / 超 max_deliveries 进 DLQ
- │        6. KG triple/invalidation 写 → 失败仅 log(G7,不 NAK)
- │        7. ★ mentions 写入(Phase 3):entity_id 必须在本 turn triples 里
+ │        4. fragment 写失败          → NAK / 超 max_deliveries 进 DLQ
+ │        5. KG triple/invalidation 写 → 失败仅 log(G7,不 NAK)
+ │        6. ★ mentions 写入(Phase 3):entity_id 必须在本 turn triples 里
  │             → 否则拒绝(防 LLM 幻觉)
- │        8. ack
+ │        7. ack
  │
  └─ agent.memory.cmd.<uid>                 (admin / 系统写,绕 steward)
        → turn_processor.process_command_message,按 kind 分发:
@@ -230,10 +227,11 @@ NATS JetStream
 ingestion 期间连接被 drain → `ack()` 抛错 → **外层 reconnect-and-resubscribe 循环**
 (指数退避)而非永久死亡。turn/cmd 各自吞 idle TimeoutError,互不饿死。
 
-### 2.4 读路径 — recall 融合中枢,7 个信号源叠加
+### 2.4 读路径 — recall 融合中枢,5 个信号阶段
 
 `application/public_recall.py::recall_with_kg_fusion` 是所有读的中枢。**并行**拉 vector
-+ KG,再叠加 working memory / 主题,最后渲染:
++ KG,再叠加主题,最后渲染。短期对话历史和摘要由 Agent 的 ContextCompiler 负责，
+Memory 不保存第二份易失 transcript:
 
 ```
 recall_context(query, voice?)
@@ -256,15 +254,15 @@ recall_context(query, voice?)
  │       _fetch_themes:单独 search Wing_Theme,theme_top_k 上限
  │       + theme_min_similarity=0.55 相关性门槛(低于则丢,防越界泄漏)
  │
- ├─[E] working memory 快照(Phase 2)
- │       backend.working_memory.snapshot() → 最近 N turn verbatim
- │
- └─[F] 渲染 recall_renderer.group_recall_context,段顺序:
-         [最近对话] → [主题] → wing 分组(个人画像/情绪/工作…) → [知识图谱事实]
+ └─[E] 渲染 recall_renderer.group_recall_context,段顺序:
+         [知识图谱事实] → [主题] → wing 分组(个人画像/情绪/工作…)
 ```
 
-返回 `{context: str, records: [...], kg_triples: [...], working_memory: [...]}`。
+返回 `{context: str, records: [...], kg_triples: [...]}`。
 任一信号源失败都不打断 recall(全程 defensive,voice 300ms 预算硬保)。
+
+`session_id` 只表示一次经过认证的交互生命周期，用于来源追踪、实时信号和审计；它不参与
+长期事实的可见性、过滤或相关性排序。`voice` 只选择资源/延迟预算，不改变召回语义。
 
 ### 2.5 形态演进:查询式 → 情境式(本轮重构的全部内容)
 
@@ -275,7 +273,7 @@ recall_context(query, voice?)
 |------|-----------|---------|------|-----|
 | **P0** | 长进程 lazy import 撞 stale 模块 | 跨包 import 上提 + AST 守门 | `test_lazy_import_guard` | — |
 | **P1** | cosine 噪声压过关键词命中 | BM25+cosine RRF rerank + KG confidence 排序 | `recall_rerank.py` | — |
-| **P2** | "刚才说啥"无法 cosine 答 | 内存环 + `[最近对话]` 段 | `working_memory.py` | `phase2-complete` |
+| **P2** | "刚才说啥"无法 cosine 答 | Agent 持久 history + summary；Memory 不复制 transcript | `eidolon_agent/domain/context` | — |
 | **P3** | "我妈/我家狗"别名命中不了 canonical | `entity_mentions` 表 + alias 反查 + steward 防幻觉 | `locked_kg.py` | `phase3-complete` |
 | **P4** | "最近怎样"只给零散 fragment | consolidator 独立进程 + Wing_Theme + `[主题]` | `consolidator.py` | `phase4-complete` |
 | **P4.1** | 主题挤占具体事实(精度代价 −15~−20pp) | 主题移出竞争 top_k + 相关性门槛 | `public_recall.py` | `phase4.1-complete` |
@@ -813,10 +811,8 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
   milvus 配置管道、云端 profile、两个 extra。抽象层保留。
 - **中文 embedder**:已落地。`bge-small-zh`(512 维 / 111MB / 0.6ms),播种 mempalace 的
   进程级 embedder 缓存并验证注入生效。选型实测见 `docs/ARCHITECTURE.md`。
-- **MCP 契约统一**:`focus_subjects` 取代 `kg_subjects`,并从返回中移除 `kg_triples` /
-  `working_memory` —— 让调用方无法推断本服务是否有知识图谱。**这一步必须 memory 与
-  agent 同批**:agent 的 `port_adapter.py:201` 正在消费 `kg_triples`,只在 memory 侧
-  实现契约会造成"契约返回一种形状、工具返回另一种"。
+- **MCP 契约统一**:易失 `working_memory` 已移除；Agent 只消费长期投影及其证据。
+  `kg_triples` 仍是 Agent 回答可追踪事实所需的正式证据字段，不再被描述成临时内部字段。
 
 ---
 
@@ -824,11 +820,11 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
 
 | 层级 | 目录 | 角色 |
 |------|------|------|
-| Domain | `eidolon/memory/domain/` | `MemoryFragment` / `ConversationTurnPayload` / `Kg*` schema, `EntityMention`, `ports.py`(`MemoryBackend` Protocol + `lock`/`working_memory`) |
+| Domain | `eidolon/memory/domain/` | `MemoryFragment` / `ConversationTurnPayload` / `Kg*` schema, `EntityMention`, `ports.py`(`MemoryBackend` Protocol + `lock`) |
 | Config | `eidolon/memory/config/` | `MemorySettings`(含 recall.rerank/theme 旋钮)、`UsersConfig`(含 `consolidator`)、palace 解析、steward prompts |
 | Infrastructure | `eidolon/memory/infrastructure/` | NATS / JetStream stream / WAL checkpoint / 完整性 / palace init |
 | Adapters | `eidolon/memory/adapters/` | `MemPalacePythonBackend`、`LockedBackend`、`SqliteKnowledgeGraph`、两个 space router、`search_payload`、`FakeMemoryBackend` |
-| Application | `eidolon/memory/application/` | `turn_processor`(写)、`public_recall`(读融合)、`recall_rerank`(P1)、`recall_renderer`、`working_memory`(P2)、`kg_recall`、`steward/*` |
+| Application | `eidolon/memory/application/` | `turn_processor`(写)、`public_recall`(读融合)、`recall_rerank`(P1)、`recall_renderer`、`kg_recall`、`steward/*` |
 | Entrypoints | `eidolon/memory/entrypoints/` | `agent_runner`(主进程 + NATS 重连)、`supervisor`(fan-out)、`consolidator`(P4)、`mcp_server`(14 工具)、`discovery_server` |
 | Bench | `scripts/benchmark/` | `bench_read_livekit`(R-01 延时)、`bench_memory_retrieve_quality`(`--with-consolidator` A/B 质量) |
 
@@ -859,12 +855,13 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
 - **召回热路径只能依赖 mempalace search 保证返回的字段**:`{text, wing, room, source_file,
   similarity}`。任何依赖自定义 metadata 的召回逻辑都会失效(见 13.1#3)——用 `room` 前缀或
   专属 wing 做信号。
-- **G7 写顺序**:turn 先 append working_memory 再跑 steward——短期连续性独立于抽取质量。
+- **状态归属**:Agent history/summary 是短期连续性的唯一来源；Memory 只接收 turn 并异步
+  形成 assertion/evidence ledger 与可补偿的长期投影。
 - **NATS-write / MCP-read 契约**:所有 e2e 必须走真链路(NATS 发、MCP 读),禁止 in-process
   直调 backend/kg 作捷径。
 - **代码改后必重启 agent**(无 hot-reload,见 §3 警告 + `test_lazy_import_guard`)。
-- **零成本回滚旋钮**:`recall.rerank_enabled`、`runtime.working_memory_maxlen=0`、
-  `recall.theme_top_k=0`、`recall.kg_in_recall` —— 每个新形态都能配置关掉退回旧行为。
+- **零成本回滚旋钮**:`recall.rerank_enabled`、`recall.theme_top_k=0`、
+  `recall.kg_in_recall`。
 
 ---
 
