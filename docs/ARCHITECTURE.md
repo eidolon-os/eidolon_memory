@@ -245,41 +245,21 @@ provider/identity 契约。读写路径不再依赖私有 `_EF_CACHE` 或 provid
 查询一直是带着 `passage:` 前缀编码的。BGE 两侧前缀都是空的所以没暴露。又一次是同一类失败：
 不报错，只是排序变差，和"模型弱"分不出来。
 
-**`hf_hub_download` 的进程级 monkeypatch 收窄到只服务 mempalace 自己那两个。** 我们的实现
-自己读 `embedding.model_dir`（不全就警告并回落到 hub）。那个补丁留着，是因为 minilm 和
-embeddinggemma 的文件解析在我们改不到的代码里，没有参数、设置或钩子能改道——代价写出来而不
-是藏着。默认配置下它现在根本不会安装。
+**没有进程级 monkeypatch，也不写 MemPalace 的私有 provider/cache。** Eidolon 的 local
+provider 自己读取 `embedding.model_dir`；MemPalace 3.8 的 native provider 没有公开的本地模型
+目录接口，因此 native provider 与 `model_dir` 同时配置会在启动前直接报错，而不是导出一个上游
+不读取的环境变量或替换 `hf_hub_download`。
 
-它**有**的是一个进程级缓存，键正好是标识一个 embedder 的东西：`(模型名, provider 元组)`。
-在第一个 palace 打开前播种那个缓存，不是对一个不情愿的库耍花招，而是用它实际存在的唯一
-扩展面。一个注入点覆盖它自己全部的消费者——写入与检索内部都调无参数的
-`get_embedding_function()`。而且那个键是按**模型名**索引的，认不出的字符串它照收（然后落回
-minilm），所以名字只是个标签，标签后面挂什么由我们决定——这正是一个 hosted embedder 能用完全
-相同的方式装进去的原因。
+两条受支持路径都只经过公开契约：
 
-（我们自己的读路径已经不在这些消费者里了，它直接持 port。见上面那一节。）
+- 默认 BGE 和 HTTP provider 由 `EmbeddingPort` 生成 document/query vectors，再通过 MemPalace
+  3.8 公开的 `embeddings` / `query_embeddings` 写入与查询。
+- `minilm` / `embeddinggemma` 仅通过 MemPalace 自己的公开 provider 与
+  `get_embedding_function()` 使用；`MemPalaceEmbedder` 只是把这个公开能力包成同一个 port。
 
-**这里必须响亮地失败。** 如果注册悄悄没生效，mempalace 落回默认的 `minilm`，palace 就被
-用一个英文模型建起来。所以：
-
-- 注册**自我验证**——播种后经公开函数取一次，确认拿到的是我们那个对象，而不是假设键算对了。
-  键算错的失败模式是"条目在，没人读"，然后 palace 静默用 minilm 建成。
-- mempalace 私有符号消失时**抛异常**，不像 `mempalace_compat` 那样给本地兜底。这里降级
-  就是要防的那件事。
-- 建 palace 的**子进程**里也要准备（`prepare_embedder_resolution_from_env`）。它继承父进程
-  的环境但继承不到进程内注册，而创建 collection 恰恰是 embedder 起作用的时刻——它定下向量
-  宽度和 chroma 持久化的 embedder 名字。缺了这一步，新 palace 会是"贴着配置名标签的 minilm
-  向量"。
-- `apply_mempalace_backend_env` 有**六个调用点，五个是 benchmark 脚本**。所以注册挂在它
-  里面，而不是另立一个钩子：在某个 bench 里忘掉它，正是让 2026-08-03 之前全部质量数字
-  测错模型的那个缺陷。
-- 同理，整个 `embedding` 一节以**一个** JSON 环境变量（`EIDOLON_EMBEDDING_CONFIG`）传给子
-  进程，而不是每个字段一个变量。逐字段的传输是一份清单，而清单是会有人忘记加一行的——那正是
-  同一个缺陷的形状。
-- 模型名有两个来源：mempalace 查缓存用的那个（`MEMPALACE_EMBEDDING_MODEL`），和我们决定往
-  里放什么用的那个（`embedding.model`）。**两者不一致时抛异常。** 它们分叉的原因就是环境不是
-  从同一份 settings 应用的——比如 bench 只复制了子进程配置的一部分 section，父子对 embedder
-  各说各话，这个已经发生过一次了。
+整个 `embedding` 一节仍以一个 `EIDOLON_EMBEDDING_CONFIG` JSON 传给子进程，保证模型 identity、
+维度和 query/document 前缀来自同一个配置源。创建 collection 时记录的 embedder identity 与读取
+时声明不一致就失败，不能回落到另一个模型继续服务。
 
 选型是实测的（`benchmarks/suites/probe_embedders.py`，用真实 run 存下的 39 个 fragment 和
 49 个真实查询）：

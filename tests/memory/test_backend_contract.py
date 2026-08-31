@@ -204,8 +204,10 @@ def test_search_sync_keeps_vector_for_inconclusive_probe(
     )
 
     def _query(_collection, **kwargs):
+        from mempalace.backends.base import QueryResult
+
         captured.update(kwargs)
-        return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+        return QueryResult.empty()
 
     monkeypatch.setattr(
         "eidolon.memory.adapters.mempalace_fast_search._query_collection", _query

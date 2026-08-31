@@ -188,12 +188,9 @@ class OnnxSentenceEmbedder:
         """A model file's path on disk, from the configured directory or the hub.
 
         Resolving weights is this implementation's own business, which is the
-        point of the port. It used to be done by monkeypatching
-        ``huggingface_hub.hf_hub_download`` process-wide so that MemPalace's
-        download call would land on a local directory — process-wide mutation to
-        serve one model's file lookup. That bridge still exists for MemPalace's
-        *own* embedders, which we cannot reach any other way; ours no longer need
-        it.
+        point of the port. No process-wide download hook is installed: a local
+        provider reads this directory itself, while a native MemPalace provider
+        rejects ``model_dir`` because upstream exposes no such public interface.
         """
 
         if self._model_dir:

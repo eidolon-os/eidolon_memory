@@ -249,8 +249,9 @@ class EmbeddingConfig(BaseModel):
     model: str = "bge-small-zh"
     # ONNX Runtime execution provider for ``local``: auto, cpu, cuda, coreml, dml.
     device: str = ""
-    # An operator's local copy of the model files. Our own implementation reads
-    # it directly. Native MemPalace embedders read the equivalent public env.
+    # An operator's local copy of the model files. Eidolon's local implementation
+    # reads it directly. MemPalace 3.8 exposes no public local-directory setting,
+    # so the validator refuses this option for its native providers.
     model_dir: str = ""
     # Explicit ORT intra-op cap. 0 keeps the native default (≈ core count),
     # which a background mine will happily use all of.
@@ -307,6 +308,17 @@ class EmbeddingConfig(BaseModel):
                     + ". The endpoint's address and the width it returns cannot "
                     "be guessed, and the width fixes the collection at creation."
                 )
+
+        resolved_provider = (
+            provider
+            if provider != "auto"
+            else ("local" if local_model_spec(model) is not None else "mempalace")
+        )
+        if resolved_provider == "mempalace" and self.model_dir.strip():
+            raise ValueError(
+                "embedding.model_dir is only supported by Eidolon's local provider; "
+                "MemPalace 3.8 has no public local model-directory interface"
+            )
 
         return self
 
