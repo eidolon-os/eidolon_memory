@@ -100,8 +100,8 @@ def test_conversation_turn_payload_serializes_wire_shape() -> None:
         "turn_id": "t1",
         "context": {
             "owner_id": "owner-a",
-                "companion_id": "companion-a",
-                "council_id": None,
+            "companion_id": "companion-a",
+            "council_id": None,
             "memory_realm_id": "realm:owner-a:default",
             "device_id": "device-1",
             "session_id": "s1",
@@ -162,6 +162,24 @@ def test_privacy_mutation_command_is_exact_id_only() -> None:
     )
     assert commitment.drawer_ids == []
     assert commitment.commitment_ids == ["commitment:abc"]
+    source_event = PrivacyMutationCommand(
+        request_id="privacy-source-event",
+        memory_space_id="realm:owner-a:default",
+        issued_at="2026-06-15T00:00:00Z",
+        action="delete",
+        source_event_ids=["turn-1", "turn-1"],
+        preview_id="source-event-cleanup",
+    )
+    assert source_event.source_event_ids == ["turn-1"]
+    with pytest.raises(ValidationError, match="hard deletion"):
+        PrivacyMutationCommand(
+            request_id="privacy-source-archive",
+            memory_space_id="realm:owner-a:default",
+            issued_at="2026-06-15T00:00:00Z",
+            action="archive",
+            source_event_ids=["turn-1"],
+            preview_id="source-event-archive",
+        )
     with pytest.raises(ValidationError, match="drawer_ids"):
         PrivacyMutationCommand(
             request_id="privacy-2",

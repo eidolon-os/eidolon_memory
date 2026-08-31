@@ -138,6 +138,61 @@ async def test_privacy_confirm_rejects_tampered_preview(mcp_with_kg) -> None:
     assert publisher.publish.await_count == 0
 
 
+async def test_operator_source_event_cleanup_uses_the_privacy_command_stream(
+    tmp_path: Path,
+) -> None:
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.config.memory_settings import load_memory_settings
+    from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+    from eidolon.memory.infrastructure.commitments import CommitmentLedger
+    from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
+
+    publisher = AsyncMock()
+    status = CommandStatusLedger(tmp_path / "command-status.sqlite3", space_id=SPACE)
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    source_event_id = "turn:partial-canary"
+
+    async def _apply(command):
+        await decisions.redact_source_events(SPACE, command.source_event_ids)
+        await status.record_applied(
+            command.request_id,
+            kind=command.kind,
+            resource_id=f"delete:1:{command.preview_id}",
+        )
+
+    publisher.publish.side_effect = _apply
+    mcp = build_control_plane_mcp(
+        FakeMemoryBackend(),
+        load_memory_settings(),
+        memory_space_id=SPACE,
+        palace_path=str(tmp_path),
+        host="127.0.0.1",
+        port=9999,
+        command_publisher=publisher,
+        command_status=status,
+        canonical_facts=CanonicalFactLedger(tmp_path / "canonical.sqlite3"),
+        commitments=CommitmentLedger(tmp_path / "commitments.sqlite3"),
+        decision_store=decisions,
+    )
+    tool = next(
+        item
+        for item in mcp._tool_manager.list_tools()
+        if item.name == "eidolon_memory_forget_source_event"
+    )
+
+    result = await tool.fn(source_event_id=source_event_id, wait_applied_seconds=0.1)
+
+    assert result["status"] == "applied"
+    assert result["source_event_tombstoned"] is True
+    command = publisher.publish.await_args.args[0]
+    assert command.action == "delete"
+    assert command.source_event_ids == [source_event_id]
+    assert command.drawer_ids == []
+    assert command.commitment_ids == []
+
+
 async def test_kg_tools_omitted_without_publisher(tmp_path: Path) -> None:
     """build_control_plane_mcp without kg/publisher must not register KG tools."""
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend

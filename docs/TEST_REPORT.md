@@ -8,14 +8,14 @@ result is claimed by this local gate.
 
 | Category | Result | Notes |
 |---|---|---|
-| Memory non-E2E | **1134 passed, 5 skipped** | Final `main`, including the public-provider and privacy hardening commits |
+| Memory non-E2E | **1152 passed, 5 skipped** | Includes public-provider hardening and exact source-event cleanup for partial materialisation; 3 local-port tests were rerun outside the restricted sandbox |
 | Memory real-process E2E | **21 passed, 8 skipped, 3 deselected** | Real NATS, Memory subprocesses, Chroma, restart, redelivery, privacy, snapshot/restore and shared/per-wing read-path parity; skipped cases require a live Pi Realm or external LLM |
 | Configuration / embedder contract | **141 passed** | Includes public-only MemPalace provider configuration and the BGE provider contract |
 | Standalone wire contracts | **61 passed** | Isolated environment with no Memory storage stack installed |
 | Changed-file Ruff / compile | **passed** | No private compatibility module or process-wide model-download patch remains |
 
-Cross-repository gates run against the final merged source set: Agent **604
-passed, 1 skipped** and its live contract harness **12/12**; Channel **1637
+Cross-repository gates run against the final merged source set: Agent **605
+passed, 1 skipped** and its live contract harness **13/13**; Channel **1637
 passed, 7 skipped, 25 deselected**; Mobile **671 passed, 5 skipped**. Mobile had
 unrelated device-commissioning work in progress and was tested read-only.
 

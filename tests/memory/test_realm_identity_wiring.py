@@ -15,8 +15,9 @@ Passing a Companion at startup would pin the audience filter to whichever one
 happened to be named, and every other Companion on that Owner would silently
 read as if it were that one.
 
-None of this opens companion-private *writes*: every production write still
-lands in the owner layer, and ``test_kg_audience_layering.py`` holds that line.
+Ordinary writes use the authoritative request identity: Companion and Council
+turns are narrow, while missing identity fails closed.  Owner-wide writes are a
+separate system/admin capability, never a fallback here.
 """
 
 from __future__ import annotations

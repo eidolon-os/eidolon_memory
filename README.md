@@ -85,7 +85,7 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 契约由 `tests/memory/test_router_contract.py` 断言。
 
 > 现状:`agent_runner` 仍只服务一个 space(router 被限制到它)。让一个进程服务 K 个 space
-> 需要 MCP 工具从请求参数取 space —— 27 个工具里只有 2 个带 `context`,其余靠端口绑定,
+> 需要 MCP 工具从请求参数取 space —— Agent 的交互读工具带 `context`,其余 ops 工具靠端口绑定,
 > 所以那是对外契约变更(契约 v2 已按此设计)。
 
 ---
@@ -359,12 +359,12 @@ mcp_http:
 ```
 设了之后 client 必须发 `Authorization: Bearer <token>` 头。
 
-### 4.3 工具清单(14 个,T1+T2+T3 + 形态 2 全量)
+### 4.3 工具清单（Agent 精简面 + ops 全量面）
 
 | 工具 | 用途 | 主要参数 |
 |------|------|---------|
 | `eidolon_memory_search` | 语义向量检索 | `query`, `top_k`, 可选 `wing` / `room` |
-| `eidolon_memory_recall_context` | **vector + KG + 主题 + 工作记忆 融合召回**(LiveKit 同源) | `query`, `top_k`, `voice` (LiveKit 50ms KG 预算 / non-voice 1s), `include_kg`, `include_sensitive_kg` |
+| `eidolon_memory_recall_context` | **vector + KG + 主题融合召回**(LiveKit 同源) | `query`, `context`, `top_k`, `voice`, `include_kg`;敏感范围由部署策略决定 |
 | `eidolon_memory_list` | 分页列举所有 drawer | `limit`, `offset`, `include_private` |
 | `eidolon_memory_status` | 当前 agent 状态(palace、wings、steward mode) | — |
 | `eidolon_memory_hierarchy_snapshot` | wing→room→drawer 树 | `max_records`, `max_drawers_per_room` |
@@ -376,8 +376,9 @@ mcp_http:
 | `eidolon_memory_kg_snapshot` | 截断的三元组列表 + stats(图可视化用) | `max_triples`, `current_only`, `entity?`, `include_sensitive` |
 | `eidolon_memory_kg_stats` | 实体/三元组计数 + active/invalidated 拆分 | — |
 | `eidolon_memory_kg_predicates` | 27 个 canonical 谓词白名单 + sensitive 子集 | — |
+| `eidolon_memory_forget_source_event` | ops 精确清理一次 ingestion event，覆盖 ledger-only/部分/完整投影 | `source_event_id`, `wait_applied_seconds` |
 
-> KG 写工具(`kg_add_triple` / `kg_invalidate`) 内部会 publish 到 NATS,然后 polling KG 表 2s 等 worker 应用。状态 `applied` = 已落盘可读;`pending` = 已发到 JetStream,worker 滞后,**保留 request_id**,过会儿会到。
+> 所有写工具都 publish 到既有 NATS durable command stream，并从独立 command-status 投影等待结果。状态 `applied` = writer 已完成；`accepted` = JetStream 已接收但尚未证明可读，调用方必须保留 `request_id`。
 
 ### 4.4 调 `recall_context` 的典型 response
 
@@ -785,7 +786,7 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
 | `test_os_import_boundary.py` | 核心不 import `eidolon_*`;子进程屏蔽 OS 包后仍能加载全部 entrypoint |
 | `test_lazy_import_guard.py` | 禁内部 lazy import(长驻进程 + 磁盘改动会让 `sys.modules` 错配) |
 | `test_deployment_profiles.py` | 出厂配置模板能加载、密钥只用变量名、embedder 已显式命名 |
-| `test_local_embedder.py` | 注入 mempalace 生效(经公开函数验证)、pooling/前缀正确、infrastructure 不 import adapters |
+| `test_local_embedder.py` | 公开 provider/显式向量链路、pooling/前缀正确、infrastructure 不 import adapters |
 | `test_kg_optional.py` | `kg.backend=none` 下服务完整可用,且关闭不销毁数据 |
 | `test_backend_contract.py` | 后端契约面 + 隐私批量操作的跨 space 保护 |
 
@@ -798,19 +799,19 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
 - KG 清理 / consolidation — 现在 invalidate 只写 `valid_to` 不删行,3-5 年陪伴单用户量级毫无压力
 - 多模态 fragments(图像/音频片段) — 当前只有文本
 
-进行中(重构):
+当前边界:
 
-- **两层可见性**:已落地。owner 层(关于 owner 本人的事实,所有 companion 可见)与
-  companion 层(与特定 companion 的互动/情感/承诺,私有)。图在查询里过滤,向量在
-  `recall_policy.visible()` 这道既有可见性闸门里过滤,两侧都以 owner 层为默认。
-  **写入归层仍全是 owner 层** —— 按语句判断需要 steward 参与,而默认收窄会把 owner
-  自己的事实藏起来不给其他 companion 看,那是两种错误里更糟的一种。
+- **两层可见性**:已落地。Owner Realm 是物理与生命周期边界；普通 Companion 对话由
+  `scope_policy.interaction_audience()` 强制写入 `companion:<id>`,Council 写入经权威校验的
+  `council:<id>`。缺少两者时 fail closed。`owner` 只允许 system/admin 明确产生,不由模型
+  根据语句内容猜测。图查询和向量召回使用同一 audience 集合。
 - **KG 自写**:已落地。`adapters/kg_sqlite.py`,schema 与查询在 `kg_sql.py` 一处定义,
   41 个测试。mempalace 的图已不再使用。
 - **local only**:已落地。云端实现整体删除 —— PG 的 6 个 ledger、PG 图、无状态 router、
   milvus 配置管道、云端 profile、两个 extra。抽象层保留。
-- **中文 embedder**:已落地。`bge-small-zh`(512 维 / 111MB / 0.6ms),播种 mempalace 的
-  进程级 embedder 缓存并验证注入生效。选型实测见 `docs/ARCHITECTURE.md`。
+- **中文 embedder**:已落地。`bge-small-zh`(512 维)通过 Eidolon 的公开 embedding port
+  生成 document/query vectors,再交给 MemPalace 3.8 的公开 collection API；不注入私有
+  provider、embedder cache 或 SQLite 热路径。选型实测见 `docs/ARCHITECTURE.md`。
 - **MCP 契约统一**:易失 `working_memory` 已移除；Agent 只消费长期投影及其证据。
   `kg_triples` 仍是 Agent 回答可追踪事实所需的正式证据字段，不再被描述成临时内部字段。
 

@@ -9,6 +9,7 @@ from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     find_forget_candidates,
     forget_exact_projections,
+    forget_resolved_projections,
     normalize_privacy_target,
 )
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
@@ -18,6 +19,7 @@ from eidolon.memory.domain.extraction_decision import ExtractionDecisionRecord
 from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
+from eidolon.memory.infrastructure.commitments import CommitmentLedger
 from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
 
 SPACE = "default.alice.default"
@@ -432,6 +434,133 @@ async def test_hard_forget_is_ledger_first_and_blocks_replay(graph, tmp_path) ->
     assert intent.raw_claim.encode() not in decisions.path.read_bytes()
     with pytest.raises(CanonicalFactInactive, match="forgotten"):
         await ledger.register(intent, targets={"drawer", "kg"})
+
+
+async def test_source_event_delete_closes_a_ledger_only_partial_write(graph, tmp_path) -> None:
+    """A failed projection is still deletable by its durable ingestion identity."""
+
+    backend = FakeMemoryBackend()
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    commitments = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    intent = MemoryIntent(
+        intent_id="intent:partial",
+        memory_space_id=SPACE,
+        source_event_id="turn:partial",
+        authority="extracted_user",
+        intent_type="preference",
+        raw_claim="用户喜欢紫色彗星",
+        operation_hint="add",
+        subject="用户",
+        predicate="likes",
+        object="紫色彗星",
+        attributes={"audience": "owner"},
+    )
+    registration = await canonical.register(intent, targets={"drawer", "kg"})
+    await decisions.put_if_absent(
+        ExtractionDecisionRecord(
+            memory_space_id=SPACE,
+            source_turn_id=intent.source_event_id,
+            extractor_version="test:v1",
+            input_hash="partial-input",
+            decision=StewardDecision(should_write=True, reason="partial projection"),
+            intents=[intent],
+        )
+    )
+
+    changed, statements = await forget_resolved_projections(
+        backend,
+        graph,
+        canonical,
+        commitments,
+        decisions,
+        SPACE,
+        drawer_ids=[],
+        commitment_ids=[],
+        source_event_ids=[intent.source_event_id],
+        hard=True,
+    )
+
+    assert changed == []
+    assert statements == 0
+    assert await canonical.evidence_count(registration.assertion_id) == 0
+    forgotten = await canonical.get_fact(SPACE, "owner", "用户", "likes", "紫色彗星")
+    assert forgotten is not None and forgotten.state == "forgotten"
+    assert await decisions.source_event_redacted(SPACE, intent.source_event_id)
+    assert await canonical.assertion_ids_for_source_events(SPACE, [intent.source_event_id]) == []
+
+
+async def test_source_event_delete_tombstones_a_decision_with_no_projection(tmp_path) -> None:
+    backend = FakeMemoryBackend()
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    commitments = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    source_event_id = "turn:decision-only"
+    await decisions.put_if_absent(
+        ExtractionDecisionRecord(
+            memory_space_id=SPACE,
+            source_turn_id=source_event_id,
+            extractor_version="test:v1",
+            input_hash="decision-only-input",
+            decision=StewardDecision(should_write=False, reason="nothing durable"),
+        )
+    )
+
+    changed, statements = await forget_resolved_projections(
+        backend,
+        None,
+        canonical,
+        commitments,
+        decisions,
+        SPACE,
+        drawer_ids=[],
+        commitment_ids=[],
+        source_event_ids=[source_event_id],
+        hard=True,
+    )
+
+    assert changed == []
+    assert statements == 0
+    assert await decisions.source_event_redacted(SPACE, source_event_id)
+    redacted = await decisions.get(SPACE, source_event_id, "test:v1")
+    assert redacted is not None and redacted.redacted
+
+
+async def test_hard_forget_removes_every_activation_drawer(tmp_path) -> None:
+    backend = FakeMemoryBackend()
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    assertion_id = await _seed_canonical(
+        backend,
+        canonical,
+        "drawer_current",
+        "用户喜欢绿茶",
+    )
+    backend.docs[f"{SPACE}::drawer_old"] = MemoryWireRecord(
+        memory_space_id=SPACE,
+        key="drawer_old",
+        value="用户以前喜欢绿茶",
+        metadata={
+            "memory_space_id": SPACE,
+            "assertion_id": assertion_id,
+            "projection_id": f"{assertion_id}:activation:0",
+            "privacy": "do_not_recall",
+        },
+    )
+
+    changed, statements = await forget_exact_projections(
+        backend,
+        None,
+        canonical,
+        SPACE,
+        ["drawer_current"],
+        hard=True,
+        decision_store=ExtractionDecisionLedger(tmp_path / "decisions.sqlite3"),
+    )
+
+    assert set(changed) == {"drawer_current", "drawer_old"}
+    assert statements == 0
+    assert await backend.get(SPACE, "drawer_current") is None
+    assert await backend.get(SPACE, "drawer_old") is None
 
 
 async def test_hard_forget_keeps_evidence_and_projections_until_source_is_redacted(

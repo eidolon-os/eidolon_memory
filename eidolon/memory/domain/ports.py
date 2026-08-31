@@ -283,6 +283,12 @@ class ExtractionDecisionStore(Protocol):
         source_event_ids: list[str],
     ) -> int: ...
 
+    async def source_event_redacted(
+        self,
+        memory_space_id: str,
+        source_event_id: str,
+    ) -> bool: ...
+
 
 @runtime_checkable
 class CanonicalFactReader(Protocol):
@@ -299,6 +305,12 @@ class CanonicalFactReader(Protocol):
         object_value: str | None = None,
         limit: int = 100,
     ) -> list[CanonicalFactHistoryRecord]: ...
+
+    async def assertion_ids_for_source_events(
+        self,
+        memory_space_id: str,
+        source_event_ids: list[str],
+    ) -> list[str]: ...
 
 
 @runtime_checkable
@@ -436,6 +448,12 @@ class CommitmentReader(Protocol):
         limit: int,
         offset: int,
     ) -> list[CommitmentRecord]: ...
+
+    async def commitment_ids_for_source_events(
+        self,
+        memory_space_id: str,
+        source_event_ids: list[str],
+    ) -> list[str]: ...
 
 
 @runtime_checkable

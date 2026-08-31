@@ -342,8 +342,9 @@ agent ──MCP──▶ mcp_server 工具 ──▶ MemoryService.recall_fused(
                                               └─ 召回策略：space、设备、audience
 ```
 
-27 个 MCP 工具里目前有 2 个走服务层：`search` 和 `recall_context`——也就是 agent
-唯一读的那两个。其余 25 个面向运维，仍是单 space，这符合它们的语义。
+Agent MCP 只暴露召回所需的 3 个读工具；ops MCP 暴露完整运维面。两者共用同一个
+`MemoryService`、router 和 Realm 句柄，不创建第二个 Chroma client。精确工具数由
+`test_mcp_surfaces.py` 守护，避免文档数字随运维能力增加而失真。
 
 `search` 与 `recall_context` 回答的是不同问题，故意不走同一条路：search 是"你记得
 关于这个的什么"，recall 是"这一轮什么相关"（所以才有图融合、近期轮次、会话过滤）。
@@ -357,37 +358,18 @@ audience = "owner"           关于 owner 本人的事实——所有 companion 
 audience = "companion:<id>"  与那一个 companion 之间发生的——对它私有
 ```
 
-在图的查询里和向量存储的可见性 gate 里强制，两侧都以 owner 层为默认。来源
+在图的查询里和向量存储的可见性 gate 里强制。来源
 （`companion_id`）与可见性（`audience`）是**分开的两个字段**——混在一起会让每条记忆
 意外变成私有。
 
-**这条轴目前在生产中是惰性的，而且那是对的，不是没做完。** 原因是结构性的：今天一个
-space 就是 `(tenant, owner, companion)`，每个 companion 一个独立的库。没有可泄漏的，也
-没有可共享的；往单 companion 的库里写 `companion:<id>` 不改变任何可观测行为，只是多了一
-个 steward 每条都得判断对的东西。
+一个 space 是 Owner Realm，同一 Owner 的 Companion 共用它。普通 turn 的 audience 不由
+steward 或 prompt 判断，而由经过认证的 runtime context 决定：Companion →
+`companion:<id>`，Council → `council:<id>`；两者都缺失时拒绝写入，绝不回退 Owner。
+`owner` 是 system/admin materialisation 的显式能力。读侧可见集合为 Owner Shared 加当前
+Companion/Council scope，因此共享与私有是同一 Realm 内的访问控制，不是多份 Palace。
 
-它在 **space 变成 per-owner**、一个库里装下多个 companion 的语句之后才真正生效。那是一次
-数据模型变更加迁移。
-
-**产品决定已裁决（2026-08-23，Owner 确认）**：`docs/跨系统/多Companion记忆隔离机制裁决.md`
-裁决 space 为 per-owner。所以这条轴要从惰性转为**承重**——多 Companion 之后，companion
-之间唯一的隔离手段就是它，不再有"一个 companion 一个库"兜着。两件事随之变成硬要求：写侧
-通路必须真正接上（今天 `_agent_cli_argv` 只传 `--memory-space-id` 和 `--port`，roster 里
-已有的 owner/companion 丢在了半路，所以 gate 在生产里是空转的），以及 gate 的正确性要有
-端到端断言而不只是单测。
-
-**读侧身份已接上**（2026-08-24）：`_agent_cli_argv` 过去只传 space id 和端口，于是生产里
-每个 runner 都是 `companion_id=None`，过滤器建好了却没有可比对的东西——只能永远答 owner
-层。roster 本来就带 owner/companion，现在传到了 runner。写侧未动。
-
-**更正**：这里原先写着"那正是下面 1:N 那项工作所解锁的"。不对，那是两条轴——
-`进程 : space = 1:N` 讲的是一个进程持有几个库，`space 变成 per-owner` 讲的是一个库里装
-什么。1:N 不会让 space 变成 per-owner；两者反而是同一个内存问题的两种解法，取舍不同
-（1:N 保住每库一把锁和独立的故障域，per-owner 不保）。
-
-`tests/memory/test_kg_audience_layering.py` 把当前状态钉成故意的：任何生产路径开始写非
-owner 层就失败，并在失败信息里说明为什么现在不该写。同一个文件也断言读侧**已经**分好层，
-所以"等"的理由是数据模型，不是缺机制。
+这些约束由 `test_scope_policy.py`、`test_companion_audience_isolation.py` 和跨 Companion E2E
+共同守护；supervisor 只固定 Realm/Owner，当前请求的 Companion/Council 身份始终随请求传入。
 
 ---
 
@@ -477,7 +459,7 @@ palace 而不是进程——一个进程可以持有很多 palace，这正是 1:
 | 契约包自持 | 12 文件 1230 行，仅依赖 pydantic |
 | `MemoryReadContract` 已实现 | 8 个方法全部在 `MemoryService` 上；契约**就是**服务本身 |
 | 自有图 | 41 个 SQLite 测试；schema 与查询在 `kg_sql.py` 一处定义。audience 是列、在 SQL 里过滤；时间戳写入时归一，区间判断是普通 SQL |
-| 中文 embedder，注入 mempalace | mempalace 用 if/else 选 embedder、无注册点 → 我们播种它的进程级缓存，并**验证注入生效**（不是假设键算对了）。默认 `bge-small-zh`：512 维、133MB、0.6ms。整条链实测：**召回 p95 从 704ms 降到 30ms，正确率只差 2 个答案** |
+| 中文 embedder，公共 API | Eidolon embedding port 生成带 query/document 前缀的 512 维向量；MemPalace 3.8 公共 collection API 接收显式向量。没有私有 provider/cache 注入 |
 | **embedder 完全隔离** | 抽象层只剩 `identity()` / `embed_documents` / `embed_queries`；chroma 那套形状退到一个 adapter 里；三个实现（进程内 ONNX、hosted HTTP、mempalace 自己那两个）；换实现只改 `embedding.provider` 一行。**真跑过**：对着一个 OpenAI 兼容端点端到端建出 palace，chroma 持久化了声明的宽度，再用 `provider: local` 去读被 `EmbedderIdentityMismatchError` 挡住并报出两个名字 |
 | ledger 行为定义在 Port 上 | 47 个契约测试，无一碰 SQLite |
 | commitment 状态机在存储之外 | 抽成纯函数，查源码断言副本不会悄悄回来 |
@@ -485,12 +467,10 @@ palace 而不是进程——一个进程可以持有很多 palace，这正是 1:
 | ledger 写入有界 | 每 ledger 在 event loop 里串行化，外加一个低于线程池规模的进程级上限 |
 | 两层可见性 | 在图查询和向量可见性 gate 里强制 |
 | 可观测性 | prometheus `/metrics` 挂在既有端口；contextvar span，字段用 OTel 命名。图的大小/WAL 页数/checkpoint 进度在 checkpoint 循环里采样，不在 scrape 时打库 |
-| 遗忘跨两个存储 | **两条路径都落到 drawer 和三元组**——MCP 确认命令，以及对话里说"忘掉…"走 steward 的那条（后者才是常走的）。靠 `source_turn_id` 桥接；archive → 结束有效期，delete → 导出后真删。第四个调用点漏传 `kg` 会被测试挡下 |
+| 遗忘跨全部投影 | assertion/evidence/commitment ledger 先写 tombstone，再删除或归档 drawer/KG；精确 `source_event_id` 可收敛 decision-only、部分投影和完整投影，重放被 tombstone 拒绝 |
 
-**885 个单元/契约测试通过，2 skipped**（901 → 818 是删掉云端实现带走了它们的测试；
-skip 从 6 降到 2 是因为跳过的都是 PostgreSQL 的。818 → 885 是 embedder 隔离带来的：
-`test_local_embedder` 从 17 涨到 61，因为要测的东西从"一个实现"变成了"一条缝加三个实现"）。
-e2e 待重跑——换 embedder 会重建索引。
+当前完整测试与真实进程 E2E 数量、性能结果只记录在 `docs/TEST_REPORT.md`；这里不复制会过期的
+计数。发布门要求单元/契约、真实 NATS/Chroma E2E、重启恢复和隐私防复活全部通过。
 
 ### 未完成，附真实阻塞
 
@@ -500,7 +480,6 @@ e2e 待重跑——换 embedder 会重建索引。
 | NATS 一个 consumer 服务所有 space | 通配 subject 辅助函数已存在；`turn_processor` 本来就从 payload 取 space | 同样是那 47 个调用点 |
 | 单端点 / discovery | | supervisor 掌管进程拓扑——**按你的指示暂缓** |
 | 收窄 MCP 响应 | `RecallResult` 按设计不含 `kg_triples` | agent 的 `port_adapter.py:201` 在读它——需要两个仓库同批 |
-| space 变成 per-owner | 读侧全就绪：audience 是列、SQL 过滤、无通配、空集合失败关闭 | **产品决定已裁决（2026-08-23）**：`docs/跨系统/多Companion记忆隔离机制裁决.md` 裁决 space 为 per-owner，理由是产品蓝图 §8 的「一份 memory」、§8.1 小忆=记忆 Agent 的分工、§10.1 记忆资产界面全是 owner 视角。**剩下的阻塞连迁移都不是**：产品未发布、无兼容义务（见方案 §1.3），所以 `memory_realms` 直接**删掉 `companion_id` 列**——现存每个 owner 只有一个 companion、因而只有一个库，删列即完成，realm_id 不变、palace 不动。也不需要 `scope` 列：那是为"两种 realm 并存"准备的，而并存本身没有必要。写侧默认仍是 owner 层——那本来就是目标行为。读侧的身份**已接上**（`_agent_cli_argv` 传 `--owner-id`/`--companion-id`，`agent_runner` 传给 `recollections_route`，见 `tests/memory/test_realm_identity_wiring.py`）；迁移落地时再把 `test_kg_audience_layering.py` 的意图从"钉住不许写"翻转为"可写且必须被 gate 挡住" |
 | 四个公开 benchmark | 口径已对齐、探针已跑两次、超时已按实测调正 | **抽取质量目前仍是未知数** —— 前两次探针的准确率测的是等待预算而非记忆，见下 |
 
 ## 目前最重要的一件事：召回，不是抽取

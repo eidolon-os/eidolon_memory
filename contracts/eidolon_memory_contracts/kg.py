@@ -125,6 +125,7 @@ class PrivacyMutationCommand(_BaseMemoryCommand):
     action: Literal["archive", "delete"]
     drawer_ids: list[str] = Field(default_factory=list, max_length=100)
     commitment_ids: list[str] = Field(default_factory=list, max_length=100)
+    source_event_ids: list[str] = Field(default_factory=list, max_length=100)
     preview_id: str = Field(min_length=1)
     target: str = ""
 
@@ -144,10 +145,22 @@ class PrivacyMutationCommand(_BaseMemoryCommand):
             raise ValueError("commitment_ids must contain commitment ledger IDs")
         return cleaned
 
+    @field_validator("source_event_ids")
+    @classmethod
+    def _valid_source_event_ids(cls, values: list[str]) -> list[str]:
+        """Keep exact ingestion identities bounded and unambiguous."""
+
+        cleaned = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+        if any(len(value) > 256 for value in cleaned):
+            raise ValueError("source_event_ids must be at most 256 characters")
+        return cleaned
+
     @model_validator(mode="after")
     def _has_exact_targets(self) -> PrivacyMutationCommand:
-        if not self.drawer_ids and not self.commitment_ids:
+        if not self.drawer_ids and not self.commitment_ids and not self.source_event_ids:
             raise ValueError("privacy mutation requires at least one exact target")
+        if self.source_event_ids and self.action != "delete":
+            raise ValueError("source_event_ids are valid only for hard deletion")
         return self
 
 

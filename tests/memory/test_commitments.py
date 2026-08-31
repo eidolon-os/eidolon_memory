@@ -59,6 +59,18 @@ def _intent(
 
 
 @pytest.mark.asyncio
+async def test_commitment_is_resolved_by_exact_source_event(tmp_path) -> None:
+    ledger = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    intent = _intent("intent:source-event", operation="confirm")
+    created = await ledger.apply(intent)
+
+    assert await ledger.commitment_ids_for_source_events(SPACE, [intent.source_event_id]) == [
+        created.commitment.commitment_id
+    ]
+    assert await ledger.commitment_ids_for_source_events(SPACE, ["turn:other"]) == []
+
+
+@pytest.mark.asyncio
 async def test_active_commitments_prioritize_due_time_before_recent_updates(
     tmp_path,
 ) -> None:
@@ -209,9 +221,7 @@ async def test_target_update_inherits_omitted_beneficiaries(tmp_path) -> None:
     update = update.model_copy(
         update={
             "attributes": {
-                key: value
-                for key, value in update.attributes.items()
-                if key != "beneficiaries"
+                key: value for key, value in update.attributes.items() if key != "beneficiaries"
             }
         }
     )
@@ -281,9 +291,7 @@ async def test_commitment_intent_reuse_with_different_payload_fails(tmp_path) ->
     await ledger.apply(original)
 
     with pytest.raises(CommitmentConflict, match="intent id reused"):
-        await ledger.apply(
-            original.model_copy(update={"raw_claim": "不同的承诺原话"})
-        )
+        await ledger.apply(original.model_copy(update={"raw_claim": "不同的承诺原话"}))
 
 
 @pytest.mark.asyncio
@@ -355,9 +363,7 @@ async def test_commitment_delete_is_ledger_first_and_replay_safe(tmp_path) -> No
     backend = LockedBackend(FakeMemoryBackend())
     kg = _CommitmentKG()
     intent = _intent("intent:privacy", operation="confirm", action="去海边看日出 canary")
-    resource = await apply_explicit_intent(
-        backend, kg, _command(intent), commitments=ledger
-    )
+    resource = await apply_explicit_intent(backend, kg, _command(intent), commitments=ledger)
     commitment_id = resource.split(":revision:", 1)[0]
 
     candidates = await find_forget_candidates(
@@ -366,9 +372,7 @@ async def test_commitment_delete_is_ledger_first_and_replay_safe(tmp_path) -> No
         "去海边看日出 canary",
         commitments=ledger,
     )
-    assert [(row.key, row.text) for row in candidates] == [
-        (commitment_id, "去海边看日出 canary")
-    ]
+    assert [(row.key, row.text) for row in candidates] == [(commitment_id, "去海边看日出 canary")]
 
     drawers, statements = await forget_commitment_projections(
         backend,
@@ -462,14 +466,10 @@ async def test_commitment_forget_preview_binds_ledger_id_not_projection(tmp_path
     backend = LockedBackend(FakeMemoryBackend())
     kg = _CommitmentKG()
     intent = _intent("intent:mcp-privacy", operation="confirm", action="去玄武湖散步 canary")
-    resource = await apply_explicit_intent(
-        backend, kg, _command(intent), commitments=commitments
-    )
+    resource = await apply_explicit_intent(backend, kg, _command(intent), commitments=commitments)
     commitment_id = resource.split(":revision:", 1)[0]
     publisher = AsyncMock()
-    status = CommandStatusLedger(
-        tmp_path / "command-status.sqlite3", space_id=SPACE
-    )
+    status = CommandStatusLedger(tmp_path / "command-status.sqlite3", space_id=SPACE)
     mcp = build_control_plane_mcp(
         backend,
         load_memory_settings(),
@@ -529,9 +529,7 @@ async def test_archived_commitment_can_be_previewed_then_hard_deleted(tmp_path) 
         operation="confirm",
         action="去紫金山看日落 canary",
     )
-    resource = await apply_explicit_intent(
-        backend, kg, _command(intent), commitments=commitments
-    )
+    resource = await apply_explicit_intent(backend, kg, _command(intent), commitments=commitments)
     commitment_id = resource.split(":revision:", 1)[0]
 
     await forget_commitment_projections(
@@ -599,9 +597,7 @@ async def test_commitment_mcp_reads_are_realm_bound(tmp_path) -> None:
         port=9998,
         commitments=ledger,
     )
-    other_tools = {
-        tool.name: tool for tool in other_realm_mcp._tool_manager.list_tools()
-    }
+    other_tools = {tool.name: tool for tool in other_realm_mcp._tool_manager.list_tools()}
     other_history = await other_tools["eidolon_memory_commitment_history"].fn(
         commitment_id=created.commitment.commitment_id,
     )

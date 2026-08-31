@@ -124,6 +124,8 @@ async def test_privacy_tombstone_erases_decisions_and_blocks_every_extractor_ver
 
     assert await store.redact_source_events(MEMORY_SPACE_ID, [turn.turn_id]) == 1
     assert await store.redact_source_events(MEMORY_SPACE_ID, [turn.turn_id]) == 0
+    assert await store.source_event_redacted(MEMORY_SPACE_ID, turn.turn_id)
+    assert not await store.source_event_redacted(MEMORY_SPACE_ID, "turn:other")
 
     for version in ("rules:v1", "llm:v99"):
         redacted = await store.get(MEMORY_SPACE_ID, turn.turn_id, version)

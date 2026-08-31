@@ -146,9 +146,7 @@ async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -
                 "projection_id": registration.projection_id,
             },
         )
-        await canonical.mark_projected(
-            SPACE, registration.assertion_id, targets={"drawer"}
-        )
+        await canonical.mark_projected(SPACE, registration.assertion_id, targets={"drawer"})
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
     msg = _stub_msg(
         {
@@ -181,6 +179,84 @@ async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -
     assert status is not None
     assert status.status == "applied"
     assert status.resource_id == "delete:2:preview-1"
+
+
+async def test_source_event_privacy_command_cleans_partial_materialisation(
+    tmp_path: Path,
+) -> None:
+    from eidolon_memory_contracts import MemoryIntent
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+    from eidolon.memory.application.turn_processor import process_command_message
+    from eidolon.memory.config.memory_settings import get_memory_settings
+    from eidolon.memory.domain.extraction_decision import ExtractionDecisionRecord
+    from eidolon.memory.domain.steward import StewardDecision
+    from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
+    from eidolon.memory.infrastructure.command_status import CommandStatusLedger
+    from eidolon.memory.infrastructure.commitments import CommitmentLedger
+    from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisionLedger
+
+    backend = FakeMemoryBackend()
+    canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    commitments = CommitmentLedger(tmp_path / "commitments.sqlite3")
+    decisions = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    source_event_id = "turn:partial-command"
+    intent = MemoryIntent(
+        intent_id="intent:partial-command",
+        memory_space_id=SPACE,
+        source_event_id=source_event_id,
+        authority="extracted_user",
+        intent_type="fact",
+        raw_claim="用户喜欢紫色彗星",
+        operation_hint="add",
+        subject="用户",
+        predicate="likes",
+        object="紫色彗星",
+        attributes={"audience": "owner"},
+    )
+    registration = await canonical.register(intent, targets={"drawer"})
+    await decisions.put_if_absent(
+        ExtractionDecisionRecord(
+            memory_space_id=SPACE,
+            source_turn_id=source_event_id,
+            extractor_version="test:v1",
+            input_hash="partial-command-input",
+            decision=StewardDecision(should_write=True, reason="projection failed"),
+            intents=[intent],
+        )
+    )
+    status = CommandStatusLedger(tmp_path / "command-status.sqlite3", space_id=SPACE)
+    msg = _stub_msg(
+        {
+            "kind": "privacy_mutation",
+            "request_id": "partial-cleanup",
+            "memory_space_id": SPACE,
+            "issued_at": "2026-09-01T00:00:00Z",
+            "action": "delete",
+            "source_event_ids": [source_event_id],
+            "preview_id": "partial-cleanup",
+            "target": source_event_id,
+        }
+    )
+
+    await process_command_message(
+        msg,
+        backend=backend,
+        kg=None,
+        settings=get_memory_settings(),
+        expected_memory_space_id=SPACE,
+        command_status=status,
+        canonical_facts=canonical,
+        commitments=commitments,
+        decision_store=decisions,
+    )
+
+    assert msg.ack_calls == ["ack"]
+    assert await decisions.source_event_redacted(SPACE, source_event_id)
+    assert await canonical.evidence_count(registration.assertion_id) == 0
+    outcome = await status.get("partial-cleanup")
+    assert outcome is not None and outcome.status == "applied"
+    assert outcome.resource_id == "delete:1:partial-cleanup"
 
 
 async def test_confirmed_commitment_delete_removes_ledger_drawer_and_kg(
@@ -383,8 +459,11 @@ async def test_command_invalidate_flow(kg_setup) -> None:
 
     await kg_setup.add_triple(
         audience="owner",
-        subject="alice", predicate="likes", object="coffee",
-        source_turn_id="seed", adapter_name="test",
+        subject="alice",
+        predicate="likes",
+        object="coffee",
+        source_turn_id="seed",
+        adapter_name="test",
     )
 
     msg = _stub_msg(
@@ -508,7 +587,7 @@ async def test_command_user_id_mismatch_acked(kg_setup) -> None:
         {
             "kind": "kg_add_triple",
             "request_id": "x",
-            "memory_space_id": OTHER_SPACE,          # mismatch
+            "memory_space_id": OTHER_SPACE,  # mismatch
             "issued_at": "2026-05-19T10:00:00Z",
             "subject": "self",
             "predicate": "likes",
@@ -534,8 +613,11 @@ async def test_command_unknown_kind_acked(kg_setup) -> None:
 
     msg = _stub_msg({"kind": "not_a_real_kind", "request_id": "?"})
     await process_command_message(
-        msg, backend=None, kg=kg_setup,
-        settings=get_memory_settings(), expected_memory_space_id=SPACE,
+        msg,
+        backend=None,
+        kg=kg_setup,
+        settings=get_memory_settings(),
+        expected_memory_space_id=SPACE,
     )
     assert msg.ack_calls == ["ack"]
 
@@ -609,9 +691,7 @@ async def _seed_drawer(
             evidence_id=intent.intent_id,
             projection_id=registration.projection_id,
         )
-    await canonical.mark_projected(
-        SPACE, registration.assertion_id, targets=targets
-    )
+    await canonical.mark_projected(SPACE, registration.assertion_id, targets=targets)
 
 
 def _privacy_msg(action: str, drawer_ids: list[str], *, request_id: str):
@@ -673,8 +753,11 @@ async def test_a_confirmed_delete_reaches_the_graph_and_not_only_the_drawer(
     # A different turn, which must survive: a forget is scoped to what was said,
     # not to everything about the subject.
     await kg_setup.add_triple(
-        subject="用户", predicate="likes", object="乌龙茶",
-        audience="owner", source_turn_id="turn-oolong",
+        subject="用户",
+        predicate="likes",
+        object="乌龙茶",
+        audience="owner",
+        source_turn_id="turn-oolong",
     )
     ledger = CommandStatusLedger(tmp_path / "command_status.sqlite3", space_id=CMD_SPACE)
 
@@ -719,7 +802,10 @@ async def test_a_hard_forget_writes_what_it_removed_before_removing_it(
 
     await _apply_privacy(
         _privacy_msg("delete", ["drawer_city"], request_id="p-export"),
-            backend, kg_setup, ledger, canonical,
+        backend,
+        kg_setup,
+        ledger,
+        canonical,
     )
 
     # Beside the graph file, which is outside the palace directory MemPalace
@@ -741,9 +827,7 @@ async def test_a_hard_forget_writes_what_it_removed_before_removing_it(
     assert lines[0]["forgotten_at"]
 
 
-async def test_an_archive_ends_the_triple_rather_than_deleting_it(
-    tmp_path: Path, kg_setup
-) -> None:
+async def test_an_archive_ends_the_triple_rather_than_deleting_it(tmp_path: Path, kg_setup) -> None:
     """Archive and delete are different promises, and the graph keeps both."""
 
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
@@ -763,7 +847,10 @@ async def test_an_archive_ends_the_triple_rather_than_deleting_it(
 
     await _apply_privacy(
         _privacy_msg("archive", ["drawer_tea"], request_id="p-archive"),
-        backend, kg_setup, ledger, canonical,
+        backend,
+        kg_setup,
+        ledger,
+        canonical,
     )
 
     records = await kg_setup.query_entity("用户", audiences=("owner",))
