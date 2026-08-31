@@ -156,6 +156,7 @@ def build_control_plane_mcp(
     command_status: CommandStatusStore | None = None,
     canonical_facts: CanonicalFactReader | None = None,
     commitments: CommitmentReader | None = None,
+    decision_store: Any = None,
     dlq_store: DlqStore | None = None,
     replay_publisher: Any = None,
     surface: str = "all",
@@ -211,6 +212,7 @@ def build_control_plane_mcp(
                         dlq=dlq_store,
                         canonical_facts=canonical_facts,
                         commitments=commitments,
+                        decisions=decision_store,
                     ),
                 )
             ),
@@ -539,6 +541,8 @@ def build_control_plane_mcp(
             memory_space_id=memory_space_id,
             command_status=command_status,
             commitments=commitments,
+            canonical_facts=canonical_facts,
+            decision_store=decision_store,
             # The service's signer, not a second one. A proof carries a
             # per-instance secret, so a preview minted by ``preview_forget`` and a
             # confirm arriving at this tool have to meet on the same key —
@@ -636,6 +640,8 @@ def _register_privacy_tools(
     command_status: CommandStatusStore | None,
     signer: PrivacyConfirmationSigner,
     commitments: Any = None,
+    canonical_facts: Any = None,
+    decision_store: Any = None,
 ) -> None:
     """Read-only preview followed by an exact-ID command on the write stream."""
 
@@ -730,6 +736,59 @@ def _register_privacy_tools(
             "drawer_ids": proof.drawer_ids,
             "commitment_ids": proof.commitment_ids,
         }
+
+    if canonical_facts is not None and commitments is not None and decision_store is not None:
+
+        @mcp.tool()
+        async def eidolon_memory_forget_source_event(
+            source_event_id: str,
+            wait_applied_seconds: float = 2.0,
+        ) -> dict[str, Any]:
+            """Hard-delete one exact ingestion event through its authority ledgers.
+
+            This is an operator recovery primitive for partial materialisation:
+            the event may have only an extraction decision, a canonical fact, or
+            every projection.  Resolution and deletion stay inside the Realm
+            writer; the caller never opens a ledger or Chroma directly.
+            """
+
+            clean_id = (source_event_id or "").strip()
+            if not clean_id:
+                return {"status": "error", "error": "source_event_id is required"}
+            if len(clean_id) > 256:
+                return {"status": "error", "error": "source_event_id is too long"}
+            command = PrivacyMutationCommand(
+                request_id=uuid.uuid4().hex,
+                memory_space_id=memory_space_id,
+                issued_at=_now_iso(),
+                issuer="admin",
+                action="delete",
+                source_event_ids=[clean_id],
+                preview_id=uuid.uuid4().hex,
+                target=clean_id,
+            )
+            outcome = await publish_with_status(
+                command_publisher,
+                command_status,
+                command,
+                wait_seconds=max(0.0, min(float(wait_applied_seconds), 30.0)),
+            )
+            tombstoned = False
+            if outcome.get("status") == "applied":
+                tombstoned = await decision_store.source_event_redacted(memory_space_id, clean_id)
+                if not tombstoned:
+                    return {
+                        **outcome,
+                        "status": "failed",
+                        "error": "source event command applied without a privacy tombstone",
+                        "source_event_id": clean_id,
+                        "source_event_tombstoned": False,
+                    }
+            return {
+                **outcome,
+                "source_event_id": clean_id,
+                "source_event_tombstoned": tombstoned,
+            }
 
 
 # palace_graph business logic lives in eidolon.memory.application.palace_graph

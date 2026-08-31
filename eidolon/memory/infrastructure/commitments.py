@@ -79,9 +79,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
     async def apply(self, intent: MemoryIntent) -> CommitmentApplyResult:
         return await self._write(self._apply_sync, intent)
 
-    async def get(
-        self, memory_space_id: str, commitment_id: str
-    ) -> CommitmentRecord | None:
+    async def get(self, memory_space_id: str, commitment_id: str) -> CommitmentRecord | None:
         return await self._read(self._get_sync, memory_space_id, commitment_id)
 
     async def mark_projected(
@@ -131,14 +129,22 @@ class CommitmentLedger(SerialisedSqliteWrites):
     async def history(
         self, memory_space_id: str, commitment_id: str, *, limit: int = 200
     ) -> list[CommitmentRevisionRecord]:
-        return await self._read(self._history_sync, memory_space_id, commitment_id, limit
-        )
+        return await self._read(self._history_sync, memory_space_id, commitment_id, limit)
 
     async def list_for_privacy(
         self, memory_space_id: str, *, limit: int, offset: int
     ) -> list[CommitmentRecord]:
+        return await self._read(self._list_for_privacy_sync, memory_space_id, limit, offset)
+
+    async def commitment_ids_for_source_events(
+        self,
+        memory_space_id: str,
+        source_event_ids: list[str],
+    ) -> list[str]:
         return await self._read(
-            self._list_for_privacy_sync, memory_space_id, limit, offset
+            self._commitment_ids_for_source_events_sync,
+            memory_space_id,
+            source_event_ids,
         )
 
     async def begin_forget(
@@ -148,9 +154,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
         *,
         hard: bool,
     ) -> list[CommitmentForgetPlan]:
-        return await self._write(
-            self._begin_forget_sync, memory_space_id, commitment_ids, hard
-        )
+        return await self._write(self._begin_forget_sync, memory_space_id, commitment_ids, hard)
 
     async def mark_forget_projected(
         self,
@@ -166,9 +170,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
             targets,
         )
 
-    async def finalize_forget(
-        self, memory_space_id: str, commitment_ids: list[str]
-    ) -> None:
+    async def finalize_forget(self, memory_space_id: str, commitment_ids: list[str]) -> None:
         await self._write(self._finalize_forget_sync, memory_space_id, commitment_ids)
 
     def _apply_sync(self, intent: MemoryIntent) -> CommitmentApplyResult:
@@ -208,9 +210,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
             if replay is not None:
                 stored = _revision_from_row(replay)
                 if stored.intent_hash != intent_hash:
-                    raise CommitmentConflict(
-                        "intent id reused with different commitment payload"
-                    )
+                    raise CommitmentConflict("intent id reused with different commitment payload")
                 row = conn.execute(
                     _sql(COMMITMENT_SELECT_BY_ID), (stored.commitment_id,)
                 ).fetchone()
@@ -222,9 +222,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
                     revision_created=False,
                 )
 
-            existing_row = conn.execute(
-                _sql(COMMITMENT_SELECT_BY_ID), (commitment_id,)
-            ).fetchone()
+            existing_row = conn.execute(_sql(COMMITMENT_SELECT_BY_ID), (commitment_id,)).fetchone()
             existing = _record(existing_row) if existing_row is not None else None
             if existing is not None:
                 fields["requested_status"] = _requested_status(intent, existing.status)
@@ -256,9 +254,12 @@ class CommitmentLedger(SerialisedSqliteWrites):
                     ),
                 )
 
-            revision_id = "commitment-revision:" + hashlib.sha256(
-                f"{record.commitment_id}\x1f{intent.intent_id}".encode()
-            ).hexdigest()[:32]
+            revision_id = (
+                "commitment-revision:"
+                + hashlib.sha256(
+                    f"{record.commitment_id}\x1f{intent.intent_id}".encode()
+                ).hexdigest()[:32]
+            )
             conn.execute(
                 _sql(COMMITMENT_REVISION_INSERT),
                 (
@@ -276,9 +277,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
                     now,
                 ),
             )
-            revision_row = conn.execute(
-                _sql(COMMITMENT_REVISION_BY_ID), (revision_id,)
-            ).fetchone()
+            revision_row = conn.execute(_sql(COMMITMENT_REVISION_BY_ID), (revision_id,)).fetchone()
         return CommitmentApplyResult(
             commitment=record,
             revision=_revision_record(revision_row),
@@ -305,13 +304,9 @@ class CommitmentLedger(SerialisedSqliteWrites):
                 (memory_space_id, commitment_id, revision),
             )
             if result.rowcount != 1:
-                raise CommitmentConflict(
-                    "commitment revision changed before projection completed"
-                )
+                raise CommitmentConflict("commitment revision changed before projection completed")
 
-    def _load_commitment(
-        self, conn: sqlite3.Connection, commitment_id: str
-    ) -> CommitmentRecord:
+    def _load_commitment(self, conn: sqlite3.Connection, commitment_id: str) -> CommitmentRecord:
         row = conn.execute(
             "SELECT * FROM commitments WHERE commitment_id = ?", (commitment_id,)
         ).fetchone()
@@ -319,9 +314,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
             raise LookupError("commitment not found")
         return _record(row)
 
-    def _get_sync(
-        self, memory_space_id: str, commitment_id: str
-    ) -> CommitmentRecord | None:
+    def _get_sync(self, memory_space_id: str, commitment_id: str) -> CommitmentRecord | None:
         with self._connect() as conn:
             row = conn.execute(
                 _sql(COMMITMENT_SELECT_ONE)
@@ -456,6 +449,30 @@ class CommitmentLedger(SerialisedSqliteWrites):
             ).fetchall()
         return [_record(row) for row in rows]
 
+    def _commitment_ids_for_source_events_sync(
+        self,
+        memory_space_id: str,
+        source_event_ids: list[str],
+    ) -> list[str]:
+        wanted = list(dict.fromkeys(value.strip() for value in source_event_ids if value.strip()))
+        if not wanted:
+            return []
+        placeholders = ", ".join("?" for _ in wanted)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT revisions.commitment_id
+                FROM commitment_revisions revisions
+                JOIN commitments current
+                  ON current.commitment_id = revisions.commitment_id
+                WHERE current.memory_space_id = ?
+                  AND revisions.source_event_id IN ({placeholders})
+                ORDER BY revisions.commitment_id
+                """,
+                (memory_space_id, *wanted),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def _begin_forget_sync(
         self, memory_space_id: str, commitment_ids: list[str], hard: bool
     ) -> list[CommitmentForgetPlan]:
@@ -549,9 +566,7 @@ class CommitmentLedger(SerialisedSqliteWrites):
                 if result.rowcount != 1:
                     raise LookupError("commitment privacy tombstone not found")
 
-    def _finalize_forget_sync(
-        self, memory_space_id: str, commitment_ids: list[str]
-    ) -> None:
+    def _finalize_forget_sync(self, memory_space_id: str, commitment_ids: list[str]) -> None:
         wanted = list(dict.fromkeys(commitment_ids))
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")

@@ -266,6 +266,50 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             limit,
         )
 
+    async def assertion_ids_for_source_events(
+        self,
+        memory_space_id: str,
+        source_event_ids: list[str],
+    ) -> list[str]:
+        return await self._read(
+            self._assertion_ids_for_source_events_sync,
+            memory_space_id,
+            source_event_ids,
+        )
+
+    def _assertion_ids_for_source_events_sync(
+        self,
+        memory_space_id: str,
+        source_event_ids: list[str],
+    ) -> list[str]:
+        wanted = list(dict.fromkeys(value.strip() for value in source_event_ids if value.strip()))
+        if not wanted:
+            return []
+        placeholders = ", ".join("?" for _ in wanted)
+        parameters = [memory_space_id, *wanted]
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT assertion_id
+                FROM (
+                    SELECT assertion_id FROM canonical_evidence
+                    WHERE memory_space_id = ?
+                      AND source_event_id IN ({placeholders})
+                    UNION
+                    SELECT assertion_id FROM canonical_invalidations
+                    WHERE memory_space_id = ?
+                      AND source_event_id IN ({placeholders})
+                    UNION
+                    SELECT assertion_id FROM canonical_reactivations
+                    WHERE memory_space_id = ?
+                      AND source_event_id IN ({placeholders})
+                )
+                ORDER BY assertion_id
+                """,
+                [*parameters, *parameters, *parameters],
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def _register_sync(
         self,
         intent: MemoryIntent,
@@ -498,9 +542,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     "SELECT * FROM canonical_forgets WHERE assertion_id = ?",
                     (assertion_id,),
                 ).fetchone()
-                effective_hard = hard or (
-                    existing is not None and bool(existing["hard"])
-                )
+                effective_hard = hard or (existing is not None and bool(existing["hard"]))
                 source_event_ids: list[str] = []
                 if effective_hard:
                     source_rows = conn.execute(

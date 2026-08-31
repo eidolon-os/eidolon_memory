@@ -1096,10 +1096,13 @@ async def process_command_message(
                 cmd.memory_space_id,
                 drawer_ids=cmd.drawer_ids,
                 commitment_ids=cmd.commitment_ids,
+                source_event_ids=cmd.source_event_ids,
                 hard=cmd.action == "delete",
             )
             resource_id = (
-                f"{cmd.action}:{len(cmd.drawer_ids) + len(cmd.commitment_ids)}:{cmd.preview_id}"
+                f"{cmd.action}:"
+                f"{len(cmd.drawer_ids) + len(cmd.commitment_ids) + len(cmd.source_event_ids)}:"
+                f"{cmd.preview_id}"
             )
             log.info(
                 "cmd_privacy_mutation_ok",
@@ -1107,6 +1110,7 @@ async def process_command_message(
                 preview_id=cmd.preview_id,
                 action=cmd.action,
                 drawer_count=len(changed),
+                source_event_count=len(cmd.source_event_ids),
                 # Separate from ``drawer_count`` because they answer different
                 # questions and their ratio is the interesting one: turns with no
                 # triples are ordinary, but a forget that touched drawers and no

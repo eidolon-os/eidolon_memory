@@ -800,6 +800,7 @@ def _run_service(
             command_status=command_status,
             canonical_facts=canonical_facts,
             commitments=commitments,
+            decision_store=decision_store,
             dlq_store=dlq,
             replay_publisher=command_publisher,
             surface=surface,

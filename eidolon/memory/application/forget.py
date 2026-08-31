@@ -9,8 +9,10 @@ from typing import Any
 from eidolon.memory.application.kg_recall import plain_triple_sentence
 from eidolon.memory.domain.kg_port import KnowledgeGraphPort
 from eidolon.memory.domain.ports import (
+    CanonicalFactStore,
     CanonicalFactWriter,
     CommitmentReader,
+    CommitmentStore,
     CommitmentWriter,
     ExtractionDecisionStore,
     MemoryAdmin,
@@ -246,6 +248,53 @@ async def assertion_ids_for_drawers(
     return assertion_ids
 
 
+async def drawer_ids_for_assertions(
+    backend: MemoryAdmin,
+    memory_space_id: str,
+    assertion_ids: list[str],
+    *,
+    max_scan: int = 50_000,
+    page_size: int = DEFAULT_FORGET_PAGE_SIZE,
+) -> list[str]:
+    """Resolve every vector projection of exact canonical assertions.
+
+    Reactivation can give one assertion more than one historical drawer.  A
+    privacy delete must remove all of them, not only the currently visible
+    activation.  The scan is bounded and refuses a partial answer for the same
+    reason as natural-language forget resolution.
+    """
+
+    wanted = {value.strip() for value in assertion_ids if value.strip()}
+    if not wanted:
+        return []
+    if max_scan < 1 or page_size < 1:
+        raise ValueError("forget resolution limits must be positive")
+    found: list[str] = []
+    seen: set[str] = set()
+    offset = 0
+    chunk = min(page_size, max_scan)
+    while offset < max_scan:
+        request_size = min(chunk, max_scan - offset)
+        rows = await backend.get_all(memory_space_id, limit=request_size, offset=offset)
+        if not rows:
+            break
+        offset += len(rows)
+        for record in rows:
+            assertion_id = str(record.metadata.get("assertion_id") or "").strip()
+            if assertion_id in wanted and record.key not in seen:
+                seen.add(record.key)
+                found.append(record.key)
+        if len(rows) < request_size:
+            break
+    if offset >= max_scan:
+        overflow = await backend.get_all(memory_space_id, limit=1, offset=offset)
+        if overflow:
+            raise ForgetResolutionLimitExceeded(
+                f"privacy assertion scan exceeds {max_scan} drawers"
+            )
+    return found
+
+
 async def _get_records(
     backend: MemoryAdmin, memory_space_id: str, drawer_ids: list[str]
 ) -> list[MemoryWireRecord]:
@@ -329,52 +378,53 @@ def _refers_to(target: str, sentence: str) -> bool:
     return left == right or left in right or (len(right) >= 4 and right in left)
 
 
-async def forget_exact_projections(
+async def forget_canonical_assertions(
     backend: MemoryAdmin,
     kg: KnowledgeGraphPort | None,
     canonical_facts: CanonicalFactWriter | None,
     memory_space_id: str,
-    drawer_ids: list[str],
+    assertion_ids: list[str],
     *,
     hard: bool,
     decision_store: ExtractionDecisionStore | None = None,
+    drawer_ids_hint: list[str] | None = None,
 ) -> tuple[list[str], int]:
-    """Ledger-first deletion of one exact projection set.
+    """Ledger-first deletion of complete canonical aggregates.
 
     The canonical tombstone is written first and remains pending until both KG
     and drawer mutations verify. A redelivery resumes the same outbox entry; a
     replay of the original evidence cannot reactivate a forgotten assertion.
+    Projection discovery happens before the tombstone so a bounded scan cannot
+    leave a newly forgotten assertion temporarily visible.
     """
 
-    assertion_ids = await assertion_ids_for_drawers(backend, memory_space_id, drawer_ids)
-    if not assertion_ids:
-        raise RuntimeError("privacy mutation refused a non-canonical drawer")
+    wanted = list(dict.fromkeys(value.strip() for value in assertion_ids if value.strip()))
+    if not wanted:
+        return [], 0
     if canonical_facts is None:
-        raise RuntimeError("canonical drawer forget requires its fact ledger")
+        raise RuntimeError("canonical forget requires its fact ledger")
+    projection_ids = await drawer_ids_for_assertions(backend, memory_space_id, wanted)
+    projection_ids = list(dict.fromkeys([*(drawer_ids_hint or []), *projection_ids]))
     targets = {"drawer", "kg"} if kg is not None else {"drawer"}
     plans = await canonical_facts.begin_forget(
         memory_space_id,
-        assertion_ids,
+        wanted,
         hard=hard,
         reason="user privacy request",
         targets=targets,
     )
     ledger_assertions = [plan.assertion_id for plan in plans]
-    if set(ledger_assertions) != set(assertion_ids):
-        raise RuntimeError("drawer projection points to a missing canonical assertion")
+    if set(ledger_assertions) != set(wanted):
+        raise RuntimeError("privacy target points to a missing canonical assertion")
     if hard:
         source_event_ids = list(
             dict.fromkeys(
-                source_event_id
-                for plan in plans
-                for source_event_id in plan.source_event_ids
+                source_event_id for plan in plans for source_event_id in plan.source_event_ids
             )
         )
         if source_event_ids:
             if decision_store is None:
-                raise RuntimeError(
-                    "hard privacy delete requires its extraction decision ledger"
-                )
+                raise RuntimeError("hard privacy delete requires its extraction decision ledger")
             await decision_store.redact_source_events(memory_space_id, source_event_ids)
         await canonical_facts.scrub_forgotten_content(
             memory_space_id,
@@ -389,15 +439,46 @@ async def forget_exact_projections(
         )
 
     changed = (
-        await delete_exact_drawers(backend, memory_space_id, drawer_ids)
-        if hard
-        else await archive_exact_drawers(backend, memory_space_id, drawer_ids)
+        (
+            await delete_exact_drawers(backend, memory_space_id, projection_ids)
+            if hard
+            else await archive_exact_drawers(backend, memory_space_id, projection_ids)
+        )
+        if projection_ids
+        else []
     )
     if ledger_assertions:
         await canonical_facts.mark_forget_projected(
             memory_space_id, ledger_assertions, targets={"drawer"}
         )
     return changed, statements
+
+
+async def forget_exact_projections(
+    backend: MemoryAdmin,
+    kg: KnowledgeGraphPort | None,
+    canonical_facts: CanonicalFactWriter | None,
+    memory_space_id: str,
+    drawer_ids: list[str],
+    *,
+    hard: bool,
+    decision_store: ExtractionDecisionStore | None = None,
+) -> tuple[list[str], int]:
+    """Resolve projection IDs to canonical aggregates, then forget the aggregates."""
+
+    assertion_ids = await assertion_ids_for_drawers(backend, memory_space_id, drawer_ids)
+    if not assertion_ids:
+        raise RuntimeError("privacy mutation refused a non-canonical drawer")
+    return await forget_canonical_assertions(
+        backend,
+        kg,
+        canonical_facts,
+        memory_space_id,
+        assertion_ids,
+        hard=hard,
+        decision_store=decision_store,
+        drawer_ids_hint=drawer_ids,
+    )
 
 
 async def forget_commitment_projections(
@@ -465,32 +546,64 @@ async def forget_commitment_projections(
 async def forget_resolved_projections(
     backend: MemoryAdmin,
     kg: KnowledgeGraphPort | None,
-    canonical_facts: CanonicalFactWriter | None,
-    commitments: CommitmentWriter | None,
+    canonical_facts: CanonicalFactStore | None,
+    commitments: CommitmentStore | None,
     decision_store: ExtractionDecisionStore | None,
     memory_space_id: str,
     *,
     drawer_ids: list[str],
     commitment_ids: list[str],
+    assertion_ids: list[str] | None = None,
+    source_event_ids: list[str] | None = None,
     hard: bool,
 ) -> tuple[list[str], int]:
     """Run one resolved privacy mutation through each aggregate's own ledger."""
 
     changed: list[str] = []
     statements = 0
+    exact_source_events = list(
+        dict.fromkeys(value.strip() for value in (source_event_ids or []) if value.strip())
+    )
+    exact_assertions = list(
+        dict.fromkeys(value.strip() for value in (assertion_ids or []) if value.strip())
+    )
+    exact_commitments = list(
+        dict.fromkeys(value.strip() for value in commitment_ids if value.strip())
+    )
+    if exact_source_events:
+        if not hard:
+            raise RuntimeError("source-event privacy cleanup must be a hard deletion")
+        if canonical_facts is None or commitments is None or decision_store is None:
+            raise RuntimeError("source-event privacy cleanup requires every authority ledger")
+        exact_assertions.extend(
+            await canonical_facts.assertion_ids_for_source_events(
+                memory_space_id, exact_source_events
+            )
+        )
+        exact_commitments.extend(
+            await commitments.commitment_ids_for_source_events(memory_space_id, exact_source_events)
+        )
     if drawer_ids:
-        drawer_changed, drawer_statements = await forget_exact_projections(
+        resolved = await assertion_ids_for_drawers(backend, memory_space_id, drawer_ids)
+        if not resolved:
+            raise RuntimeError("privacy mutation refused a non-canonical drawer")
+        exact_assertions.extend(resolved)
+    exact_assertions = list(dict.fromkeys(exact_assertions))
+    exact_commitments = list(dict.fromkeys(exact_commitments))
+    if exact_assertions:
+        drawer_changed, drawer_statements = await forget_canonical_assertions(
             backend,
             kg,
             canonical_facts,
             memory_space_id,
-            drawer_ids,
+            exact_assertions,
             hard=hard,
             decision_store=decision_store,
+            drawer_ids_hint=drawer_ids,
         )
         changed.extend(drawer_changed)
         statements += drawer_statements
-    if commitment_ids:
+    if exact_commitments:
         if commitments is None:
             raise RuntimeError("commitment privacy mutation requires its ledger")
         commitment_changed, commitment_statements = await forget_commitment_projections(
@@ -498,12 +611,15 @@ async def forget_resolved_projections(
             kg,
             commitments,
             memory_space_id,
-            commitment_ids,
+            exact_commitments,
             hard=hard,
             decision_store=decision_store,
         )
         changed.extend(commitment_changed)
         statements += commitment_statements
+    if exact_source_events:
+        assert decision_store is not None
+        await decision_store.redact_source_events(memory_space_id, exact_source_events)
     return changed, statements
 
 

@@ -31,6 +31,7 @@ from eidolon.memory.entrypoints.mcp_server import (
 #: Tools that change or destroy stored memory, or act on the user's behalf.
 DESTRUCTIVE = (
     "eidolon_memory_forget_confirm",
+    "eidolon_memory_forget_source_event",
     "eidolon_memory_dlq_replay",
     "eidolon_memory_dlq_resolve",
     "eidolon_memory_kg_invalidate",
@@ -129,6 +130,7 @@ def _build(surface: str = "all"):
         command_status=_Present(),
         canonical_facts=_Present(),
         commitments=_Present(),
+        decision_store=_Present(),
         dlq_store=_Present(),
         replay_publisher=_Present(),
         surface=surface,
@@ -214,7 +216,7 @@ def test_operator_surface_excludes_retired_direct_fact_write() -> None:
     """The ops surface has no second conversational fact source."""
 
     tools = _tools("all")
-    assert len(tools) == 27
+    assert len(tools) == 28
     assert "eidolon_memory_user_confirm" not in tools
 
 
@@ -302,6 +304,7 @@ async def test_every_registered_tool_survives_being_invoked() -> None:
         "name": "用户",
         "entity_name": "用户",
         "source_turn_id": "turn-1",
+        "source_event_id": "turn-1",
         "request_id": "req-1",
         "entry_id": "dlq-1",
         "commitment_id": "c-1",

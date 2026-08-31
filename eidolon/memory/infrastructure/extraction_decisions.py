@@ -56,8 +56,7 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                 """
             )
             columns = {
-                str(row["name"])
-                for row in conn.execute("PRAGMA table_info(extraction_decisions)")
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(extraction_decisions)")
             }
             if "intents_json" not in columns:
                 conn.execute(
@@ -113,6 +112,17 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
         if checkpoint is not None and int(checkpoint[0]) != 0:
             raise RuntimeError("extraction privacy checkpoint remained busy")
         return changed
+
+    async def source_event_redacted(
+        self,
+        memory_space_id: str,
+        source_event_id: str,
+    ) -> bool:
+        return await self._read(
+            self._source_event_redacted_sync,
+            memory_space_id,
+            source_event_id,
+        )
 
     def _get_sync(
         self,
@@ -212,9 +222,7 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
         memory_space_id: str,
         source_event_ids: list[str],
     ) -> int:
-        wanted = list(
-            dict.fromkeys(value.strip() for value in source_event_ids if value.strip())
-        )
+        wanted = list(dict.fromkeys(value.strip() for value in source_event_ids if value.strip()))
         if not wanted:
             return 0
         now = datetime.now(UTC).isoformat()
@@ -239,6 +247,24 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                     (memory_space_id, source_event_id),
                 )
         return changed
+
+    def _source_event_redacted_sync(
+        self,
+        memory_space_id: str,
+        source_event_id: str,
+    ) -> bool:
+        clean_id = source_event_id.strip()
+        if not clean_id:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM extraction_privacy_tombstones
+                WHERE memory_space_id = ? AND source_turn_id = ?
+                """,
+                (memory_space_id, clean_id),
+            ).fetchone()
+        return row is not None
 
     @staticmethod
     def _redacted_record(
@@ -271,8 +297,7 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
             input_hash=str(row["input_hash"]),
             decision=StewardDecision.model_validate_json(str(row["decision_json"])),
             intents=[
-                MemoryIntent.model_validate(item)
-                for item in json.loads(str(row["intents_json"]))
+                MemoryIntent.model_validate(item) for item in json.loads(str(row["intents_json"]))
             ],
             created_at=str(row["created_at"]),
         )
