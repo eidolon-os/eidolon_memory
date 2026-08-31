@@ -94,7 +94,7 @@ Memory 检索边界不返回无依据证据，Agent 最终是否诚实拒答由 
 ```
 
 报告同时保留端到端 MCP latency，避免通过无限扩大 top-k/context 换取表面准确率。
-只验证真实管线契约时可用 `--steward-mode rules --min-triples 0
+只验证真实管线契约时可用 `--steward-mode test-verbatim --min-triples 0
 --min-fragments 5`；质量报告必须保留默认 `llm`，两种结果不得混为同一基线。
 
 ## 一键全跑

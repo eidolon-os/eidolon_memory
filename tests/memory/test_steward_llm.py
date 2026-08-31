@@ -1,4 +1,4 @@
-"""LiteLLM steward parsing and fallback behavior."""
+"""LiteLLM steward parsing and user-evidence behavior."""
 
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ async def test_llm_steward_accepts_valid_json(monkeypatch: pytest.MonkeyPatch):
                             "wing": "Wing_Profile",
                             "room": "profile_core",
                             "content": "用户喜欢晚上听轻音乐放松。",
+                            "evidence_quote": "我喜欢晚上听轻音乐放松",
                             "memory_type": "preference",
                             "importance": 4,
                             "confidence": 0.9,
@@ -88,14 +89,138 @@ async def test_llm_steward_accepts_valid_json(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_llm_steward_falls_back_on_invalid_json(monkeypatch: pytest.MonkeyPatch):
+async def test_llm_steward_rejects_invalid_json_for_durable_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
     async def fake_acompletion(**_kwargs):
         return {"choices": [{"message": {"content": "not json"}}]}
 
     monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
-    decision = await LiteLLMSteward(_settings_local_llm()).decide(_turn())
-    assert decision.should_write
-    assert decision.fragments[0].metadata["steward"] == "rules"
+    with pytest.raises(Exception, match="invalid LLM steward output"):
+        await LiteLLMSteward(_settings_local_llm()).decide(_turn())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence_quote",
+    ["", "我会记得这能帮你放松"],
+)
+async def test_llm_steward_requires_verbatim_user_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_quote: str,
+) -> None:
+    async def fake_acompletion(**_kwargs):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": __import__("json").dumps(
+                            {
+                                "should_write": True,
+                                "fragments": [
+                                    {
+                                        "memory_space_id": "ignored",
+                                        "source_turn_id": "t1",
+                                        "wing": "Wing_Life",
+                                        "room": "music",
+                                        "content": "用户喜欢轻音乐",
+                                        "evidence_quote": evidence_quote,
+                                        "memory_type": "preference",
+                                        "importance": 4,
+                                        "confidence": 0.9,
+                                    }
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
+
+    with pytest.raises(Exception, match="evidence_quote"):
+        await LiteLLMSteward(_settings_local_llm()).decide(_turn())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_text", "action", "target", "evidence_quote"),
+    [
+        (
+            "那段有关绿茶的事，从今往后不应留存在任何地方",
+            "delete_request",
+            "绿茶",
+            "有关绿茶的事，从今往后不应留存在任何地方",
+        ),
+        (
+            "先前提供的住址信息我现在撤回",
+            "delete_request",
+            "住址信息",
+            "先前提供的住址信息我现在撤回",
+        ),
+        (
+            "家庭矛盾这个话题到此为止",
+            "archive_topic",
+            "家庭矛盾",
+            "家庭矛盾这个话题到此为止",
+        ),
+    ],
+)
+async def test_privacy_actions_are_semantic_structured_output_not_phrase_matching(
+    monkeypatch: pytest.MonkeyPatch,
+    user_text: str,
+    action: str,
+    target: str,
+    evidence_quote: str,
+) -> None:
+    async def fake_acompletion(**_kwargs):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": __import__("json").dumps(
+                            {
+                                "should_write": False,
+                                "fragments": [],
+                                "triples": [],
+                                "invalidations": [],
+                                "privacy_actions": [
+                                    {
+                                        "action": action,
+                                        "target": target,
+                                        "reason": "semantic privacy intent",
+                                        "evidence_quote": evidence_quote,
+                                    }
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
+    turn = _turn().model_copy(update={"user_text": user_text})
+
+    decision = await LiteLLMSteward(_settings_local_llm()).decide(turn)
+
+    assert decision.fragments == []
+    assert decision.triples == []
+    assert decision.invalidations == []
+    assert [(item.action, item.target) for item in decision.privacy_actions] == [
+        (action, target)
+    ]
+
+
+def test_steward_prompt_does_not_send_assistant_text() -> None:
+    rendered = LiteLLMSteward(_settings_local_llm())._render_user_prompt(_turn())
+
+    assert "我喜欢晚上听轻音乐放松" in rendered
+    assert "我会记得这能帮你放松" not in rendered
+    assert "[ASSISTANT]" not in rendered
 
 
 # ── where extraction loses material ──────────────────────────────────────────
@@ -111,7 +236,7 @@ def _fragment_json(importance: int, content: str) -> str:
         '{"memory_space_id": "r:benchmark:default", "source_turn_id": "t1", '
         '"wing": "Wing_Life", "room": "colour", "content": "'
         f'{content}", "memory_type": "fact", "importance": {importance}, '
-        '"confidence": 0.9}'
+        '"confidence": 0.9, "evidence_quote": "我喜欢晚上听轻音乐放松"}'
     )
 
 
@@ -209,10 +334,9 @@ async def test_every_loss_path_is_counted(monkeypatch: pytest.MonkeyPatch) -> No
 # A run on 2026-08-04 lost one turn of 40 to this: the model omitted
 # ``memory_space_id``, ``MemoryFragment`` rejects a blank one, and the whole
 # decision failed validation — over a field ``stamp_fragment_identity`` overwrites
-# from the context a few lines later. The turn fell back to rule-based extraction
-# and, because the ledger's identity is the *configured policy*, was never
-# re-extracted. Zero occurrences in the 160 turns before it, which is the rate
-# that makes a benchmark irreproducible rather than obviously broken.
+# from the context a few lines later. The turn then needed a durable retry. Zero
+# occurrences in the 160 turns before it is exactly the rate that makes a
+# benchmark irreproducible rather than obviously broken.
 
 
 def _ctx():
@@ -230,6 +354,7 @@ def _ctx():
 def _fragment(**overrides):
     base = {
         "content": "我妈失眠",
+        "evidence_quote": "我喜欢晚上听轻音乐放松",
         "wing": "Wing_Relationship",
         "room": "sleep",
         "source_turn_id": "t1",
@@ -312,9 +437,8 @@ def test_a_prose_extension_does_not_discard_the_whole_turn() -> None:
     ``extensions`` is a namespace → dict map. The model read it as a free-form
     annotation slot and wrote a sentence, which failed validation — and because
     validation is all-or-nothing, that one string discarded every fragment and
-    every triple it had extracted for the turn, dropping it to rule-based
-    extraction. Once in 90 turns, so in production roughly one turn in a hundred
-    silently degrades and the ledger records the degraded decision as durable.
+    every triple it had extracted for the turn. Once in 90 turns, so it must not
+    turn an otherwise usable extraction into a retry.
     """
 
     decision = _parse(

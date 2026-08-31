@@ -11,7 +11,6 @@ from eidolon_memory_contracts import ConversationTurnPayload
 from pydantic import ValidationError
 
 from eidolon.memory.application.steward.common import finalize_fragments
-from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import StewardOutputError
 from eidolon.memory.domain.fragments import is_usable_extension
@@ -28,21 +27,16 @@ class LiteLLMSteward:
     def __init__(
         self,
         settings: MemorySettings,
-        *,
-        fallback: RuleBasedSteward | None = None,
     ) -> None:
         self._settings = settings
-        self._fallback = fallback or RuleBasedSteward(settings)
 
     @property
     def extraction_version(self) -> str:
-        """Identify the configured extraction policy, including fallback semantics."""
+        """Identify the configured semantic extraction policy."""
         policy = {
             "model": self._settings.llm.model,
             "prompt": self._settings.render_steward_prompt(),
             "temperature": self._settings.llm.temperature,
-            "fallback_to_rules": self._settings.steward.fallback_to_rules,
-            "fallback_version": self._fallback.extraction_version,
             "max_fragments": self._settings.steward.max_fragments_per_turn,
             "min_importance": self._settings.steward.min_importance_to_write,
         }
@@ -53,62 +47,49 @@ class LiteLLMSteward:
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         """Decide, and stamp who decided.
 
-        ``stamped_by`` does not overwrite, which is what keeps the fallback
-        honest: on that path ``_decide`` returns the rule steward's decision,
-        already stamped ``rules:…``, and it survives this call unchanged. So the
-        ledger can tell a degraded turn from a successful one without any code at
-        the fallback site.
+        Invalid output is a retryable extraction failure. It must not be replaced
+        by a keyword-based decision with different semantics.
         """
 
         return (await self._decide(turn)).stamped_by(self.extraction_version)
 
     async def _decide(self, turn: ConversationTurnPayload) -> StewardDecision:
-        try:
-            if not self._settings.llm.model:
-                msg = "llm.model is not configured in memory settings YAML"
-                raise StewardOutputError(msg)
-            raw = await self._call_llm(turn)
-            decision = self._parse_decision(raw, context=turn.context)
-            proposed = decision.fragments
-            capped = proposed[: self._settings.steward.max_fragments_per_turn]
-            kept = [
-                f for f in capped if f.importance >= self._settings.steward.min_importance_to_write
-            ]
-            # Count where material is lost. Without this a corpus that yields few
-            # memories looks the same whether the model proposed little or these
-            # two thresholds discarded most of what it proposed — and the fix
-            # differs completely.
-            metrics.FRAGMENTS_EXTRACTED.labels(stage="proposed").inc(len(proposed))
-            metrics.FRAGMENTS_EXTRACTED.labels(stage="dropped_cap").inc(len(proposed) - len(capped))
-            metrics.FRAGMENTS_EXTRACTED.labels(stage="dropped_importance").inc(
-                len(capped) - len(kept)
+        if not self._settings.llm.model:
+            msg = "llm.model is not configured in memory settings YAML"
+            raise StewardOutputError(msg)
+        raw = await self._call_llm(turn)
+        decision = self._parse_decision(raw, context=turn.context)
+        _validate_user_evidence(decision, turn.user_text)
+        proposed = decision.fragments
+        capped = proposed[: self._settings.steward.max_fragments_per_turn]
+        kept = [f for f in capped if f.importance >= self._settings.steward.min_importance_to_write]
+        # Count where material is lost. Without this a corpus that yields few
+        # memories looks the same whether the model proposed little or these
+        # two thresholds discarded most of what it proposed — and the fix
+        # differs completely.
+        metrics.FRAGMENTS_EXTRACTED.labels(stage="proposed").inc(len(proposed))
+        metrics.FRAGMENTS_EXTRACTED.labels(stage="dropped_cap").inc(len(proposed) - len(capped))
+        metrics.FRAGMENTS_EXTRACTED.labels(stage="dropped_importance").inc(len(capped) - len(kept))
+        metrics.FRAGMENTS_EXTRACTED.labels(stage="written").inc(len(kept))
+        if len(kept) < len(proposed):
+            log.info(
+                "steward_fragments_filtered",
+                turn_id=turn.turn_id,
+                proposed=len(proposed),
+                written=len(kept),
+                dropped_by_cap=len(proposed) - len(capped),
+                dropped_by_importance=len(capped) - len(kept),
+                min_importance=self._settings.steward.min_importance_to_write,
             )
-            metrics.FRAGMENTS_EXTRACTED.labels(stage="written").inc(len(kept))
-            if len(kept) < len(proposed):
-                log.info(
-                    "steward_fragments_filtered",
-                    turn_id=turn.turn_id,
-                    proposed=len(proposed),
-                    written=len(kept),
-                    dropped_by_cap=len(proposed) - len(capped),
-                    dropped_by_importance=len(capped) - len(kept),
-                    min_importance=self._settings.steward.min_importance_to_write,
-                )
-            decision.fragments = kept
-            decision.fragments = finalize_fragments(
-                decision.fragments,
-                steward="llm",
-                context=turn.context,
-                source_turn_id=turn.turn_id,
-            )
-            if decision.fragments:
-                decision.should_write = True
-            return decision
-        except Exception as exc:
-            if not self._settings.steward.fallback_to_rules:
-                raise
-            log.warning("llm_steward_fallback_to_rules", error=str(exc))
-            return await self._fallback.decide(turn)
+        decision.fragments = finalize_fragments(
+            kept,
+            steward="llm",
+            context=turn.context,
+            source_turn_id=turn.turn_id,
+        )
+        if decision.fragments:
+            decision.should_write = True
+        return decision
 
     async def _call_llm(self, turn: ConversationTurnPayload) -> str:
         from litellm import acompletion
@@ -148,21 +129,19 @@ class LiteLLMSteward:
             "scope 只能是 global/persona/agent/device/session；设备位置、能力、校准、"
             "本地环境用 scope=device visibility=current_device；用户长期偏好、关系、"
             "事实用 scope=persona visibility=all_devices。\n\n"
-            f"[USER]\n{turn.user_text}\n\n"
-            f"[ASSISTANT]\n{turn.assistant_text}\n"
+            f"[USER]\n{turn.user_text}\n"
         )
 
     def _parse_decision(self, raw: str, *, context: object | None = None) -> StewardDecision:
         """Validate the model's JSON, after taking back the fields that are ours.
 
         Which memory space a fragment belongs to is decided by the turn, not by the
-        model — ``stamp_fragment_identity`` overwrites it from the context a few
-        lines after this returns. But validation ran first and
+        model — ``finalize_fragments`` overwrites it from the context after this
+        returns. But validation ran first and
         ``MemoryFragment.memory_space_id`` rejects a blank one, so a model that
         omitted the field failed the whole decision over a value we were about to
-        replace. The turn then fell back to rule-based extraction and, because the
-        ledger records the *configured policy* as its identity, was never
-        re-extracted.
+        replace. The turn then failed extraction and had to be retried from the
+        durable turn stream.
 
         Observed once in 40 turns, and not at all in the 160 turns before it — the
         kind of rate that makes a benchmark irreproducible rather than obviously
@@ -170,7 +149,7 @@ class LiteLLMSteward:
 
         So the field is set from the context here rather than merely defaulted:
         replacing it means a model that invents a *different* space id cannot get
-        one past validation either. That path is already safe — the stamp
+        one past validation either. That path is already safe — finalization
         overwrites unconditionally — and this keeps it safe without depending on
         the order of two functions.
         """
@@ -210,9 +189,8 @@ def _drop_unusable_extensions(data: Any) -> list[str]:
     annotation slot writes ``{"note": "原话中「她」指向…"}``, which is a string
     where a dict belongs — and because validation is all-or-nothing, that one
     annotation discarded every fragment and every triple the model had extracted
-    for the turn. Observed once in 90 turns, so in production roughly one turn in
-    a hundred silently degrades to rule-based extraction, and the ledger records
-    the degraded decision as durable.
+    for the turn. Observed once in 90 turns, so it must not turn an otherwise
+    usable extraction into a retry.
 
     This is the second time the same lesson has been learned in this function —
     the docstring above it records a model omitting ``memory_space_id`` and
@@ -243,6 +221,31 @@ def _drop_unusable_extensions(data: Any) -> list[str]:
                 extensions.pop(namespace)
                 dropped.append(f"fragments[{index}].extensions.{namespace}")
     return dropped
+
+
+def _validate_user_evidence(decision: StewardDecision, user_text: str) -> None:
+    """Require every durable action to cite verbatim user evidence.
+
+    The extractor may normalize a fact into a fragment or triple, but it may not
+    use the assistant reply or an inferred detail as authority. Directly-created
+    domain objects keep backwards-compatible defaults; this boundary applies to
+    untrusted model output before it reaches the ledger.
+    """
+
+    actions = [
+        *decision.fragments,
+        *decision.triples,
+        *decision.invalidations,
+        *decision.privacy_actions,
+    ]
+    for index, action in enumerate(actions):
+        quote = str(getattr(action, "evidence_quote", "") or "").strip()
+        if not quote:
+            raise StewardOutputError(f"steward action {index} is missing a user evidence_quote")
+        if quote not in user_text:
+            raise StewardOutputError(
+                f"steward action {index} evidence_quote is not verbatim user text"
+            )
 
 
 def _extract_content(response: Any) -> str:

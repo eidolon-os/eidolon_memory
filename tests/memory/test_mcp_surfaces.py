@@ -8,7 +8,7 @@ describe tools the agent must never call. On a board running a local model besid
 the rest of Eidolon, that is context spent on noise.
 
 The one that matters more: that list included ``forget_confirm``, ``dlq_replay``,
-``dlq_resolve``, ``kg_invalidate`` and ``user_confirm``. A model reading "忘了这件事吧"
+``dlq_resolve`` and ``kg_invalidate``. A model reading "忘了这件事吧"
 from a user had a plausible destructive tool within reach and nothing but its own
 judgement in between. Removing it from the list is a stronger guarantee than
 prompting against it.
@@ -35,7 +35,6 @@ DESTRUCTIVE = (
     "eidolon_memory_dlq_resolve",
     "eidolon_memory_kg_invalidate",
     "eidolon_memory_kg_add_triple",
-    "eidolon_memory_user_confirm",
 )
 
 
@@ -211,11 +210,12 @@ def test_the_split_is_worth_its_complexity() -> None:
     )
 
 
-def test_the_default_surface_is_unchanged() -> None:
-    """``build_control_plane_mcp`` has other callers — tests, the admin path — and
-    the split must not have moved anything under them."""
+def test_operator_surface_excludes_retired_direct_fact_write() -> None:
+    """The ops surface has no second conversational fact source."""
 
-    assert len(_tools("all")) == 28
+    tools = _tools("all")
+    assert len(tools) == 27
+    assert "eidolon_memory_user_confirm" not in tools
 
 
 def test_the_two_surfaces_have_distinct_paths() -> None:
@@ -338,9 +338,7 @@ async def test_every_registered_tool_survives_being_invoked() -> None:
         "required_values has no entry for these, so they were skipped:\n  "
         + "\n  ".join(unsupplied)
     )
-    assert not binding_failures, "tools that cannot be invoked:\n  " + "\n  ".join(
-        binding_failures
-    )
+    assert not binding_failures, "tools that cannot be invoked:\n  " + "\n  ".join(binding_failures)
 
 
 def test_the_agent_cannot_widen_its_own_visibility() -> None:

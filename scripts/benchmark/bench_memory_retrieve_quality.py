@@ -203,18 +203,13 @@ def extractor_counts(palace_root: Path) -> dict[str, int] | None:
 def require_uniform_extractor(palace_root: Path) -> None:
     """Refuse a corpus whose turns were not all extracted the same way.
 
-    The steward falls back to rule-based extraction when its LLM call fails, and
-    the pipeline carries on — correct for production, fatal for a measurement. A
-    corpus where some turns were extracted by an LLM and others by regexes is not
-    comparable to one where all were, and the difference is large: a run on
-    2026-08-04 lost 16 calls to connection errors and produced 6 triples where the
-    previous run produced 36.
+    Every durable decision must come from the configured LLM steward. Historical
+    or test data may carry another ``produced_by`` value, which would make the
+    corpus incomparable to a clean run.
 
-    That run was caught, but only indirectly, by the triple floor. A run with two
-    or three fallbacks would clear the floor and publish a number that quietly
-    measured something else — which is the failure mode that cost four earlier
-    probe runs. So the extractor is read per decision from the ledger and any
-    mixture is refused by name.
+    Such a run could still clear the triple floor and publish a number that quietly
+    measured something else. So the extractor is read per decision from the ledger
+    and any mixture is refused by name.
 
     Readable at all only because ``StewardDecision.produced_by`` is stamped by
     whichever extractor ran; the ledger's ``extractor_version`` column cannot
@@ -240,10 +235,9 @@ def require_uniform_extractor(palace_root: Path) -> None:
         summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
         print(
             f"[FAIL] the corpus was not extracted uniformly by the LLM steward: {summary}.\n"
-            f"       A rules-extracted turn yields far fewer fragments and triples, so "
-            f"any\n       quality figure here would describe a mixture. Check the agent "
-            f"log for\n       'llm_steward_fallback_to_rules' and its error, then delete "
-            f"{palace_root}\n       and rerun once the steward endpoint is healthy.",
+            f"       This data space contains decisions from a different extraction "
+            f"policy.\n       Use a fresh benchmark data space and rerun with a healthy "
+            f"steward endpoint: {palace_root}",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -359,6 +353,8 @@ def _spawn_agent(
     settings_path.write_text(yaml.safe_dump(settings_doc, allow_unicode=True), encoding="utf-8")
 
     env = {**os.environ, "EIDOLON_MEMORY_SETTINGS_YAML": str(settings_path)}
+    if steward_mode == "test-verbatim":
+        env["EIDOLON_MEMORY_TEST_STEWARD"] = "1"
     dotenv = _REPO_ROOT / "config" / ".env"
     if dotenv.is_file():
         for line in dotenv.read_text().splitlines():
@@ -1085,7 +1081,7 @@ async def _wait_for_ingestion(
         stats = stats_raw if isinstance(stats_raw, dict) else {}
         last_stats = stats
         last_fragments = await _list_fragment_count(session)
-        # Checked while draining, not only at the end. A single fallback invalidates
+        # Checked while draining, not only at the end. A mismatched producer invalidates
         # the run, and finding that out after twenty minutes of ingestion means the
         # twenty minutes were spent for nothing — the same reason the NATS check
         # moved to a preflight. There is no recovering within a run: the decision is
@@ -1095,14 +1091,14 @@ async def _wait_for_ingestion(
         if degraded and steward_mode == "llm":
             elapsed = time.monotonic() - start
             print(
-                f"[FAIL] after {elapsed:.0f}s the steward has fallen back to rules on "
+                f"[FAIL] after {elapsed:.0f}s the corpus contains a non-LLM producer on "
                 f"{sum(degraded.values())} turn(s): "
                 f"{', '.join(f'{k}={v}' for k, v in sorted(producers.items()))}.\n"
                 f"       Giving up now rather than finishing the ingestion, because a "
                 f"mixed corpus\n       cannot be compared with a clean one and the "
                 f"decision is already durable.\n"
-                f"       Check the agent log for 'llm_steward_fallback_to_rules' and "
-                f"its error.",
+                f"       Use a fresh data space and verify the configured steward "
+                f"endpoint.",
                 file=sys.stderr,
             )
             raise SystemExit(2)
@@ -1458,9 +1454,9 @@ def main() -> int:
     parser.add_argument("--nats-url", default="nats://127.0.0.1:4222")
     parser.add_argument(
         "--steward-mode",
-        choices=("llm", "rules"),
+        choices=("llm", "test-verbatim"),
         default="llm",
-        help="llm for quality evaluation; rules for deterministic pipeline smoke",
+        help="llm for quality evaluation; test-verbatim for deterministic pipeline smoke",
     )
     parser.add_argument(
         "--min-triples", type=int, default=18, help="Wait until kg_stats.triples_total reaches this"

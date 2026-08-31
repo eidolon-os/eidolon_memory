@@ -38,7 +38,7 @@ def test_top_k_cap(monkeypatch: pytest.MonkeyPatch):
     assert len(out) <= settings.recall.top_k
 
 
-def test_user_confirmed_authority_outranks_same_session_recency() -> None:
+def test_rank_uses_scope_and_session_without_source_specific_boosts() -> None:
     context = MemoryActorContext(
         memory_realm_id="default.alice.default",
         memory_space_id="default.alice.default",
@@ -56,23 +56,23 @@ def test_user_confirmed_authority_outranks_same_session_recency() -> None:
             "similarity": 0.99,
         },
     )
-    explicit = MemoryWireRecord(
+    command_projection = MemoryWireRecord(
         memory_space_id=context.memory_space_id,
         key="drawer_explicit",
         value="用户明确要求记住的内容",
         metadata={
             "memory_space_id": context.memory_space_id,
-            "source": "user-confirmed",
+            "source": "assertion-ledger",
             "scope": "global",
             "similarity": 0.8,
         },
     )
 
     ranked = RecallPolicyRegistry.default().rank(
-        [current_chat, explicit],
+        [current_chat, command_projection],
         context=context,
         query="内容",
         top_k=2,
     )
 
-    assert [record.key for record in ranked] == ["drawer_explicit", "drawer_chat"]
+    assert [record.key for record in ranked] == ["drawer_chat", "drawer_explicit"]

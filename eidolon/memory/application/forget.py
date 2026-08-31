@@ -15,13 +15,7 @@ from eidolon.memory.domain.ports import (
 )
 from eidolon.memory.domain.wire import MemoryWireRecord
 
-_COMMAND_RE = re.compile(
-    r"(?:请|麻烦)?(?:帮我|把|给我)?(?:忘掉|删掉|删除|抹掉|不要记住|别记住|别记录|"
-    r"不要再提|以后别再提|以后别提|别再提|别再说)"
-)
-_SUFFIX_RE = re.compile(r"(?:这条|这段|相关的|有关的)?(?:的)?(?:记忆|内容|信息|事情|事实)$")
 _NON_SEMANTIC_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
-_GENERIC_TARGETS = frozenset({"", "刚才", "这件事", "那件事", "这个", "那个", "全部"})
 DEFAULT_FORGET_PAGE_SIZE = 5_000
 
 
@@ -52,13 +46,10 @@ class ForgetResolutionLimitExceeded(RuntimeError):
     """Resolution cannot prove a complete candidate set within safety limits."""
 
 
-def extract_privacy_target(text: str) -> str:
-    """Remove command boilerplate while preserving the fact/topic itself."""
-    clean = (text or "").strip().strip("，。！？,.!? ")
-    clean = re.sub(r"^(?:请|麻烦)(?:帮我)?", "", clean).strip()
-    clean = _COMMAND_RE.sub("", clean, count=1).strip("，。！？,.!? ")
-    clean = _SUFFIX_RE.sub("", clean).strip("，。！？,.!? ")
-    return clean
+def normalize_privacy_target(text: str) -> str:
+    """Normalize an already-resolved semantic target without language rules."""
+
+    return (text or "").strip().strip("，。！？,.!? ")
 
 
 def _normalize(text: Any) -> str:
@@ -87,9 +78,9 @@ async def find_forget_candidates(
     partial subset of the user's history. This is not a cross-page snapshot;
     exact-ID preview/confirm remains the strict path under concurrent writes.
     """
-    clean_target = extract_privacy_target(target)
+    clean_target = normalize_privacy_target(target)
     normalized_target = _normalize(clean_target)
-    if clean_target in _GENERIC_TARGETS or len(normalized_target) < 2:
+    if len(normalized_target) < 2:
         return []
 
     # Stable IDs are already unambiguous; avoid an O(n) palace listing for
@@ -316,11 +307,7 @@ async def find_forget_statements(
         include_sensitive=True,
         limit_per_entity=FORGET_STATEMENTS_PER_ENTITY,
     )
-    return [
-        triple
-        for triple in triples
-        if _refers_to(phrase, plain_triple_sentence(triple))
-    ]
+    return [triple for triple in triples if _refers_to(phrase, plain_triple_sentence(triple))]
 
 
 def _refers_to(target: str, sentence: str) -> bool:
@@ -355,9 +342,7 @@ async def forget_exact_projections(
     replay of the original evidence cannot reactivate a forgotten assertion.
     """
 
-    assertion_ids = await assertion_ids_for_drawers(
-        backend, memory_space_id, drawer_ids
-    )
+    assertion_ids = await assertion_ids_for_drawers(backend, memory_space_id, drawer_ids)
     if not assertion_ids:
         raise RuntimeError("privacy mutation refused a non-canonical drawer")
     if canonical_facts is None:
@@ -418,9 +403,7 @@ async def forget_commitment_projections(
     statements = 0
     if kg is not None:
         statements = await kg.forget_source_turns(wanted, hard=hard)
-    await commitments.mark_forget_projected(
-        memory_space_id, wanted, targets={"kg"}
-    )
+    await commitments.mark_forget_projected(memory_space_id, wanted, targets={"kg"})
 
     drawer_ids: list[str] = []
     for plan in plans:
@@ -438,9 +421,7 @@ async def forget_commitment_projections(
             if hard
             else await backend.archive_many(memory_space_id, drawer_ids)
         )
-    await commitments.mark_forget_projected(
-        memory_space_id, wanted, targets={"drawer"}
-    )
+    await commitments.mark_forget_projected(memory_space_id, wanted, targets={"drawer"})
     await commitments.finalize_forget(memory_space_id, wanted)
     return changed, statements
 
@@ -468,9 +449,7 @@ async def forget_graph_assertions(
     if set(ledger_assertions) != set(wanted):
         raise RuntimeError("graph projection points to a missing canonical assertion")
     changed = await kg.forget_assertions(ledger_assertions, hard=False)
-    await canonical_facts.mark_forget_projected(
-        memory_space_id, ledger_assertions, targets={"kg"}
-    )
+    await canonical_facts.mark_forget_projected(memory_space_id, ledger_assertions, targets={"kg"})
     return changed
 
 

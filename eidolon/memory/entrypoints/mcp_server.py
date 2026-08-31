@@ -10,7 +10,6 @@ Chroma/KG lock.
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 import uuid
 from importlib.metadata import PackageNotFoundError, version
@@ -22,16 +21,13 @@ from eidolon_memory_contracts import (
     KgAddTripleCommand,
     KgInvalidateCommand,
     MemoryActorContext,
-    MemoryIntent,
-    MemoryIntentCommand,
     PrivacyMutationCommand,
     RecallPlan,
 )
 
 from eidolon.memory.adapters.fixed_space_router import FixedSpaceRouter
 from eidolon.memory.adapters.kg_sqlite import now_iso as _now_iso
-from eidolon.memory.application.claim_routing import route_explicit_claim
-from eidolon.memory.application.explicit_writes import publish_with_status
+from eidolon.memory.application.command_delivery import publish_with_status
 from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     find_forget_candidates,
@@ -73,7 +69,7 @@ _OPS = "ops"
 #: and JSON schema — about 3,900 tokens in front of every agent request, of which
 #: 3,347 described tools the agent must never call. That is the smaller half of the
 #: problem. The larger half is that the list included ``forget_confirm``,
-#: ``dlq_replay``, ``dlq_resolve``, ``kg_invalidate`` and ``user_confirm``: a model
+#: ``dlq_replay``, ``dlq_resolve`` and ``kg_invalidate``: a model
 #: reading "忘了这件事吧" from a user had a plausible destructive tool in reach, and
 #: nothing but its own judgement between the two.
 AGENT_SURFACE_TOOLS = (
@@ -439,9 +435,7 @@ def build_control_plane_mcp(
                 "include_terminal": include_terminal,
                 "total": page.total,
                 "truncated": page.truncated,
-                "commitments": [
-                    row.model_dump(mode="json") for row in page.commitments
-                ],
+                "commitments": [row.model_dump(mode="json") for row in page.commitments],
             }
 
         @tool(_OPS)
@@ -482,9 +476,7 @@ def build_control_plane_mcp(
         lim = max(1, min(limit, 5000))
         off = max(0, offset)
         rows = await backend.get_all(memory_space_id, limit=lim, offset=off)
-        filtered = [
-            r for r in rows if row_visible_to_listing(r, include_private=include_private)
-        ]
+        filtered = [r for r in rows if row_visible_to_listing(r, include_private=include_private)]
         return {
             "records": [wire_record_to_public_dict(r) for r in filtered],
             "total_hint": len(filtered),
@@ -541,12 +533,6 @@ def build_control_plane_mcp(
     # is an operator tool — these are the write and confirm paths, and they are the
     # ones it matters most to keep off the agent's list.
     if surface == "all" and command_publisher is not None:
-        _register_user_confirm_tool(
-            mcp,
-            command_publisher=command_publisher,
-            memory_space_id=memory_space_id,
-            command_status=command_status,
-        )
         _register_privacy_tools(
             mcp,
             backend=backend,
@@ -693,9 +679,7 @@ def _register_privacy_tools(
                 candidate.key for candidate in candidates if candidate.key.startswith("drawer_")
             ],
             commitment_ids=[
-                candidate.key
-                for candidate in candidates
-                if candidate.key.startswith("commitment:")
+                candidate.key for candidate in candidates if candidate.key.startswith("commitment:")
             ],
         )
         ambiguous = len(candidates) > 1 or any(candidate.score < 1.0 for candidate in candidates)
@@ -749,146 +733,6 @@ def _register_privacy_tools(
         }
 
 
-def _register_user_confirm_tool(
-    mcp: Any,
-    *,
-    command_publisher: Any,
-    memory_space_id: str,
-    command_status: CommandStatusStore | None,
-) -> None:
-    """Phase 5.2 — verbatim-write tool, bypasses steward.
-
-    Decoupled from ``_register_kg_tools`` because this writes a *fragment*
-    (chromadb drawer), not a KG triple. Only needs ``command_publisher`` —
-    no ``kg`` dependency.
-    """
-
-    @mcp.tool()
-    async def eidolon_memory_user_confirm(
-        text: str,
-        wing: str = "auto",
-        memory_type: str = "auto",
-        importance: int = 5,
-        confidence: float = 0.99,
-        tags: list[str] | None = None,
-        scope: str = "persona",
-        visibility: str = "all_devices",
-        source_device_id: str = "",
-        target_device_id: str | None = None,
-        source_instance_id: str = "",
-        council_id: str = "",
-        session_id: str = "",
-        extensions: dict[str, dict[str, Any]] | None = None,
-        source_event_id: str = "",
-        tool_call_id: str = "",
-        request_id: str = "",
-        wait_applied_seconds: float = 0.75,
-    ) -> dict[str, Any]:
-        """Persist a user-confirmed fact verbatim, bypassing the LLM steward.
-
-        Use when the caller (LiveKit voice agent / IDE / chat UI) has
-        positively determined the user wants something remembered
-        word-for-word — e.g. "记住我喝乌龙茶不喝绿茶". The steward path
-        (where LLM may paraphrase, mis-route, or drop the statement
-        entirely) is **not** appropriate for this intent.
-
-        Writes:
-          - ``metadata.source = "user-confirmed"`` — recall pins these
-            ahead of cosine-ranked drawers in the same wing.
-          - ``confidence = 0.99`` (caller-override allowed) — the
-            highest-trust signal in the system short of KG facts.
-          - ``importance = 5`` default — explicit user intent ranks
-            top of the importance ladder.
-
-        Returns a truthful ``accepted``/``applied``/``failed`` status. Idempotency:
-        re-publishing the same ``request_id`` (caller can't drive that
-        from the tool, but JetStream redelivery does) collapses at chroma.
-        """
-        clean = (text or "").strip()
-        if not clean:
-            return {
-                "status": "error",
-                "error": "text must be a non-empty string",
-            }
-        clean_source_instance_id = source_instance_id.strip()
-        clean_council_id = council_id.strip()
-        if not clean_source_instance_id and not clean_council_id:
-            return {
-                "status": "error",
-                "error": "source_instance_id or council_id is required",
-            }
-        clean_request_id = request_id.strip()
-        if clean_request_id and (
-            len(clean_request_id) > 128
-            or re.fullmatch(r"[A-Za-z0-9._:-]+", clean_request_id) is None
-        ):
-            return {
-                "status": "error",
-                "error": "request_id contains unsupported characters",
-            }
-        request_id = clean_request_id or uuid.uuid4().hex
-        event_id = source_event_id.strip() or request_id
-        requested_memory_type = memory_type.strip() or "auto"
-        intent_type = (
-            "preference"
-            if requested_memory_type.lower() == "preference"
-            else "fact"
-        )
-        route = route_explicit_claim(clean, intent_type=intent_type)
-        selected_wing = route.wing if wing.strip() in {"", "auto"} else wing.strip()
-        selected_memory_type = (
-            route.memory_type
-            if requested_memory_type.lower() == "auto"
-            else requested_memory_type
-        )
-        intent = MemoryIntent(
-            intent_id=f"intent:{request_id}",
-            memory_space_id=memory_space_id,
-            source_event_id=event_id,
-            authority="explicit_user",
-            intent_type=intent_type,
-            raw_claim=clean,
-            operation_hint="confirm",
-            occurred_at=_now_iso(),
-            tool_call_id=tool_call_id.strip() or None,
-            confidence=max(0.0, min(1.0, confidence)),
-            attributes={
-                "wing": selected_wing,
-                "memory_type": selected_memory_type,
-                "importance": max(1, min(5, importance)),
-                "tags": list(tags or []),
-                "scope": scope,
-                "visibility": visibility,
-                "source_device_id": source_device_id,
-                "target_device_id": target_device_id,
-                "source_instance_id": clean_source_instance_id,
-                "council_id": clean_council_id,
-                "session_id": session_id,
-                "extensions": dict(extensions or {}),
-            },
-        )
-        cmd = MemoryIntentCommand(
-            request_id=request_id,
-            memory_space_id=memory_space_id,
-            issued_at=_now_iso(),
-            issuer="agent",
-            intent=intent,
-        )
-        outcome = await publish_with_status(
-            command_publisher,
-            command_status,
-            cmd,
-            wait_seconds=wait_applied_seconds,
-        )
-        return {
-            **outcome,
-            "wing": selected_wing,
-            "memory_type": selected_memory_type,
-            "intent_id": intent.intent_id,
-            "source_event_id": event_id,
-        }
-
-
 # palace_graph business logic lives in eidolon.memory.application.palace_graph
 # (thin shell here keeps entrypoints layer pure).
 
@@ -907,6 +751,7 @@ def _register_kg_tools(
     projection; read tools query the graph directly. A legacy
     storage-polling fallback remains only for embedders that omit the ledger.
     """
+
     @mcp.tool()
     async def eidolon_memory_kg_add_triple(
         subject: str,
@@ -954,9 +799,7 @@ def _register_kg_tools(
         # read-optimized status projection.
         deadline = time.monotonic() + wait_visible_seconds
         while time.monotonic() < deadline:
-            tid = await kg.find_pending_triple_id(
-                f"req:{request_id}", subject, predicate, object
-            )
+            tid = await kg.find_pending_triple_id(f"req:{request_id}", subject, predicate, object)
             if tid:
                 return {
                     "status": "applied",
@@ -997,9 +840,7 @@ def _register_kg_tools(
         await command_publisher.publish(cmd)
         deadline = time.monotonic() + wait_visible_seconds
         while time.monotonic() < deadline:
-            applied = await kg.find_invalidation_applied(
-                subject, predicate, object, ended_iso
-            )
+            applied = await kg.find_invalidation_applied(subject, predicate, object, ended_iso)
             if applied:
                 return {"status": "applied", "request_id": request_id}
             await asyncio.sleep(0.03)

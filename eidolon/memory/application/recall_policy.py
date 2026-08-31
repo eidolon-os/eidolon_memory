@@ -186,8 +186,6 @@ class RecallPolicyRegistry:
             score = 0.25
         else:
             score = 0.5
-        if meta.get("source") == "user-confirmed":
-            score += 0.2
         extensions = parse_extensions(meta)
         for namespace, payload in extensions.items():
             del payload
@@ -206,12 +204,10 @@ class RecallPolicyRegistry:
         include_private: bool = False,
     ) -> list[MemoryWireRecord]:
         visible = [
-            r for r in records
-            if self.visible(r, context=context, include_private=include_private)
+            r for r in records if self.visible(r, context=context, include_private=include_private)
         ]
         visible.sort(
             key=lambda r: (
-                (r.metadata or {}).get("source") == "user-confirmed",
                 self.score(r, context=context, query=query),
                 float((r.metadata or {}).get("similarity") or 0.0),
             ),

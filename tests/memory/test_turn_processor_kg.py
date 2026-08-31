@@ -18,9 +18,11 @@ from eidolon.memory.domain.space_lock import SpaceLock
 
 SPACE_FOR_TESTS = "default.alice.default"
 
+
 @pytest.fixture
 def settings():
     from eidolon.memory.config.memory_settings import load_memory_settings
+
     return load_memory_settings()
 
 
@@ -28,6 +30,7 @@ def settings():
 def backend():
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
     from eidolon.memory.adapters.locked_backend import LockedBackend
+
     return LockedBackend(FakeMemoryBackend())
 
 
@@ -101,105 +104,10 @@ def _make_steward(decision):
     return s
 
 
-async def test_explicit_write_is_the_only_long_term_source_for_its_turn(
-    settings,
-    backend,
-    kg,
-    canonical,
-) -> None:
-    from eidolon_memory_contracts import companion_audience
-
-    from eidolon.memory.application.ingest import ingest_memory_fragment
-    from eidolon.memory.application.turn_processor import process_turn_message
-    from eidolon.memory.domain.fragments import MemoryFragment
-
-    turn_id = "turn-explicit-1"
-    await ingest_memory_fragment(
-        backend,
-        MemoryFragment(
-            memory_id="memoryintent:explicit-1",
-            memory_space_id=MEMORY_SPACE_ID,
-            memory_realm_id=MEMORY_SPACE_ID,
-            source_device_id="device",
-            source_instance_id="test",
-            wing="Wing_Event",
-            room="user_confirmed_explicit",
-            content="明天我要去北京",
-            memory_type="event",
-            importance=5,
-            confidence=0.99,
-            source_turn_id=turn_id,
-            session_id="s1",
-            metadata={"source": "user-confirmed"},
-        ),
-    )
-    from eidolon.memory.domain.kg import KgTripleAction
-    from eidolon.memory.domain.steward import StewardDecision
-
-    steward_fragment = MemoryFragment(
-        memory_id="derived-duplicate",
-        memory_space_id=MEMORY_SPACE_ID,
-        source_device_id="device",
-        source_instance_id="test",
-        wing="Wing_Event",
-        room="event_trip",
-        content="用户明天要去北京",
-        memory_type="event",
-        importance=4,
-        confidence=0.9,
-        source_turn_id=turn_id,
-        session_id="s1",
-    )
-    steward = _make_steward(
-        StewardDecision(
-            should_write=True,
-            reason="explicit durable fact",
-            fragments=[steward_fragment],
-            triples=[
-                KgTripleAction(
-                    subject="self",
-                    predicate="planned_to",
-                    object="去北京",
-                    confidence=0.95,
-                )
-            ],
-        )
-    )
-    msg = _stub_msg(
-        _turn_payload(
-            turn_id=turn_id,
-            user_text="请记住：明天我要去北京",
-        )
-    )
-
-    await process_turn_message(
-        msg,
-        steward=steward,
-        backend=backend,
-        kg=kg,
-        settings=settings,
-        max_deliveries=3,
-        expected_memory_space_id=MEMORY_SPACE_ID,
-        canonical_facts=canonical,
-    )
-
-    steward.decide.assert_awaited_once()
-    rows = await backend.get_all("")
-    assert [row.value for row in rows] == ["明天我要去北京"]
-    graph_rows = await kg.query_entity(
-        "self", audiences=(companion_audience("test"),)
-    )
-    assert graph_rows == []
-    assert msg.ack_calls == ["ack"]
-    assert msg.nak_calls == []
-
-
 # ─── G7: KG write failure does not block ack ─────────────────────────────
 
 
-async def test_kg_failure_leaves_projection_pending_and_naks(
-    settings, backend, canonical
-):
+async def test_kg_failure_leaves_projection_pending_and_naks(settings, backend, canonical):
     """A canonical drawer cannot be advertised complete while KG is absent."""
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.fragments import MemoryFragment
@@ -212,19 +120,31 @@ async def test_kg_failure_leaves_projection_pending_and_naks(
     bad_kg.invalidate = AsyncMock(return_value=0)
 
     fragment = MemoryFragment(
-        memory_id="f1", memory_space_id="wrong.realm",
-        source_device_id="wrong-device", source_instance_id="wrong-companion",
-        wing="Wing_Profile", room="profile_core",
-        content="user likes tea", memory_type="preference",
-        importance=4, confidence=0.95,
-        source_turn_id="t1", session_id="s1",
+        memory_id="f1",
+        memory_space_id="wrong.realm",
+        source_device_id="wrong-device",
+        source_instance_id="wrong-companion",
+        wing="Wing_Profile",
+        room="profile_core",
+        content="user likes tea",
+        memory_type="preference",
+        importance=4,
+        confidence=0.95,
+        source_turn_id="t1",
+        session_id="s1",
     )
     triple = KgTripleAction(
-        subject="self", predicate="likes", object="tea", confidence=0.9,
+        subject="self",
+        predicate="likes",
+        object="tea",
+        confidence=0.9,
     )
     decision = StewardDecision(
-        should_write=True, reason="ok",
-        fragments=[fragment], triples=[triple], invalidations=[],
+        should_write=True,
+        reason="ok",
+        fragments=[fragment],
+        triples=[triple],
+        invalidations=[],
     )
 
     msg = _stub_msg(_turn_payload())
@@ -264,11 +184,18 @@ async def test_chroma_failure_naks_below_max_deliveries(settings, kg, canonical)
     bad_backend.ingest_fragment = AsyncMock(side_effect=RuntimeError("chroma corrupt"))
     bad_backend.delete = AsyncMock()
     fragment = MemoryFragment(
-        memory_id="f1", memory_space_id=MEMORY_SPACE_ID,
-        source_device_id="device", source_instance_id="instance",
-        wing="Wing_Profile", room="r",
-        content="x", memory_type="preference", importance=4, confidence=0.9,
-        source_turn_id="t1", session_id="s1",
+        memory_id="f1",
+        memory_space_id=MEMORY_SPACE_ID,
+        source_device_id="device",
+        source_instance_id="instance",
+        wing="Wing_Profile",
+        room="r",
+        content="x",
+        memory_type="preference",
+        importance=4,
+        confidence=0.9,
+        source_turn_id="t1",
+        session_id="s1",
     )
     decision = StewardDecision(should_write=True, reason="", fragments=[fragment])
 
@@ -290,16 +217,16 @@ async def test_chroma_failure_naks_below_max_deliveries(settings, kg, canonical)
 # ─── G1: same turn replayed twice → KG triple not duplicated ─────────────
 
 
-async def test_replay_of_same_turn_does_not_duplicate_triples(
-    settings, backend, kg, canonical
-):
+async def test_replay_of_same_turn_does_not_duplicate_triples(settings, backend, kg, canonical):
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.kg import KgTripleAction
     from eidolon.memory.domain.steward import StewardDecision
 
     triple = KgTripleAction(subject="self", predicate="likes", object="tea", confidence=0.9)
     decision = StewardDecision(
-        should_write=True, reason="", triples=[triple],
+        should_write=True,
+        reason="",
+        triples=[triple],
     )
     steward = _make_steward(decision)
 
@@ -307,8 +234,13 @@ async def test_replay_of_same_turn_does_not_duplicate_triples(
     for _ in range(3):
         msg = _stub_msg(payload)
         await process_turn_message(
-            msg, steward=steward, backend=backend, kg=kg,
-            settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+            msg,
+            steward=steward,
+            backend=backend,
+            kg=kg,
+            settings=settings,
+            max_deliveries=3,
+            expected_memory_space_id=MEMORY_SPACE_ID,
             canonical_facts=canonical,
         )
         assert msg.ack_calls == ["ack"]
@@ -326,7 +258,8 @@ async def test_low_confidence_triples_skipped(settings, backend, kg, canonical):
     from eidolon.memory.domain.steward import StewardDecision
 
     decision = StewardDecision(
-        should_write=True, reason="",
+        should_write=True,
+        reason="",
         triples=[
             KgTripleAction(subject="self", predicate="likes", object="tea", confidence=0.9),
             KgTripleAction(
@@ -336,8 +269,13 @@ async def test_low_confidence_triples_skipped(settings, backend, kg, canonical):
     )
     msg = _stub_msg(_turn_payload())
     await process_turn_message(
-        msg, steward=_make_steward(decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        msg,
+        steward=_make_steward(decision),
+        backend=backend,
+        kg=kg,
+        settings=settings,
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
         canonical_facts=canonical,
     )
     stats = await kg.stats()
@@ -349,9 +287,7 @@ async def test_low_confidence_triples_skipped(settings, backend, kg, canonical):
 # ─── Invalidation runs before any new triple is recorded ─────────────────
 
 
-async def test_invalidation_applies_before_new_triple(
-    settings, backend, kg, canonical
-):
+async def test_invalidation_applies_before_new_triple(settings, backend, kg, canonical):
     """If both an invalidation and a new triple target the same (s,p,o),
     the invalidation should fire first so we end up with one *new* triple
     with valid_to=None and an older one with valid_to set."""
@@ -361,30 +297,40 @@ async def test_invalidation_applies_before_new_triple(
 
     # Seed an existing "likes coffee" via a prior turn.
     seed_decision = StewardDecision(
-        should_write=True, reason="",
+        should_write=True,
+        reason="",
         triples=[
-            KgTripleAction(
-                subject="self", predicate="likes", object="coffee", confidence=0.95
-            )
+            KgTripleAction(subject="self", predicate="likes", object="coffee", confidence=0.95)
         ],
     )
     msg1 = _stub_msg(_turn_payload(turn_id="seed"))
     await process_turn_message(
-        msg1, steward=_make_steward(seed_decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        msg1,
+        steward=_make_steward(seed_decision),
+        backend=backend,
+        kg=kg,
+        settings=settings,
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
         canonical_facts=canonical,
     )
 
     # New turn changes mind.
     change_decision = StewardDecision(
-        should_write=True, reason="",
+        should_write=True,
+        reason="",
         triples=[KgTripleAction(subject="self", predicate="likes", object="tea", confidence=0.95)],
         invalidations=[KgInvalidationAction(subject="self", predicate="likes", object="coffee")],
     )
     msg2 = _stub_msg(_turn_payload(turn_id="change"))
     await process_turn_message(
-        msg2, steward=_make_steward(change_decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        msg2,
+        steward=_make_steward(change_decision),
+        backend=backend,
+        kg=kg,
+        settings=settings,
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
         canonical_facts=canonical,
     )
 
@@ -394,9 +340,7 @@ async def test_invalidation_applies_before_new_triple(
         if r.object == "coffee"
     ]
     tea = [
-        r
-        for r in await kg.query_entity("self", audiences=("companion:test",))
-        if r.object == "tea"
+        r for r in await kg.query_entity("self", audiences=("companion:test",)) if r.object == "tea"
     ]
     # Coffee invalidated → no current "likes coffee"
     assert not coffee
@@ -412,16 +356,24 @@ async def test_privacy_actions_skip_kg(settings, backend, kg, canonical):
     from eidolon.memory.domain.steward import PrivacyAction, StewardDecision
 
     decision = StewardDecision(
-        should_write=False, reason="user said don't record",
-        fragments=[], triples=[], invalidations=[],
+        should_write=False,
+        reason="user said don't record",
+        fragments=[],
+        triples=[],
+        invalidations=[],
         privacy_actions=[
             PrivacyAction(action="do_not_store", target="recent topic", reason="user request"),
         ],
     )
     msg = _stub_msg(_turn_payload())
     await process_turn_message(
-        msg, steward=_make_steward(decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        msg,
+        steward=_make_steward(decision),
+        backend=backend,
+        kg=kg,
+        settings=settings,
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
         canonical_facts=canonical,
     )
     stats = await kg.stats()
@@ -440,12 +392,14 @@ async def test_decision_with_bad_predicate_rejected_at_pydantic() -> None:
         "should_write": True,
         "reason": "test",
         "fragments": [],
-        "triples": [{
-            "subject": "self",
-            "predicate": "loves",   # not in whitelist
-            "object": "x",
-            "confidence": 0.9,
-        }],
+        "triples": [
+            {
+                "subject": "self",
+                "predicate": "loves",  # not in whitelist
+                "object": "x",
+                "confidence": 0.9,
+            }
+        ],
         "invalidations": [],
         "privacy_actions": [],
     }
@@ -456,27 +410,33 @@ async def test_decision_with_bad_predicate_rejected_at_pydantic() -> None:
 # ─── KG-V13 G2: KG plan privacy carry-over via steward output ────────────
 
 
-async def test_steward_output_with_health_predicate_propagates(
-    settings, backend, kg, canonical
-):
+async def test_steward_output_with_health_predicate_propagates(settings, backend, kg, canonical):
     """Sanity: a health triple does land in KG, but is filtered from default reads."""
     from eidolon.memory.application.turn_processor import process_turn_message
     from eidolon.memory.domain.kg import KgTripleAction
     from eidolon.memory.domain.steward import StewardDecision
 
     decision = StewardDecision(
-        should_write=True, reason="",
+        should_write=True,
+        reason="",
         triples=[
             KgTripleAction(
-                subject="self", predicate="has_health_condition", object="anxiety",
+                subject="self",
+                predicate="has_health_condition",
+                object="anxiety",
                 confidence=0.95,
             )
         ],
     )
     msg = _stub_msg(_turn_payload())
     await process_turn_message(
-        msg, steward=_make_steward(decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        msg,
+        steward=_make_steward(decision),
+        backend=backend,
+        kg=kg,
+        settings=settings,
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
         canonical_facts=canonical,
     )
 
@@ -485,13 +445,9 @@ async def test_steward_output_with_health_predicate_propagates(
     assert not any(r.predicate == "has_health_condition" for r in default)
     # Sensitive interaction facts remain private to the companion that learned
     # them; opting in to sensitive data must not widen the audience to Owner.
-    owner_opt_in = await kg.query_entity(
-        "self", audiences=("owner",), include_sensitive=True
-    )
+    owner_opt_in = await kg.query_entity("self", audiences=("owner",), include_sensitive=True)
     assert not any(r.predicate == "has_health_condition" for r in owner_opt_in)
-    opt_in = await kg.query_entity(
-        "self", audiences=("companion:test",), include_sensitive=True
-    )
+    opt_in = await kg.query_entity("self", audiences=("companion:test",), include_sensitive=True)
     assert any(r.predicate == "has_health_condition" for r in opt_in)
 
 
@@ -524,8 +480,13 @@ async def test_a_triple_survives_a_turn_whose_fragments_were_not_worth_keeping(
     msg = _stub_msg(_turn_payload(turn_id="low-importance-1"))
 
     await process_turn_message(
-        msg, steward=_make_steward(decision), backend=backend, kg=kg,
-        settings=settings, max_deliveries=3, expected_memory_space_id=MEMORY_SPACE_ID,
+        msg,
+        steward=_make_steward(decision),
+        backend=backend,
+        kg=kg,
+        settings=settings,
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
         canonical_facts=canonical,
     )
 
@@ -561,7 +522,10 @@ async def test_a_correction_is_applied_even_with_nothing_worth_storing(
                 ],
             )
         ),
-        backend=backend, kg=kg, settings=settings, max_deliveries=3,
+        backend=backend,
+        kg=kg,
+        settings=settings,
+        max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
         canonical_facts=canonical,
     )
@@ -579,7 +543,10 @@ async def test_a_correction_is_applied_even_with_nothing_worth_storing(
                 ],
             )
         ),
-        backend=backend, kg=kg, settings=settings, max_deliveries=3,
+        backend=backend,
+        kg=kg,
+        settings=settings,
+        max_deliveries=3,
         expected_memory_space_id=MEMORY_SPACE_ID,
         canonical_facts=canonical,
     )

@@ -261,9 +261,7 @@ def _free_port() -> int:
                 continue
         _ISSUED_PORTS.add(candidate)
         return candidate
-    raise RuntimeError(
-        f"no free port in {_PORT_BAND[0]}-{_PORT_BAND[1]} for an e2e agent"
-    )
+    raise RuntimeError(f"no free port in {_PORT_BAND[0]}-{_PORT_BAND[1]} for an e2e agent")
 
 
 @pytest.fixture
@@ -454,6 +452,8 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                             env[k] = v.strip()
         if env_overrides:
             env.update(env_overrides)
+        if steward_mode == "test-verbatim":
+            env["EIDOLON_MEMORY_TEST_STEWARD"] = "1"
 
         with log_path.open("ab") as log_fp:
             proc = subprocess.Popen(
@@ -799,7 +799,7 @@ async def nats_publish_kg_invalidate(
     return str(payload["request_id"])
 
 
-async def nats_publish_user_confirm(
+async def nats_publish_assertion(
     nats_url: str,
     *,
     user_id: str,
@@ -813,23 +813,22 @@ async def nats_publish_user_confirm(
     operation_hint: str = "confirm",
     companion_id: str = "e2e",
 ) -> str:
-    """Publish an explicit ``MemoryIntentCommand`` to the cmd subject.
+    """Publish an administrative assertion to the command subject.
 
-    This is the exact wire shape the ``eidolon_memory_user_confirm`` MCP tool
-    emits — e2e tests publish it directly to verify the worker → drawer →
-    recall-pin path end to end.
+    This fixture seeds deterministic lifecycle state without exposing a second
+    conversational write path or applying source-specific recall priority.
     """
     payload = _base_cmd(user_id, "memory_intent", request_id)
     event_id = f"e2e:{payload['request_id']}"
     intent_type = "preference" if memory_type == "preference" else "fact"
     payload.update(
         {
-            "issuer": "agent",
+            "issuer": "admin",
             "intent": {
                 "intent_id": f"intent:{payload['request_id']}",
                 "memory_space_id": payload["memory_space_id"],
                 "source_event_id": event_id,
-                "authority": "explicit_user",
+                "authority": "explicit_admin",
                 "intent_type": intent_type,
                 "raw_claim": text,
                 "operation_hint": operation_hint,

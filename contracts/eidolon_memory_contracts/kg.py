@@ -166,8 +166,6 @@ class DeviceSyncBatchPayload(_BaseMemoryCommand):
     events: list[DeviceSyncEvent] = Field(default_factory=list)
 
 
-USER_CONFIRMED_ROOM_PREFIX = "userconfirm:"
-
 MemoryCommandPayload = (
     KgAddTripleCommand
     | KgInvalidateCommand

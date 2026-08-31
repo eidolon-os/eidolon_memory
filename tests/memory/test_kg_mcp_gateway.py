@@ -83,11 +83,13 @@ async def test_privacy_preview_is_read_only_and_confirm_publishes_exact_ids(
             metadata={"memory_space_id": SPACE, "wing": "Wing_Profile"},
         )
     preview_tool = next(
-        tool for tool in mcp._tool_manager.list_tools()
+        tool
+        for tool in mcp._tool_manager.list_tools()
         if tool.name == "eidolon_memory_forget_preview"
     )
     confirm_tool = next(
-        tool for tool in mcp._tool_manager.list_tools()
+        tool
+        for tool in mcp._tool_manager.list_tools()
         if tool.name == "eidolon_memory_forget_confirm"
     )
 
@@ -125,7 +127,8 @@ async def test_privacy_preview_is_read_only_and_confirm_publishes_exact_ids(
 async def test_privacy_confirm_rejects_tampered_preview(mcp_with_kg) -> None:
     mcp, _, publisher, _, _ = mcp_with_kg
     confirm_tool = next(
-        tool for tool in mcp._tool_manager.list_tools()
+        tool
+        for tool in mcp._tool_manager.list_tools()
         if tool.name == "eidolon_memory_forget_confirm"
     )
 
@@ -158,8 +161,7 @@ async def test_kg_tools_omitted_without_publisher(tmp_path: Path) -> None:
 async def test_kg_predicates_tool_returns_whitelist(mcp_with_kg) -> None:
     mcp, _, _, _, _ = mcp_with_kg
     tool = next(
-        t for t in mcp._tool_manager.list_tools()
-        if t.name == "eidolon_memory_kg_predicates"
+        t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_kg_predicates"
     )
     result = await tool.fn()
     assert "likes" in result["predicates"]
@@ -180,8 +182,11 @@ async def test_kg_add_triple_publishes_then_reads_status(mcp_with_kg) -> None:
         # via locked_kg directly, then returns.
         triple_id = await locked_kg.add_triple(
             audience="owner",
-            subject=cmd.subject, predicate=cmd.predicate, object=cmd.object,
-            valid_from=cmd.valid_from, valid_to=cmd.valid_to,
+            subject=cmd.subject,
+            predicate=cmd.predicate,
+            object=cmd.object,
+            valid_from=cmd.valid_from,
+            valid_to=cmd.valid_to,
             confidence=cmd.confidence,
             source_turn_id=cmd.source_drawer_id or f"req:{cmd.request_id}",
             adapter_name=cmd.adapter_name,
@@ -220,7 +225,7 @@ async def test_kg_add_triple_returns_accepted_when_worker_silent(mcp_with_kg) ->
         subject="self",
         predicate="likes",
         object="never_applied",
-        wait_visible_seconds=0.1,   # short for the test
+        wait_visible_seconds=0.1,  # short for the test
     )
     assert result["status"] == "accepted"
     assert result["triple_id"] is None
@@ -230,13 +235,19 @@ async def test_kg_query_entity_excludes_sensitive_by_default(mcp_with_kg) -> Non
     mcp, locked_kg, _, _, _ = mcp_with_kg
     await locked_kg.add_triple(
         audience="owner",
-        subject="self", predicate="has_health_condition", object="anxiety",
-        source_turn_id="seed", adapter_name="test",
+        subject="self",
+        predicate="has_health_condition",
+        object="anxiety",
+        source_turn_id="seed",
+        adapter_name="test",
     )
     await locked_kg.add_triple(
         audience="owner",
-        subject="self", predicate="likes", object="tea",
-        source_turn_id="seed2", adapter_name="test",
+        subject="self",
+        predicate="likes",
+        object="tea",
+        source_turn_id="seed2",
+        adapter_name="test",
     )
     query_tool = next(
         t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_kg_query_entity"
@@ -260,9 +271,7 @@ async def test_command_status_read_does_not_wait_for_backend_lock(mcp_with_kg) -
         resource_id="memoryintent:intent:status-fast",
     )
     status_tool = next(
-        t
-        for t in mcp._tool_manager.list_tools()
-        if t.name == "eidolon_memory_command_status"
+        t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_command_status"
     )
 
     async with backend.lock:
@@ -279,7 +288,8 @@ async def test_command_status_stats_tool_reads_projection_capacity(mcp_with_kg) 
     mcp, _, _, ledger, _ = mcp_with_kg
     await ledger.record_accepted("active", kind="privacy_mutation")
     tool = next(
-        item for item in mcp._tool_manager.list_tools()
+        item
+        for item in mcp._tool_manager.list_tools()
         if item.name == "eidolon_memory_command_status_stats"
     )
 
@@ -327,7 +337,8 @@ async def test_canonical_stats_read_does_not_wait_for_backend_lock(tmp_path: Pat
         canonical_facts=canonical,
     )
     tool = next(
-        item for item in mcp._tool_manager.list_tools()
+        item
+        for item in mcp._tool_manager.list_tools()
         if item.name == "eidolon_memory_canonical_stats"
     )
 
@@ -376,14 +387,13 @@ async def test_canonical_history_tool_is_realm_bound_and_redacts_sensitive(
         canonical_facts=canonical,
     )
     tool = next(
-        item for item in mcp._tool_manager.list_tools()
+        item
+        for item in mcp._tool_manager.list_tools()
         if item.name == "eidolon_memory_fact_history"
     )
 
     result = await tool.fn(subject="self", predicate="lives_in")
-    redacted = await tool.fn(
-        subject="self", predicate="has_health_condition"
-    )
+    redacted = await tool.fn(subject="self", predicate="has_health_condition")
 
     assert result["status"] == "ok"
     assert result["memory_space_id"] == SPACE
@@ -451,77 +461,3 @@ async def test_dlq_mcp_list_detail_replay_resolve(tmp_path: Path) -> None:
     )
     assert duplicate["status"] == "not_replayable"
     assert resolved["status"] == "resolved"
-
-
-async def test_user_confirm_reports_accepted_not_applied_when_worker_is_silent(
-    mcp_with_kg,
-) -> None:
-    mcp, _, publisher, ledger, backend = mcp_with_kg
-    publisher.publish.side_effect = lambda _command: None
-    tool = next(
-        t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_user_confirm"
-    )
-
-    result = await tool.fn(
-        text="我喜欢乌龙茶",
-        source_instance_id="companion-a",
-        wait_applied_seconds=0.01,
-    )
-
-    assert result["status"] == "accepted"
-    record = await ledger.get(result["request_id"])
-    assert record is not None
-    assert record.status == "accepted"
-    assert backend.inner.docs == {}
-    command = publisher.publish.await_args.args[0]
-    assert command.kind == "memory_intent"
-    assert command.intent.authority == "explicit_user"
-    assert command.intent.raw_claim == "我喜欢乌龙茶"
-
-
-async def test_user_confirm_accepts_idempotency_key_and_auto_routes_event(
-    mcp_with_kg,
-) -> None:
-    mcp, _, publisher, _, _ = mcp_with_kg
-    publisher.publish.side_effect = lambda _command: None
-    tool = next(
-        t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_user_confirm"
-    )
-
-    result = await tool.fn(
-        text="明天我要去北京",
-        source_instance_id="companion-a",
-        request_id="turn-1.memory-1",
-        wait_applied_seconds=0.01,
-    )
-
-    assert result["request_id"] == "turn-1.memory-1"
-    assert result["wing"] == "Wing_Event"
-    assert result["memory_type"] == "event"
-    command = publisher.publish.await_args.args[0]
-    assert command.intent.attributes["wing"] == "Wing_Event"
-    assert command.intent.attributes["memory_type"] == "event"
-
-
-async def test_user_confirm_publish_failure_is_truthfully_failed(mcp_with_kg) -> None:
-    mcp, _, publisher, ledger, _ = mcp_with_kg
-
-    async def _fail(_command):
-        raise RuntimeError("NATS unavailable")
-
-    publisher.publish.side_effect = _fail
-    tool = next(
-        t for t in mcp._tool_manager.list_tools() if t.name == "eidolon_memory_user_confirm"
-    )
-
-    result = await tool.fn(
-        text="我喜欢乌龙茶",
-        source_instance_id="companion-a",
-        wait_applied_seconds=0.01,
-    )
-
-    assert result["status"] == "failed"
-    assert "NATS unavailable" in result["error"]
-    record = await ledger.get(result["request_id"])
-    assert record is not None
-    assert record.status == "failed"

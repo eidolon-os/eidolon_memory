@@ -1,26 +1,4 @@
-"""Which extractor produced a decision, and why that is not the version column.
-
-The steward falls back to rule-based extraction when its LLM call fails, and the
-pipeline carries on. That is right for production — a degraded memory beats a
-dropped turn — but it was recorded as a *successful LLM extraction*, because the
-ledger's ``extractor_version`` is the configured policy hash and says ``llm:…``
-either way.
-
-Two consequences, both silent:
-
-* A replayed turn hits the idempotency guard under the same version and returns
-  the stored rules-based decision, so it is never re-extracted once the endpoint
-  recovers. The memory stays degraded permanently and the ledger asserts it was
-  LLM-extracted.
-* Any measurement over that corpus is a mixture. A run on 2026-08-04 lost 16
-  calls to connection errors and produced 6 triples where the previous run
-  produced 36; it was caught only indirectly, by a triple floor that a run with
-  two or three fallbacks would clear.
-
-The version column cannot carry this: it is computed *before* ``decide`` runs,
-because it is what the idempotency lookup is keyed on. So provenance is a
-separate thing, stamped on the decision by whoever produced it.
-"""
+"""Extraction provenance remains explicit and replay-safe."""
 
 from __future__ import annotations
 
@@ -32,7 +10,6 @@ import pytest
 import yaml
 
 from eidolon.memory.application.steward.llm import LiteLLMSteward
-from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.steward import StewardDecision
 
@@ -40,9 +17,7 @@ _CONFIG = Path(__file__).resolve().parents[2] / "config" / "settings.example.yam
 
 
 def _settings() -> MemorySettings:
-    return MemorySettings.model_validate(
-        yaml.safe_load(_CONFIG.read_text(encoding="utf-8"))
-    )
+    return MemorySettings.model_validate(yaml.safe_load(_CONFIG.read_text(encoding="utf-8")))
 
 
 def _turn():
@@ -94,46 +69,12 @@ def test_stamping_does_not_mutate_the_original() -> None:
     assert fresh.produced_by == ""
 
 
-# ── each steward stamps itself ───────────────────────────────────────────────
-
-
-async def test_the_rule_steward_stamps_its_own_decisions() -> None:
-    decision = await RuleBasedSteward(_settings()).decide(_turn())
-
-    assert decision.produced_by == "rules:v2"
-
-
-async def test_a_fallback_is_recorded_as_the_rule_steward() -> None:
-    """The case that was invisible.
-
-    An empty ``llm.model`` makes the LLM path raise, which is the same code path a
-    connection error takes. The decision that comes back must say ``rules:`` even
-    though the steward asked for it is the LLM one — and there is no code at the
-    fallback site making that happen, which is the point.
-    """
-
+async def test_llm_failure_is_not_replaced_by_a_different_extractor() -> None:
     settings = _settings()
     settings.llm.model = ""
-    steward = LiteLLMSteward(settings, fallback=RuleBasedSteward(settings))
 
-    decision = await steward.decide(_turn())
-
-    assert decision.produced_by == "rules:v2"
-    assert not decision.produced_by.startswith("llm:")
-    # The steward's own version still says llm — it describes the configured
-    # policy, which is exactly why it cannot answer this question.
-    assert steward.extraction_version.startswith("llm:")
-
-
-def test_the_two_stewards_do_not_share_a_producer_string() -> None:
-    """Distinguishable, or the ledger cannot tell them apart."""
-
-    settings = _settings()
-
-    assert (
-        RuleBasedSteward(settings).extraction_version
-        != LiteLLMSteward(settings).extraction_version
-    )
+    with pytest.raises(Exception, match="llm.model is not configured"):
+        await LiteLLMSteward(settings).decide(_turn())
 
 
 # ── the benchmark can now refuse a mixed corpus ──────────────────────────────
@@ -152,9 +93,7 @@ def _ledger_with(tmp_path: Path, producers: list[str]) -> Path:
             "input_hash TEXT, decision_json TEXT, intents_json TEXT, created_at TEXT)"
         )
         for index, producer in enumerate(producers):
-            payload = StewardDecision(
-                should_write=True, produced_by=producer
-            ).model_dump_json()
+            payload = StewardDecision(should_write=True, produced_by=producer).model_dump_json()
             conn.execute(
                 "INSERT INTO extraction_decisions VALUES (?,?,?,?,?,?,?)",
                 ("s", f"t{index}", "llm:same", "h", payload, "[]", "now"),
@@ -237,7 +176,7 @@ async def test_provenance_survives_the_ledger(tmp_path: Path) -> None:
             source_turn_id="t1",
             extractor_version="llm:policy-hash",
             input_hash="h1",
-            decision=StewardDecision(should_write=True, produced_by="rules:v2"),
+            decision=StewardDecision(should_write=True, produced_by="llm:policy-hash"),
             intents=[],
             created_at="2026-08-04T00:00:00Z",
         )
@@ -246,10 +185,8 @@ async def test_provenance_survives_the_ledger(tmp_path: Path) -> None:
     loaded = await ledger.get("default.alice.default", "t1", "llm:policy-hash")
 
     assert loaded is not None
-    # The key says the policy was the LLM one; the decision says regexes did the
-    # work. Both true, and only together do they describe what happened.
     assert loaded.extractor_version == "llm:policy-hash"
-    assert loaded.decision.produced_by == "rules:v2"
+    assert loaded.decision.produced_by == "llm:policy-hash"
 
 
 async def test_a_decision_written_before_the_field_existed_still_loads(

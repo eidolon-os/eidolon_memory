@@ -1,16 +1,4 @@
-"""The write half of the boundary, and the one rule it exists to hold.
-
-``MemoryWriteContract`` was declared when the contracts package was written and
-implemented by nothing until 2026-08-07. The three operations were all real — a
-turn goes out over NATS, explicit writes and forgets go through MCP tools — but
-scattered across two transports with no object gathering them, so the sentence
-the contract is built around had nowhere to live:
-
-    ``applied`` is the only status that means stored and readable. A caller that
-    says "I'll remember that" on ``accepted`` is lying to the user.
-
-Everything here is about that sentence staying true.
-"""
+"""Write-contract coverage for turn ingestion and privacy confirmation."""
 
 from __future__ import annotations
 
@@ -91,103 +79,6 @@ def test_one_object_satisfies_both_halves_of_the_boundary() -> None:
     service = _service()
     assert isinstance(service, MemoryReadContract)
     assert isinstance(service, MemoryWriteContract)
-
-
-# ── the rule ──────────────────────────────────────────────────────────────────
-
-
-async def test_a_write_the_ledger_confirms_is_the_only_one_called_applied() -> None:
-    publisher = _Publisher()
-    service = _service(
-        command_publisher=publisher,
-        command_status=_Status({"status": "applied", "resource_id": "drawer_1"}),
-    )
-
-    outcome = await service.write_confirmed_fact(
-        _ctx(), "我对花生过敏", source_event_id="evt-1", tool_call_id="call-1"
-    )
-
-    assert outcome.status == "applied"
-    assert outcome.durable is True
-    assert outcome.resource_id == "drawer_1"
-
-
-async def test_a_write_that_outruns_the_wait_is_accepted_not_applied() -> None:
-    """The timeout case, which is the one a caller is most likely to speak over."""
-
-    service = _service(
-        command_publisher=_Publisher(),
-        command_status=_Status(None),  # never reaches a terminal state
-    )
-
-    outcome = await service.write_confirmed_fact(
-        _ctx(),
-        "我对花生过敏",
-        source_event_id="evt-1",
-        tool_call_id="call-1",
-        wait_applied_seconds=0.01,
-    )
-
-    assert outcome.status == "accepted"
-    assert outcome.durable is False, "accepted must never read as stored"
-
-
-async def test_a_write_with_no_ledger_is_accepted_not_applied() -> None:
-    """Durable on the bus, unobservable in outcome. Claiming more would be a guess."""
-
-    service = _service(command_publisher=_Publisher(), command_status=None)
-
-    outcome = await service.write_confirmed_fact(
-        _ctx(), "我对花生过敏", source_event_id="evt-1", tool_call_id="call-1"
-    )
-
-    assert outcome.status == "accepted"
-    assert outcome.durable is False
-
-
-async def test_a_write_that_never_reached_the_bus_says_so() -> None:
-    status = _Status(None)
-    service = _service(command_publisher=_Publisher(fail=True), command_status=status)
-
-    outcome = await service.write_confirmed_fact(
-        _ctx(), "我对花生过敏", source_event_id="evt-1", tool_call_id="call-1"
-    )
-
-    assert outcome.status == "failed"
-    assert "bus unreachable" in (outcome.error or "")
-    # Recorded, so a later status lookup agrees with what the caller was told.
-    assert status.failed and status.failed[0][0] == outcome.request_id
-
-
-async def test_the_same_tool_call_writes_under_the_same_id_twice() -> None:
-    """Retrying a write must be a retry, not a second memory."""
-
-    publisher = _Publisher()
-    service = _service(command_publisher=publisher, command_status=_Status(None))
-
-    first = await service.write_confirmed_fact(
-        _ctx(), "我对花生过敏", source_event_id="evt-1", tool_call_id="call-1"
-    )
-    second = await service.write_confirmed_fact(
-        _ctx(), "我对花生过敏", source_event_id="evt-1", tool_call_id="call-1"
-    )
-
-    assert first.request_id == second.request_id == "call-1"
-
-
-async def test_an_empty_fact_fails_rather_than_publishing_nothing() -> None:
-    publisher = _Publisher()
-    service = _service(command_publisher=publisher, command_status=_Status(None))
-
-    outcome = await service.write_confirmed_fact(
-        _ctx(), "   ", source_event_id="evt-1", tool_call_id="call-1"
-    )
-
-    assert outcome.status == "failed"
-    assert publisher.published == []
-
-
-# ── turns are the other kind of write, and say less on purpose ────────────────
 
 
 async def test_a_published_turn_reports_the_bus_not_the_memory() -> None:
@@ -273,7 +164,7 @@ async def test_a_preview_hands_back_a_token_its_own_confirm_accepts(tmp_path) ->
         command_status=_Status({"status": "applied"}),
     )
 
-    preview = await service.preview_forget(_ctx(), "忘掉用户对花生过敏", action="delete")
+    preview = await service.preview_forget(_ctx(), "用户对花生过敏", action="delete")
 
     assert preview.status == "preview"
     assert preview.requires_explicit_confirmation

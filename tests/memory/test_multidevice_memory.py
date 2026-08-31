@@ -18,12 +18,12 @@ from eidolon_memory_contracts import (
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
-from eidolon.memory.application.steward.rules import RuleBasedSteward
 from eidolon.memory.application.turn_processor import process_sync_message
 from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.space_lock import SpaceLock
+from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 from eidolon.memory.infrastructure.nats.names import memory_consumer_name, nats_safe_name
@@ -202,22 +202,6 @@ async def test_working_memory_partitions_by_device_and_session() -> None:
     ]
 
 
-@pytest.mark.asyncio
-async def test_rules_steward_classifies_persona_and_device_memory() -> None:
-    settings = load_memory_settings()
-    steward = RuleBasedSteward(settings)
-
-    persona = await steward.decide(_turn("我喜欢乌龙茶"))
-    device = await steward.decide(_turn("这台设备在客厅，麦克风需要校准"))
-
-    assert persona.fragments[0].scope == "persona"
-    assert persona.fragments[0].visibility == "all_devices"
-    assert device.fragments[0].scope == "device"
-    assert device.fragments[0].visibility == "current_device"
-    assert "location" in device.fragments[0].extensions
-    assert "capability" in device.fragments[0].extensions
-
-
 class _Msg:
     def __init__(self, payload: dict) -> None:
         self.data = json.dumps(payload).encode("utf-8")
@@ -247,14 +231,34 @@ class _Backend:
         return None
 
 
+class _SyncSteward:
+    extraction_version = "test:sync"
+
+    async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
+        return StewardDecision(
+            should_write=True,
+            fragments=[
+                MemoryFragment(
+                    memory_space_id=turn.context.memory_space_id,
+                    source_turn_id=turn.turn_id,
+                    wing="Wing_Life",
+                    room="preference",
+                    content=turn.user_text,
+                    evidence_quote=turn.user_text,
+                    memory_type="preference",
+                    importance=4,
+                    confidence=0.9,
+                )
+            ],
+        )
+
+
 @pytest.mark.asyncio
 async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
     settings = load_memory_settings()
-    steward = RuleBasedSteward(settings)
+    steward = _SyncSteward()
     backend = _Backend()
-    ledger = SyncLedger(
-        tmp_path / "sync_ledger.sqlite3", space_id=_ctx().memory_space_id
-    )
+    ledger = SyncLedger(tmp_path / "sync_ledger.sqlite3", space_id=_ctx().memory_space_id)
     canonical = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
     turn = _turn("我喜欢乌龙茶").model_dump(mode="json")
     batch = DeviceSyncBatchPayload(

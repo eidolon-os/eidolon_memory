@@ -8,7 +8,6 @@ from typing import Any
 
 from eidolon_memory_contracts import (
     KG_PREDICATE_VALUES,
-    USER_CONFIRMED_ROOM_PREFIX,
     MemoryIntent,
     MemoryIntentCommand,
 )
@@ -56,18 +55,12 @@ async def apply_explicit_intent(
     """
     intent = cmd.intent
     if intent.authority not in {"explicit_user", "explicit_admin"}:
-        raise MemoryIntentRejected(
-            "memory_intent command requires explicit authority"
-        )
+        raise MemoryIntentRejected("memory_intent command requires explicit authority")
     if intent.intent_type == "forget":
-        raise MemoryIntentRejected(
-            "forget intents require the exact privacy preview/confirm flow"
-        )
+        raise MemoryIntentRejected("forget intents require the exact privacy preview/confirm flow")
     if intent.intent_type == "commitment":
         if commitments is None or kg is None:
-            raise MemoryIntentRejected(
-                "commitment intent requires commitment and KG ports"
-            )
+            raise MemoryIntentRejected("commitment intent requires commitment and KG ports")
         try:
             return await apply_explicit_commitment(
                 backend,
@@ -78,9 +71,7 @@ async def apply_explicit_intent(
         except (CommitmentConflict, ValueError) as exc:
             raise MemoryIntentRejected(str(exc)) from exc
     if canonical_facts is None:
-        raise MemoryIntentRejected(
-            "long-term fact intent requires the canonical fact ledger"
-        )
+        raise MemoryIntentRejected("long-term fact intent requires the canonical fact ledger")
     attributes = intent.attributes
     interaction_context = SimpleNamespace(
         companion_id=_optional_attribute(attributes, "source_instance_id"),
@@ -107,13 +98,9 @@ async def apply_explicit_intent(
                 "correction requires an exact subject/predicate/object invalidation"
             )
         if intent.predicate not in KG_PREDICATE_VALUES:
-            raise MemoryIntentRejected(
-                f"unsupported KG predicate: {intent.predicate}"
-            )
+            raise MemoryIntentRejected(f"unsupported KG predicate: {intent.predicate}")
         if kg is None or canonical_facts is None:
-            raise MemoryIntentRejected(
-                "exact correction requires KG and canonical fact ports"
-            )
+            raise MemoryIntentRejected("exact correction requires KG and canonical fact ports")
         stamped = (
             intent
             if intent.occurred_at is not None
@@ -137,23 +124,17 @@ async def apply_explicit_intent(
         return f"invalidated:{result.assertion_id}"
     structured = (intent.subject, intent.predicate, intent.object)
     if any(structured) and not all(structured):
-        raise MemoryIntentRejected(
-            "structured intent requires subject, predicate, and object"
-        )
+        raise MemoryIntentRejected("structured intent requires subject, predicate, and object")
     if all(structured):
         if intent.predicate not in KG_PREDICATE_VALUES:
-            raise MemoryIntentRejected(
-                f"unsupported KG predicate: {intent.predicate}"
-            )
+            raise MemoryIntentRejected(f"unsupported KG predicate: {intent.predicate}")
         if kg is None:
             raise RuntimeError("structured memory intent requires KG backend")
 
     prepared_registration = None
     if intent.operation_hint == "update":
         if not all(structured) or canonical_facts is None:
-            raise MemoryIntentRejected(
-                "update requires a structured fact and canonical fact port"
-            )
+            raise MemoryIntentRejected("update requires a structured fact and canonical fact port")
         prepared_registration = await _prepare_explicit_update(
             backend,
             kg,
@@ -170,15 +151,9 @@ async def apply_explicit_intent(
         intent_type=intent.intent_type,
     )
     requested_wing = _non_blank_attribute(attributes, "wing", "auto")
-    requested_memory_type = _non_blank_attribute(
-        attributes, "memory_type", "auto"
-    )
+    requested_memory_type = _non_blank_attribute(attributes, "memory_type", "auto")
     wing = route.wing if requested_wing == "auto" else requested_wing
-    memory_type = (
-        route.memory_type
-        if requested_memory_type == "auto"
-        else requested_memory_type
-    )
+    memory_type = route.memory_type if requested_memory_type == "auto" else requested_memory_type
     importance = _bounded_int_attribute(attributes, "importance", 5, 1, 5)
     tags = _string_list_attribute(attributes, "tags")
     scope = attributes.get("scope", "persona")
@@ -187,19 +162,13 @@ async def apply_explicit_intent(
     visibility = attributes.get("visibility", "all_devices")
     if visibility not in {"all_devices", "current_device", "private"}:
         visibility = "all_devices"
-    source = (
-        "user-confirmed"
-        if intent.authority == "explicit_user"
-        else "admin-confirmed"
-    )
+    source = "assertion-ledger"
     extensions = attributes.get("extensions", {})
     if not isinstance(extensions, dict):
         extensions = {}
     registration = prepared_registration
     projection_identity = intent.intent_id
-    requested_targets: set[ProjectionTarget] = (
-        {"drawer", "kg"} if all(structured) else {"drawer"}
-    )
+    requested_targets: set[ProjectionTarget] = {"drawer", "kg"} if all(structured) else {"drawer"}
     ledger_intent = (
         intent
         if all(structured)
@@ -258,8 +227,7 @@ async def apply_explicit_intent(
                     )
                     return f"reactivated:{registration.assertion_id}"
                 return (
-                    f"confirmed:{registration.assertion_id}:"
-                    f"evidence:{registration.evidence_count}"
+                    f"confirmed:{registration.assertion_id}:evidence:{registration.evidence_count}"
                 )
 
     resource_id = f"memoryintent:{projection_identity}"
@@ -272,18 +240,13 @@ async def apply_explicit_intent(
             audience=drawer_audience,
             scope=scope,
             visibility=visibility,
-            source_device_id=(
-                _optional_attribute(attributes, "source_device_id") or "admin"
-            ),
+            source_device_id=(_optional_attribute(attributes, "source_device_id") or "admin"),
             target_device_id=_optional_attribute(attributes, "target_device_id"),
             source_instance_id=(
                 _optional_attribute(attributes, "source_instance_id") or cmd.issuer
             ),
             wing=wing,
-            room=(
-                f"{USER_CONFIRMED_ROOM_PREFIX}"
-                f"{_projection_room_token(projection_identity)}"
-            ),
+            room=f"assertion:{_projection_room_token(projection_identity)}",
             content=intent.raw_claim,
             memory_type=memory_type,
             importance=importance,
@@ -294,8 +257,8 @@ async def apply_explicit_intent(
                 if registration is not None
                 else intent.source_event_id
             ),
-            session_id=_optional_attribute(attributes, "session_id") or source,
-            tags=[source, *tags],
+            session_id=_optional_attribute(attributes, "session_id") or "command",
+            tags=[source, intent.authority, *tags],
             privacy="normal",
             metadata={
                 "source": source,
@@ -524,11 +487,7 @@ def _string_list_attribute(attributes: dict[str, Any], key: str) -> list[str]:
     if not isinstance(value, list):
         return []
     return list(
-        dict.fromkeys(
-            item.strip()
-            for item in value
-            if isinstance(item, str) and item.strip()
-        )
+        dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip())
     )
 
 

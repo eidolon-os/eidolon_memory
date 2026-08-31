@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from eidolon_memory_contracts import USER_CONFIRMED_ROOM_PREFIX
-
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.wire import MemoryWireRecord
 
@@ -40,18 +38,6 @@ def filter_voice_recall_hits(
     out: list[MemoryWireRecord] = []
     for rec in hits:
         metadata = rec.metadata or {}
-        room = str(metadata.get("room") or rec.key or "")
-        user_confirmed = (
-            metadata.get("source") == "user-confirmed"
-            or room.startswith(USER_CONFIRMED_ROOM_PREFIX)
-        )
-        # An explicit memory tool write is not a transcript echo. It promises
-        # write-after-visible semantics and must remain recallable even when it
-        # was confirmed in this session moments ago. Freshness/session
-        # suppression applies only to naturally extracted conversation turns.
-        if user_confirmed:
-            out.append(rec)
-            continue
         if settings.recall.exclude_current_session and session_id:
             if str(metadata.get("session_id", "")) == session_id:
                 continue

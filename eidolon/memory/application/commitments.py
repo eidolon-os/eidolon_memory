@@ -25,9 +25,7 @@ async def apply_explicit_commitment(
     record = result.commitment
     current_projection_id = f"{record.commitment_id}:revision:{record.revision}"
     previous_projection_id = (
-        f"{record.commitment_id}:revision:{record.revision - 1}"
-        if record.revision > 1
-        else None
+        f"{record.commitment_id}:revision:{record.revision - 1}" if record.revision > 1 else None
     )
     if previous_projection_id is not None:
         previous = await backend.get_by_source_turn_id(
@@ -67,11 +65,11 @@ async def apply_explicit_commitment(
                     confidence=intent.confidence,
                     occurred_at=intent.occurred_at or cmd.issued_at,
                     source_turn_id=current_projection_id,
-                    session_id="user-confirmed",
-                    tags=["user-confirmed", "commitment", record.status],
+                    session_id="command",
+                    tags=["assertion-ledger", intent.authority, "commitment", record.status],
                     privacy="normal",
                     metadata={
-                        "source": "user-confirmed",
+                        "source": "assertion-ledger",
                         "request_id": cmd.request_id,
                         "intent_id": intent.intent_id,
                         "commitment_id": record.commitment_id,

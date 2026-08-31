@@ -55,15 +55,10 @@ from eidolon_memory_contracts import (
     conversation_turn_subject,
 )
 
-from eidolon.memory.application.explicit_writes import (
-    InvalidWriteRequest,
-    build_confirmed_fact_command,
-    normalise_request_id,
-    publish_with_status,
-)
+from eidolon.memory.application.command_delivery import publish_with_status
 from eidolon.memory.application.forget import (
-    extract_privacy_target,
     find_forget_candidates,
+    normalize_privacy_target,
 )
 from eidolon.memory.application.materialization import inspect_materialization
 from eidolon.memory.application.privacy_confirmation import PrivacyConfirmationSigner
@@ -490,7 +485,7 @@ class MemoryService:
         """
 
         runtime = await self._runtime(ctx)
-        target = extract_privacy_target(query)
+        target = normalize_privacy_target(query)
         try:
             candidates = await find_forget_candidates(
                 runtime.backend,
@@ -504,9 +499,7 @@ class MemoryService:
                 memory_space_id=ctx.memory_realm_id,
                 error=str(exc),
             )
-            return ForgetPreview(
-                status="failed", target=target, action=action, error=str(exc)
-            )
+            return ForgetPreview(status="failed", target=target, action=action, error=str(exc))
 
         if not candidates:
             # Distinct from a failure: the request was understood and matched
@@ -613,61 +606,6 @@ class MemoryService:
             trace_id=trace_id,
         )
 
-    async def write_confirmed_fact(
-        self,
-        ctx: MemoryActorContext,
-        text: str,
-        *,
-        source_event_id: str,
-        tool_call_id: str,
-        confidence: float = 0.99,
-        tags: tuple[str, ...] = (),
-        wait_applied_seconds: float = 0.75,
-    ) -> WriteOutcome:
-        """Store a fact the user explicitly asked to be remembered.
-
-        Waits for a durable outcome, because the caller is about to speak. On
-        timeout the answer is ``accepted``, never ``applied``.
-
-        Routing is the service's business: a product caller knows the sentence
-        and the turn that asked for it, not which wing it belongs in. The
-        operator tool exposes the overrides.
-        """
-
-        if self._command_publisher is None:
-            return WriteOutcome(
-                status="unknown",
-                request_id="",
-                error="no command publisher configured",
-            )
-        request_id = normalise_request_id(f"{tool_call_id}".strip() or None)
-        try:
-            command, _routing = build_confirmed_fact_command(
-                ctx,
-                text,
-                request_id=request_id,
-                source_event_id=source_event_id,
-                tool_call_id=tool_call_id,
-                confidence=confidence,
-                tags=tags,
-                now_iso=_now_iso(),
-            )
-        except InvalidWriteRequest as exc:
-            return WriteOutcome(status="failed", request_id=request_id, error=str(exc))
-
-        outcome = await publish_with_status(
-            self._command_publisher,
-            self._command_status,
-            command,
-            wait_seconds=wait_applied_seconds,
-        )
-        return WriteOutcome(
-            status=outcome.get("status", "unknown"),
-            request_id=str(outcome.get("request_id") or request_id),
-            resource_id=outcome.get("resource_id"),
-            error=outcome.get("error"),
-        )
-
     async def confirm_forget(
         self,
         ctx: MemoryActorContext,
@@ -724,9 +662,7 @@ class MemoryService:
             action=proof.action,
             request_id=str(outcome.get("request_id") or command.request_id),
             forgotten_ids=(
-                [*proof.drawer_ids, *proof.commitment_ids]
-                if status == "applied"
-                else []
+                [*proof.drawer_ids, *proof.commitment_ids] if status == "applied" else []
             ),
             error=str(outcome.get("error") or ""),
         )
@@ -797,9 +733,7 @@ class MemoryService:
         return list(holder()) if holder is not None else []
 
 
-def _degraded_recall(
-    reason: str, *, trace: dict[str, float] | None = None
-) -> FusedRecall:
+def _degraded_recall(reason: str, *, trace: dict[str, float] | None = None) -> FusedRecall:
     result = FusedRecall()
     result["context"] = ""
     result["snippets"] = []

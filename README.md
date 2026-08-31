@@ -159,19 +159,19 @@ entrypoints/   进程入口 · CLI · 进程经理
   supervisor.py        多用户 fan-out(agent + 可选 consolidator)+ 重连/重启
   agent_runner.py      单用户进程:MCP server + NATS subscriber(带重连韧性)
   consolidator.py      主题 worker(独立进程)
-  mcp_server.py        FastMCP 工具注册(27 个工具:9 个 public + 18 个 admin)
+  mcp_server.py        FastMCP 工具注册(agent 只读面 + ops 管理面)
   discovery_server.py  agent-routing HTTP
         │ 调用
         ▼
 application/   用例编排(无 IO 细节,只编排)
-  turn_processor.py    写路径:turn → steward → fragments/triples/mentions
-                       cmd 路径:kg_add / kg_invalidate / theme / user_confirm
+  turn_processor.py    turn → steward → assertion ledger → 可补偿投影
+                       cmd 路径:kg_add / kg_invalidate / theme / assertion
   public_recall.py     读路径:recall_with_kg_fusion(融合中枢)
   recall_rerank.py     BM25 + cosine RRF rerank            (Phase 1)
   recall_renderer.py   渲染 [最近对话]/[主题]/wing 分组/[知识图谱事实]
   working_memory.py    WorkingMemoryRing 短期对话环          (Phase 2)
   kg_recall.py         KG 实体路由 + triple 转中文叙述
-  steward/             noop | rules | llm(factory 选择)
+  steward/             noop | llm（test-verbatim 仅测试）
   livekit_recall.py    voice 300ms 预算封装
         │ 依赖抽象(Protocol)
         ▼
@@ -209,10 +209,9 @@ NATS JetStream
  │        2. user_id 不匹配           → ack 丢弃
  │        3. ★ working_memory.append(turn)  ← 先于 steward(G7:连续性≠抽取质量)
  │        4. steward.decide(turn):
- │             ├─ noop  → 空 decision(只 ack)
- │             ├─ rules → 正则抽 1 fragment + privacy_actions
+ │             ├─ noop  → 测试/诊断时空 decision(只 ack)
  │             └─ llm   → LiteLLM 抽 fragments+triples+invalidations+mentions
- │                         (失败 → fallback rules)
+ │                         (逐条校验 user evidence_quote；失败 → NAK 重试)
  │        5. fragment 写失败          → NAK / 超 max_deliveries 进 DLQ
  │        6. KG triple/invalidation 写 → 失败仅 log(G7,不 NAK)
  │        7. ★ mentions 写入(Phase 3):entity_id 必须在本 turn triples 里
@@ -234,7 +233,7 @@ ingestion 期间连接被 drain → `ack()` 抛错 → **外层 reconnect-and-re
 ### 2.4 读路径 — recall 融合中枢,7 个信号源叠加
 
 `application/public_recall.py::recall_with_kg_fusion` 是所有读的中枢。**并行**拉 vector
-+ KG,再叠加 working memory / 主题 / user-confirmed,最后渲染:
++ KG,再叠加 working memory / 主题,最后渲染:
 
 ```
 recall_context(query, voice?)
@@ -253,18 +252,14 @@ recall_context(query, voice?)
  ├─[C] rerank(settings.recall.rerank_enabled,Phase 1)
  │       BM25 + cosine RRF 融合;rank-bm25 缺失/抛错 → 恒等退化
  │
- ├─[D] user-confirmed 置顶(Phase 5.2)
- │       _is_user_confirmed:metadata.source 或 room 前缀 `userconfirm:`
- │       (mempalace search 丢 metadata,room 是唯一存活信号)→ 拉到 vector 最前
- │
- ├─[E] 主题独立通道(Phase 4 + 4.1)
+ ├─[D] 主题独立通道(Phase 4 + 4.1)
  │       _fetch_themes:单独 search Wing_Theme,theme_top_k 上限
  │       + theme_min_similarity=0.55 相关性门槛(低于则丢,防越界泄漏)
  │
- ├─[F] working memory 快照(Phase 2)
+ ├─[E] working memory 快照(Phase 2)
  │       backend.working_memory.snapshot() → 最近 N turn verbatim
  │
- └─[G] 渲染 recall_renderer.group_recall_context,段顺序:
+ └─[F] 渲染 recall_renderer.group_recall_context,段顺序:
          [最近对话] → [主题] → wing 分组(个人画像/情绪/工作…) → [知识图谱事实]
 ```
 
@@ -274,7 +269,7 @@ recall_context(query, voice?)
 ### 2.5 形态演进:查询式 → 情境式(本轮重构的全部内容)
 
 原系统是**形态 1 查询式**(agent 主动 query 才有数据)。本轮把它推进到**形态 2 情境式**
-(memory 主动注入连续性 + 主题 + 关系别名 + 用户确认),分阶段、每阶段独立验证:
+(memory 主动注入连续性 + 主题 + 关系别名),分阶段、每阶段独立验证:
 
 | 阶段 | 解决的痛点 | 核心机制 | 落点 | tag |
 |------|-----------|---------|------|-----|
@@ -284,7 +279,6 @@ recall_context(query, voice?)
 | **P3** | "我妈/我家狗"别名命中不了 canonical | `entity_mentions` 表 + alias 反查 + steward 防幻觉 | `locked_kg.py` | `phase3-complete` |
 | **P4** | "最近怎样"只给零散 fragment | consolidator 独立进程 + Wing_Theme + `[主题]` | `consolidator.py` | `phase4-complete` |
 | **P4.1** | 主题挤占具体事实(精度代价 −15~−20pp) | 主题移出竞争 top_k + 相关性门槛 | `public_recall.py` | `phase4.1-complete` |
-| **P5.2** | 用户说"记住X"被 steward 改写/丢 | cmd 直写通道 + recall 置顶 | `turn_processor.py` | `phase5.2-complete` |
 
 每阶段都过 **U/F/E/P/R 五闸门**(单元/功能/e2e/性能/回归);Phase 4 还经 `--with-consolidator`
 A/B bench 量化(靶向类目 emotion/time/topic +10~+33pp,精度类目零回归)。
@@ -373,7 +367,6 @@ mcp_http:
 |------|------|---------|
 | `eidolon_memory_search` | 语义向量检索 | `query`, `top_k`, 可选 `wing` / `room` |
 | `eidolon_memory_recall_context` | **vector + KG + 主题 + 工作记忆 融合召回**(LiveKit 同源) | `query`, `top_k`, `voice` (LiveKit 50ms KG 预算 / non-voice 1s), `include_kg`, `include_sensitive_kg` |
-| `eidolon_memory_user_confirm` | **用户确认意图**(绕 steward、经 NATS 单写 worker 投影、verbatim、召回置顶) | `text`, `wing`, `memory_type`, `importance`, `confidence`, `tags`, `source_event_id`, `tool_call_id` |
 | `eidolon_memory_list` | 分页列举所有 drawer | `limit`, `offset`, `include_private` |
 | `eidolon_memory_status` | 当前 agent 状态(palace、wings、steward mode) | — |
 | `eidolon_memory_hierarchy_snapshot` | wing→room→drawer 树 | `max_records`, `max_drawers_per_room` |
@@ -856,9 +849,8 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
 3. **stored `source` metadata 在 3 处读路径被覆盖**(`mempalace_python_backend` /
    `search_payload` / `fake_backend`)
    get_all→`mempalace-python`、search→`mcp`、fake→`fake`;且 mempalace 向量 search 只回
-   `{text,wing,room,source_file,similarity}`(自定义 metadata 全丢)。导致 P5.2 user-confirmed
-   置顶 + P4 source 检查静默失效。**修**:三处改"仅缺失时默认";user-confirmed 改用
-   `room` 前缀(search 会保留)做信号。
+   `{text,wing,room,source_file,similarity}`(自定义 metadata 全丢),使 provenance 与投影
+   诊断失真。**修**:三处改为仅在字段缺失时补默认值。
 
 ### 13.2 关键不变量(改代码前必读)
 

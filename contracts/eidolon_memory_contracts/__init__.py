@@ -64,7 +64,6 @@ from .intent import (
 from .kg import (
     KG_PREDICATE_VALUES,
     SENSITIVE_PREDICATES,
-    USER_CONFIRMED_ROOM_PREFIX,
     ConsolidatorIngestThemeCommand,
     DeviceSyncBatchPayload,
     DeviceSyncEvent,
@@ -145,7 +144,6 @@ __all__ = [
     "MEMORY_SYNC_BASE",
     "MEMORY_SCHEMA_VERSION",
     "SENSITIVE_PREDICATES",
-    "USER_CONFIRMED_ROOM_PREFIX",
     "ActiveCommitment",
     "CommitmentReadResult",
     "ConversationTurnPayload",

@@ -32,6 +32,7 @@ class KgTripleAction(BaseEidolonModel):
     subject: str = Field(min_length=1, max_length=128)
     predicate: _KgPredicate
     object: str = Field(min_length=1, max_length=256)
+    evidence_quote: str = ""
     valid_from: str | None = None
     valid_to: str | None = None
     confidence: float = Field(ge=0.0, le=1.0, default=0.9)
@@ -43,6 +44,7 @@ class KgInvalidationAction(BaseEidolonModel):
     subject: str = Field(min_length=1)
     predicate: _KgPredicate
     object: str = Field(min_length=1)
+    evidence_quote: str = ""
     ended: str | None = None
     reason: str = Field(default="", max_length=128)
 

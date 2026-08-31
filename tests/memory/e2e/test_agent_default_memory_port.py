@@ -22,6 +22,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.memory.e2e.conftest import (
+    nats_publish_assertion,
+    nats_publish_commitment,
+)
+
 # In the monorepo workspace, exercise the sibling Agent checkout directly.
 # Standalone eidolon-memory CI still skips cleanly through importorskip below.
 _WORKSPACE_ROOT = Path(
@@ -128,18 +133,6 @@ async def _wait_for_true(
     return False
 
 
-def _mcp_tool_json(result):
-    if not getattr(result, "content", None):
-        return None
-    text = getattr(result.content[0], "text", "") or ""
-    if not text:
-        return None
-    payload = json.loads(text)
-    if isinstance(payload, dict) and set(payload) == {"result"}:
-        return payload["result"]
-    return payload
-
-
 class _E2EPersonas:
     """Keep persona deterministic while exercising real Commitment reads."""
 
@@ -208,7 +201,6 @@ def _latency_percentiles(values: list[float]) -> dict[str, float | int]:
 async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runner) -> None:
     handle = live_agent_runner(
         user_id=MEMORY_SPACE_ID,
-
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(
@@ -265,8 +257,8 @@ async def test_agent_memory_port_writes_and_recalls_default_user(live_agent_runn
         await bus.close()
 
 
-async def test_agent_personal_recall_latency_distribution(live_agent_runner) -> None:
-    """Measure the public Agent read path with the natural personal-question budget."""
+async def test_agent_recall_latency_distribution(live_agent_runner) -> None:
+    """Measure the single public Agent recall path without phrase classification."""
     handle = live_agent_runner(
         user_id="e2e_agent_personal_recall_perf",
         steward_mode="noop",
@@ -293,16 +285,15 @@ async def test_agent_personal_recall_latency_distribution(live_agent_runner) -> 
     query = f"我最喜欢的水果是不是 {marker}？"
     try:
         write_started = time.perf_counter()
-        await port.assert_fact(
-            owner_id,
-            companion_id,
-            handle.user_id,
-            "owner",
-            "likes",
-            marker,
-            source_event_id=f"turn-{marker}",
-            tool_call_id=f"call-{marker}",
-            confidence=0.99,
+        await nats_publish_assertion(
+            handle.nats_url,
+            user_id=handle.user_id,
+            text=f"owner likes {marker}",
+            request_id=f"seed-{marker}",
+            subject="owner",
+            predicate="likes",
+            object_value=marker,
+            companion_id=companion_id,
         )
 
         latest_recall = None
@@ -333,7 +324,6 @@ async def test_agent_personal_recall_latency_distribution(live_agent_runner) -> 
             history_manager=HistoryManager(),
             memory_port=port,
             memory_timeout_s=0.5,
-            explicit_memory_timeout_s=4.0,
             active_commitment_limit=1,
             active_commitment_timeout_s=0.5,
             context_budget_mode="disabled",
@@ -352,7 +342,7 @@ async def test_agent_personal_recall_latency_distribution(live_agent_runner) -> 
             messages = await compiler.compile(turn)
             compiler_total_ms = (time.perf_counter() - started) * 1000
             trace = turn.metadata["memory_trace"]
-            assert trace["timeout_ms"] == 4000
+            assert trace["timeout_ms"] == 500
             assert trace["degraded"] is False, trace
             assert trace["context_injected"] is True
             assert marker in messages[0].content
@@ -365,15 +355,13 @@ async def test_agent_personal_recall_latency_distribution(live_agent_runner) -> 
             samples.append(sample)
 
         metrics = {
-            name: _latency_percentiles(
-                [sample[name] for sample in samples if name in sample]
-            )
+            name: _latency_percentiles([sample[name] for sample in samples if name in sample])
             for name in sorted({key for sample in samples for key in sample})
         }
         report = {
             "write_visibility_ms": round(write_visibility_ms, 3),
             "query": query,
-            "timeout_classification_ms": 4000,
+            "recall_budget_ms": 500,
             "metrics": metrics,
         }
         print("AGENT_MEMORY_PERF=" + json.dumps(report, ensure_ascii=False, sort_keys=True))
@@ -389,7 +377,6 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
     """Real NATS + Realm MCP: active is injected; fulfilled disappears."""
     handle = live_agent_runner(
         user_id="e2e_agent_commitment_context",
-
         steward_mode="noop",
     )
     routes = MemoryRoutingTable.from_static(
@@ -413,37 +400,33 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
     owner_id = "owner-e2e"
     companion_id = "companion-e2e"
     try:
-        request_id = await port.apply_commitment(
-            owner_id,
-            companion_id,
-            handle.user_id,
-            "小忆",
-            "promised",
-            f"周六陪 owner 去恐龙园 {marker}",
-            f"我答应周六陪你去恐龙园 {marker}",
-            source_event_id=f"turn-create-{marker}",
-            tool_call_id=f"call-create-{marker}",
-            operation="confirm",
+        request_id = await nats_publish_commitment(
+            handle.nats_url,
+            user_id=handle.user_id,
+            subject="小忆",
+            action=f"周六陪 owner 去恐龙园 {marker}",
+            text=f"我答应周六陪你去恐龙园 {marker}",
+            operation_hint="confirm",
+            request_id=f"create-{marker}",
             beneficiaries=[owner_id],
             participants=["朋友甲", "朋友乙"],
             due_at="2026-07-18T09:00:00+08:00",
             status="confirmed",
+            companion_id=companion_id,
         )
         assert request_id
-        later_request_id = await port.apply_commitment(
-            owner_id,
-            companion_id,
-            handle.user_id,
-            "小忆",
-            "promised",
-            f"下个月陪 owner 去博物馆 {later_marker}",
-            f"我答应下个月陪你去博物馆 {later_marker}",
-            source_event_id=f"turn-create-{later_marker}",
-            tool_call_id=f"call-create-{later_marker}",
-            operation="confirm",
+        later_request_id = await nats_publish_commitment(
+            handle.nats_url,
+            user_id=handle.user_id,
+            subject="小忆",
+            action=f"下个月陪 owner 去博物馆 {later_marker}",
+            text=f"我答应下个月陪你去博物馆 {later_marker}",
+            operation_hint="confirm",
+            request_id=f"create-{later_marker}",
             beneficiaries=[owner_id],
             due_at="2026-08-18T09:00:00+08:00",
             status="confirmed",
+            companion_id=companion_id,
         )
         assert later_request_id
 
@@ -462,11 +445,7 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
             )
             assert result.degraded is False, result.degraded_reason
             current = next(
-                (
-                    item
-                    for item in result.commitments
-                    if marker in item.action
-                ),
+                (item for item in result.commitments if marker in item.action),
                 None,
             )
             return current is not None and any(
@@ -523,19 +502,17 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         assert before_turn.metadata["commitment_context_trace"]["truncated"] is True
         assert before_turn.metadata["commitment_context_trace"]["context_injected"] is True
 
-        fulfil_request_id = await port.apply_commitment(
-            owner_id,
-            companion_id,
-            handle.user_id,
-            "小忆",
-            "promised",
-            current.action,
-            f"我们已经去过恐龙园了 {marker}",
-            source_event_id=f"turn-fulfil-{marker}",
-            tool_call_id=f"call-fulfil-{marker}",
-            operation="update",
+        fulfil_request_id = await nats_publish_commitment(
+            handle.nats_url,
+            user_id=handle.user_id,
+            subject="小忆",
+            action=current.action,
+            text=f"我们已经去过恐龙园了 {marker}",
+            operation_hint="update",
+            request_id=f"fulfil-{marker}",
             target_id=current.commitment_id,
             status="fulfilled",
+            companion_id=companion_id,
         )
         assert fulfil_request_id
 
@@ -579,339 +556,6 @@ async def test_agent_commitment_product_read_is_active_only(live_agent_runner) -
         assert after_turn.metadata["commitment_context_trace"]["total"] == 1
         assert after_turn.metadata["commitment_context_trace"]["truncated"] is False
         assert after_turn.metadata["commitment_context_trace"]["context_injected"] is True
-    finally:
-        await port.close()
-        await bus.close()
-
-
-async def test_agent_memory_port_delete_is_previewed_and_terminally_applied(
-    live_agent_runner,
-    mcp_session,
-) -> None:
-    handle = live_agent_runner(
-        user_id="e2e_agent_privacy_terminal",
-
-        steward_mode="noop",
-    )
-    routes = MemoryRoutingTable.from_static(
-        endpoints=[
-            MemoryEndpoint(
-                memory_space_id=handle.user_id,
-                mcp_url=handle.agent_mcp_url,
-                ops_mcp_url=handle.mcp_url,
-            )
-        ],
-        nats=NatsSettings(url=handle.nats_url),
-    )
-    bus = NatsEventBus(handle.nats_url)
-    pool = McpClientPool(routes=routes)
-    port = EidolonMemoryPort(
-        pool=pool,
-        publisher=MemoryNatsPublisher(event_bus=bus, routes=routes),
-    )
-    marker = f"agent-privacy-{uuid.uuid4().hex[:8]}"
-    facts = [f"{marker} 工作记录", f"{marker} 旅行记录"]
-    resources_closed = False
-    try:
-        for index, fact in enumerate(facts):
-            await port.write_confirmed_fact(
-                "e2e",
-                "e2e",
-                handle.user_id,
-                "e2e",
-                "e2e",
-                text=fact,
-                source_event_id=f"turn-{marker}",
-                tool_call_id=f"call-{index}",
-            )
-
-        latest_preview = None
-
-        async def _preview_has_both() -> bool:
-            nonlocal latest_preview
-            latest_preview = await port.preview_forget(
-                "e2e",
-                "e2e",
-                handle.user_id,
-                "e2e",
-                marker,
-                action="delete",
-                session_id="e2e",
-            )
-            return (
-                latest_preview.status == "preview"
-                and len(latest_preview.candidates) == 2
-            )
-
-        assert await _wait_for_true(_preview_has_both, timeout_s=30)
-        assert latest_preview is not None
-        assert latest_preview.requires_explicit_confirmation is True
-
-        # A second preview still resolves both rows: preview is read-only.
-        second_preview = await port.preview_forget(
-            "e2e",
-            "e2e",
-            handle.user_id,
-            "e2e",
-            marker,
-            action="delete",
-            session_id="e2e",
-        )
-        assert len(second_preview.candidates) == 2
-
-        outcome = await port.confirm_forget(
-            "e2e",
-            "e2e",
-            handle.user_id,
-            "e2e",
-            second_preview.confirmation_token,
-            session_id="e2e",
-            wait_applied_seconds=5.0,
-        )
-        assert outcome.status == "applied"
-        assert outcome.request_id
-        assert len(outcome.drawer_ids) == 2
-
-        # Close the Agent-owned MCP session before opening an independent
-        # verification client; this matches separate production callers and
-        # keeps AnyIO cancel scopes properly nested.
-        await port.close()
-        await bus.close()
-        resources_closed = True
-
-        async with mcp_session(handle.mcp_url) as session:
-            payload = _mcp_tool_json(
-                await session.call_tool(
-                    "eidolon_memory_list",
-                    {"limit": 100, "include_private": False},
-                )
-            )
-            values = {
-                str(record.get("value") or "")
-                for record in (payload or {}).get("records") or []
-            }
-            assert all(fact not in values for fact in facts)
-    finally:
-        if not resources_closed:
-            await port.close()
-            await bus.close()
-
-
-async def test_agent_structured_intent_projects_drawer_and_kg_with_terminal_status(
-    live_agent_runner,
-    mcp_session,
-) -> None:
-    handle = live_agent_runner(
-        user_id="e2e_agent_structured_intent",
-
-        steward_mode="noop",
-    )
-    routes = MemoryRoutingTable.from_static(
-        endpoints=[
-            MemoryEndpoint(
-                memory_space_id=handle.user_id,
-                mcp_url=handle.agent_mcp_url,
-                ops_mcp_url=handle.mcp_url,
-            )
-        ],
-        nats=NatsSettings(url=handle.nats_url),
-    )
-    bus = NatsEventBus(handle.nats_url)
-    pool = McpClientPool(routes=routes)
-    port = EidolonMemoryPort(
-        pool=pool,
-        publisher=MemoryNatsPublisher(event_bus=bus, routes=routes),
-    )
-    marker = f"oolong-{uuid.uuid4().hex[:8]}"
-    turn_id = f"turn-{marker}"
-    call_id = f"call-{marker}"
-    try:
-        request_id = await port.assert_fact(
-            "e2e",
-            "e2e",
-            handle.user_id,
-            "self",
-            "likes",
-            marker,
-            source_event_id=turn_id,
-            tool_call_id=call_id,
-            confidence=0.99,
-        )
-        assert request_id
-
-        async with mcp_session(handle.mcp_url) as session:
-            latest_status = None
-
-            async def _applied() -> bool:
-                nonlocal latest_status
-                latest_status = _mcp_tool_json(
-                    await session.call_tool(
-                        "eidolon_memory_command_status",
-                        {"request_id": request_id},
-                    )
-                )
-                return (
-                    isinstance(latest_status, dict)
-                    and latest_status.get("status") == "applied"
-                )
-
-            assert await _wait_for_true(_applied, timeout_s=30)
-            assert latest_status is not None
-            assert str(latest_status.get("resource_id", "")).startswith(
-                "memoryintent:fact:"
-            )
-
-            second_request_id = await port.assert_fact(
-                "e2e",
-                "e2e",
-                handle.user_id,
-                "self",
-                "likes",
-                marker,
-                source_event_id=f"turn-confirm-again-{marker}",
-                tool_call_id=f"call-confirm-again-{marker}",
-                confidence=0.99,
-            )
-            second_status = None
-
-            async def _second_applied() -> bool:
-                nonlocal second_status
-                second_status = _mcp_tool_json(
-                    await session.call_tool(
-                        "eidolon_memory_command_status",
-                        {"request_id": second_request_id},
-                    )
-                )
-                return (
-                    isinstance(second_status, dict)
-                    and second_status.get("status") == "applied"
-                )
-
-            assert await _wait_for_true(_second_applied, timeout_s=30)
-            assert str(second_status.get("resource_id", "")).endswith(
-                ":evidence:2"
-            )
-
-            listed = _mcp_tool_json(
-                await session.call_tool(
-                    "eidolon_memory_list",
-                    {"limit": 100, "include_private": True},
-                )
-            )
-            values = [
-                str(record.get("value") or "")
-                for record in (listed or {}).get("records") or []
-            ]
-            assert values.count(f"self likes {marker}") == 1
-
-            kg_result = _mcp_tool_json(
-                await session.call_tool(
-                    "eidolon_memory_kg_query_entity",
-                    {"name": "self"},
-                )
-            )
-            matching_triples = [
-                triple
-                for triple in (kg_result or {}).get("triples") or []
-                if triple.get("predicate") == "likes"
-                and triple.get("object") == marker
-            ]
-            assert len(matching_triples) == 1
-
-            invalidation_request_id = await port.invalidate_fact(
-                "e2e",
-                "e2e",
-                handle.user_id,
-                "self",
-                "likes",
-                marker,
-                source_event_id=f"turn-invalidate-{marker}",
-                tool_call_id=f"call-invalidate-{marker}",
-            )
-            invalidated = None
-
-            async def _invalidation_applied() -> bool:
-                nonlocal invalidated
-                invalidated = _mcp_tool_json(
-                    await session.call_tool(
-                        "eidolon_memory_command_status",
-                        {"request_id": invalidation_request_id},
-                    )
-                )
-                return (
-                    isinstance(invalidated, dict)
-                    and invalidated.get("status") == "applied"
-                )
-
-            assert await _wait_for_true(_invalidation_applied, timeout_s=30), invalidated
-            assert str(invalidated.get("resource_id", "")).startswith(
-                "invalidated:fact:"
-            )
-
-            repair_request_id = await port.reactivate_fact(
-                "e2e",
-                "e2e",
-                handle.user_id,
-                "self",
-                "likes",
-                marker,
-                source_event_id=f"turn-repair-{marker}",
-                tool_call_id=f"call-repair-{marker}",
-                confidence=0.99,
-            )
-            repair_status = None
-
-            async def _repair_applied() -> bool:
-                nonlocal repair_status
-                repair_status = _mcp_tool_json(
-                    await session.call_tool(
-                        "eidolon_memory_command_status",
-                        {"request_id": repair_request_id},
-                    )
-                )
-                return (
-                    isinstance(repair_status, dict)
-                    and repair_status.get("status") == "applied"
-                )
-
-            assert await _wait_for_true(_repair_applied, timeout_s=30)
-            assert str(repair_status.get("resource_id", "")).startswith(
-                "reactivated:fact:"
-            )
-
-            repaired_list = _mcp_tool_json(
-                await session.call_tool(
-                    "eidolon_memory_list",
-                    {"limit": 100, "include_private": False},
-                )
-            )
-            repaired_records = (repaired_list or {}).get("records") or []
-            repaired_values = [
-                str(record.get("value") or "")
-                for record in repaired_records
-                if (record.get("metadata") or {}).get("privacy") != "do_not_recall"
-            ]
-            assert repaired_values.count(f"self likes {marker}") == 1
-            archived_values = [
-                str(record.get("value") or "")
-                for record in repaired_records
-                if (record.get("metadata") or {}).get("privacy") == "do_not_recall"
-            ]
-            assert archived_values.count(f"self likes {marker}") == 1
-
-            repaired_kg = _mcp_tool_json(
-                await session.call_tool(
-                    "eidolon_memory_kg_query_entity",
-                    {"name": "self"},
-                )
-            )
-            repaired_triples = [
-                triple
-                for triple in (repaired_kg or {}).get("triples") or []
-                if triple.get("predicate") == "likes"
-                and triple.get("object") == marker
-            ]
-            assert len(repaired_triples) == 1
     finally:
         await port.close()
         await bus.close()

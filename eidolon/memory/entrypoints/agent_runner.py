@@ -251,7 +251,7 @@ async def _nats_subscriber_loop(
         turn spends ~5-8s in the steward's LLM call — which runs OUTSIDE the
         backend lock (``LockedBackend`` locks per-operation, not across a turn).
         So while a large turn backlog churns, a command (admin KG edit /
-        user-confirmed fact / consolidator theme) still acquires the lock and
+        assertion command / consolidator theme) still acquires the lock and
         applies in ~ms on the cmd task. Intra-subject order is preserved (one
         task drains its subject sequentially); there is no cross-subject order
         contract. Idle loops cheaply; a real fetch/ack error propagates so the
