@@ -49,6 +49,23 @@ PALACE_PLAIN_FILES = (
 
 MANIFEST_NAME = "manifest.json"
 
+# Hard-deletion authorities that a restore must never move backwards past.
+# These are the existing ledgers, not a second backup or privacy database.
+_PRIVACY_WATERMARK_QUERIES = (
+    (
+        "canonical_facts.sqlite3",
+        "SELECT MAX(forgotten_at) FROM canonical_forgets WHERE hard = 1",
+    ),
+    (
+        "commitments.sqlite3",
+        "SELECT MAX(forgotten_at) FROM commitment_privacy WHERE action = 'delete'",
+    ),
+    (
+        "extraction_decisions.sqlite3",
+        "SELECT MAX(redacted_at) FROM extraction_privacy_tombstones",
+    ),
+)
+
 
 class SnapshotError(RuntimeError):
     """The copy was not taken, and nothing incomplete was left behind."""
@@ -229,6 +246,15 @@ def restore_realm_snapshot(
     ledgers_path = Path(ledgers_path)
     snapshot = verify_realm_snapshot(source, snapshot)
 
+    privacy_watermark = _latest_privacy_watermark(ledgers_path)
+    if privacy_watermark is not None:
+        taken_at = _parse_timestamp(snapshot.taken_at, label="snapshot taken_at")
+        if taken_at < privacy_watermark:
+            raise RestoreError(
+                "snapshot predates a hard privacy deletion in the live realm; "
+                "restoring it would resurrect deleted memory"
+            )
+
     staged_palace = _stage(source / PALACE_PREFIX, palace_path)
     staged_ledgers = _stage(source / LEDGERS_PREFIX, ledgers_path)
     moved_aside: list[tuple[Path, Path]] = []
@@ -270,6 +296,45 @@ def restore_realm_snapshot(
         "palace_path": str(palace_path),
         "ledgers_path": str(ledgers_path),
     }
+
+
+def _latest_privacy_watermark(ledgers_path: Path) -> datetime | None:
+    """Latest durable hard-delete time in the live Realm, if one exists."""
+
+    latest: datetime | None = None
+    for filename, query in _PRIVACY_WATERMARK_QUERIES:
+        path = Path(ledgers_path) / filename
+        if not path.is_file():
+            continue
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            try:
+                row = connection.execute(query).fetchone()
+            except sqlite3.OperationalError as exc:
+                # A pre-feature or test fixture database has no privacy table.
+                # Other SQL failures are integrity problems and must stop restore.
+                if "no such table" in str(exc).lower():
+                    continue
+                raise RestoreError(
+                    f"cannot inspect privacy watermark in {filename}: {exc}"
+                ) from exc
+        finally:
+            connection.close()
+        if row is None or row[0] is None:
+            continue
+        value = _parse_timestamp(str(row[0]), label=f"{filename} privacy watermark")
+        latest = value if latest is None else max(latest, value)
+    return latest
+
+
+def _parse_timestamp(value: str, *, label: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RestoreError(f"{label} is not a valid ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _stage(copied: Path, live: Path) -> Path:
