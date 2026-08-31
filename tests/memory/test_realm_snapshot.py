@@ -26,6 +26,7 @@ from eidolon.memory.infrastructure.realm_snapshot import (
     MANIFEST_NAME,
     RestoreError,
     SnapshotError,
+    restore_realm_snapshot,
     verify_realm_snapshot,
     write_realm_snapshot,
 )
@@ -211,3 +212,39 @@ def test_a_live_writer_does_not_block_the_snapshot(
     finally:
         connection.close()
     assert "uncommitted" not in notes
+
+
+def test_restore_refuses_to_cross_a_newer_hard_privacy_deletion(
+    space: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """An old backup cannot make a deleted fact recallable again."""
+
+    palace, ledgers = space
+    snapshot = _take(space, tmp_path / "copy")
+    canonical = ledgers / "canonical_facts.sqlite3"
+    with sqlite3.connect(canonical) as connection:
+        connection.execute(
+            """
+            CREATE TABLE canonical_forgets (
+                assertion_id TEXT PRIMARY KEY,
+                hard INTEGER NOT NULL,
+                forgotten_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO canonical_forgets VALUES (?, 1, ?)",
+            ("fact:privacy-fence", "2099-01-01T00:00:00+00:00"),
+        )
+    _database(palace / "chroma.sqlite3", rows=2)
+
+    with pytest.raises(RestoreError, match="resurrect deleted memory"):
+        restore_realm_snapshot(
+            source=tmp_path / "copy",
+            palace_path=palace,
+            ledgers_path=ledgers,
+            snapshot=snapshot,
+        )
+
+    with sqlite3.connect(palace / "chroma.sqlite3") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM kept").fetchone()[0] == 7

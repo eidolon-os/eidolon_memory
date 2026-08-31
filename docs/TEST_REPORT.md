@@ -1,7 +1,31 @@
 # Test report
 
+## MemPalace 3.8 release gate — 2026-09-01
+
+Measured on macOS / Apple Silicon with Python 3.13 and `mempalace==3.8.0`.
+The final commit and Pi release identity are recorded after integration; no Pi
+result is claimed by this local gate.
+
+| Category | Result | Notes |
+|---|---|---|
+| Memory non-E2E | **1131 passed, 5 skipped** | Three additional loopback-bind cases were denied by the workspace sandbox; the complete preflight file passed **10/10** outside that sandbox |
+| Memory real-process E2E | **18 passed, 9 skipped, 3 deselected** | Real NATS, Memory subprocesses, Chroma, restart, redelivery, privacy and snapshot/restore; skipped cases require a live Pi Realm |
+| Configuration / embedder contract | **141 passed** | Includes public-only MemPalace provider configuration and the BGE provider contract |
+| Standalone wire contracts | **61 passed** | Isolated environment with no Memory storage stack installed |
+| Changed-file Ruff / compile | **passed** | No private compatibility module or process-wide model-download patch remains |
+
+Cross-repository gates run against the same source set: Agent **601 passed,
+1 skipped** plus its loopback product-acceptance file **2/2** outside the
+sandbox; Channel **1602 passed, 9 skipped, 25 deselected**; Mobile **671 passed,
+5 skipped**. Mobile had unrelated device-commissioning work in progress and was
+tested read-only.
+
+## Historical 3.6 baseline
+
 Measured on 2026-08-01, branch `refactor/memory-contracts-v2`, commit `9f0d762`.
-macOS 15.5 / Apple Silicon, Python 3.12, MemPalace 3.6.0.
+macOS 15.5 / Apple Silicon, Python 3.12, MemPalace 3.6.0. The sections below are
+the retained baseline; where a 3.8 configuration row is updated, it is called
+out explicitly rather than presenting the baseline as a new run.
 
 Every number here comes from a run on this machine. Where a claim is not tested,
 it says so rather than being left out — an untested claim that looks tested is
@@ -115,10 +139,10 @@ real wrappers, and it is the only category that would have caught this.
 uv run pytest tests/memory/test_deployment_profiles.py \
   tests/memory/test_router_contract.py tests/memory/test_ledger_contract.py \
   tests/memory/test_kg_optional.py tests/memory/test_local_embedder.py \
-  tests/memory/test_embedding_model_dir.py -q
+  tests/memory/test_mempalace_backend_config.py -q
 ```
 
-**144 passed, 31s.**
+**141 passed, 11.84s.**
 
 This category was "local↔cloud switch": the same behavioural tests run against
 SQLite ledgers and PostgreSQL ones, against a Chroma file and a live Milvus, to
@@ -136,7 +160,7 @@ where a wrong value produces a *working* service that answers differently.
 | `test_local_embedder` | 61 | The embedder seam: three implementations behind one port, the Chroma shape living in one adapter instead of on the encoder, our encoder being what MemPalace resolves (verified through its public function, not assumed from the cache key), pooling and prefixes per family, a hosted endpoint's batching / retry / declared width, the config migration, and that `infrastructure` does not import `adapters` |
 | `test_router_contract` | 13 | The router contract, and that a palace refuses a second holder |
 | `test_kg_optional` | 6 | `kg.backend: none` serves recall vector-only, offers no graph tools, and deletes nothing |
-| `test_embedding_model_dir` | 6 | The one embedder whose files we cannot resolve ourselves — and, as much, where the process-wide download patch is *not* installed |
+| `test_mempalace_backend_config` | 12 | Only public MemPalace provider settings are exported; unsupported native-provider `model_dir` fails at configuration time |
 | `test_deployment_profiles` | 5 | The shipped template loads, names its embedder, and keeps secrets in variables |
 
 ### What is verified to be a config change
@@ -146,7 +170,7 @@ where a wrong value produces a *working* service that answers differently.
 | **Embedder implementation: in-process ONNX ↔ hosted HTTP endpoint ↔ MemPalace's own** | `embedding.provider` | `test_local_embedder` — same factory call, three classes, and the registration path holding a hosted embedder without knowing it is one. Exercised for real: a palace built end to end against an OpenAI-compatible endpoint, Chroma persisting the declared width, and reading it back under `provider: local` refused with `EmbedderIdentityMismatchError` naming both encoders |
 | Embedder model: bge-small-zh ↔ bge-base-zh ↔ e5-small ↔ MemPalace's two | `embedding.model` | `test_local_embedder`, plus full bench runs at five of them — the palace marker records the configured model each time, which is the check that the earlier runs were missing |
 | Graph: none ↔ sqlite | `kg.backend` | `test_kg_optional` + round-trip e2e |
-| Model files: hub ↔ local directory | `embedding.model_dir` | `test_local_embedder` for ours (the implementation reads the directory itself), `test_embedding_model_dir` for MemPalace's (their download call, patched process-wide because there is no other surface) |
+| Model files: hub ↔ local directory | `embedding.model_dir` | `test_local_embedder`; only Eidolon's local provider owns this switch, while MemPalace native providers reject it because 3.8 exposes no public equivalent |
 | Shard: which spaces one process serves | `allowed_spaces` | `test_router_contract` |
 
 `mempalace.embedding_model` and its three siblings still configure the embedder and
