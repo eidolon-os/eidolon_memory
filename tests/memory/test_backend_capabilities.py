@@ -67,25 +67,23 @@ async def test_a_store_without_warming_is_not_an_error() -> None:
     await warm_read_path(_PlainStore(), _settings())
 
 
-async def test_warming_asks_for_the_voice_wings() -> None:
-    """Voice has the tightest budget, so its wings are the ones whose first read
-    must not be the slow one."""
-
+async def test_warming_asks_for_every_recallable_wing() -> None:
     store = _WarmableStore()
 
-    await warm_read_path(store, _settings(voice_wings=["Wing_Life", "Wing_Work"]))
+    settings = _settings()
+    await warm_read_path(store, settings)
 
-    assert store.warmed_wings == ["Wing_Life", "Wing_Work"]
+    expected = [wing.id for wing in settings.wings if wing.id not in {"Wing_Privacy", "Wing_Theme"}]
+    assert store.warmed_wings == expected
 
 
-def test_without_voice_wings_everything_but_privacy_is_warmed() -> None:
-    """Warming a private wing would pull it into caches for a path that never
-    reads it."""
+def test_private_and_theme_channels_are_not_warmed_in_main_fanout() -> None:
 
     wings = _wings_worth_warming(_settings())
 
     assert wings
     assert "Wing_Privacy" not in wings
+    assert "Wing_Theme" not in wings
 
 
 # ── capabilities have to survive the wrapper ─────────────────────────────────
@@ -130,9 +128,10 @@ async def test_warming_reaches_the_inner_store_through_the_wrapper() -> None:
     store = _WarmableStore()
     wrapped = LockedBackend(store)
 
-    await warm_read_path(wrapped, _settings(voice_wings=["Wing_Life"]))
+    settings = _settings()
+    await warm_read_path(wrapped, settings)
 
-    assert store.warmed_wings == ["Wing_Life"]
+    assert store.warmed_wings == _wings_worth_warming(settings)
 
 
 async def test_the_wrapper_serialises_room_graph_under_its_lock() -> None:

@@ -16,10 +16,8 @@ from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.public_recall import search_all_wings_mcp_style
 from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.application.turn_processor import process_turn_message
-from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.space_lock import SpaceLock
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
 
@@ -88,7 +86,6 @@ async def test_persona_shared_but_device_memory_stays_current_device_only(tmp_pa
     settings = load_memory_settings()
     backend = FakeMemoryBackend()
 
-    backend.working_memory = WorkingMemoryRing(maxlen=5, lock=SpaceLock())
     steward = _ScopeSteward()
     memory_space_id = _ctx("device-a").memory_space_id
     canonical_facts = CanonicalFactLedger(tmp_path / "canonical.sqlite3")

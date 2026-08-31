@@ -55,8 +55,6 @@ def _settings(args: argparse.Namespace) -> MemorySettings:
             },
             "recall": {
                 "top_k": args.top_k,
-                "exclude_recent_minutes": 0,
-                "voice_wings": WINGS,
             },
         }
     )
@@ -155,8 +153,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                         wing=WINGS[idx % len(WINGS)],
                         room=f"live_{idx % 7}",
                         text=(
-                            f"Concurrent write {idx}: backend {backend_name} "
-                            "mixed read write test."
+                            f"Concurrent write {idx}: backend {backend_name} mixed read write test."
                         ),
                         metadata={
                             "memory_space_id": "bench",

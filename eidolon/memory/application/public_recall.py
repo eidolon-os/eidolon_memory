@@ -13,7 +13,6 @@ from eidolon_memory_contracts import MemoryActorContext
 
 from eidolon.memory.adapters.recall_ranking import public_metadata, rank_records_by_similarity
 from eidolon.memory.application.kg_recall import expand_from_recalled, query_kg_for_recall
-from eidolon.memory.application.recall_filters import filter_voice_recall_hits
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.recall_rerank import rerank_bm25_rrf
 from eidolon.memory.application.scope_policy import interaction_readable_audiences
@@ -66,12 +65,9 @@ def _resolve_wings(
     settings: MemorySettings,
     *,
     wing: str | None,
-    for_voice: bool,
 ) -> list[str]:
     if wing:
         return [wing]  # explicit single-wing request (incl. callers wanting Wing_Theme)
-    if for_voice and settings.recall.voice_wings:
-        return list(settings.recall.voice_wings)
     return [w.id for w in settings.wings if w.id not in _FANOUT_EXCLUDED_WINGS]
 
 
@@ -280,7 +276,6 @@ async def recall_with_kg_fusion(
     top_k: int,
     kg: object | None,
     for_voice: bool = False,
-    user_utterance: str = "",
     palace_path: str | None = None,
     include_sensitive_kg: bool = False,
     kg_subjects: list[str] | None = None,
@@ -307,7 +302,6 @@ async def recall_with_kg_fusion(
             wing=None,
             room=None,
             for_voice=for_voice,
-            user_utterance=user_utterance,
             palace_path=palace_path,
             raise_on_degraded=True,
             diagnostics=diagnostics,
@@ -444,22 +438,6 @@ async def recall_with_kg_fusion(
         vector_records = merged
     diagnostics["theme_ms"] = _elapsed_ms(theme_started)
 
-    # Phase 2 — working memory snapshot. ``backend.working_memory`` is
-    # ``None`` on test fakes; the ring's snapshot is empty when disabled
-    # (``maxlen=0``). Either way callers get a list to render.
-    working_started = time.perf_counter()
-    working_memory: list = []
-    ring = getattr(backend, "working_memory", None)
-    if ring is not None:
-        try:
-            working_memory = await ring.snapshot(
-                device_id=context.device_id,
-                session_id=context.session_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - never break recall
-            log.warning("working_memory_snapshot_failed", error=str(exc))
-    diagnostics["working_memory_ms"] = _elapsed_ms(working_started)
-
     _record_recall(
         kind=recall_kind,
         settings=settings,
@@ -473,7 +451,6 @@ async def recall_with_kg_fusion(
     return {
         "vector": vector_records,
         "kg": kg_records,
-        "working_memory": working_memory,
         "degraded": vector_degraded,
         "degraded_reason": degraded_reason,
         "trace": diagnostics,
@@ -751,7 +728,6 @@ async def search_all_wings_mcp_style(
     wing: str | None,
     room: str | None,
     for_voice: bool = False,
-    user_utterance: str = "",
     palace_path: str | None = None,
     raise_on_degraded: bool = False,
     diagnostics: dict[str, float] | None = None,
@@ -759,7 +735,7 @@ async def search_all_wings_mcp_style(
     """Search configured wings in parallel, filter, rank, and cap top_k."""
     vector_started = time.perf_counter()
     scope_started = time.perf_counter()
-    wings = _resolve_wings(settings, wing=wing, for_voice=for_voice)
+    wings = _resolve_wings(settings, wing=wing)
     audiences = interaction_readable_audiences(context)
     if diagnostics is not None:
         diagnostics["scope_resolution_ms"] = _elapsed_ms(scope_started)
@@ -873,14 +849,6 @@ async def search_all_wings_mcp_style(
 
     if vector_degraded and raise_on_degraded and not hits:
         raise MemoryBackendUnavailable("vector search degraded and exact fallback found no hits")
-
-    if for_voice:
-        hits = filter_voice_recall_hits(
-            hits,
-            settings,
-            session_id=context.session_id or "",
-            user_utterance=user_utterance,
-        )
 
     hits = rank_records_by_similarity(hits, top_k=max(top_k, len(hits)))
     result = RecallPolicyRegistry.default().rank(

@@ -70,10 +70,6 @@ class LockedBackend(MemoryBackend):
         # continues running.  Keep operation-owned tasks alive so the Realm lock
         # is released only when the actual backend operation has terminated.
         self._operations: set[asyncio.Task[Any]] = set()
-        # Phase 2: optional in-memory working-memory ring. ``agent_runner``
-        # assigns the actual instance after construction (so settings drive
-        # ``maxlen`` without coupling LockedBackend to the config schema).
-        self.working_memory: Any = None
 
     @property
     def lock(self) -> SpaceLock:
@@ -160,9 +156,9 @@ class LockedBackend(MemoryBackend):
 
         async def _run() -> T:
             async with held:
-                metrics.SPACE_LOCK_WAIT_SECONDS.labels(
-                    mode="write" if write else "read"
-                ).observe(time.perf_counter() - waited_from)
+                metrics.SPACE_LOCK_WAIT_SECONDS.labels(mode="write" if write else "read").observe(
+                    time.perf_counter() - waited_from
+                )
                 started.set()
                 return await operation()
 

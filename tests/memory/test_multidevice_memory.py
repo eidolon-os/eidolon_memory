@@ -19,10 +19,8 @@ from eidolon_memory_contracts import (
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.application.turn_processor import process_sync_message
-from eidolon.memory.application.working_memory import WorkingMemoryRing
 from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.fragments import MemoryFragment
-from eidolon.memory.domain.space_lock import SpaceLock
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
@@ -183,25 +181,6 @@ def test_recall_policy_keeps_other_device_out_of_rendered_context() -> None:
     assert registry.rank([other, current], context=ctx, query="客厅", top_k=2) == [current]
 
 
-@pytest.mark.asyncio
-async def test_working_memory_partitions_by_device_and_session() -> None:
-
-    ring = WorkingMemoryRing(maxlen=5, lock=SpaceLock())
-    await ring.append(_turn("A1", device_id="device-a", session_id="s1"))
-    await ring.append(_turn("A2", device_id="device-a", session_id="s2"))
-    await ring.append(_turn("B1", device_id="device-b", session_id="s1"))
-
-    assert [t.user_text for t in await ring.snapshot(device_id="device-a", session_id="s1")] == [
-        "A1"
-    ]
-    assert [t.user_text for t in await ring.snapshot(device_id="device-a", session_id="s2")] == [
-        "A2"
-    ]
-    assert [t.user_text for t in await ring.snapshot(device_id="device-b", session_id="s1")] == [
-        "B1"
-    ]
-
-
 class _Msg:
     def __init__(self, payload: dict) -> None:
         self.data = json.dumps(payload).encode("utf-8")
@@ -212,8 +191,6 @@ class _Msg:
 
 
 class _Backend:
-    working_memory = None
-
     def __init__(self) -> None:
         self.fragments: list[MemoryFragment] = []
 

@@ -73,9 +73,7 @@ def _settings() -> MemorySettings:
 
 def _ctx(space: str, *, companion: str | None = "default") -> MemoryActorContext:
     owner = space.split(".")[1]
-    return MemoryActorContext(
-        memory_realm_id=space, owner_id=owner, companion_id=companion
-    )
+    return MemoryActorContext(memory_realm_id=space, owner_id=owner, companion_id=companion)
 
 
 def _fragment(
@@ -213,16 +211,13 @@ async def test_the_contract_result_carries_no_graph_or_turn_fields(service) -> N
     assert "working_memory" not in emitted
 
 
-async def test_the_fused_method_is_the_only_place_the_extra_fields_come_from(
+async def test_the_fused_method_exposes_projection_evidence_for_agent(
     service,
 ) -> None:
-    """One producer for the transitional material, so it cannot become a second
-    contract. When the client stops reading these, the method goes."""
-
     fused = await service.recall_fused(_ctx(ALICE), "x", plan=RecallPlan())
 
     assert "kg_triples" in fused
-    assert "working_memory" in fused
+    assert "working_memory" not in fused
 
 
 # ── audience, which only means something once a space spans companions ───────
@@ -294,9 +289,7 @@ async def test_a_fixed_space_router_refuses_any_other_space() -> None:
     from eidolon.memory.adapters.fixed_space_router import FixedSpaceRouter
 
     router = FixedSpaceRouter(
-        MemorySpaceRuntime(
-            space_id=ALICE, backend=FakeMemoryBackend(), palace_path="/tmp/alice"
-        )
+        MemorySpaceRuntime(space_id=ALICE, backend=FakeMemoryBackend(), palace_path="/tmp/alice")
     )
 
     assert not router.serves(BOB)
@@ -308,9 +301,7 @@ async def test_a_fixed_space_router_refuses_any_other_space() -> None:
 
 
 async def test_a_caller_may_turn_the_graph_off_for_one_request(service) -> None:
-    fused = await service.recall_fused(
-        _ctx(ALICE), "x", plan=RecallPlan(), include_kg=False
-    )
+    fused = await service.recall_fused(_ctx(ALICE), "x", plan=RecallPlan(), include_kg=False)
 
     assert fused["kg_triples"] == []
 
@@ -323,9 +314,7 @@ async def test_a_caller_cannot_turn_on_a_graph_this_deployment_lacks(service) ->
     able to discover whether this deployment keeps a graph.
     """
 
-    fused = await service.recall_fused(
-        _ctx(ALICE), "x", plan=RecallPlan(), include_kg=True
-    )
+    fused = await service.recall_fused(_ctx(ALICE), "x", plan=RecallPlan(), include_kg=True)
 
     assert fused["degraded"] is False
     assert fused["kg_triples"] == []

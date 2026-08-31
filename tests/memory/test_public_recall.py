@@ -188,18 +188,28 @@ def test_parse_search_payload_stamps_default_memory_space_id():
 
     # A vector hit as mempalace returns it: wing/room/text, NO memory_space_id.
     stripped = {"results": [{"wing": "Wing_Life", "room": "r1", "text": "plain drawer"}]}
-    assert parse_search_tool_payload(
-        stripped, default_memory_space_id="realm-1"
-    )[0].memory_space_id == "realm-1"
+    assert (
+        parse_search_tool_payload(stripped, default_memory_space_id="realm-1")[0].memory_space_id
+        == "realm-1"
+    )
     # Backwards-compat: no default supplied → legacy wing fallback.
     assert parse_search_tool_payload(stripped)[0].memory_space_id == "Wing_Life"
     # Metadata-carried id (get_all / sqlite_exact paths) always wins over the
     # default, so a genuinely cross-space record keeps its real id.
-    with_meta = {"results": [{"wing": "Wing_Life", "room": "r1", "text": "x",
-                              "metadata": {"memory_space_id": "realm-2"}}]}
-    assert parse_search_tool_payload(
-        with_meta, default_memory_space_id="realm-1"
-    )[0].memory_space_id == "realm-2"
+    with_meta = {
+        "results": [
+            {
+                "wing": "Wing_Life",
+                "room": "r1",
+                "text": "x",
+                "metadata": {"memory_space_id": "realm-2"},
+            }
+        ]
+    }
+    assert (
+        parse_search_tool_payload(with_meta, default_memory_space_id="realm-1")[0].memory_space_id
+        == "realm-2"
+    )
 
 
 def test_stamped_vector_hit_visible_and_cross_space_rejected():
@@ -212,8 +222,16 @@ def test_stamped_vector_hit_visible_and_cross_space_rejected():
     rec = parse_search_tool_payload(hit, default_memory_space_id=ctx.memory_space_id)[0]
     assert recall_record_visible_for_context(rec, ctx)
 
-    other = {"results": [{"wing": "Wing_Life", "room": "r1", "text": "bob fact",
-                          "metadata": {"memory_space_id": "default.bob.default"}}]}
+    other = {
+        "results": [
+            {
+                "wing": "Wing_Life",
+                "room": "r1",
+                "text": "bob fact",
+                "metadata": {"memory_space_id": "default.bob.default"},
+            }
+        ]
+    }
     rec_other = parse_search_tool_payload(other, default_memory_space_id=ctx.memory_space_id)[0]
     assert not recall_record_visible_for_context(rec_other, ctx)
 
@@ -226,17 +244,23 @@ def test_json_content_drawer_dedups_across_read_paths():
     from eidolon.memory.domain.wire import MemoryWireRecord
 
     vec = MemoryWireRecord(  # vector path: value is the PARSED object
-        memory_space_id="realm", key="r1", value={"b": 2, "a": 1},
+        memory_space_id="realm",
+        key="r1",
+        value={"b": 2, "a": 1},
         metadata={"wing": "Wing_Life", "room": "r1"},
     )
     getall = MemoryWireRecord(  # get_all fallback: same drawer, RAW json string, drawer-id key
-        memory_space_id="realm", key="drawer-id-xyz", value='{"a": 1, "b": 2}',
+        memory_space_id="realm",
+        key="drawer-id-xyz",
+        value='{"a": 1, "b": 2}',
         metadata={"wing": "Wing_Life", "room": "r1"},
     )
     assert len(_merge_unique_records([vec], [getall])) == 1
 
     other = MemoryWireRecord(
-        memory_space_id="realm", key="r2", value="different drawer",
+        memory_space_id="realm",
+        key="r2",
+        value="different drawer",
         metadata={"wing": "Wing_Life", "room": "r2"},
     )
     assert len(_merge_unique_records([vec], [other])) == 2
@@ -256,6 +280,52 @@ async def test_group_recall_context_non_empty_when_hits():
     ]
     ctx = group_recall_context(hits)
     assert "事件" in ctx or "生活" in ctx
+
+
+@pytest.mark.asyncio
+async def test_voice_and_text_recall_have_the_same_memory_visibility_across_sessions():
+    """Transport mode and interaction age affect budgets, never fact visibility."""
+    settings = get_memory_settings()
+    backend = FakeMemoryBackend()
+    recallable_wings = [
+        wing.id for wing in settings.wings if wing.id not in {"Wing_Privacy", "Wing_Theme"}
+    ]
+    for index, wing in enumerate(recallable_wings):
+        await backend.ingest_text(
+            wing=wing,
+            room=f"fact_{index}",
+            text=f"青蓝9号跨模态事实 {wing}",
+            metadata={
+                "memory_space_id": MEMORY_SPACE_ID,
+                "audience": "companion:default",
+                "scope": "persona",
+                "visibility": "all_devices",
+                "session_id": "interaction-a",
+                "source_turn_id": f"turn-a-{index}",
+            },
+        )
+
+    same_interaction = _context().model_copy(update={"session_id": "interaction-a"})
+    next_interaction = _context().model_copy(update={"session_id": "interaction-b"})
+    cases = [
+        (same_interaction, False),
+        (same_interaction, True),
+        (next_interaction, False),
+        (next_interaction, True),
+    ]
+    for context, voice in cases:
+        recalled = await recall_with_kg_fusion(
+            backend,
+            settings,
+            query="青蓝9号",
+            context=context,
+            top_k=len(recallable_wings) + 1,
+            kg=None,
+            for_voice=voice,
+        )
+        assert {record.key for record in recalled["vector"]} == {
+            f"fact_{index}" for index in range(len(recallable_wings))
+        }
 
 
 @pytest.mark.asyncio
@@ -322,6 +392,7 @@ async def test_voice_scoped_read_failure_degrades_to_empty():
     Voice recall must degrade instead of crashing the MCP worker process.
     """
     settings = get_memory_settings()
+
     class PanicLike(BaseException):
         pass
 

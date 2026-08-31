@@ -30,8 +30,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import nats
 import pytest
 
+from eidolon.memory.infrastructure.nats.names import memory_consumer_name
 from tests.memory.e2e.conftest import (
     e2e_actor_context,
     load_companion_corpus,
@@ -76,6 +78,7 @@ def _require_llm():
         load_memory_settings,
         reset_memory_settings_cache,
     )
+
     reset_memory_settings_cache()
     settings = load_memory_settings()
     probe_loop = asyncio.new_event_loop()
@@ -104,16 +107,17 @@ async def _wing_theme_count(session) -> int:
     """Count Wing_Theme drawers via MCP list."""
     payload = mcp_tool_json(
         await session.call_tool(
-            "eidolon_memory_list", {"limit": 1000, "include_private": False},
+            "eidolon_memory_list",
+            {"limit": 1000, "include_private": False},
         )
     )
     if not isinstance(payload, dict):
         return 0
     rows = payload.get("records") or []
     return sum(
-        1 for r in rows
-        if isinstance(r, dict)
-        and (r.get("metadata") or {}).get("wing") == "Wing_Theme"
+        1
+        for r in rows
+        if isinstance(r, dict) and (r.get("metadata") or {}).get("wing") == "Wing_Theme"
     )
 
 
@@ -170,7 +174,9 @@ def _run_consolidator(
                 "--max-parallel-wings",
                 str(max_parallel_wings),
             ],
-            stdout=log_fp, stderr=subprocess.STDOUT, env=env,
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
+            env=env,
             timeout=timeout_s,
         )
 
@@ -182,7 +188,8 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
     and ``recall_context`` renders a [主题] section."""
     corpus = load_companion_corpus()
     handle = live_agent_runner(
-        user_id="e2e_p4_consol", steward_mode="llm",
+        user_id="e2e_p4_consol",
+        steward_mode="llm",
         # Lower the theme relevance floor for recall. This test verifies the
         # consolidator → Wing_Theme drawer → [主题] render *pipeline*, not the
         # production ``theme_min_similarity`` tuning. A generic reflection query
@@ -197,13 +204,12 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
     # ── Seed: full 40-turn corpus.
     for entry in corpus:
         await nats_publish_turn(
-            handle.nats_url, user_id=handle.user_id,
+            handle.nats_url,
+            user_id=handle.user_id,
             user_text=entry["user_text"],
             assistant_text=entry["assistant_text"],
             turn_id=entry["turn_id"],
         )
-
-    last_turn_id = corpus[-1]["turn_id"]
 
     async with mcp_session(handle.mcp_url) as session:
         # Wait for the FULL 40-turn backlog to drain before running the
@@ -216,33 +222,30 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
         # consolidator publishes its themes, those theme commands sit unprocessed
         # behind the turn batch and never land within the assertion window below.
         #
-        # Turns are delivered in publish order, so once the LAST corpus turn
-        # shows up in the working-memory ring the whole backlog has been
-        # processed and the loop is free to apply the theme commands promptly.
-        # (Drawer-count alone is unreliable: trailing turns the steward declines
-        # to persist leave the count flat while the loop is still busy.)
-        async def _backlog_drained(s) -> bool:
-            payload = mcp_tool_json(
-                await s.call_tool(
-                    "eidolon_memory_recall_context",
-                    {"query": "最近", "context": ctx, "top_k": 5, "voice": False},
-                )
-            )
-            if not isinstance(payload, dict):
-                return False
-            wm_ids = {t.get("turn_id") for t in (payload.get("working_memory") or [])}
-            return last_turn_id in wm_ids
+        # Wait on JetStream's durable-consumer state, the actual completion
+        # boundary. A volatile transcript shadow is neither durable nor owned by
+        # the long-term Memory service and must not double as ingestion status.
+        nc = await nats.connect(handle.nats_url)
+        js = nc.jetstream()
+        try:
 
-        assert await wait_for_visible(
-            session, predicate=_backlog_drained, timeout_s=360, poll_interval_s=2.0
-        ), (
-            "LLM steward did not drain the 40-turn backlog (last turn never "
-            "reached the working-memory ring) in 360s — can't run consolidator"
-        )
+            async def _backlog_drained(_session) -> bool:
+                info = await js.consumer_info(
+                    "MEMORY_TURNS",
+                    memory_consumer_name("eidolon-memory-agent", handle.user_id),
+                )
+                return info.num_pending == 0 and info.num_ack_pending == 0
+
+            assert await wait_for_visible(
+                session, predicate=_backlog_drained, timeout_s=360, poll_interval_s=2.0
+            ), "LLM steward did not drain the 40-turn JetStream backlog in 360s"
+        finally:
+            await nc.close()
 
         drawer_count = mcp_tool_json(
             await session.call_tool(
-                "eidolon_memory_list", {"limit": 1000, "include_private": False},
+                "eidolon_memory_list",
+                {"limit": 1000, "include_private": False},
             )
         )
         n_drawers = len((drawer_count or {}).get("records") or [])
@@ -306,9 +309,9 @@ async def test_consolidator_subprocess_produces_wing_theme_drawers(
 
 @pytest.mark.skip(
     reason="Idempotency contract is verified by unit tests "
-           "(test_idempotency_hash_stable_for_same_input + "
-           "test_ingest_theme_idempotent_on_redelivery in test_consolidator.py); "
-           "this e2e was redundant and timing-brittle on slow LLM subprocesses."
+    "(test_idempotency_hash_stable_for_same_input + "
+    "test_ingest_theme_idempotent_on_redelivery in test_consolidator.py); "
+    "this e2e was redundant and timing-brittle on slow LLM subprocesses."
 )
 async def test_consolidator_idempotent_on_rerun(
     _require_llm, live_agent_runner, mcp_session, tmp_path
@@ -317,23 +320,27 @@ async def test_consolidator_idempotent_on_rerun(
     themes — the idempotency hash is the contract."""
     corpus = load_companion_corpus()
     handle = live_agent_runner(
-        user_id="e2e_p4_idemp", steward_mode="llm",
+        user_id="e2e_p4_idemp",
+        steward_mode="llm",
     )
     # Publish the FULL corpus — matches the timing budget that works in the
     # sibling test. LLM steward is slow (~5-8s/turn); 30 was too tight.
     for entry in corpus:
         await nats_publish_turn(
-            handle.nats_url, user_id=handle.user_id,
+            handle.nats_url,
+            user_id=handle.user_id,
             user_text=entry["user_text"],
             assistant_text=entry["assistant_text"],
             turn_id=entry["turn_id"],
         )
 
     async with mcp_session(handle.mcp_url) as session:
+
         async def _enough_drawers(s) -> bool:
             payload = mcp_tool_json(
                 await s.call_tool(
-                    "eidolon_memory_list", {"limit": 1000, "include_private": False},
+                    "eidolon_memory_list",
+                    {"limit": 1000, "include_private": False},
                 )
             )
             return isinstance(payload, dict) and len(payload.get("records") or []) >= 15
@@ -344,7 +351,8 @@ async def test_consolidator_idempotent_on_rerun(
 
         # First pass
         _run_consolidator(
-            user_id=handle.user_id, settings_yaml=handle.settings_path,
+            user_id=handle.user_id,
+            settings_yaml=handle.settings_path,
             log_path=tmp_path / "c1.log",
         )
 
@@ -357,7 +365,8 @@ async def test_consolidator_idempotent_on_rerun(
 
         # Second pass — same palace, same drawer set.
         _run_consolidator(
-            user_id=handle.user_id, settings_yaml=handle.settings_path,
+            user_id=handle.user_id,
+            settings_yaml=handle.settings_path,
             log_path=tmp_path / "c2.log",
         )
         # Allow the cmd subscriber to drain any new (idempotent) writes.
@@ -368,9 +377,7 @@ async def test_consolidator_idempotent_on_rerun(
         # if the LLM is non-deterministic on theme TEXT (idempotency is on
         # the DRAWER SET hash, not the LLM output text). But the count
         # must not balloon — accept ±1 fluctuation.
-        print(
-            f"\n[Phase 4 e2e idempotent] first={first_count} second={second_count}"
-        )
+        print(f"\n[Phase 4 e2e idempotent] first={first_count} second={second_count}")
         assert second_count <= first_count + 1, (
             f"theme count exploded on rerun: {first_count} → {second_count} "
             f"(idempotency hash should pin it)"

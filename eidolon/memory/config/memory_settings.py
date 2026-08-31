@@ -41,9 +41,6 @@ class RecallPolicy(BaseModel):
     top_k: int = 5
     livekit_timeout_seconds: float = 0.3
     filter_taboo_statuses: list[str] = Field(default_factory=lambda: ["taboo", "archived"])
-    voice_wings: list[str] = Field(default_factory=list)
-    exclude_recent_minutes: int = 10
-    exclude_current_session: bool = True
     # KG plan §5.6
     kg_in_recall: bool = True
     # Voice budget for the graph lookup. Tight because it runs alongside the
@@ -159,9 +156,6 @@ class RuntimeConfig(BaseModel):
     log_dir: str = ""  # default $EIDOLON_LOG_ROOT/memory
     run_dir: str = ""  # default $EIDOLON_RUNTIME_ROOT/memory
     read: ReadRuntimeConfig = Field(default_factory=ReadRuntimeConfig)
-    # Phase 2 — in-memory short-term continuity ring. 0 disables; reasonable
-    # values are 5-20. Each turn is ~1-2KB so even maxlen=20 is <40KB per user.
-    working_memory_maxlen: int = 10
 
 
 class ChromadbConfig(BaseModel):

@@ -649,7 +649,7 @@ async def nats_publish_turn(
 ) -> str:
     """Publish a ConversationTurnPayload to ``eidolon.memory.turn.<space_token>``.
 
-    Mirrors the real producer (``eidolon_agent`` MemoryNatsPublisher.publish_turn):
+    Mirrors the real producer (``eidolon_agent`` HistoryFanout.publish_turn):
     identity is expressed via ``owner_id / companion_id / memory_realm_id`` on
     ``MemoryActorContext`` (``memory_realm_id == memory_space_id``), and the
     payload is wrapped in the versioned memory envelope — the consumer's

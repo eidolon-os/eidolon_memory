@@ -87,9 +87,6 @@ def _settings(args: argparse.Namespace) -> MemorySettings:
             },
             "recall": {
                 "top_k": args.top_k,
-                "exclude_recent_minutes": 0,
-                "exclude_current_session": False,
-                "voice_wings": WINGS,
                 "theme_top_k": 0,
             },
             "runtime": {
@@ -308,8 +305,7 @@ async def _measure_point(
     count = await asyncio.to_thread(_collection_count, col)
 
     sample_indices = [
-        int(round(i * max(0, size - 1) / max(1, queries - 1)))
-        for i in range(queries)
+        int(round(i * max(0, size - 1) / max(1, queries - 1))) for i in range(queries)
     ]
     for idx in sample_indices:
         category, query = _query_for(idx)

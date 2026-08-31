@@ -27,6 +27,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from eidolon_memory_contracts import build_memory_actor_context  # noqa: E402
+
 from eidolon.memory.adapters.locked_backend import LockedBackend  # noqa: E402
 from eidolon.memory.adapters.mempalace_python_backend import (  # noqa: E402
     MemPalacePythonBackend,
@@ -37,7 +39,7 @@ from eidolon.memory.adapters.mempalace_query_embedding import (  # noqa: E402
 )
 from eidolon.memory.config.memory_settings import get_memory_settings  # noqa: E402
 from eidolon.memory.config.palace_directory import (  # noqa: E402
-    resolve_palace_for_user,
+    resolve_palace_for_memory_space,
 )
 
 _QUERIES = [
@@ -57,9 +59,11 @@ def _percentiles(samples: list[float]) -> dict:
         return {"count": 0, "p50": 0, "p95": 0, "p99": 0, "max": 0, "min": 0}
     s = sorted(samples)
     n = len(s)
+
     def pct(p):
         idx = min(n - 1, max(0, int(p * n) - 1))
         return round(s[idx], 3)
+
     return {
         "count": n,
         "min": round(s[0], 3),
@@ -81,18 +85,24 @@ async def _timed_recall(
 ) -> dict:
     """Run a single voice recall, reporting per-stage timings (ms)."""
     from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
+    from eidolon.memory.adapters.recall_ranking import rank_records_by_similarity
     from eidolon.memory.adapters.search_payload import parse_search_tool_payload
     from eidolon.memory.application.public_recall import (
         _resolve_wings,
-        filter_voice_recall_hits,
-        rank_records_by_similarity,
-        recall_record_visible_for_user,
+        recall_record_visible_for_context,
     )
 
     stages: dict[str, float] = {}
 
-    wings = _resolve_wings(settings, wing=None, for_voice=True)
+    wings = _resolve_wings(settings, wing=None)
     top_k = settings.recall.top_k
+    context = build_memory_actor_context(
+        memory_realm_id=user_id,
+        owner_id="benchmark",
+        companion_id="benchmark",
+        device_id="benchmark",
+        session_id="benchmark-probe",
+    )
 
     # ── embed ──
     t0 = time.perf_counter()
@@ -101,17 +111,16 @@ async def _timed_recall(
     # via mempalace.embedding inside search_memories_shared_embedding, but
     # measuring the cached path is the cheapest representative.
     from eidolon.memory.adapters.mempalace_query_embedding import embed_query_vector
+
     _vec = embed_query_vector(query)
     del _vec
     stages["embed_ms"] = (time.perf_counter() - t0) * 1000
     cache_info_after = _embed_query_cached_normalized.cache_info()
-    stages["embed_cache_hit"] = (
-        cache_info_after.hits > cache_info_before.hits
-    )
+    stages["embed_cache_hit"] = cache_info_after.hits > cache_info_before.hits
 
     # ── lock acquire ──
     t1 = time.perf_counter()
-    async with backend.lock:
+    async with backend.lock.reader():
         stages["lock_acquire_ms"] = (time.perf_counter() - t1) * 1000
         # ── vector query (in-thread, blocking) ──
         t2 = time.perf_counter()
@@ -128,11 +137,11 @@ async def _timed_recall(
 
     # ── filter + rank ──
     t3 = time.perf_counter()
-    records = parse_search_tool_payload({"results": raw_hits})
-    records = [
-        r for r in records if recall_record_visible_for_user(r, user_id)
-    ]
-    records = filter_voice_recall_hits(records, settings)
+    records = parse_search_tool_payload(
+        {"results": raw_hits},
+        default_memory_space_id=context.memory_space_id,
+    )
+    records = [r for r in records if recall_record_visible_for_context(r, context)]
     records = rank_records_by_similarity(records, top_k=top_k)
     stages["filter_rank_ms"] = (time.perf_counter() - t3) * 1000
 
@@ -145,8 +154,12 @@ async def _timed_recall(
 
 async def _main(args):
     settings = get_memory_settings()
-    palace_path = resolve_palace_for_user(settings, args.user_id)
-    inner = MemPalacePythonBackend(settings, str(palace_path))
+    palace_path = resolve_palace_for_memory_space(settings, args.user_id)
+    inner = MemPalacePythonBackend(
+        settings,
+        str(palace_path),
+        memory_space_id=args.user_id,
+    )
     backend = LockedBackend(inner)
 
     # Main-thread warm of chromadb so the threadpool inside
@@ -187,7 +200,7 @@ async def _main(args):
             )
 
     # Aggregate over WARM samples (skip cold rounds)
-    warm = all_stages[args.cold_rounds:]
+    warm = all_stages[args.cold_rounds :]
     aggregate = {
         "n_total": len(all_stages),
         "n_cold": args.cold_rounds,

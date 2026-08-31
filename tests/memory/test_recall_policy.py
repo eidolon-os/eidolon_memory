@@ -38,41 +38,41 @@ def test_top_k_cap(monkeypatch: pytest.MonkeyPatch):
     assert len(out) <= settings.recall.top_k
 
 
-def test_rank_uses_scope_and_session_without_source_specific_boosts() -> None:
+def test_rank_does_not_use_transport_session_as_relevance() -> None:
     context = MemoryActorContext(
         memory_realm_id="default.alice.default",
         memory_space_id="default.alice.default",
         companion_id="default",
         session_id="current-session",
     )
-    current_chat = MemoryWireRecord(
+    same_session = MemoryWireRecord(
         memory_space_id=context.memory_space_id,
-        key="drawer_chat",
-        value="当前会话普通内容",
+        key="same_session",
+        value="同一交互写入的事实",
         metadata={
             "memory_space_id": context.memory_space_id,
             "session_id": "current-session",
             "scope": "persona",
-            "similarity": 0.99,
+            "similarity": 0.7,
         },
     )
-    command_projection = MemoryWireRecord(
+    older_session = MemoryWireRecord(
         memory_space_id=context.memory_space_id,
-        key="drawer_explicit",
-        value="用户明确要求记住的内容",
+        key="older_session",
+        value="较早交互写入但更相关的事实",
         metadata={
             "memory_space_id": context.memory_space_id,
-            "source": "assertion-ledger",
-            "scope": "global",
-            "similarity": 0.8,
+            "session_id": "older-session",
+            "scope": "persona",
+            "similarity": 0.9,
         },
     )
 
     ranked = RecallPolicyRegistry.default().rank(
-        [current_chat, command_projection],
+        [same_session, older_session],
         context=context,
-        query="内容",
+        query="事实",
         top_k=2,
     )
 
-    assert [record.key for record in ranked] == ["drawer_chat", "drawer_explicit"]
+    assert [record.key for record in ranked] == ["older_session", "same_session"]

@@ -321,10 +321,10 @@ So the contract is not a competing design — it is the same surface with a type
 signature and a name per operation.
 
 **But making it the surface in use is a cross-repository change, not a local
-one.** `RecallResult` deliberately has no `kg_triples` and no `working_memory`
-field: both would let a client infer whether the service keeps a graph, which is
-the knowledge the contract exists to withhold. The tool returns them today, and
-`eidolon_agent/infra/memory/port_adapter.py:201` reads `kg_triples` — 17
+one.** `RecallResult` deliberately has no raw `kg_triples`; the Agent MCP
+surface exposes projection evidence separately and no longer carries a second
+process-local conversation transcript. The tool returns graph evidence today,
+and `eidolon_agent/infra/memory/port_adapter.py` consumes it — 17
 references on the agent side.
 
 So implementing the contract inside this repository alone would produce exactly

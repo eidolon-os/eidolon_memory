@@ -1,8 +1,8 @@
 """Startup warmup for processes that serve reads.
 
 What warming means belongs to the store — see :class:`WarmableBackend`. What is
-worth warming belongs here, because it is a recall decision: the wings a voice
-turn reaches are the ones whose first read must not be the slow one.
+worth warming belongs here, because the first voice turn must not pay cold-read
+cost for any durable memory category it is allowed to recall.
 """
 
 from __future__ import annotations
@@ -40,13 +40,7 @@ async def warm_read_path(
 
 
 def _wings_worth_warming(settings: MemorySettings) -> list[str]:
-    """The voice wings, since voice has the tightest budget of any read path.
+    """Warm every recallable wing; transport mode must not change semantics."""
 
-    Falls back to every wing but Privacy when voice wings are unset — warming a
-    private wing would load it into caches for a path that does not read it.
-    """
-
-    wings = settings.recall.voice_wings or [
-        wing.id for wing in settings.wings if wing.id != "Wing_Privacy"
-    ]
+    wings = [wing.id for wing in settings.wings if wing.id not in {"Wing_Privacy", "Wing_Theme"}]
     return wings or [settings.wings[0].id]
