@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-import re
 import time
 from typing import Any
 
@@ -57,8 +55,6 @@ def recall_record_visible_for_context(
 #     keeps the specific-fact top_k clean while themes still surface via
 #     their own channel.
 _FANOUT_EXCLUDED_WINGS = frozenset({"Wing_Privacy", "Wing_Theme"})
-_EXACT_SCAN_LIMIT = 5000
-_VOICE_EXACT_SCAN_LIMIT = 250
 
 
 def _resolve_wings(
@@ -85,186 +81,6 @@ def _effective_wing_parallel(settings: MemorySettings, *, for_voice: bool) -> in
     # reporting its cores that yielded the full count, capped at 4, so the
     # halving never happened.
     return max(1, min(4, (os.cpu_count() or 4) // 2))
-
-
-def _normalize_text(value: Any) -> str:
-    return str(value or "").strip().lower()
-
-
-def _query_terms(query: str) -> list[str]:
-    q = _normalize_text(query)
-    if not q:
-        return []
-    terms: set[str] = {q}
-    terms.update(t for t in re.findall(r"[a-z0-9_@\-.]{2,}", q) if t)
-    cjk = re.sub(r"[^\u3400-\u9fff]+", "", q)
-    for n in range(2, min(8, len(cjk)) + 1):
-        for i in range(0, len(cjk) - n + 1):
-            term = cjk[i : i + n]
-            if term not in {"什么", "哪里", "怎么", "时候", "这个", "那个"}:
-                terms.add(term)
-    return sorted(terms, key=lambda item: (-len(item), item))
-
-
-def _record_search_blob(record: MemoryWireRecord) -> str:
-    meta = record.metadata or {}
-    return _normalize_text(
-        " ".join(
-            [
-                str(record.value or ""),
-                str(record.key or ""),
-                str(meta.get("wing") or ""),
-                str(meta.get("room") or ""),
-                str(meta.get("tags") or ""),
-            ]
-        )
-    )
-
-
-def _lexical_score(record: MemoryWireRecord, *, query: str, terms: list[str]) -> float:
-    blob = _record_search_blob(record)
-    if not blob:
-        return 0.0
-    q = _normalize_text(query)
-    score = 0.0
-    if q and q in blob:
-        score += 100.0 + min(len(q), 40)
-    for term in terms:
-        if term and term in blob:
-            score += min(len(term), 12)
-    return score
-
-
-async def _exact_lexical_fallback(
-    backend: MemoryReader,
-    *,
-    query: str,
-    context: MemoryActorContext,
-    wings: list[str],
-    room: str | None,
-    top_k: int,
-    scan_limit: int,
-) -> list[MemoryWireRecord]:
-    """Bounded exact scan for real-time freshness and vector-search degradation.
-
-    Chroma/MemPalace vector search can lag, fail, or miss short entity queries.
-    ``get_all`` is the same single-owner backend surface used by admin listing,
-    so it sees newly committed drawers immediately while respecting the same
-    process lock. The scan is intentionally capped; vector remains the primary
-    scalable retrieval path.
-    """
-    get_all = getattr(backend, "get_all", None)
-    if get_all is None:
-        return []
-    terms = _query_terms(query)
-    if not terms:
-        return []
-    try:
-        rows = await get_all(context.memory_space_id, limit=scan_limit, offset=0)
-    except Exception as exc:  # noqa: BLE001 - fallback must not break recall
-        log.warning(
-            "exact_lexical_fallback_failed",
-            memory_space_id=context.memory_space_id,
-            query_len=len(query or ""),
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
-        return []
-
-    wing_set = set(wings)
-    scored: list[tuple[float, MemoryWireRecord]] = []
-    for row in rows:
-        meta = row.metadata or {}
-        row_wing = str(meta.get("wing") or "")
-        row_room = str(meta.get("room") or row.key or "")
-        if wing_set and row_wing not in wing_set:
-            continue
-        if room and row_room != room and row.key != room:
-            continue
-        if not recall_record_visible_for_context(row, context):
-            continue
-        score = _lexical_score(row, query=query, terms=terms)
-        if score <= 0:
-            continue
-        enriched_meta = {
-            **meta,
-            "retrieval": "lexical_fallback",
-            "similarity": min(0.99, score / 120.0),
-            "_lexical_score": score,
-        }
-        scored.append((score, row.model_copy(update={"metadata": enriched_meta})))
-
-    scored.sort(
-        key=lambda item: (
-            item[0],
-            item[1].memory_time or item[1].created_at,
-        ),
-        reverse=True,
-    )
-    return [row for _score, row in scored[: max(1, top_k)]]
-
-
-def _canonical_value_key(value: Any) -> str:
-    """Canonicalize a record ``value`` so both read paths dedup to one key.
-
-    The vector path (``parse_search_tool_payload``) ``json.loads`` a drawer's
-    content, so JSON drawers come back as a parsed dict/list; the ``get_all``
-    fallback keeps the raw JSON string. ``str()`` of those differs
-    (``"{'a': 1}"`` vs ``'{"a": 1}'``), so a plain ``str(value)`` fails to
-    dedup the *same* JSON drawer across paths on the chroma backend. Normalize
-    both to sorted-key JSON; plain-text content is returned unchanged.
-    """
-    if isinstance(value, (dict, list)):
-        obj: Any = value
-    elif isinstance(value, str):
-        stripped = value.strip()
-        if not stripped or stripped[0] not in "{[":
-            return value  # fast path: plain text, not JSON
-        try:
-            obj = json.loads(value)
-        except (json.JSONDecodeError, ValueError):
-            return value
-    else:
-        return str(value)
-    try:
-        return json.dumps(obj, sort_keys=True, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return str(value)
-
-
-def _record_identity(row: MemoryWireRecord) -> tuple[str, str, str, str]:
-    """Stable drawer identity shared by the vector and lexical read paths.
-
-    The two paths key records differently — vector search
-    (``parse_search_tool_payload``) uses ``room`` as ``key`` because MemPalace's
-    search payload exposes no drawer id, while ``get_all`` uses the chroma
-    ``drawer_id``. Deduping on ``key`` therefore lets the *same* drawer appear
-    twice once vector hits survive the visibility gate. A drawer id is
-    deterministically ``_drawer_id(wing, room, content)``, so ``(memory_space_id,
-    wing, room, canonical(value))`` is the same identity both paths agree on.
-    """
-    meta = row.metadata or {}
-    return (
-        row.memory_space_id,
-        str(meta.get("wing") or ""),
-        str(meta.get("room") or row.key or ""),
-        _canonical_value_key(row.value),
-    )
-
-
-def _merge_unique_records(
-    primary: list[MemoryWireRecord],
-    fallback: list[MemoryWireRecord],
-) -> list[MemoryWireRecord]:
-    seen: set[tuple[str, str, str, str]] = set()
-    merged: list[MemoryWireRecord] = []
-    for row in [*primary, *fallback]:
-        ident = _record_identity(row)
-        if ident in seen:
-            continue
-        seen.add(ident)
-        merged.append(row)
-    return merged
 
 
 async def recall_with_kg_fusion(
@@ -821,34 +637,8 @@ async def search_all_wings_mcp_style(
                 continue
             hits.extend(batch)
 
-    lexical_started = time.perf_counter()
-    if len(hits) < top_k:
-        exact_hits = await _exact_lexical_fallback(
-            backend,
-            query=query,
-            context=context,
-            wings=wings,
-            room=room,
-            top_k=top_k,
-            scan_limit=_VOICE_EXACT_SCAN_LIMIT if for_voice else _EXACT_SCAN_LIMIT,
-        )
-        if exact_hits:
-            metrics.LEXICAL_FALLBACKS.inc()
-            log.info(
-                "exact_lexical_fallback_hit",
-                memory_space_id=context.memory_space_id,
-                query_len=len(query or ""),
-                hit_count=len(exact_hits),
-                vector_hit_count=len(hits),
-                vector_degraded=vector_degraded,
-                for_voice=for_voice,
-            )
-            hits = _merge_unique_records(hits, exact_hits)
-    if diagnostics is not None:
-        diagnostics["lexical_fallback_ms"] = _elapsed_ms(lexical_started)
-
     if vector_degraded and raise_on_degraded and not hits:
-        raise MemoryBackendUnavailable("vector search degraded and exact fallback found no hits")
+        raise MemoryBackendUnavailable("vector search degraded")
 
     hits = rank_records_by_similarity(hits, top_k=max(top_k, len(hits)))
     result = RecallPolicyRegistry.default().rank(

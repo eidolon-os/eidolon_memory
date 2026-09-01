@@ -246,7 +246,14 @@ async def test_natural_turn_is_recalled_by_voice_after_device_reenters(
                 OWNER_USER_ID,
                 marker,
                 memory_realm_id=MEMORY_SPACE_ID,
-                plan=MemoryQueryPlan(semantic_k=5, voice=True),
+                # Match ContextCompiler's product plan: ordinary personal
+                # recall always queries the authenticated self node in
+                # parallel with semantic retrieval.
+                plan=MemoryQueryPlan(
+                    semantic_k=5,
+                    voice=True,
+                    kg_subjects=("self",),
+                ),
                 timeout_s=5.0,
                 companion_id=COMPANION_ID,
                 device_id="default-device",
@@ -313,15 +320,21 @@ async def test_agent_recall_latency_distribution(live_agent_runner) -> None:
     marker = f"火龙果-{uuid.uuid4().hex[:8]}"
     owner_id = "owner-perf"
     companion_id = "companion-perf"
-    query = f"我最喜欢的水果是不是 {marker}？"
+    # The question must not contain the answer marker.  Including it would
+    # turn this into an exact-token readback probe and hide the ordinary
+    # product case: a person asks naturally for a fact they stated earlier.
+    query = "我最喜欢的水果是什么？"
     try:
         write_started = time.perf_counter()
         await nats_publish_assertion(
             handle.nats_url,
             user_id=handle.user_id,
             text=f"owner likes {marker}",
+            wing="Wing_Life",
             request_id=f"seed-{marker}",
-            subject="owner",
+            # Canonical owner facts use the graph's public ``self`` entity;
+            # ContextCompiler queries that same authenticated focus subject.
+            subject="self",
             predicate="likes",
             object_value=marker,
             companion_id=companion_id,
@@ -335,7 +348,11 @@ async def test_agent_recall_latency_distribution(live_agent_runner) -> None:
                 owner_id,
                 query,
                 memory_realm_id=handle.user_id,
-                plan=MemoryQueryPlan(semantic_k=5, voice=True),
+                plan=MemoryQueryPlan(
+                    semantic_k=5,
+                    voice=True,
+                    kg_subjects=("self",),
+                ),
                 timeout_s=4.0,
                 companion_id=companion_id,
                 device_id="device-perf",
@@ -343,7 +360,11 @@ async def test_agent_recall_latency_distribution(live_agent_runner) -> None:
             )
             return not latest_recall.degraded and marker in latest_recall.context
 
-        assert await _wait_for_true(_fact_visible, timeout_s=30, poll_interval_s=0.05)
+        assert await _wait_for_true(
+            _fact_visible,
+            timeout_s=30,
+            poll_interval_s=0.05,
+        ), latest_recall
         write_visibility_ms = (time.perf_counter() - write_started) * 1000
 
         compiler = ContextCompiler(

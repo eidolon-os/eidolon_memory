@@ -103,12 +103,6 @@ GRAPH_TIMEOUTS = Counter(
 """Expected to be non-zero: dropping the graph contribution is the designed
 behaviour when it is slow. A rate that climbs is the signal."""
 
-LEXICAL_FALLBACKS = Counter(
-    "eidolon_memory_lexical_fallback_total",
-    "Recalls that fell back to a literal scan after vector search came up short.",
-)
-"""The scan is bounded but not cheap, so how often it fires is worth watching."""
-
 TURN_STAGE_SECONDS = Histogram(
     "eidolon_memory_turn_stage_seconds",
     "Time inside one stage of absorbing a turn.",

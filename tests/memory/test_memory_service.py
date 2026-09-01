@@ -242,17 +242,23 @@ async def test_a_companions_private_memory_stays_with_that_companion(service) ->
         )
     )
 
-    for_a = await service.recall_context(
-        _ctx(ALICE, companion="comp_a"), "green joke", plan=RecallPlan()
+    owner_for_a = await service.recall_context(
+        _ctx(ALICE, companion="comp_a"), "owner likes green", plan=RecallPlan()
     )
-    for_b = await service.recall_context(
-        _ctx(ALICE, companion="comp_b"), "green joke", plan=RecallPlan()
+    owner_for_b = await service.recall_context(
+        _ctx(ALICE, companion="comp_b"), "owner likes green", plan=RecallPlan()
+    )
+    private_for_a = await service.recall_context(
+        _ctx(ALICE, companion="comp_a"), "our private joke", plan=RecallPlan()
+    )
+    private_for_b = await service.recall_context(
+        _ctx(ALICE, companion="comp_b"), "our private joke", plan=RecallPlan()
     )
 
-    assert "owner likes green" in for_a.context
-    assert "owner likes green" in for_b.context, "the owner layer reaches every companion"
-    assert "private joke" in for_a.context
-    assert "private joke" not in for_b.context
+    assert "owner likes green" in owner_for_a.context
+    assert "owner likes green" in owner_for_b.context, "the owner layer reaches every companion"
+    assert "private joke" in private_for_a.context
+    assert "private joke" not in private_for_b.context
 
 
 async def test_held_spaces_reports_this_process_not_a_callers_memories(

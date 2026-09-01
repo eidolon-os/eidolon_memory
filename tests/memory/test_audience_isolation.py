@@ -270,23 +270,11 @@ async def test_a_memory_written_before_the_field_existed_stays_recallable() -> N
     assert await _recall(backend, COMP_A) == ["likes green from before the upgrade"]
 
 
-# ── the cost of filtering after retrieval ────────────────────────────────────
+# ── audience filtering at the storage query boundary ────────────────────────
 
 
-async def test_another_companions_memories_are_filtered_but_still_cost_budget() -> None:
-    """Documents a known limitation, and pins the part that must not regress.
-
-    The filter runs over the store's results rather than inside its query, so a
-    row the caller cannot see still consumed one of the ``top_k`` slots. Measured
-    against real chroma: asking for 5 with eight of another companion's memories
-    ranking higher returns 1, not 5.
-
-    What must hold is that nothing leaks — that part is asserted here. Fewer
-    results than asked for is a loss of usefulness, not of privacy, and fixing it
-    means pushing the filter into both stores' query languages and deciding what
-    happens to rows written before the field existed. Until then this is stated
-    rather than hidden.
-    """
+async def test_another_companions_memories_are_filtered_before_ranking() -> None:
+    """Private rows neither leak nor crowd Owner-visible rows out of ``top_k``."""
 
     backend = FakeMemoryBackend()
     for index in range(5):
@@ -301,9 +289,21 @@ async def test_another_companions_memories_are_filtered_but_still_cost_budget() 
         _fragment("owner likes the colour green", audience=OWNER_AUDIENCE)
     )
 
-    recalled = await _recall(backend, COMP_B, query="private owner colour", top_k=5)
+    owner_recalled = await _recall(
+        backend,
+        COMP_B,
+        query="owner likes the colour green",
+        top_k=1,
+    )
+    private_recalled = await _recall(
+        backend,
+        COMP_B,
+        query="private to A number 0",
+        top_k=1,
+    )
 
-    assert not any("private to A" in text for text in recalled), (
+    assert not any("private to A" in text for text in owner_recalled), (
         "A's memories must never reach B"
     )
-    assert "owner likes the colour green" in recalled
+    assert owner_recalled == ["owner likes the colour green"]
+    assert private_recalled == []
