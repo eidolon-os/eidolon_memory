@@ -110,7 +110,24 @@ TURN_STAGE_SECONDS = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 15.0, 30.0, 60.0, 120.0),
 )
 """Wider buckets than recall: this path waits on an LLM, so seconds are normal
-and the useful question is which stage dominates."""
+and the useful question is which stage dominates.
+
+``stage`` is one of:
+
+* ``steward`` — the LLM decision, including its retry
+* ``privacy`` — applying a forget across projections; only turns that carry a
+  privacy action enter it
+* ``fragments`` — the drawer projection of a fragment-only decision
+* ``kg`` — canonical registration, invalidation, the drawer beside each triple,
+  the graph rows, and entity mentions; only entered when a graph is configured
+* ``total`` — the whole absorption. Only a turn that reached the end is
+  sampled: a payload rejected before the steward ran spent no time in any
+  stage, and recording it here would report discarding as fast absorption.
+
+A stage that did no work is not entered, so the histogram is not diluted with
+zeros from quiet turns. ``total`` is therefore usually larger than the sum of
+the stages present, and the difference is the un-staged remainder — decode,
+validation, ledger bookkeeping — not unaccounted stage time."""
 
 TURNS_TOTAL = Counter(
     "eidolon_memory_turn_total",

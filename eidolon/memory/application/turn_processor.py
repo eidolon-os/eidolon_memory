@@ -8,8 +8,10 @@ failure is retryable and is never acknowledged as if every projection agreed.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -279,6 +281,54 @@ def _drawer_for_triple(
     )
 
 
+class _TurnStages:
+    """Per-turn stage timings: histogram samples plus one greppable log line.
+
+    The histogram answers "is absorption getting slower"; it cannot answer
+    "which stage owned *that* turn", because a percentile has no turn id. An
+    end-to-end latency outlier only ever raises the second question, so the
+    same measurements are also emitted on the existing ``turn_processed``
+    line, where they sit beside the turn id already logged there.
+
+    A stage that did no work is never entered, so a quiet turn does not push
+    zeros into the histogram and flatten its tail.
+    """
+
+    def __init__(self) -> None:
+        self._started = time.perf_counter()
+        self._elapsed: dict[str, float] = {}
+
+    @contextlib.contextmanager
+    def stage(self, name: str) -> Iterator[None]:
+        """Time one stage whether it returns or raises.
+
+        Both paths are recorded for the reason the steward stage already did
+        it by hand: a stage that reports only on success hides exactly the
+        runs an operator went looking for.
+        """
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = time.perf_counter() - started
+            self._elapsed[name] = self._elapsed.get(name, 0.0) + elapsed
+            metrics.TURN_STAGE_SECONDS.labels(stage=name).observe(elapsed)
+
+    def observe_total(self) -> None:
+        """Close the whole-turn span. Only absorption reaches this.
+
+        A turn rejected before the steward ran spent no time in any stage, so
+        recording it as a ``total`` sample would report the discard path as
+        fast absorption.
+        """
+        elapsed = time.perf_counter() - self._started
+        self._elapsed["total"] = elapsed
+        metrics.TURN_STAGE_SECONDS.labels(stage="total").observe(elapsed)
+
+    def log_fields(self) -> dict[str, int]:
+        return {f"{name}_ms": round(value * 1000) for name, value in self._elapsed.items()}
+
+
 async def _apply_privacy(
     backend: Any,
     memory_space_id: str,
@@ -347,6 +397,7 @@ async def process_turn_message(
       * deterministic redelivery resumes pending projections
       * a ledger-first privacy action is never applied to only one projection
     """
+    stages = _TurnStages()
     deliveries = delivery_count(msg)
     try:
         raw = json.loads(msg.data.decode("utf-8"))
@@ -406,20 +457,14 @@ async def process_turn_message(
         return
 
     # ── decide ─────────────────────────────────────────────────────────────
-    steward_started = time.perf_counter()
     try:
-        decision, memory_intents = await _decide_once(
-            steward,
-            turn,
-            decision_store,
-        )
-        metrics.TURN_STAGE_SECONDS.labels(stage="steward").observe(
-            time.perf_counter() - steward_started
-        )
+        with stages.stage("steward"):
+            decision, memory_intents = await _decide_once(
+                steward,
+                turn,
+                decision_store,
+            )
     except Exception as exc:
-        metrics.TURN_STAGE_SECONDS.labels(stage="steward").observe(
-            time.perf_counter() - steward_started
-        )
         metrics.TURNS_TOTAL.labels(outcome="steward_failed").inc()
         log.error(
             "turn_processor_steward_failed",
@@ -458,20 +503,21 @@ async def process_turn_message(
     fragments_written = 0
     try:
         # Privacy actions first; they may purge before we attempt new writes.
-        await _apply_privacy(
-            backend,
-            memory_space_id,
-            decision.privacy_actions,
-            interaction_readable_audiences(turn.context),
-            kg,
-            canonical_facts,
-            commitments,
-            decision_store,
-        )
         if decision.privacy_actions:
-            if decision_store is None:
-                raise RuntimeError("privacy turns require the extraction decision ledger")
-            await decision_store.redact_source_events(memory_space_id, [turn.turn_id])
+            with stages.stage("privacy"):
+                await _apply_privacy(
+                    backend,
+                    memory_space_id,
+                    decision.privacy_actions,
+                    interaction_readable_audiences(turn.context),
+                    kg,
+                    canonical_facts,
+                    commitments,
+                    decision_store,
+                )
+                if decision_store is None:
+                    raise RuntimeError("privacy turns require the extraction decision ledger")
+                await decision_store.redact_source_events(memory_space_id, [turn.turn_id])
             memory_intents = []
             decision = StewardDecision(
                 should_write=False,
@@ -483,51 +529,52 @@ async def process_turn_message(
         # writing the model's prose as another source creates two independently
         # correctable versions of the same fact.
         if decision.should_write and (not decision.triples or kg is None):
-            if canonical_facts is None:
-                raise RuntimeError("natural long-term memory requires its fact ledger")
-            fragment_intents = {
-                int(intent.attributes["source_index"]): intent
-                for intent in memory_intents
-                if intent.attributes.get("source_kind") == "fragment"
-            }
-            pending: list[tuple[MemoryFragment, Any]] = []
-            for index, fragment in enumerate(decision.fragments):
-                intent = fragment_intents[index]
-                registration = await canonical_facts.register(intent, targets={"drawer"})
-                if registration.state != "active":
-                    continue
-                projection_id = registration.projection_id or registration.assertion_id
-                if "drawer" not in registration.pending_targets:
-                    existing_drawer = await backend.get_by_source_turn_id(
-                        memory_space_id, f"canonical:{projection_id}"
-                    )
-                    if existing_drawer is not None:
+            with stages.stage("fragments"):
+                if canonical_facts is None:
+                    raise RuntimeError("natural long-term memory requires its fact ledger")
+                fragment_intents = {
+                    int(intent.attributes["source_index"]): intent
+                    for intent in memory_intents
+                    if intent.attributes.get("source_kind") == "fragment"
+                }
+                pending: list[tuple[MemoryFragment, Any]] = []
+                for index, fragment in enumerate(decision.fragments):
+                    intent = fragment_intents[index]
+                    registration = await canonical_facts.register(intent, targets={"drawer"})
+                    if registration.state != "active":
                         continue
-                    await canonical_facts.mark_projection_pending(
+                    projection_id = registration.projection_id or registration.assertion_id
+                    if "drawer" not in registration.pending_targets:
+                        existing_drawer = await backend.get_by_source_turn_id(
+                            memory_space_id, f"canonical:{projection_id}"
+                        )
+                        if existing_drawer is not None:
+                            continue
+                        await canonical_facts.mark_projection_pending(
+                            memory_space_id,
+                            registration.assertion_id,
+                            targets={"drawer"},
+                        )
+                    stamped = _stamped_for_turn(fragment, turn=turn, turn_ts=turn_ts)
+                    pending.append(
+                        (
+                            _canonical_drawer(
+                                stamped,
+                                assertion_id=registration.assertion_id,
+                                evidence_id=intent.intent_id,
+                                projection_id=projection_id,
+                            ),
+                            registration,
+                        )
+                    )
+                await ingest_memory_fragments(backend, [item[0] for item in pending])
+                for _, registration in pending:
+                    await canonical_facts.mark_projected(
                         memory_space_id,
                         registration.assertion_id,
                         targets={"drawer"},
                     )
-                stamped = _stamped_for_turn(fragment, turn=turn, turn_ts=turn_ts)
-                pending.append(
-                    (
-                        _canonical_drawer(
-                            stamped,
-                            assertion_id=registration.assertion_id,
-                            evidence_id=intent.intent_id,
-                            projection_id=projection_id,
-                        ),
-                        registration,
-                    )
-                )
-            await ingest_memory_fragments(backend, [item[0] for item in pending])
-            for _, registration in pending:
-                await canonical_facts.mark_projected(
-                    memory_space_id,
-                    registration.assertion_id,
-                    targets={"drawer"},
-                )
-            fragments_written = len(pending)
+                fragments_written = len(pending)
     except Exception as exc:
         log.error(
             "turn_processor_fragment_failed",
@@ -559,222 +606,223 @@ async def process_turn_message(
     min_conf = settings.kg.min_confidence_to_write if kg is not None else 1.0
 
     if kg is not None:
-        # Invalidations first so a "change of mind" turn always ends the old
-        # fact before any new one referencing the same (s,p,o) shape lands.
-        invalidation_intents: dict[int, MemoryIntent] = {}
-        for intent in memory_intents:
-            source_index = intent.attributes.get("source_index")
-            if (
-                intent.attributes.get("source_kind") == "invalidation"
-                and isinstance(source_index, int)
-                and not isinstance(source_index, bool)
-            ):
-                invalidation_intents[source_index] = intent
-        for index, inv in enumerate(decision.invalidations):
-            intent = invalidation_intents.get(index)
-            audience = turn_audience
-            try:
-                if canonical_facts is not None and intent is not None:
-                    if intent.occurred_at is None:
-                        intent = intent.model_copy(update={"occurred_at": turn_ts})
-                    result = await invalidate_exact_canonical_fact(
-                        backend,
-                        kg,
-                        intent,
-                        canonical_facts,
-                    )
-                    rows = result.kg_rows_invalidated
-                else:
-                    rows = await kg.invalidate(
-                        subject=inv.subject,
-                        predicate=inv.predicate,
-                        object=inv.object,
-                        audiences=(audience,),
-                        ended=inv.ended or turn_ts,
-                    )
-                if rows > 0:
-                    kg_invalidations_applied += 1
-                else:
-                    log.info(
-                        "kg_invalidate_no_match",
-                        subject=inv.subject,
-                        predicate=inv.predicate,
-                        object=inv.object,
-                    )
-            except Exception as exc:
-                kg_failures.append(f"inv:{exc}")
+        with stages.stage("kg"):
+            # Invalidations first so a "change of mind" turn always ends the old
+            # fact before any new one referencing the same (s,p,o) shape lands.
+            invalidation_intents: dict[int, MemoryIntent] = {}
+            for intent in memory_intents:
+                source_index = intent.attributes.get("source_index")
                 if (
-                    canonical_facts is not None
-                    and decision_store is not None
-                    and intent is not None
+                    intent.attributes.get("source_kind") == "invalidation"
+                    and isinstance(source_index, int)
+                    and not isinstance(source_index, bool)
                 ):
-                    canonical_projection_failures.append(str(exc))
-                log.warning("kg_invalidate_failed", error=str(exc))
-
-        triple_intents: dict[int, MemoryIntent] = {}
-        for intent in memory_intents:
-            source_index = intent.attributes.get("source_index")
-            if (
-                intent.attributes.get("source_kind") == "triple"
-                and isinstance(source_index, int)
-                and not isinstance(source_index, bool)
-            ):
-                triple_intents[source_index] = intent
-        for index, t in enumerate(decision.triples):
-            if t.confidence < min_conf:
-                kg_skipped_low_confidence += 1
-                continue
-            try:
-                intent = triple_intents.get(index)
+                    invalidation_intents[source_index] = intent
+            for index, inv in enumerate(decision.invalidations):
+                intent = invalidation_intents.get(index)
                 audience = turn_audience
-                if canonical_facts is None or intent is None:
-                    raise RuntimeError("structured natural memory requires its fact ledger")
-                exact = await canonical_facts.get_fact(
-                    intent.memory_space_id,
-                    audience,
-                    intent.subject or "",
-                    intent.predicate or "",
-                    intent.object or "",
-                )
-                if exact is not None and exact.state != "active":
-                    # A current fact may become true again after an earlier
-                    # correction. Reuse the canonical ledger's existing
-                    # reactivation transition rather than either rejecting
-                    # the new evidence forever or creating a second fact id.
-                    # The steward has already supplied a complete,
-                    # high-confidence triple; this is not inferred from the
-                    # fragment text.
-                    intent = intent.model_copy(
-                        update={
-                            "operation_hint": "update",
-                            "attributes": {
-                                **intent.attributes,
-                                "reason": "steward reasserted exact fact",
-                            },
-                        }
-                    )
-                    registration = await canonical_facts.register_reactivation(
-                        intent,
-                        targets={"drawer", "kg"},
-                    )
-                else:
-                    registration = await canonical_facts.register(
-                        intent,
-                        targets={"drawer", "kg"},
-                    )
-                if registration.state != "active" and not registration.reactivation_pending:
-                    kg_exact_noop += 1
-                    continue
-                projection_id = registration.projection_id or registration.assertion_id
+                try:
+                    if canonical_facts is not None and intent is not None:
+                        if intent.occurred_at is None:
+                            intent = intent.model_copy(update={"occurred_at": turn_ts})
+                        result = await invalidate_exact_canonical_fact(
+                            backend,
+                            kg,
+                            intent,
+                            canonical_facts,
+                        )
+                        rows = result.kg_rows_invalidated
+                    else:
+                        rows = await kg.invalidate(
+                            subject=inv.subject,
+                            predicate=inv.predicate,
+                            object=inv.object,
+                            audiences=(audience,),
+                            ended=inv.ended or turn_ts,
+                        )
+                    if rows > 0:
+                        kg_invalidations_applied += 1
+                    else:
+                        log.info(
+                            "kg_invalidate_no_match",
+                            subject=inv.subject,
+                            predicate=inv.predicate,
+                            object=inv.object,
+                        )
+                except Exception as exc:
+                    kg_failures.append(f"inv:{exc}")
+                    if (
+                        canonical_facts is not None
+                        and decision_store is not None
+                        and intent is not None
+                    ):
+                        canonical_projection_failures.append(str(exc))
+                    log.warning("kg_invalidate_failed", error=str(exc))
 
-                drawer_pending = "drawer" in registration.pending_targets
-                if not drawer_pending or not registration.evidence_created:
-                    existing_drawer = await backend.get_by_source_turn_id(
-                        memory_space_id, f"canonical:{projection_id}"
+            triple_intents: dict[int, MemoryIntent] = {}
+            for intent in memory_intents:
+                source_index = intent.attributes.get("source_index")
+                if (
+                    intent.attributes.get("source_kind") == "triple"
+                    and isinstance(source_index, int)
+                    and not isinstance(source_index, bool)
+                ):
+                    triple_intents[source_index] = intent
+            for index, t in enumerate(decision.triples):
+                if t.confidence < min_conf:
+                    kg_skipped_low_confidence += 1
+                    continue
+                try:
+                    intent = triple_intents.get(index)
+                    audience = turn_audience
+                    if canonical_facts is None or intent is None:
+                        raise RuntimeError("structured natural memory requires its fact ledger")
+                    exact = await canonical_facts.get_fact(
+                        intent.memory_space_id,
+                        audience,
+                        intent.subject or "",
+                        intent.predicate or "",
+                        intent.object or "",
                     )
-                    if existing_drawer is not None:
-                        if drawer_pending:
-                            await canonical_facts.mark_projected(
+                    if exact is not None and exact.state != "active":
+                        # A current fact may become true again after an earlier
+                        # correction. Reuse the canonical ledger's existing
+                        # reactivation transition rather than either rejecting
+                        # the new evidence forever or creating a second fact id.
+                        # The steward has already supplied a complete,
+                        # high-confidence triple; this is not inferred from the
+                        # fragment text.
+                        intent = intent.model_copy(
+                            update={
+                                "operation_hint": "update",
+                                "attributes": {
+                                    **intent.attributes,
+                                    "reason": "steward reasserted exact fact",
+                                },
+                            }
+                        )
+                        registration = await canonical_facts.register_reactivation(
+                            intent,
+                            targets={"drawer", "kg"},
+                        )
+                    else:
+                        registration = await canonical_facts.register(
+                            intent,
+                            targets={"drawer", "kg"},
+                        )
+                    if registration.state != "active" and not registration.reactivation_pending:
+                        kg_exact_noop += 1
+                        continue
+                    projection_id = registration.projection_id or registration.assertion_id
+
+                    drawer_pending = "drawer" in registration.pending_targets
+                    if not drawer_pending or not registration.evidence_created:
+                        existing_drawer = await backend.get_by_source_turn_id(
+                            memory_space_id, f"canonical:{projection_id}"
+                        )
+                        if existing_drawer is not None:
+                            if drawer_pending:
+                                await canonical_facts.mark_projected(
+                                    memory_space_id,
+                                    registration.assertion_id,
+                                    targets={"drawer"},
+                                )
+                            drawer_pending = False
+                        elif not drawer_pending:
+                            await canonical_facts.mark_projection_pending(
                                 memory_space_id,
                                 registration.assertion_id,
                                 targets={"drawer"},
                             )
-                        drawer_pending = False
-                    elif not drawer_pending:
-                        await canonical_facts.mark_projection_pending(
+                            drawer_pending = True
+                    if drawer_pending:
+                        await ingest_memory_fragment(
+                            backend,
+                            _drawer_for_triple(
+                                t,
+                                turn=turn,
+                                turn_ts=turn_ts,
+                                assertion_id=registration.assertion_id,
+                                evidence_id=intent.intent_id,
+                                projection_id=projection_id,
+                            ),
+                        )
+                        await canonical_facts.mark_projected(
                             memory_space_id,
                             registration.assertion_id,
                             targets={"drawer"},
                         )
-                        drawer_pending = True
-                if drawer_pending:
-                    await ingest_memory_fragment(
-                        backend,
-                        _drawer_for_triple(
-                            t,
-                            turn=turn,
-                            turn_ts=turn_ts,
-                            assertion_id=registration.assertion_id,
-                            evidence_id=intent.intent_id,
-                            projection_id=projection_id,
-                        ),
-                    )
-                    await canonical_facts.mark_projected(
-                        memory_space_id,
-                        registration.assertion_id,
-                        targets={"drawer"},
-                    )
-                    fragments_written += 1
+                        fragments_written += 1
 
-                kg_pending = "kg" in registration.pending_targets
-                should_verify = (
-                    not kg_pending
-                    or not registration.evidence_created
-                    or registration.evidence_count > 1
-                )
-                if should_verify:
-                    if await _canonical_kg_visible(kg, intent):
-                        if kg_pending:
-                            await canonical_facts.mark_projected(
+                    kg_pending = "kg" in registration.pending_targets
+                    should_verify = (
+                        not kg_pending
+                        or not registration.evidence_created
+                        or registration.evidence_count > 1
+                    )
+                    if should_verify:
+                        if await _canonical_kg_visible(kg, intent):
+                            if kg_pending:
+                                await canonical_facts.mark_projected(
+                                    memory_space_id,
+                                    registration.assertion_id,
+                                    targets={"kg"},
+                                )
+                            if registration.reactivation_pending:
+                                await canonical_facts.mark_reactivated(
+                                    memory_space_id,
+                                    intent.intent_id,
+                                    targets={"drawer", "kg"},
+                                )
+                            kg_exact_noop += 1
+                            continue
+                        if not kg_pending:
+                            await canonical_facts.mark_projection_pending(
                                 memory_space_id,
                                 registration.assertion_id,
                                 targets={"kg"},
                             )
-                        if registration.reactivation_pending:
-                            await canonical_facts.mark_reactivated(
-                                memory_space_id,
-                                intent.intent_id,
-                                targets={"drawer", "kg"},
-                            )
-                        kg_exact_noop += 1
-                        continue
-                    if not kg_pending:
-                        await canonical_facts.mark_projection_pending(
-                            memory_space_id,
-                            registration.assertion_id,
-                            targets={"kg"},
-                        )
-                await kg.add_triple(
-                    audience=audience,
-                    subject=t.subject,
-                    predicate=t.predicate,
-                    object=t.object,
-                    valid_from=t.valid_from or turn_ts,
-                    valid_to=t.valid_to,
-                    confidence=t.confidence,
-                    source_turn_id=(f"canonical:{projection_id}"),
-                    assertion_id=registration.assertion_id,
-                    evidence_id=intent.intent_id,
-                    projection_id=projection_id,
-                    adapter_name="steward-llm",
-                )
-                await canonical_facts.mark_projected(
-                    memory_space_id,
-                    registration.assertion_id,
-                    targets={"kg"},
-                )
-                if registration.reactivation_pending:
-                    await canonical_facts.mark_reactivated(
-                        memory_space_id,
-                        intent.intent_id,
-                        targets={"drawer", "kg"},
+                    await kg.add_triple(
+                        audience=audience,
+                        subject=t.subject,
+                        predicate=t.predicate,
+                        object=t.object,
+                        valid_from=t.valid_from or turn_ts,
+                        valid_to=t.valid_to,
+                        confidence=t.confidence,
+                        source_turn_id=(f"canonical:{projection_id}"),
+                        assertion_id=registration.assertion_id,
+                        evidence_id=intent.intent_id,
+                        projection_id=projection_id,
+                        adapter_name="steward-llm",
                     )
-                kg_triples_added += 1
-            except Exception as exc:
-                kg_failures.append(f"add:{exc}")
-                canonical_projection_failures.append(str(exc))
-                log.warning("kg_add_triple_failed", error=str(exc))
+                    await canonical_facts.mark_projected(
+                        memory_space_id,
+                        registration.assertion_id,
+                        targets={"kg"},
+                    )
+                    if registration.reactivation_pending:
+                        await canonical_facts.mark_reactivated(
+                            memory_space_id,
+                            intent.intent_id,
+                            targets={"drawer", "kg"},
+                        )
+                    kg_triples_added += 1
+                except Exception as exc:
+                    kg_failures.append(f"add:{exc}")
+                    canonical_projection_failures.append(str(exc))
+                    log.warning("kg_add_triple_failed", error=str(exc))
 
-        # Phase 3 — entity_mentions write. Runs AFTER triples so the
-        # anti-hallucination guard can verify each mention's entity_id was
-        # actually asserted in this turn (steward output is LLM-derived,
-        # so cross-validation with structured triple ids is essential).
-        mentions_written, mentions_rejected = await _write_mentions(
-            kg,
-            decision,
-            audience=turn_audience,
-            kg_failures=kg_failures,
-        )
+            # Phase 3 — entity_mentions write. Runs AFTER triples so the
+            # anti-hallucination guard can verify each mention's entity_id was
+            # actually asserted in this turn (steward output is LLM-derived,
+            # so cross-validation with structured triple ids is essential).
+            mentions_written, mentions_rejected = await _write_mentions(
+                kg,
+                decision,
+                audience=turn_audience,
+                kg_failures=kg_failures,
+            )
 
     # A turn that reached here was absorbed. "wrote" versus "skipped" is the
     # distinction that matters: a steady stream of skipped turns is either a
@@ -784,6 +832,11 @@ async def process_turn_message(
 
     # G8: one structured line per turn — operators can grep this without
     # parsing the whole log stream.
+    #
+    # The ``*_ms`` fields say which stage owned this turn. They are here rather
+    # than only in the histogram because an end-to-end latency outlier is
+    # always about one turn, and a percentile cannot name one.
+    stages.observe_total()
     log.info(
         "turn_processed",
         turn_id=turn.turn_id,
@@ -802,6 +855,7 @@ async def process_turn_message(
         privacy_actions=privacy_action_count,
         mentions=mentions_written if kg is not None else 0,
         mentions_rejected=mentions_rejected if kg is not None else 0,
+        **stages.log_fields(),
     )
     if canonical_projection_failures:
         error = "canonical projection failed: " + "; ".join(canonical_projection_failures[:2])
