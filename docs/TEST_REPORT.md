@@ -14,44 +14,42 @@ result is claimed by this local gate.
 | Standalone wire contracts | **61 passed** | Isolated environment with no Memory storage stack installed |
 | Changed-file Ruff / compile | **passed** | No private compatibility module or process-wide model-download patch remains |
 
-After removing the explicit-claim language router, the complete suite was run
-again outside the restricted sandbox (the real-process cases bind loopback
-ports): **1170 passed, 14 skipped, 3 deselected in 12m38s**.  The tested Memory
-source is `main@7773204`.  Structured triples now obtain intent type, wing and
-memory type from the single predicate registry; a verbatim administrative
-intent without an explicit destination fails closed.  A syntax-tree regression
-test prevents that projection path from reading `raw_claim` in order to infer a
+After removing both the explicit-claim language router and Eidolon's CJK
+full-drawer fallback, the complete suite was run again outside the restricted
+sandbox (the real-process cases bind loopback ports): **1159 passed, 13 skipped,
+3 deselected in 14m27s**.  Structured triples obtain intent type, wing and memory
+type from the single predicate registry; a verbatim administrative intent
+without an explicit destination fails closed.  A syntax-tree regression test
+prevents that projection path from reading `raw_claim` in order to infer a
 destination.
 
-### Open release blockers
+### Recall evidence and open integration gates
 
-This gate is green for the committed Memory implementation, but the integrated
-Pi release is not yet eligible:
+MemPalace 3.8 Chroma lexical search does not segment ordinary short CJK queries:
+a fresh Palace returned no lexical hit for `曼森`, `名字`, `我叫什么名字`, `芒果`,
+`水果`, or `最喜欢的水果是什么`, including with a valid audience filter.  A
+1003-drawer BGE-small-zh-v1.5 benchmark also showed that vector top-five alone is
+not a completeness guarantee for those prompts.
 
-1. **MemPalace 3.8 Chroma lexical search does not support ordinary short CJK
-   recall.**  A fresh Palace written through the public collection API returned
-   no lexical hit for `曼森`, `名字`, `我叫什么名字`, `芒果`, `水果`, or
-   `最喜欢的水果是什么`, including with a valid audience filter.  The 3.8 Chroma
-   backend tokenizes a continuous CJK clause as one `unicode61`/`\w+` token, so
-   query and document tokens do not meet.  This is the segmentation limitation
-   already described by upstream issue #973; upstream issue #1949 remains open
-   for the wider Chinese recall failure.
-2. **Vector search does not safely replace that lexical source.**  Against a
-   fresh 1003-drawer Chroma Palace using the production BGE-small-zh-v1.5
-   512-dimensional model, `曼森`, `我叫什么名字`, `水果`, `常州`, and
-   `我住在哪里` all missed the correct drawer at top five.  Individual vector
-   requests were fast (about 3--4 ms), but low latency is not evidence of recall
-   completeness.
-3. Consequently, `application/public_recall.py`'s bounded lexical scan cannot be
-   deleted without a product regression.  It also cannot be replaced with an
-   Eidolon tokenizer, private SQLite query or sidecar index without recreating
-   the workaround the 3.8 upgrade is meant to remove.  Production release waits
-   for a public MemPalace capability with held-out CJK and scope-filter tests.
-4. The integrated Host gate additionally waits for the Channel turn-decision
-   authority work and the separately owned commissioning changes.  The Pi
-   currently reports every service running with zero restarts, but
-   `app-ready` is degraded at `hub_admits_devices=false`; dirty Hub/Admin work
-   is deliberately excluded from release artifacts.
+That limitation is **not an absolute blocker for canonical long-term facts**.
+Eidolon facts are sourced from the assertion/evidence ledger and projected into
+the semantic KG.  A real-process Agent E2E now asks the ordinary question
+`我最喜欢的水果是什么？` without putting the answer marker in the query.  After
+deleting Eidolon's CJK n-gram/full-drawer scan, all 60 recalls resolved the
+authenticated `self` fact through the product query plan.  Write visibility was
+37.135 ms; Agent recall p50/p95/p99/max was 10/16/34/41 ms, and compiler total
+was 11.056/16.701/34.475/41.278 ms against a 500 ms budget.
+
+The remaining CJK limitation is explicitly scoped to **unstructured narrative
+recall quality**.  It stays in the held-out MemPalace/vector benchmark and must
+not be hidden by an Eidolon tokenizer, private SQLite query, full-drawer scan,
+or sidecar index.  A narrative miss degrades that projection; it does not create
+a second fact source or justify a duplicate search engine.
+
+The integrated Host gate still waits for the Channel turn-decision authority
+work and the commissioning source set to be integrated and released together.
+The Pi currently reports every service running with zero restarts, but its
+active older release remains degraded at `hub_admits_devices=false`.
 
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637

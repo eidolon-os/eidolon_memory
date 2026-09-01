@@ -14,6 +14,7 @@ from eidolon.memory.application.public_recall import (
 from eidolon.memory.application.recall_renderer import group_recall_context
 from eidolon.memory.application.scope_policy import MissingInteractionIdentity
 from eidolon.memory.config.memory_settings import get_memory_settings
+from eidolon.memory.domain.errors import MemoryBackendUnavailable
 
 MEMORY_SPACE_ID = "default.alice.default"
 
@@ -93,73 +94,22 @@ async def test_ordinary_recall_without_companion_or_council_fails_closed():
 
 
 @pytest.mark.asyncio
-async def test_search_exact_fallback_recalls_short_name_fact_when_vector_empty():
-    settings = get_memory_settings()
-
-    class EmptyVectorBackend(FakeMemoryBackend):
-        async def search(self, *args, **kwargs):  # noqa: ANN002, ANN003
-            self.searches.append((args, kwargs))
-            return []
-
-    backend = EmptyVectorBackend()
-    await backend.ingest_text(
-        wing="Wing_Profile",
-        room="profile_core",
-        text="用户的名字是曼森。",
-        metadata={
-            "memory_space_id": MEMORY_SPACE_ID,
-            "scope": "persona",
-            "visibility": "all_devices",
-        },
-    )
-
-    out = await search_all_wings_mcp_style(
-        backend,
-        settings,
-        query="我叫什么名字",
-        context=_context(),
-        top_k=5,
-        wing=None,
-        room=None,
-    )
-
-    assert len(out) == 1
-    assert out[0].value == "用户的名字是曼森。"
-    assert out[0].metadata["retrieval"] == "lexical_fallback"
-
-
-@pytest.mark.asyncio
-async def test_search_exact_fallback_survives_vector_backend_error():
-    settings = get_memory_settings()
-
+async def test_vector_failure_is_reported_without_a_private_fallback():
     class BrokenVectorBackend(FakeMemoryBackend):
         async def search(self, *args, **kwargs):  # noqa: ANN002, ANN003
             raise RuntimeError("vector index unavailable")
 
-    backend = BrokenVectorBackend()
-    await backend.ingest_text(
-        wing="Wing_Profile",
-        room="profile_core",
-        text="用户的名字是曼森。",
-        metadata={
-            "memory_space_id": MEMORY_SPACE_ID,
-            "scope": "persona",
-            "visibility": "all_devices",
-        },
-    )
-
-    out = await search_all_wings_mcp_style(
-        backend,
-        settings,
-        query="曼森",
-        context=_context(),
-        top_k=5,
-        wing="Wing_Profile",
-        room="profile_core",
-    )
-
-    assert [r.value for r in out] == ["用户的名字是曼森。"]
-    assert out[0].metadata["retrieval"] == "lexical_fallback"
+    with pytest.raises(MemoryBackendUnavailable, match="vector search degraded"):
+        await search_all_wings_mcp_style(
+            BrokenVectorBackend(),
+            get_memory_settings(),
+            query="我叫什么名字",
+            context=_context(),
+            top_k=5,
+            wing="Wing_Profile",
+            room=None,
+            raise_on_degraded=True,
+        )
 
 
 def test_visible_filters_privacy_metadata():
@@ -234,36 +184,6 @@ def test_stamped_vector_hit_visible_and_cross_space_rejected():
     }
     rec_other = parse_search_tool_payload(other, default_memory_space_id=ctx.memory_space_id)[0]
     assert not recall_record_visible_for_context(rec_other, ctx)
-
-
-def test_json_content_drawer_dedups_across_read_paths():
-    """The same JSON-content drawer read via the vector path (parsed dict) and
-    the get_all fallback (raw JSON string) must collapse to one record; a
-    genuinely different drawer must not."""
-    from eidolon.memory.application.public_recall import _merge_unique_records
-    from eidolon.memory.domain.wire import MemoryWireRecord
-
-    vec = MemoryWireRecord(  # vector path: value is the PARSED object
-        memory_space_id="realm",
-        key="r1",
-        value={"b": 2, "a": 1},
-        metadata={"wing": "Wing_Life", "room": "r1"},
-    )
-    getall = MemoryWireRecord(  # get_all fallback: same drawer, RAW json string, drawer-id key
-        memory_space_id="realm",
-        key="drawer-id-xyz",
-        value='{"a": 1, "b": 2}',
-        metadata={"wing": "Wing_Life", "room": "r1"},
-    )
-    assert len(_merge_unique_records([vec], [getall])) == 1
-
-    other = MemoryWireRecord(
-        memory_space_id="realm",
-        key="r2",
-        value="different drawer",
-        metadata={"wing": "Wing_Life", "room": "r2"},
-    )
-    assert len(_merge_unique_records([vec], [other])) == 2
 
 
 @pytest.mark.asyncio
