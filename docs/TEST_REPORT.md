@@ -14,6 +14,45 @@ result is claimed by this local gate.
 | Standalone wire contracts | **61 passed** | Isolated environment with no Memory storage stack installed |
 | Changed-file Ruff / compile | **passed** | No private compatibility module or process-wide model-download patch remains |
 
+After removing the explicit-claim language router, the complete suite was run
+again outside the restricted sandbox (the real-process cases bind loopback
+ports): **1170 passed, 14 skipped, 3 deselected in 12m38s**.  The tested Memory
+source is `main@7773204`.  Structured triples now obtain intent type, wing and
+memory type from the single predicate registry; a verbatim administrative
+intent without an explicit destination fails closed.  A syntax-tree regression
+test prevents that projection path from reading `raw_claim` in order to infer a
+destination.
+
+### Open release blockers
+
+This gate is green for the committed Memory implementation, but the integrated
+Pi release is not yet eligible:
+
+1. **MemPalace 3.8 Chroma lexical search does not support ordinary short CJK
+   recall.**  A fresh Palace written through the public collection API returned
+   no lexical hit for `曼森`, `名字`, `我叫什么名字`, `芒果`, `水果`, or
+   `最喜欢的水果是什么`, including with a valid audience filter.  The 3.8 Chroma
+   backend tokenizes a continuous CJK clause as one `unicode61`/`\w+` token, so
+   query and document tokens do not meet.  This is the segmentation limitation
+   already described by upstream issue #973; upstream issue #1949 remains open
+   for the wider Chinese recall failure.
+2. **Vector search does not safely replace that lexical source.**  Against a
+   fresh 1003-drawer Chroma Palace using the production BGE-small-zh-v1.5
+   512-dimensional model, `曼森`, `我叫什么名字`, `水果`, `常州`, and
+   `我住在哪里` all missed the correct drawer at top five.  Individual vector
+   requests were fast (about 3--4 ms), but low latency is not evidence of recall
+   completeness.
+3. Consequently, `application/public_recall.py`'s bounded lexical scan cannot be
+   deleted without a product regression.  It also cannot be replaced with an
+   Eidolon tokenizer, private SQLite query or sidecar index without recreating
+   the workaround the 3.8 upgrade is meant to remove.  Production release waits
+   for a public MemPalace capability with held-out CJK and scope-filter tests.
+4. The integrated Host gate additionally waits for the Channel turn-decision
+   authority work and the separately owned commissioning changes.  The Pi
+   currently reports every service running with zero restarts, but
+   `app-ready` is degraded at `hub_admits_devices=false`; dirty Hub/Admin work
+   is deliberately excluded from release artifacts.
+
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637
 passed, 7 skipped, 25 deselected**; Mobile **671 passed, 5 skipped**. Mobile had
