@@ -52,7 +52,11 @@ async def test_second_agent_for_same_realm_is_rejected_before_serving(
         resolved = shutil.which("eidolon-memory-agent")
         assert resolved is not None
         agent_cli = Path(resolved)
-    env = {**os.environ, "EIDOLON_MEMORY_SETTINGS_YAML": str(owner.settings_path)}
+    env = {
+        **os.environ,
+        "EIDOLON_MEMORY_SETTINGS_YAML": str(owner.settings_path),
+        "EIDOLON_MEMORY_ENV_FILE": str(owner.settings_path.with_suffix(".env")),
+    }
 
     with duplicate_log.open("ab") as log_fp:
         duplicate = subprocess.Popen(

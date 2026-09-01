@@ -426,9 +426,18 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
             yaml.safe_dump(settings_doc, allow_unicode=True),
             encoding="utf-8",
         )
+        # A worktree must not depend on an untracked repository ``config/.env``
+        # merely to start deterministic E2E processes.  The runtime requires an
+        # explicit env-file path even when the selected steward needs no secret,
+        # so give each subprocess its own empty file.  LLM credentials, when a
+        # test deliberately uses them, continue to arrive through inherited
+        # environment variables below rather than being copied into test data.
+        process_env_path = tmp_settings_dir / f"{memory_space_id}.env"
+        process_env_path.write_text("", encoding="utf-8")
 
         env = {**os.environ}
         env["EIDOLON_MEMORY_SETTINGS_YAML"] = str(settings_path)
+        env["EIDOLON_MEMORY_ENV_FILE"] = str(process_env_path)
         # Set explicitly rather than relying on the settings file: run_dir
         # resolution reads the environment first, so an exported value in the
         # developer's shell would otherwise put test claims back in the shared
