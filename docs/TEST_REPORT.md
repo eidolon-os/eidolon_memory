@@ -51,6 +51,41 @@ work and the commissioning source set to be integrated and released together.
 The Pi currently reports every service running with zero restarts, but its
 active older release remains degraded at `hub_admits_devices=false`.
 
+### After the release gate — 2026-09-01, local only
+
+Two things the gate could not see were closed, and both were verified locally
+only.  No Pi run is claimed here: the Host stayed on
+`20260901-memory380-e2e-fe60160-40b3550-v4` throughout, 18/18 services
+active/running with zero restarts, and nothing was deployed.
+
+Memory **1182 passed, 13 skipped, 3 deselected in 15m11s**; Agent **602 passed,
+1 skipped**.  Changed-file Ruff clean in both.
+
+1. **Turn latency is attributable.**  Only the steward stage was measured, so
+   the gate run's 59.25s materialisation — against 18.1s / 27.7s / 27.6s before
+   it — could be observed and not explained.  Four stages are now recorded
+   (`steward`, `privacy`, `fragments`, `kg`) plus a `total`, and the same
+   numbers go onto the `turn_processed` log line, because a percentile cannot
+   name the one turn an outlier is about.  **The 59s itself is still
+   unattributed**: attributing it needs a live run, which this pass did not
+   make.
+2. **The materialisation budget is a gate.**  The live contract reported every
+   readback under `memory_readback_timeout_s` as the same `passed`, so an 18s
+   write and a 59s write were indistinguishable in the report.
+   `--memory-materialization-budget-s` now fails the check while still
+   reporting the record that landed.  **Unit-tested, not yet exercised against
+   the Pi.**
+3. **The MCP tool surface is no longer one space.**  24 of 28 tools closed over
+   the process's handles; all 28 now resolve through the router per request,
+   with an optional `memory_space_id` that falls back to the server's own.  No
+   caller changes.  This removes the blocker `ARCHITECTURE.md` recorded for
+   `进程 : space = 1 : N`; what remains there is deployment topology, which is
+   deferred, and the wildcard-subject consumer, which changes a published
+   runtime topology and so needs a real Pi E2E before it can be claimed.
+
+The CJK release blockers above are unchanged.  Nothing in this pass touches
+MemPalace's tokenizer, and none of it makes the integrated Pi release eligible.
+
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637
 passed, 7 skipped, 25 deselected**; Mobile **671 passed, 5 skipped**. Mobile had
