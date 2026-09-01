@@ -224,6 +224,42 @@ def build_control_plane_mcp(
     mcp = FastMCP(name if surface == "all" else f"{name}-{surface}", **mcp_kwargs)
     tool = _audience_gate(mcp, surface)
 
+    # The space this server was started for. Tools below take it as a default,
+    # not as their subject: every one of them resolves handles through the
+    # router per request, so this server can be handed a second space without
+    # being restarted. That is the whole difference between a process that *is*
+    # a space and a process that *serves* spaces.
+    default_space_id = memory_space_id
+
+    async def _space(requested: str | None = None) -> MemorySpaceRuntime:
+        """Handles for the space this request names, or this server's default.
+
+        Defaulting keeps every existing caller working unchanged — an operator
+        tool called without a space still answers about the one the server was
+        started for — while making the parameter the only thing a caller needs
+        to reach a different one.
+
+        Being asked for a space this deployment does not serve raises out of the
+        router. That is the right answer: silently substituting the default
+        would report one space's contents under another space's name.
+        """
+
+        return await service.runtime_for_space((requested or "").strip() or default_space_id)
+
+    async def _ledger(runtime: MemorySpaceRuntime, field: str) -> Any:
+        """One of a space's ledgers, or a refusal naming what is missing.
+
+        A ledger is optional per space, so a tool registered because the default
+        space keeps one can still be asked about a space that does not. An
+        AttributeError there would read as a bug in the tool rather than as a
+        deployment that keeps no such record.
+        """
+
+        ledger = getattr(runtime.ledgers, field)
+        if ledger is None:
+            raise ValueError(f"space {runtime.space_id} keeps no {field} ledger")
+        return ledger
+
     @tool(_AGENT)
     async def eidolon_memory_search(
         query: str,
@@ -303,24 +339,28 @@ def build_control_plane_mcp(
         }
 
     @tool(_OPS)
-    async def eidolon_memory_status() -> dict[str, Any]:
+    async def eidolon_memory_status(memory_space_id: str | None = None) -> dict[str, Any]:
         """Report storage readability and projection convergence."""
         try:
             mempalace_version = version("mempalace")
         except PackageNotFoundError:
             mempalace_version = "unknown"
+        runtime = await _space(memory_space_id)
         materialization = await service.status(
             MemoryActorContext(
-                memory_realm_id=memory_space_id,
-                memory_space_id=memory_space_id,
+                memory_realm_id=runtime.space_id,
+                memory_space_id=runtime.space_id,
             )
         )
         return {
             "backend": "mempalace-python",
             "mempalace_version": mempalace_version,
             "mempalace_backend": settings.mempalace.backend,
-            "memory_space_id": memory_space_id,
-            "palace_path": palace_path,
+            "memory_space_id": runtime.space_id,
+            # The resolved space's own directory, not the one this process was
+            # started with — reporting the default here would name the wrong
+            # palace as soon as a second space is served.
+            "palace_path": runtime.palace_path,
             "palace_initialized": materialization.details.get("data_readable", False),
             "ready": materialization.ready,
             **materialization.details,
@@ -333,27 +373,37 @@ def build_control_plane_mcp(
     if command_status is not None:
 
         @tool(_OPS)
-        async def eidolon_memory_command_status(request_id: str) -> dict[str, Any]:
+        async def eidolon_memory_command_status(
+            request_id: str,
+            memory_space_id: str | None = None,
+        ) -> dict[str, Any]:
             """Read asynchronous write status without acquiring memory storage locks."""
             clean_id = (request_id or "").strip()
             if not clean_id:
                 return {"status": "error", "error": "request_id is required"}
-            record = await command_status.get(clean_id)
+            ledger = await _ledger(await _space(memory_space_id), "command_status")
+            record = await ledger.get(clean_id)
             if record is None:
                 return {"status": "unknown", "request_id": clean_id}
             return record.to_dict()
 
         @tool(_OPS)
-        async def eidolon_memory_command_status_stats() -> dict[str, Any]:
+        async def eidolon_memory_command_status_stats(
+            memory_space_id: str | None = None,
+        ) -> dict[str, Any]:
             """Capacity and active-work metrics for the write-status projection."""
-            return (await command_status.stats()).to_dict()
+            ledger = await _ledger(await _space(memory_space_id), "command_status")
+            return (await ledger.stats()).to_dict()
 
     if canonical_facts is not None:
 
         @tool(_OPS)
-        async def eidolon_memory_canonical_stats() -> dict[str, Any]:
+        async def eidolon_memory_canonical_stats(
+            memory_space_id: str | None = None,
+        ) -> dict[str, Any]:
             """Read exact-fact evidence and projection-state counts."""
-            return (await canonical_facts.stats()).to_dict()
+            ledger = await _ledger(await _space(memory_space_id), "canonical_facts")
+            return (await ledger.stats()).to_dict()
 
         @tool(_OPS)
         async def eidolon_memory_fact_history(
@@ -362,6 +412,7 @@ def build_control_plane_mcp(
             object_value: str | None = None,
             limit: int = 100,
             include_sensitive: bool = False,
+            memory_space_id: str | None = None,
         ) -> dict[str, Any]:
             """Current state and auditable lifecycle for one canonical fact slot."""
             clean_subject = (subject or "").strip()
@@ -380,8 +431,10 @@ def build_control_plane_mcp(
                     "reason": "include_sensitive is required",
                     "facts": [],
                 }
-            records = await canonical_facts.history(
-                memory_space_id,
+            runtime = await _space(memory_space_id)
+            ledger = await _ledger(runtime, "canonical_facts")
+            records = await ledger.history(
+                runtime.space_id,
                 clean_subject,
                 clean_predicate,
                 object_value=clean_object,
@@ -389,7 +442,7 @@ def build_control_plane_mcp(
             )
             return {
                 "status": "ok",
-                "memory_space_id": memory_space_id,
+                "memory_space_id": runtime.space_id,
                 "subject": clean_subject,
                 "predicate": clean_predicate,
                 "object": clean_object,
@@ -424,15 +477,18 @@ def build_control_plane_mcp(
         async def eidolon_memory_commitments(
             include_terminal: bool = False,
             limit: int = 100,
+            memory_space_id: str | None = None,
         ) -> dict[str, Any]:
             """List current commitments, optionally including terminal history."""
-            page = await commitments.list_current_page(
-                memory_space_id,
+            runtime = await _space(memory_space_id)
+            ledger = await _ledger(runtime, "commitments")
+            page = await ledger.list_current_page(
+                runtime.space_id,
                 include_terminal=include_terminal,
                 limit=max(1, min(limit, 200)),
             )
             return {
-                "memory_space_id": memory_space_id,
+                "memory_space_id": runtime.space_id,
                 "include_terminal": include_terminal,
                 "total": page.total,
                 "truncated": page.truncated,
@@ -443,27 +499,36 @@ def build_control_plane_mcp(
         async def eidolon_memory_commitment_history(
             commitment_id: str,
             limit: int = 200,
+            memory_space_id: str | None = None,
         ) -> dict[str, Any]:
             """Read immutable revisions for one Realm-bound commitment."""
             clean_id = (commitment_id or "").strip()
             if not clean_id:
                 return {"status": "error", "error": "commitment_id is required"}
-            revisions = await commitments.history(
-                memory_space_id,
+            runtime = await _space(memory_space_id)
+            ledger = await _ledger(runtime, "commitments")
+            revisions = await ledger.history(
+                runtime.space_id,
                 clean_id,
                 limit=max(1, min(limit, 500)),
             )
             return {
                 "status": "ok" if revisions else "not_found",
-                "memory_space_id": memory_space_id,
+                "memory_space_id": runtime.space_id,
                 "commitment_id": clean_id,
                 "revisions": [row.model_dump(mode="json") for row in revisions],
             }
 
+    # These three groups are gated on what the *default* space keeps, because
+    # that is what this server was started for and it is the only space it is
+    # guaranteed to be able to inspect at build time. The handles below are the
+    # capability signal only; every tool still resolves its own per request, so
+    # a group registered here serves any space the router will open.
     if surface == "all" and dlq_store is not None:
         _register_dlq_tools(
             mcp,
-            dlq_store=dlq_store,
+            space=_space,
+            ledger=_ledger,
             replay_publisher=replay_publisher or command_publisher,
         )
 
@@ -472,11 +537,13 @@ def build_control_plane_mcp(
         limit: int = 500,
         offset: int = 0,
         include_private: bool = False,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
-        """Paginated listing of this memory space's drawers (Admin / IDE)."""
+        """Paginated listing of one memory space's drawers (Admin / IDE)."""
         lim = max(1, min(limit, 5000))
         off = max(0, offset)
-        rows = await backend.get_all(memory_space_id, limit=lim, offset=off)
+        runtime = await _space(memory_space_id)
+        rows = await runtime.backend.get_all(runtime.space_id, limit=lim, offset=off)
         filtered = [r for r in rows if row_visible_to_listing(r, include_private=include_private)]
         return {
             "records": [wire_record_to_public_dict(r) for r in filtered],
@@ -487,12 +554,14 @@ def build_control_plane_mcp(
     async def eidolon_memory_get_by_source_turn(
         source_turn_id: str,
         include_private: bool = False,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Exact drawer lookup by ``source_turn_id`` for sync/write probes."""
         turn_id = (source_turn_id or "").strip()
         if not turn_id:
             return {"record": None}
-        row = await backend.get_by_source_turn_id(memory_space_id, turn_id)
+        runtime = await _space(memory_space_id)
+        row = await runtime.backend.get_by_source_turn_id(runtime.space_id, turn_id)
         if row is None:
             return {"record": None}
         if not row_visible_to_listing(row, include_private=include_private):
@@ -503,14 +572,16 @@ def build_control_plane_mcp(
     async def eidolon_memory_hierarchy_snapshot(
         max_records: int = 8000,
         max_drawers_per_room: int = 48,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Return wing→room→drawer tree snapshot (bounded scan)."""
         mr = max(50, min(max_records, 50_000))
         md = max(4, min(max_drawers_per_room, 400))
+        runtime = await _space(memory_space_id)
         return await build_mempalace_hierarchy_snapshot(
-            backend,
+            runtime.backend,
             settings,
-            palace_path=palace_path,
+            palace_path=runtime.palace_path,
             max_records=mr,
             max_drawers_per_room=md,
         )
@@ -519,6 +590,7 @@ def build_control_plane_mcp(
     async def eidolon_memory_palace_graph(
         max_nodes: int = 120,
         max_edges: int = 200,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Cross-wing tunnel graph (rooms shared between wings).
 
@@ -528,7 +600,8 @@ def build_control_plane_mcp(
         """
         mn = max(10, min(max_nodes, 800))
         me = max(10, min(max_edges, 2000))
-        return await build_palace_graph(backend, max_nodes=mn, max_edges=me)
+        runtime = await _space(memory_space_id)
+        return await build_palace_graph(runtime.backend, max_nodes=mn, max_edges=me)
 
     # Gated as whole groups rather than per tool, because every tool in all three
     # is an operator tool — these are the write and confirm paths, and they are the
@@ -536,13 +609,13 @@ def build_control_plane_mcp(
     if surface == "all" and command_publisher is not None:
         _register_privacy_tools(
             mcp,
-            backend=backend,
+            space=_space,
             command_publisher=command_publisher,
-            memory_space_id=memory_space_id,
-            command_status=command_status,
-            commitments=commitments,
-            canonical_facts=canonical_facts,
-            decision_store=decision_store,
+            has_source_event_recovery=(
+                canonical_facts is not None
+                and commitments is not None
+                and decision_store is not None
+            ),
             # The service's signer, not a second one. A proof carries a
             # per-instance secret, so a preview minted by ``preview_forget`` and a
             # confirm arriving at this tool have to meet on the same key —
@@ -554,10 +627,8 @@ def build_control_plane_mcp(
     if surface == "all" and kg is not None and command_publisher is not None:
         _register_kg_tools(
             mcp,
-            kg=kg,
+            space=_space,
             command_publisher=command_publisher,
-            memory_space_id=memory_space_id,
-            command_status=command_status,
         )
 
     return mcp
@@ -566,19 +637,30 @@ def build_control_plane_mcp(
 def _register_dlq_tools(
     mcp: Any,
     *,
-    dlq_store: DlqStore,
+    space: Any,
+    ledger: Any,
     replay_publisher: Any,
 ) -> None:
-    """Operational tools; raw payload bytes never cross the MCP boundary."""
+    """Operational tools; raw payload bytes never cross the MCP boundary.
+
+    ``space`` and ``ledger`` are the builder's per-request resolvers rather
+    than one space's store: a dead letter belongs to the space that failed to
+    absorb it, so an operator holding several has to be able to say which.
+    """
+
+    async def _dlq(memory_space_id: str | None) -> DlqStore:
+        return await ledger(await space(memory_space_id), "dlq")
 
     @mcp.tool()
     async def eidolon_memory_dlq_list(
         state: str = "unresolved",
         limit: int = 100,
         offset: int = 0,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """List dead letters with bounded payload previews."""
         selected = None if state == "all" else state
+        dlq_store = await _dlq(memory_space_id)
         try:
             records = await dlq_store.list(
                 state=selected,
@@ -594,17 +676,25 @@ def _register_dlq_tools(
         }
 
     @mcp.tool()
-    async def eidolon_memory_dlq_detail(entry_id: str) -> dict[str, Any]:
+    async def eidolon_memory_dlq_detail(
+        entry_id: str,
+        memory_space_id: str | None = None,
+    ) -> dict[str, Any]:
         """Inspect one dead letter without exposing its full sensitive payload."""
+        dlq_store = await _dlq(memory_space_id)
         record = await dlq_store.get((entry_id or "").strip())
         if record is None:
             return {"status": "not_found", "entry_id": entry_id}
         return {"status": "ok", "record": record.to_dict()}
 
     @mcp.tool()
-    async def eidolon_memory_dlq_replay(entry_id: str) -> dict[str, Any]:
+    async def eidolon_memory_dlq_replay(
+        entry_id: str,
+        memory_space_id: str | None = None,
+    ) -> dict[str, Any]:
         """Atomically claim and republish one unresolved original message."""
         clean_id = (entry_id or "").strip()
+        dlq_store = await _dlq(memory_space_id)
         item = await dlq_store.claim_replay(clean_id)
         if item is None:
             record = await dlq_store.get(clean_id)
@@ -622,8 +712,13 @@ def _register_dlq_tools(
         return {"status": "replayed", "record": record.to_dict()}
 
     @mcp.tool()
-    async def eidolon_memory_dlq_resolve(entry_id: str, note: str) -> dict[str, Any]:
+    async def eidolon_memory_dlq_resolve(
+        entry_id: str,
+        note: str,
+        memory_space_id: str | None = None,
+    ) -> dict[str, Any]:
         """Resolve a dead letter without replay, retaining an operator note."""
+        dlq_store = await _dlq(memory_space_id)
         try:
             record = await dlq_store.resolve((entry_id or "").strip(), note=note)
         except ValueError as exc:
@@ -634,21 +729,24 @@ def _register_dlq_tools(
 def _register_privacy_tools(
     mcp: Any,
     *,
-    backend: MemoryBackend,
+    space: Any,
     command_publisher: Any,
-    memory_space_id: str,
-    command_status: CommandStatusStore | None,
     signer: PrivacyConfirmationSigner,
-    commitments: Any = None,
-    canonical_facts: Any = None,
-    decision_store: Any = None,
+    has_source_event_recovery: bool,
 ) -> None:
-    """Read-only preview followed by an exact-ID command on the write stream."""
+    """Read-only preview followed by an exact-ID command on the write stream.
+
+    ``has_source_event_recovery`` says whether the default space keeps the
+    three ledgers the source-event primitive needs. It decides registration
+    only; the tool resolves the ledgers of whichever space it is asked about,
+    and refuses a space that keeps none.
+    """
 
     @mcp.tool()
     async def eidolon_memory_forget_preview(
         target: str,
         action: str = "delete",
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Resolve a topic to exact drawers without changing memory.
 
@@ -661,12 +759,13 @@ def _register_privacy_tools(
             return {"status": "error", "error": "target is required"}
         if action not in {"archive", "delete"}:
             return {"status": "error", "error": "action must be archive or delete"}
+        runtime = await space(memory_space_id)
         try:
             candidates = await find_forget_candidates(
-                backend,
-                memory_space_id,
+                runtime.backend,
+                runtime.space_id,
                 clean_target,
-                commitments=commitments,
+                commitments=runtime.ledgers.commitments,
             )
         except ForgetResolutionLimitExceeded as exc:
             return {
@@ -677,7 +776,7 @@ def _register_privacy_tools(
         if not candidates:
             return {"status": "not_found", "target": clean_target, "candidates": []}
         token, proof = signer.issue(
-            memory_space_id=memory_space_id,
+            memory_space_id=runtime.space_id,
             action=action,  # type: ignore[arg-type]
             target=clean_target,
             drawer_ids=[
@@ -703,18 +802,22 @@ def _register_privacy_tools(
     async def eidolon_memory_forget_confirm(
         confirmation_token: str,
         wait_applied_seconds: float = 0.75,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Publish one previously previewed exact-ID archive/delete command."""
+        runtime = await space(memory_space_id)
         try:
+            # Against the resolved space, so a token minted for one space can
+            # never be confirmed against another by naming a different one here.
             proof = signer.verify(
                 (confirmation_token or "").strip(),
-                expected_memory_space_id=memory_space_id,
+                expected_memory_space_id=runtime.space_id,
             )
         except ValueError as exc:
             return {"status": "error", "error": str(exc)}
         command = PrivacyMutationCommand(
             request_id=uuid.uuid4().hex,
-            memory_space_id=memory_space_id,
+            memory_space_id=runtime.space_id,
             issued_at=_now_iso(),
             issuer="agent",
             action=proof.action,
@@ -725,7 +828,7 @@ def _register_privacy_tools(
         )
         outcome = await publish_with_status(
             command_publisher,
-            command_status,
+            runtime.ledgers.command_status,
             command,
             wait_seconds=wait_applied_seconds,
         )
@@ -737,12 +840,13 @@ def _register_privacy_tools(
             "commitment_ids": proof.commitment_ids,
         }
 
-    if canonical_facts is not None and commitments is not None and decision_store is not None:
+    if has_source_event_recovery:
 
         @mcp.tool()
         async def eidolon_memory_forget_source_event(
             source_event_id: str,
             wait_applied_seconds: float = 2.0,
+            memory_space_id: str | None = None,
         ) -> dict[str, Any]:
             """Hard-delete one exact ingestion event through its authority ledgers.
 
@@ -757,9 +861,13 @@ def _register_privacy_tools(
                 return {"status": "error", "error": "source_event_id is required"}
             if len(clean_id) > 256:
                 return {"status": "error", "error": "source_event_id is too long"}
+            runtime = await space(memory_space_id)
+            decision_store = runtime.ledgers.decisions
+            if decision_store is None:
+                raise ValueError(f"space {runtime.space_id} keeps no decisions ledger")
             command = PrivacyMutationCommand(
                 request_id=uuid.uuid4().hex,
-                memory_space_id=memory_space_id,
+                memory_space_id=runtime.space_id,
                 issued_at=_now_iso(),
                 issuer="admin",
                 action="delete",
@@ -769,13 +877,13 @@ def _register_privacy_tools(
             )
             outcome = await publish_with_status(
                 command_publisher,
-                command_status,
+                runtime.ledgers.command_status,
                 command,
                 wait_seconds=max(0.0, min(float(wait_applied_seconds), 30.0)),
             )
             tombstoned = False
             if outcome.get("status") == "applied":
-                tombstoned = await decision_store.source_event_redacted(memory_space_id, clean_id)
+                tombstoned = await decision_store.source_event_redacted(runtime.space_id, clean_id)
                 if not tombstoned:
                     return {
                         **outcome,
@@ -798,17 +906,25 @@ def _register_privacy_tools(
 def _register_kg_tools(
     mcp: Any,
     *,
-    kg: Any,
+    space: Any,
     command_publisher: Any,
-    memory_space_id: str,
-    command_status: CommandStatusStore | None,
 ) -> None:
     """Register the 6 KG tools on the FastMCP instance (KG plan §3.3).
 
     Write tools publish to NATS and wait on the separate command-status
     projection; read tools query the graph directly. A legacy
     storage-polling fallback remains only for embedders that omit the ledger.
+
+    The graph and its status ledger are resolved per request through ``space``,
+    so these tools inspect whichever space the caller names rather than the one
+    the server started with.
     """
+
+    async def _graph(memory_space_id: str | None) -> tuple[Any, Any]:
+        runtime = await space(memory_space_id)
+        if runtime.kg is None:
+            raise ValueError(f"space {runtime.space_id} has no knowledge graph")
+        return runtime, runtime.kg
 
     @mcp.tool()
     async def eidolon_memory_kg_add_triple(
@@ -819,6 +935,7 @@ def _register_kg_tools(
         valid_to: str | None = None,
         confidence: float = 1.0,
         wait_visible_seconds: float = 2.0,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Queue a temporal triple write via NATS; wait for worker status (≤2s).
 
@@ -826,10 +943,11 @@ def _register_kg_tools(
         Replay can recover edits only inside configured JetStream retention;
         it is not a multi-year source of truth.
         """
+        runtime, kg = await _graph(memory_space_id)
         request_id = uuid.uuid4().hex
         cmd = KgAddTripleCommand(
             request_id=request_id,
-            memory_space_id=memory_space_id,
+            memory_space_id=runtime.space_id,
             issued_at=_now_iso(),
             subject=subject,
             predicate=predicate,
@@ -840,10 +958,10 @@ def _register_kg_tools(
             source_drawer_id=f"req:{request_id}",
             adapter_name="admin",
         )
-        if command_status is not None:
+        if runtime.ledgers.command_status is not None:
             outcome = await publish_with_status(
                 command_publisher,
-                command_status,
+                runtime.ledgers.command_status,
                 cmd,
                 wait_seconds=wait_visible_seconds,
             )
@@ -874,23 +992,25 @@ def _register_kg_tools(
         object: str,
         ended: str | None = None,
         wait_visible_seconds: float = 2.0,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Mark a triple ended via NATS. Returns when worker has applied it."""
+        runtime, kg = await _graph(memory_space_id)
         request_id = uuid.uuid4().hex
         ended_iso = ended or _now_iso()
         cmd = KgInvalidateCommand(
             request_id=request_id,
-            memory_space_id=memory_space_id,
+            memory_space_id=runtime.space_id,
             issued_at=_now_iso(),
             subject=subject,
             predicate=predicate,
             object=object,
             ended=ended_iso,
         )
-        if command_status is not None:
+        if runtime.ledgers.command_status is not None:
             return await publish_with_status(
                 command_publisher,
-                command_status,
+                runtime.ledgers.command_status,
                 cmd,
                 wait_seconds=wait_visible_seconds,
             )
@@ -910,6 +1030,7 @@ def _register_kg_tools(
         as_of: str | None = None,
         direction: str = "outgoing",
         include_sensitive: bool = False,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Return triples linked to entity ``name`` at point ``as_of`` (default NOW).
 
@@ -920,6 +1041,7 @@ def _register_kg_tools(
         # operator inspecting a graph needs to see all of it, not the slice one
         # companion would get. What still gates the health predicates is
         # include_sensitive.
+        _, kg = await _graph(memory_space_id)
         records = await kg.query_entity(
             name,
             audiences=await _all_audiences(kg),
@@ -941,8 +1063,10 @@ def _register_kg_tools(
         until: str | None = None,
         limit: int = 100,
         include_sensitive: bool = False,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Chronological events; entity-scoped if name given, else global."""
+        _, kg = await _graph(memory_space_id)
         records = await kg.timeline(
             entity_name=entity_name,
             audiences=await _all_audiences(kg),
@@ -959,8 +1083,9 @@ def _register_kg_tools(
         }
 
     @mcp.tool()
-    async def eidolon_memory_kg_stats() -> dict[str, Any]:
+    async def eidolon_memory_kg_stats(memory_space_id: str | None = None) -> dict[str, Any]:
         """Entity/triple counts + active/invalidated split."""
+        _, kg = await _graph(memory_space_id)
         return await kg.stats()
 
     @mcp.tool()
@@ -969,6 +1094,7 @@ def _register_kg_tools(
         current_only: bool = True,
         entity: str | None = None,
         include_sensitive: bool = False,
+        memory_space_id: str | None = None,
     ) -> dict[str, Any]:
         """Bounded triple snapshot for graph visualization.
 
@@ -985,6 +1111,7 @@ def _register_kg_tools(
         saying it had not.
         """
         limit = max(10, min(max_triples, 5000))
+        _, kg = await _graph(memory_space_id)
         records = await kg.timeline(
             entity_name=entity if entity else None,
             # Required and keyword-only, and previously omitted — which made every

@@ -476,10 +476,10 @@ palace 而不是进程——一个进程可以持有很多 palace，这正是 1:
 
 | | 状态 | 阻塞 |
 |---|---|---|
-| 进程 : space = 1 : N | router、服务、ledger 边界全都支持了。`agent_runner.py` 仍传 `allowed_spaces=[one]` | 3 个 handler 接固定句柄，必须改为接 router——**47 个测试调用点**，格式混杂，无法安全脚本化 |
-| NATS 一个 consumer 服务所有 space | 通配 subject 辅助函数已存在；`turn_processor` 本来就从 payload 取 space | 同样是那 47 个调用点 |
+| 进程 : space = 1 : N | router、服务、ledger 边界、**以及 MCP 工具面**全都支持了。28 个工具零个再闭包绑定进程句柄：每个都按请求经 router 解析，可选 `memory_space_id` 缺省回落到本进程启动时那个 space，所以既有调用方一行不用改。`agent_runner.py` 仍传 `allowed_spaces=[one]` | 只剩部署拓扑：supervisor 每个 space 起一个进程、discovery 按 space 广播端点。**这一项按你的指示暂缓**，见下一行 |
+| NATS 一个 consumer 服务所有 space | 通配 subject 辅助函数已存在；`turn_processor` 本来就从 payload 取 space；工具面的固定句柄阻塞已解除 | `agent_runner` 改订通配 subject 会改变已发布的运行拓扑。本地测试无法证伪它，需要一次真实 Pi E2E 才算数 |
 | 单端点 / discovery | | supervisor 掌管进程拓扑——**按你的指示暂缓** |
-| 收窄 MCP 响应 | `RecallResult` 按设计不含 `kg_triples` | agent 的 `port_adapter.py:201` 在读它——需要两个仓库同批 |
+| 收窄 MCP 响应 | `RecallResult` 按设计不含 `kg_triples` | agent 侧实际是 3 个文件：`infra/memory/port_adapter.py:133-141` 解析、`core/types/memory.py:61` 持有、`domain/context/compiler.py` 6 处消费。比先前记的「`port_adapter.py:201` 一处」和「17 处」都不准，已按实测更正——需要两个仓库同批 |
 | 四个公开 benchmark | 口径已对齐、探针已跑两次、超时已按实测调正 | **抽取质量目前仍是未知数** —— 前两次探针的准确率测的是等待预算而非记忆，见下 |
 
 ## 目前最重要的一件事：召回，不是抽取

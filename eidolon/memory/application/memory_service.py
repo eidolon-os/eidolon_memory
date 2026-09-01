@@ -186,6 +186,19 @@ class MemoryService:
 
         return await self._router.resolve(ctx.memory_realm_id)
 
+    async def runtime_for_space(self, memory_space_id: str) -> MemorySpaceRuntime:
+        """Handles for a named space, with no actor claimed.
+
+        The operator surface inspects a space rather than acting as someone
+        inside it. Routing that through :meth:`runtime_for` would mean minting a
+        ``MemoryActorContext`` with no owner and no companion, and an empty
+        actor context is exactly the shape the audience filter reads as a
+        caller. Saying plainly that there is no actor is safer than inventing
+        one that looks like an anonymous participant.
+        """
+
+        return await self._router.resolve(memory_space_id)
+
     async def _runtime(self, ctx: MemoryActorContext) -> MemorySpaceRuntime:
         return await self.runtime_for(ctx)
 
