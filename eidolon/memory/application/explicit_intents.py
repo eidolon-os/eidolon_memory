@@ -262,6 +262,7 @@ async def apply_explicit_intent(
                 "assertion_id": registration.assertion_id if registration else "",
                 "evidence_id": intent.intent_id if registration else "",
                 "projection_id": projection_identity if registration else "",
+                "source_event_id": intent.source_event_id,
             },
             extensions=extensions,
         )

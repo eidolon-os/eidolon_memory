@@ -239,6 +239,7 @@ def _canonical_drawer(
                 "assertion_id": assertion_id,
                 "evidence_id": evidence_id,
                 "projection_id": projection_id,
+                "source_event_id": fragment.source_turn_id,
                 "source": "canonical-natural",
             },
         }
