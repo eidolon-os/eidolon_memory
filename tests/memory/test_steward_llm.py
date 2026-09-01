@@ -210,9 +210,7 @@ async def test_privacy_actions_are_semantic_structured_output_not_phrase_matchin
     assert decision.fragments == []
     assert decision.triples == []
     assert decision.invalidations == []
-    assert [(item.action, item.target) for item in decision.privacy_actions] == [
-        (action, target)
-    ]
+    assert [(item.action, item.target) for item in decision.privacy_actions] == [(action, target)]
 
 
 def test_steward_prompt_does_not_send_assistant_text() -> None:
@@ -421,6 +419,109 @@ def test_without_a_turn_context_a_blank_is_still_refused() -> None:
 
     with pytest.raises(StewardOutputError):
         _parse(_fragment(memory_space_id=""), context=None)
+
+
+# ─── the same field under a different name ────────────────────────────────────
+#
+# Found on 2026-09-01 in a live Pi run, not in a benchmark. One turn took 55.8s
+# to become readable; the runner log said 38s of that was an LLM call discarded
+# because the model returned ``fragments.0.source_turn_id=''``, and the retry
+# that followed produced a usable decision in 18s. ``_stamped_for_turn`` passes
+# ``turn.turn_id`` into ``stamp_fragment_identity`` unconditionally, so the
+# rejected value was one the pipeline already held and was about to overwrite.
+
+
+def _parse_with_turn(fragment, *, turn_id="t1"):
+    import json as _json
+
+    payload = {"should_write": True, "reason": "t", "fragments": [fragment]}
+    return _steward()._parse_decision(
+        _json.dumps(payload, ensure_ascii=False),
+        context=_ctx(),
+        source_turn_id=turn_id,
+    )
+
+
+def test_a_blank_source_turn_id_is_taken_from_the_turn() -> None:
+    """38 seconds of model time, thrown away over a field we already had."""
+
+    decision = _parse_with_turn(_fragment(source_turn_id=""))
+
+    assert decision.fragments[0].source_turn_id == "t1"
+
+
+def test_a_source_turn_id_the_model_invented_is_discarded() -> None:
+    """Replaced, not defaulted — for the same reason as the space id.
+
+    A fragment attributed to a turn that did not produce it would make the
+    forget path delete by the wrong source event.
+    """
+
+    decision = _parse_with_turn(_fragment(source_turn_id="some-other-turn"))
+
+    assert decision.fragments[0].source_turn_id == "t1"
+
+
+def test_without_a_turn_id_a_blank_is_still_refused() -> None:
+    """Nothing authoritative to substitute means the old strictness is right."""
+
+    from eidolon.memory.domain.errors import StewardOutputError
+
+    with pytest.raises(StewardOutputError):
+        _parse_with_turn(_fragment(source_turn_id=""), turn_id="")
+
+
+def test_steward_identity_is_not_the_models_job() -> None:
+    """Closes the class, rather than its third instance.
+
+    Three times now a field that is not the substance of a memory has decided
+    whether the memory exists: ``memory_space_id``, then prose in
+    ``extensions``, then ``source_turn_id``. The first and third are the same
+    defect exactly — a field ``stamp_fragment_identity`` overwrites from the
+    turn, which ``MemoryFragment`` rejects when blank, checked in that order.
+
+    So the property is asserted rather than the instances: every field that is
+    both stamped and rejected-when-blank must survive arriving blank. A tenth
+    stamped field that is also validated fails here until ``_parse_decision``
+    takes it back too.
+    """
+
+    from eidolon.memory.application.steward.common import stamp_fragment_identity
+    from eidolon.memory.domain.fragments import MemoryFragment
+
+    sentinel = "model-supplied-value"
+    original = MemoryFragment(
+        memory_id="m1",
+        memory_space_id=sentinel,
+        source_device_id=sentinel,
+        source_instance_id=sentinel,
+        source_turn_id=sentinel,
+        session_id=sentinel,
+        wing="Wing_Relationship",
+        room="sleep",
+        content="我妈失眠",
+        memory_type="relationship",
+        importance=4,
+        confidence=0.9,
+    )
+    stamped = stamp_fragment_identity(original, context=_ctx(), source_turn_id="t1")
+    before, after = original.model_dump(), stamped.model_dump()
+    overwritten = {field for field in before if before[field] != after[field]}
+
+    rejected_when_blank: set[str] = set()
+    for decorator in MemoryFragment.__pydantic_decorators__.field_validators.values():
+        if decorator.func.__name__ == "_not_blank":
+            rejected_when_blank |= set(decorator.info.fields)
+
+    at_risk = overwritten & rejected_when_blank
+    assert at_risk, "nothing is both stamped and blank-rejected; this test is now vacuous"
+
+    for field in sorted(at_risk):
+        decision = _parse_with_turn(_fragment(**{field: ""}))
+        assert getattr(decision.fragments[0], field), (
+            f"{field} is overwritten from the turn but a blank one still fails "
+            f"the whole decision; take it back in _parse_decision"
+        )
 
 
 # ── extensions the model wrote as prose ───────────────────────────────────────

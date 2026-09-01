@@ -58,7 +58,11 @@ class LiteLLMSteward:
             msg = "llm.model is not configured in memory settings YAML"
             raise StewardOutputError(msg)
         raw = await self._call_llm(turn)
-        decision = self._parse_decision(raw, context=turn.context)
+        decision = self._parse_decision(
+            raw,
+            context=turn.context,
+            source_turn_id=turn.turn_id,
+        )
         _validate_user_evidence(decision, turn.user_text)
         proposed = decision.fragments
         capped = proposed[: self._settings.steward.max_fragments_per_turn]
@@ -132,7 +136,13 @@ class LiteLLMSteward:
             f"[USER]\n{turn.user_text}\n"
         )
 
-    def _parse_decision(self, raw: str, *, context: object | None = None) -> StewardDecision:
+    def _parse_decision(
+        self,
+        raw: str,
+        *,
+        context: object | None = None,
+        source_turn_id: str = "",
+    ) -> StewardDecision:
         """Validate the model's JSON, after taking back the fields that are ours.
 
         Which memory space a fragment belongs to is decided by the turn, not by the
@@ -152,6 +162,22 @@ class LiteLLMSteward:
         one past validation either. That path is already safe — finalization
         overwrites unconditionally — and this keeps it safe without depending on
         the order of two functions.
+
+        ``source_turn_id`` is the same field with a different name, found the
+        same way and only later: a live run took 55.8s to materialise one turn,
+        and the log said 38s of that was an LLM call thrown away because the
+        model returned ``fragments.0.source_turn_id=''``, followed by a full
+        retry that then succeeded in 18s. ``_stamped_for_turn`` passes
+        ``turn.turn_id`` into ``stamp_fragment_identity`` unconditionally, so the
+        rejected value was one this pipeline was about to overwrite with a value
+        it already held.
+
+        That closes the class rather than a third instance of it.
+        ``stamp_fragment_identity`` overwrites nine fields; exactly two of them
+        are also rejected-when-blank by ``MemoryFragment``, and both are now
+        taken back here. ``test_steward_identity_is_not_the_models_job`` asserts
+        that intersection stays covered, so a tenth stamped field that is also
+        validated cannot quietly reintroduce this.
         """
 
         try:
@@ -167,10 +193,15 @@ class LiteLLMSteward:
                 or getattr(context, "memory_realm_id", "")
                 or ""
             ).strip()
-        if space_id and isinstance(data, dict):
+        turn_id = str(source_turn_id or "").strip()
+        if isinstance(data, dict) and (space_id or turn_id):
             for fragment in data.get("fragments") or []:
-                if isinstance(fragment, dict):
+                if not isinstance(fragment, dict):
+                    continue
+                if space_id:
                     fragment["memory_space_id"] = space_id
+                if turn_id:
+                    fragment["source_turn_id"] = turn_id
 
         for dropped in _drop_unusable_extensions(data):
             log.warning("steward_extension_dropped", field=dropped)
