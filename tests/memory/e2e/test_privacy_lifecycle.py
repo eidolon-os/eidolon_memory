@@ -36,6 +36,21 @@ async def _recall_values(session, context, query: str) -> list[str]:
     return [str(record.get("value") or "") for record in payload.get("records") or []]
 
 
+async def _wait_for_command(session, request_id: str) -> dict:
+    latest: dict = {}
+
+    async def _terminal(s) -> bool:
+        nonlocal latest
+        payload = mcp_tool_json(
+            await s.call_tool("eidolon_memory_command_status", {"request_id": request_id})
+        )
+        latest = payload if isinstance(payload, dict) else {}
+        return latest.get("status") in {"applied", "failed"}
+
+    assert await wait_for_visible(session, predicate=_terminal, timeout_s=30), latest
+    return latest
+
+
 async def test_archive_then_delete_respects_read_write_protocols(
     live_agent_runner,
     mcp_session,
@@ -175,3 +190,75 @@ async def test_ambiguous_delete_requires_preview_then_exact_id_command(
             return all(fact not in values for fact in facts)
 
         assert await wait_for_visible(session, predicate=_both_deleted, timeout_s=30)
+
+
+async def test_deleted_canonical_fact_cannot_be_reactivated_by_later_replay(
+    live_agent_runner,
+    mcp_session,
+) -> None:
+    handle = live_agent_runner(user_id="e2e_privacy_no_reactivation", steward_mode="noop")
+    context = e2e_actor_context(handle.user_id)
+    subject = "person:e2e-forgotten"
+    obj = "topic:e2e-forgotten"
+    fact = f"{subject} likes {obj}"
+
+    async with mcp_session(handle.mcp_url) as session:
+        add_id = await nats_publish_assertion(
+            handle.nats_url,
+            user_id=handle.user_id,
+            text=fact,
+            wing="Wing_Life",
+            subject=subject,
+            predicate="likes",
+            object_value=obj,
+        )
+        assert (await _wait_for_command(session, add_id))["status"] == "applied"
+
+        preview = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_forget_preview", {"target": obj, "action": "delete"}
+            )
+        )
+        assert preview["status"] == "preview"
+        deleted = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_forget_confirm",
+                {
+                    "confirmation_token": preview["confirmation_token"],
+                    "wait_applied_seconds": 2.0,
+                },
+            )
+        )
+        assert deleted["status"] in {"accepted", "applied"}
+
+        async def _absent(s) -> bool:
+            return not any(obj in value for value in await _recall_values(s, context, obj))
+
+        assert await wait_for_visible(session, predicate=_absent, timeout_s=30)
+
+        replay_id = await nats_publish_assertion(
+            handle.nats_url,
+            user_id=handle.user_id,
+            text=f"{fact} again",
+            wing="Wing_Life",
+            subject=subject,
+            predicate="likes",
+            object_value=obj,
+            operation_hint="update",
+        )
+        replay = await _wait_for_command(session, replay_id)
+        assert replay["status"] == "failed", replay
+        assert not any(obj in value for value in await _recall_values(session, context, obj))
+
+        snapshot = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_kg_snapshot",
+                {"max_triples": 100, "current_only": True, "include_sensitive": True},
+            )
+        )
+        assert not any(
+            row.get("subject") == subject
+            and row.get("predicate") == "likes"
+            and row.get("object") == obj
+            for row in snapshot["triples"]
+        )

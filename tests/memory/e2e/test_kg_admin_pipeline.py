@@ -24,6 +24,8 @@ import pytest
 from tests.memory.e2e.conftest import (
     e2e_actor_context,
     mcp_tool_json,
+    nats_publish_assertion,
+    nats_publish_exact_correction,
     nats_publish_kg_add_triple,
     nats_publish_kg_invalidate,
     wait_for_visible,
@@ -37,11 +39,11 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 # Chosen so the recall query and the KG entity-routing both naturally hit
 # the canonical entity names (no prefix-stripping needed for these subjects).
 _TRIPLES: tuple[dict, ...] = (
-    {"subject": "self",    "predicate": "likes",      "obj": "oolong", "confidence": 0.95},
-    {"subject": "self",    "predicate": "likes",      "obj": "tea",    "confidence": 0.90},
-    {"subject": "self",    "predicate": "dislikes",   "obj": "coffee", "confidence": 0.85},
-    {"subject": "self",    "predicate": "lives_in",   "obj": "Beijing","confidence": 0.99},
-    {"subject": "alice",   "predicate": "works_at",   "obj": "Acme",   "confidence": 0.80},
+    {"subject": "self", "predicate": "likes", "obj": "oolong", "confidence": 0.95},
+    {"subject": "self", "predicate": "likes", "obj": "tea", "confidence": 0.90},
+    {"subject": "self", "predicate": "dislikes", "obj": "coffee", "confidence": 0.85},
+    {"subject": "self", "predicate": "lives_in", "obj": "Beijing", "confidence": 0.99},
+    {"subject": "alice", "predicate": "works_at", "obj": "Acme", "confidence": 0.80},
 )
 
 
@@ -69,9 +71,7 @@ async def _kg_timeline(session, *, entity_name: str | None = None, limit: int = 
     args: dict = {"limit": limit}
     if entity_name:
         args["entity_name"] = entity_name
-    payload = mcp_tool_json(
-        await session.call_tool("eidolon_memory_kg_timeline", args)
-    )
+    payload = mcp_tool_json(await session.call_tool("eidolon_memory_kg_timeline", args))
     if not isinstance(payload, dict):
         return []
     return payload.get("events") or []
@@ -88,6 +88,21 @@ async def _recall_context(session, context, *, query: str, top_k: int = 5) -> di
     return payload if isinstance(payload, dict) else {}
 
 
+async def _wait_for_command(session, request_id: str) -> dict:
+    latest: dict = {}
+
+    async def _terminal(s) -> bool:
+        nonlocal latest
+        payload = mcp_tool_json(
+            await s.call_tool("eidolon_memory_command_status", {"request_id": request_id})
+        )
+        latest = payload if isinstance(payload, dict) else {}
+        return latest.get("status") in {"applied", "failed"}
+
+    assert await wait_for_visible(session, predicate=_terminal, timeout_s=30), latest
+    return latest
+
+
 async def test_kg_admin_cmd_pipeline_full_roundtrip(live_agent_runner, mcp_session):
     """W7 + R4 + R10 in a single coherent scenario.
 
@@ -102,7 +117,8 @@ async def test_kg_admin_cmd_pipeline_full_roundtrip(live_agent_runner, mcp_sessi
        written objects (R4 wire-up: KG → recall envelope).
     """
     handle = live_agent_runner(
-        user_id="e2e_kg_admin", steward_mode="noop",
+        user_id="e2e_kg_admin",
+        steward_mode="noop",
     )
     ctx = e2e_actor_context(handle.user_id)
 
@@ -111,8 +127,10 @@ async def test_kg_admin_cmd_pipeline_full_roundtrip(live_agent_runner, mcp_sessi
         await nats_publish_kg_add_triple(
             handle.nats_url,
             user_id=handle.user_id,
-            subject=t["subject"], predicate=t["predicate"],
-            obj=t["obj"], confidence=t["confidence"],
+            subject=t["subject"],
+            predicate=t["predicate"],
+            obj=t["obj"],
+            confidence=t["confidence"],
         )
 
     async with mcp_session(handle.mcp_url) as session:
@@ -137,9 +155,7 @@ async def test_kg_admin_cmd_pipeline_full_roundtrip(live_agent_runner, mcp_sessi
         assert {"oolong", "tea", "coffee", "Beijing"}.issubset(self_objects), (
             f"kg_query_entity('self') missing expected objects; got {self_objects}"
         )
-        assert "Acme" not in self_objects, (
-            "alice:works_at:Acme leaked into entity='self' result"
-        )
+        assert "Acme" not in self_objects, "alice:works_at:Acme leaked into entity='self' result"
 
         # ─── R10: kg_timeline returns ≥ 5 across all entities ─────────────
         timeline = await _kg_timeline(session, entity_name=None, limit=50)
@@ -177,15 +193,21 @@ async def test_kg_invalidate_cmd_closes_triple(live_agent_runner, mcp_session):
     while leaving ``triples_total`` unchanged.
     """
     handle = live_agent_runner(
-        user_id="e2e_kg_invalidate", steward_mode="noop",
+        user_id="e2e_kg_invalidate",
+        steward_mode="noop",
     )
     # Seed one triple via the add channel first.
     await nats_publish_kg_add_triple(
-        handle.nats_url, user_id=handle.user_id,
-        subject="self", predicate="lives_in", obj="Beijing", confidence=0.99,
+        handle.nats_url,
+        user_id=handle.user_id,
+        subject="self",
+        predicate="lives_in",
+        obj="Beijing",
+        confidence=0.99,
     )
 
     async with mcp_session(handle.mcp_url) as session:
+
         async def _seeded(s) -> bool:
             stats = await _kg_stats(s)
             return int(stats.get("triples_active") or 0) >= 1
@@ -197,8 +219,11 @@ async def test_kg_invalidate_cmd_closes_triple(live_agent_runner, mcp_session):
 
         # Now invalidate it.
         await nats_publish_kg_invalidate(
-            handle.nats_url, user_id=handle.user_id,
-            subject="self", predicate="lives_in", obj="Beijing",
+            handle.nats_url,
+            user_id=handle.user_id,
+            subject="self",
+            predicate="lives_in",
+            obj="Beijing",
         )
 
         async def _invalidated(s) -> bool:
@@ -215,3 +240,80 @@ async def test_kg_invalidate_cmd_closes_triple(live_agent_runner, mcp_session):
         )
         assert after["triples_active"] == 0, after
         assert after["triples_invalidated"] == 1, after
+
+
+async def test_canonical_invalidate_then_reactivate_is_one_fact_with_two_intervals(
+    live_agent_runner,
+    mcp_session,
+) -> None:
+    """Exercise ledger, drawer and temporal KG as one lifecycle over public protocols."""
+
+    handle = live_agent_runner(user_id="e2e_canonical_reactivation", steward_mode="noop")
+    subject = "person:e2e-reactivation"
+    obj = "topic:e2e-reactivation"
+
+    async with mcp_session(handle.mcp_url) as session:
+        add_id = await nats_publish_assertion(
+            handle.nats_url,
+            user_id=handle.user_id,
+            text=f"{subject} likes {obj}",
+            wing="Wing_Life",
+            subject=subject,
+            predicate="likes",
+            object_value=obj,
+        )
+        assert (await _wait_for_command(session, add_id))["status"] == "applied"
+
+        invalidate_id = await nats_publish_exact_correction(
+            handle.nats_url,
+            user_id=handle.user_id,
+            subject=subject,
+            predicate="likes",
+            object_value=obj,
+            text=f"{subject} no longer likes {obj}",
+        )
+        assert (await _wait_for_command(session, invalidate_id))["status"] == "applied"
+
+        reactivate_id = await nats_publish_assertion(
+            handle.nats_url,
+            user_id=handle.user_id,
+            text=f"{subject} likes {obj} again",
+            wing="Wing_Life",
+            subject=subject,
+            predicate="likes",
+            object_value=obj,
+            operation_hint="update",
+        )
+        reactivated = await _wait_for_command(session, reactivate_id)
+        assert reactivated["status"] == "applied", reactivated
+        assert str(reactivated.get("resource_id") or "").startswith("reactivated:")
+
+        history = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_fact_history",
+                {"subject": subject, "predicate": "likes", "object_value": obj},
+            )
+        )
+        fact = history["facts"][0]
+        assert fact["fact"]["state"] == "active"
+        assert [row["transition"] for row in fact["transitions"]] == [
+            "invalidated",
+            "reactivated",
+        ]
+
+        snapshot = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_kg_snapshot",
+                {"max_triples": 100, "current_only": False, "include_sensitive": True},
+            )
+        )
+        rows = [
+            row
+            for row in snapshot["triples"]
+            if row.get("subject") == subject
+            and row.get("predicate") == "likes"
+            and row.get("object") == obj
+        ]
+        assert len(rows) == 2
+        assert sum(row.get("valid_to") is None for row in rows) == 1
+        assert sum(row.get("valid_to") is not None for row in rows) == 1
