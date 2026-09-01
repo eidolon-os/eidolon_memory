@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from eidolon_memory_contracts import KG_PREDICATE_VALUES
+from eidolon_memory_contracts import KG_PREDICATE_VALUES, MemoryIntentType
 
 
 class PredicateCardinality(StrEnum):
@@ -40,6 +40,9 @@ class PredicateDefinition:
     temporality: PredicateTemporality
     update_policy: PredicateUpdatePolicy = PredicateUpdatePolicy.EXACT_ONLY
     sensitive: bool = False
+    intent_type: MemoryIntentType = "fact"
+    projection_wing: str | None = None
+    projection_memory_type: str | None = None
 
 
 def _definition(
@@ -49,6 +52,9 @@ def _definition(
     temporality: PredicateTemporality = PredicateTemporality.DURABLE,
     update_policy: PredicateUpdatePolicy = PredicateUpdatePolicy.EXACT_ONLY,
     sensitive: bool = False,
+    intent_type: MemoryIntentType = "fact",
+    projection_wing: str | None = None,
+    projection_memory_type: str | None = None,
 ) -> PredicateDefinition:
     return PredicateDefinition(
         predicate=predicate,
@@ -56,6 +62,9 @@ def _definition(
         temporality=temporality,
         update_policy=update_policy,
         sensitive=sensitive,
+        intent_type=intent_type,
+        projection_wing=projection_wing,
+        projection_memory_type=projection_memory_type,
     )
 
 
@@ -63,9 +72,93 @@ def _definition(
 # strong enough to replace another current value automatically, and even then
 # only for an explicit ``update`` command.  Employment, roles, preferences,
 # relationships, health facts and commitments may all legitimately be plural.
-_PREDICATES: dict[str, PredicateDefinition] = {
-    predicate: _definition(predicate) for predicate in KG_PREDICATE_VALUES
-}
+_PREDICATES: dict[str, PredicateDefinition] = {}
+
+
+def _register_projection(
+    predicates: tuple[str, ...],
+    *,
+    wing: str,
+    memory_type: str,
+    intent_type: MemoryIntentType = "fact",
+) -> None:
+    """Register product ontology, never infer it from a claim's wording."""
+
+    for predicate in predicates:
+        _PREDICATES[predicate] = _definition(
+            predicate,
+            intent_type=intent_type,
+            projection_wing=wing,
+            projection_memory_type=memory_type,
+        )
+
+
+_register_projection(
+    (
+        "child_of",
+        "parent_of",
+        "partner_of",
+        "sibling_of",
+        "friend_of",
+    ),
+    wing="Wing_Relationship",
+    memory_type="relationship",
+)
+_register_projection(
+    ("colleague_of", "works_at", "studies_at", "holds_role"),
+    wing="Wing_Work",
+    memory_type="work",
+)
+_register_projection(
+    ("lives_in", "born_in"),
+    wing="Wing_Profile",
+    memory_type="profile",
+)
+_register_projection(
+    ("likes", "dislikes", "prefers"),
+    wing="Wing_Life",
+    memory_type="preference",
+    intent_type="preference",
+)
+_register_projection(
+    ("does", "practices", "owns", "uses"),
+    wing="Wing_Life",
+    memory_type="life",
+)
+_register_projection(
+    ("promised", "committed_to", "planned_to"),
+    wing="Wing_Future",
+    memory_type="commitment",
+    intent_type="commitment",
+)
+_register_projection(
+    (
+        "has_state",
+        "has_emotion",
+        "has_concern",
+        "worried_about",
+        "struggles_with",
+    ),
+    wing="Wing_Emotion",
+    memory_type="emotion",
+)
+_register_projection(
+    ("has_health_condition", "takes_medication", "has_symptom"),
+    wing="Wing_Health",
+    memory_type="health",
+)
+_register_projection(
+    ("attended", "experienced", "achieved"),
+    wing="Wing_Event",
+    memory_type="event",
+    intent_type="episode",
+)
+
+if set(_PREDICATES) != set(KG_PREDICATE_VALUES):
+    missing = sorted(set(KG_PREDICATE_VALUES) - set(_PREDICATES))
+    extra = sorted(set(_PREDICATES) - set(KG_PREDICATE_VALUES))
+    raise RuntimeError(f"predicate projection registry mismatch: missing={missing}, extra={extra}")
+
 _PREDICATES.update(
     {
         # Ledger-only identity for a durable natural-language assertion that
@@ -77,40 +170,69 @@ _PREDICATES.update(
             cardinality=PredicateCardinality.SINGLE,
             temporality=PredicateTemporality.CURRENT_STATE,
             update_policy=PredicateUpdatePolicy.SUPERSEDE_EXPLICIT,
+            projection_wing="Wing_Profile",
+            projection_memory_type="profile",
         ),
         "born_in": _definition(
             "born_in",
             cardinality=PredicateCardinality.SINGLE,
             temporality=PredicateTemporality.DURABLE,
             update_policy=PredicateUpdatePolicy.REQUIRE_CORRECTION,
+            projection_wing="Wing_Profile",
+            projection_memory_type="profile",
         ),
         "has_state": _definition(
-            "has_state", temporality=PredicateTemporality.CURRENT_STATE
+            "has_state",
+            temporality=PredicateTemporality.CURRENT_STATE,
+            projection_wing="Wing_Emotion",
+            projection_memory_type="emotion",
         ),
         "has_emotion": _definition(
-            "has_emotion", temporality=PredicateTemporality.CURRENT_STATE
+            "has_emotion",
+            temporality=PredicateTemporality.CURRENT_STATE,
+            projection_wing="Wing_Emotion",
+            projection_memory_type="emotion",
         ),
         "has_symptom": _definition(
             "has_symptom",
             temporality=PredicateTemporality.CURRENT_STATE,
             sensitive=True,
+            projection_wing="Wing_Health",
+            projection_memory_type="health",
         ),
         "takes_medication": _definition(
             "takes_medication",
             temporality=PredicateTemporality.CURRENT_STATE,
             sensitive=True,
+            projection_wing="Wing_Health",
+            projection_memory_type="health",
         ),
         "has_health_condition": _definition(
-            "has_health_condition", sensitive=True
+            "has_health_condition",
+            sensitive=True,
+            projection_wing="Wing_Health",
+            projection_memory_type="health",
         ),
         "attended": _definition(
-            "attended", temporality=PredicateTemporality.EVENT
+            "attended",
+            temporality=PredicateTemporality.EVENT,
+            intent_type="episode",
+            projection_wing="Wing_Event",
+            projection_memory_type="event",
         ),
         "experienced": _definition(
-            "experienced", temporality=PredicateTemporality.EVENT
+            "experienced",
+            temporality=PredicateTemporality.EVENT,
+            intent_type="episode",
+            projection_wing="Wing_Event",
+            projection_memory_type="event",
         ),
         "achieved": _definition(
-            "achieved", temporality=PredicateTemporality.EVENT
+            "achieved",
+            temporality=PredicateTemporality.EVENT,
+            intent_type="episode",
+            projection_wing="Wing_Event",
+            projection_memory_type="event",
         ),
     }
 )

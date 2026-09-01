@@ -17,6 +17,7 @@ from eidolon_memory_contracts import (
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.application.explicit_intents import (
+    MemoryIntentRejected,
     _projection_room_token,
     apply_explicit_intent,
 )
@@ -283,6 +284,68 @@ async def test_automatic_then_explicit_adds_evidence_and_only_projects_drawer(
     assert kg.add_triple.await_count == 1
     assert len(backend.inner.docs) == 1
     assert await ledger.evidence_count(assertion_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_explicit_projection_uses_predicate_ontology_not_claim_words(tmp_path) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    kg = _StatefulKG()
+    command = _explicit_command(raw_claim="这句话刻意不包含任何偏好触发词")
+
+    await apply_explicit_intent(backend, kg, command, canonical_facts=ledger)
+
+    record = next(iter(backend.inner.docs.values()))
+    assert record.metadata["wing"] == "Wing_Life"
+    assert record.metadata["memory_type"] == "preference"
+
+
+@pytest.mark.asyncio
+async def test_verbatim_explicit_projection_requires_typed_destination(tmp_path) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    command = _explicit_command().model_copy(
+        update={
+            "intent": _explicit_command().intent.model_copy(
+                update={"subject": None, "predicate": None, "object": None}
+            )
+        }
+    )
+
+    with pytest.raises(
+        MemoryIntentRejected,
+        match="requires explicit wing and memory_type",
+    ):
+        await apply_explicit_intent(
+            backend,
+            _StatefulKG(),
+            command,
+            canonical_facts=ledger,
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_projection_rejects_destination_conflicting_with_predicate(
+    tmp_path,
+) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    base = _explicit_command()
+    command = base.model_copy(
+        update={
+            "intent": base.intent.model_copy(
+                update={"attributes": {**base.intent.attributes, "wing": "Wing_Work"}}
+            )
+        }
+    )
+
+    with pytest.raises(MemoryIntentRejected, match="conflicts with predicate"):
+        await apply_explicit_intent(
+            backend,
+            _StatefulKG(),
+            command,
+            canonical_facts=ledger,
+        )
 
 
 @pytest.mark.asyncio

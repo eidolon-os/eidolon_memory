@@ -8,11 +8,9 @@ from typing import Any
 
 from eidolon_memory_contracts import MemoryIntent, MemoryIntentType
 
+from eidolon.memory.domain.predicates import predicate_definition
 from eidolon.memory.domain.steward import StewardDecision
 
-_COMMITMENT_PREDICATES = {"promised", "committed_to", "planned_to"}
-_PREFERENCE_PREDICATES = {"likes", "dislikes", "prefers"}
-_EPISODE_PREDICATES = {"attended", "experienced", "achieved"}
 _EPISODE_MEMORY_TYPES = {"interaction", "event", "emotion"}
 
 
@@ -51,13 +49,7 @@ def _fragment_intent_type(memory_type: str) -> MemoryIntentType:
 
 
 def _triple_intent_type(predicate: str) -> MemoryIntentType:
-    if predicate in _COMMITMENT_PREDICATES:
-        return "commitment"
-    if predicate in _PREFERENCE_PREDICATES:
-        return "preference"
-    if predicate in _EPISODE_PREDICATES:
-        return "episode"
-    return "fact"
+    return predicate_definition(predicate).intent_type
 
 
 def memory_intents_from_decision(

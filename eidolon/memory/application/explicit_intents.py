@@ -15,7 +15,6 @@ from eidolon_memory_contracts import (
 from eidolon.memory.application.canonical_invalidation import (
     invalidate_exact_canonical_fact,
 )
-from eidolon.memory.application.claim_routing import route_explicit_claim
 from eidolon.memory.application.commitments import apply_explicit_commitment
 from eidolon.memory.application.ingest import ingest_memory_fragment
 from eidolon.memory.application.scope_policy import (
@@ -146,14 +145,7 @@ async def apply_explicit_intent(
         raise MemoryIntentRejected("unsupported memory intent operation")
 
     attributes = intent.attributes
-    route = route_explicit_claim(
-        intent.raw_claim,
-        intent_type=intent.intent_type,
-    )
-    requested_wing = _non_blank_attribute(attributes, "wing", "auto")
-    requested_memory_type = _non_blank_attribute(attributes, "memory_type", "auto")
-    wing = route.wing if requested_wing == "auto" else requested_wing
-    memory_type = route.memory_type if requested_memory_type == "auto" else requested_memory_type
+    wing, memory_type = _projection_location(intent)
     importance = _bounded_int_attribute(attributes, "importance", 5, 1, 5)
     tags = _string_list_attribute(attributes, "tags")
     scope = attributes.get("scope", "persona")
@@ -313,6 +305,44 @@ async def apply_explicit_intent(
         )
         return f"reactivated:{registration.assertion_id}"
     return resource_id
+
+
+def _projection_location(intent: MemoryIntent) -> tuple[str, str]:
+    """Resolve projection from structured ontology, never from claim wording.
+
+    Structured facts use the one product-owned predicate registry. Verbatim
+    text has no predicate semantics, so its administrative producer must state
+    the destination explicitly. ``auto`` is rejected: silently guessing a
+    Palace location from natural-language tokens recreates a second extractor.
+    """
+
+    attributes = intent.attributes
+    requested_wing = _non_blank_attribute(attributes, "wing", "")
+    requested_memory_type = _non_blank_attribute(attributes, "memory_type", "")
+    if intent.subject and intent.predicate and intent.object:
+        definition = predicate_definition(intent.predicate)
+        wing = definition.projection_wing
+        memory_type = definition.projection_memory_type
+        if wing is None or memory_type is None:
+            raise MemoryIntentRejected(
+                f"predicate {intent.predicate!r} has no projection location"
+            )
+        if requested_wing not in {"", "auto", wing}:
+            raise MemoryIntentRejected(
+                f"wing {requested_wing!r} conflicts with predicate {intent.predicate!r}"
+            )
+        if requested_memory_type not in {"", "auto", memory_type}:
+            raise MemoryIntentRejected(
+                "memory_type "
+                f"{requested_memory_type!r} conflicts with predicate {intent.predicate!r}"
+            )
+        return wing, memory_type
+
+    if requested_wing in {"", "auto"} or requested_memory_type in {"", "auto"}:
+        raise MemoryIntentRejected(
+            "verbatim memory intent requires explicit wing and memory_type"
+        )
+    return requested_wing, requested_memory_type
 
 
 async def _prepare_explicit_update(
