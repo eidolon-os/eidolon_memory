@@ -131,9 +131,16 @@ class LiteLLMSteward:
             # it said identity gets overwritten. Asking for a value in order to
             # discard it is what put a model-supplied ``source_turn_id`` on the
             # path that threw away a whole turn's extraction.
-            "每个 fragments[] 必须包含 scope, visibility, target_device_id, wing, "
-            "room, content, memory_type, importance, confidence, metadata, "
-            "extensions。\n"
+            # ``evidence_quote`` is here because _validate_user_evidence rejects
+            # the whole decision without it, and it was in neither version of
+            # this list — the system prompt demanded it and this one did not,
+            # which is the same contradiction as the identity fields, pointing
+            # the other way.
+            "每个 fragments[] 必须包含 evidence_quote, scope, visibility, "
+            "target_device_id, wing, room, content, memory_type, importance, "
+            "confidence, metadata, extensions。\n"
+            "fragments/triples/invalidations/privacy_actions 每一项的 "
+            "evidence_quote 都必须逐字取自本轮 [USER]，缺失或非原文会让整轮作废。\n"
             "不要输出身份字段：memory_space_id、memory_realm_id、owner_id、"
             "companion_id、source_device_id、source_instance_id、source_turn_id、"
             "session_id 全部由服务端按这一轮的 runtime context 写入，模型给的值"

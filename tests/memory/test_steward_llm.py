@@ -515,6 +515,25 @@ def test_the_prompt_does_not_ask_for_fields_it_will_discard() -> None:
     )
 
 
+def test_the_prompt_asks_for_every_field_that_can_fail_the_decision() -> None:
+    """The same contradiction, pointing the other way.
+
+    ``_validate_user_evidence`` discards a whole decision when any action has
+    no ``evidence_quote``. The system prompt demanded one; this list never
+    mentioned it, in either version of it. A live v5 round spent two complete
+    model calls failing on exactly that before a third succeeded — 118.6s end
+    to end for one turn.
+
+    Asking for it is the cheapest thing that can be true here, not a guarantee
+    the model complies.
+    """
+
+    rendered = LiteLLMSteward(_settings_local_llm())._render_user_prompt(_turn())
+    required_line = next(line for line in rendered.splitlines() if "必须包含" in line)
+
+    assert "evidence_quote" in required_line
+
+
 def test_steward_identity_is_not_the_models_job() -> None:
     """Closes the class, rather than its third instance.
 
