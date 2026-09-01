@@ -298,6 +298,7 @@ async def test_explicit_projection_uses_predicate_ontology_not_claim_words(tmp_p
     record = next(iter(backend.inner.docs.values()))
     assert record.metadata["wing"] == "Wing_Life"
     assert record.metadata["memory_type"] == "preference"
+    assert record.metadata["source_event_id"] == "turn-explicit"
 
 
 @pytest.mark.asyncio
@@ -748,6 +749,7 @@ async def test_same_natural_fact_is_isolated_per_companion(tmp_path) -> None:
         companion_audience("other"),
     }
     assert len({row.metadata["assertion_id"] for row in docs}) == 2
+    assert {row.metadata["source_event_id"] for row in docs} == {"turn-a", "turn-b"}
     calls = kg.add_triple.await_args_list
     assert {call.kwargs["audience"] for call in calls} == {
         AUDIENCE,
