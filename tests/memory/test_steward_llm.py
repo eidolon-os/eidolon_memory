@@ -471,6 +471,50 @@ def test_without_a_turn_id_a_blank_is_still_refused() -> None:
         _parse_with_turn(_fragment(source_turn_id=""), turn_id="")
 
 
+def test_the_prompt_does_not_ask_for_fields_it_will_discard() -> None:
+    """The proximate cause, rather than the symptom.
+
+    The required-field list demanded five fields ``stamp_fragment_identity``
+    overwrites from the turn — two of which fail validation when blank — while
+    the sentence right after it said identity gets overwritten. A model
+    following the list produced exactly the value that threw away a turn's
+    whole extraction.
+
+    Derived from the stamped set rather than hardcoded, so a field that becomes
+    service-supplied later cannot be left behind in the prompt.
+    """
+
+    from eidolon.memory.application.steward.common import stamp_fragment_identity
+    from eidolon.memory.domain.fragments import MemoryFragment
+
+    sentinel = "model-supplied-value"
+    original = MemoryFragment(
+        memory_id="m1",
+        memory_space_id=sentinel,
+        source_device_id=sentinel,
+        source_instance_id=sentinel,
+        source_turn_id=sentinel,
+        session_id=sentinel,
+        wing="Wing_Relationship",
+        room="sleep",
+        content="我妈失眠",
+        memory_type="relationship",
+        importance=4,
+        confidence=0.9,
+    )
+    stamped = stamp_fragment_identity(original, context=_ctx(), source_turn_id="t1")
+    before, after = original.model_dump(), stamped.model_dump()
+    overwritten = {field for field in before if before[field] != after[field]}
+
+    rendered = LiteLLMSteward(_settings_local_llm())._render_user_prompt(_turn())
+    required_line = next(line for line in rendered.splitlines() if "必须包含" in line)
+
+    still_asked = sorted(field for field in overwritten if field in required_line)
+    assert not still_asked, (
+        f"the prompt still asks the model for fields the service overwrites: {still_asked}"
+    )
+
+
 def test_steward_identity_is_not_the_models_job() -> None:
     """Closes the class, rather than its third instance.
 

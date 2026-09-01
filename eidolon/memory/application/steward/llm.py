@@ -125,11 +125,19 @@ class LiteLLMSteward:
             f"context: {json.dumps(context, ensure_ascii=False)}\n"
             f"timestamp: {turn.timestamp}\n"
             f"metadata: {meta}\n\n"
-            "每个 fragments[] 必须包含 memory_space_id, scope, visibility, "
-            "source_device_id, target_device_id, source_instance_id, source_turn_id, "
-            "session_id, wing, room, content, memory_type, importance, confidence, "
-            "metadata, extensions。身份字段会由服务端 runtime context 覆盖，"
-            "不要依赖模型生成 owner_id、companion_id 或 memory_realm_id。\n"
+            # Only the fields that survive. The list used to demand five that
+            # ``stamp_fragment_identity`` overwrites from the turn — including
+            # the two that fail validation when blank — while the sentence after
+            # it said identity gets overwritten. Asking for a value in order to
+            # discard it is what put a model-supplied ``source_turn_id`` on the
+            # path that threw away a whole turn's extraction.
+            "每个 fragments[] 必须包含 scope, visibility, target_device_id, wing, "
+            "room, content, memory_type, importance, confidence, metadata, "
+            "extensions。\n"
+            "不要输出身份字段：memory_space_id、memory_realm_id、owner_id、"
+            "companion_id、source_device_id、source_instance_id、source_turn_id、"
+            "session_id 全部由服务端按这一轮的 runtime context 写入，模型给的值"
+            "会被丢弃。\n"
             "scope 只能是 global/persona/agent/device/session；设备位置、能力、校准、"
             "本地环境用 scope=device visibility=current_device；用户长期偏好、关系、"
             "事实用 scope=persona visibility=all_devices。\n\n"
