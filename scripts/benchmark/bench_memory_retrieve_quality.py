@@ -120,7 +120,7 @@ def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
     return False
 
 
-def require_expected_embedder(palace_root: Path, *, configured: str) -> None:
+def require_expected_embedder(palace_root: Path, *, settings: Any) -> None:
     """Refuse to report if the palace was not built with the configured embedder.
 
     Copying the config into the spawn settings is not enough on its own: MemPalace
@@ -131,19 +131,37 @@ def require_expected_embedder(palace_root: Path, *, configured: str) -> None:
 
     Checked after ingestion rather than before, because the file does not exist
     until the palace is created.
+
+    The comparison is against what MemPalace *will* record for the configured
+    provider, not against ``embedding.model``. Those were the same thing until
+    3.8, and are not now: 3.8 storage takes vectors through the public
+    openai-compat provider, so the marker says ``openai-compat`` whatever model
+    is actually behind the endpoint. Comparing it to ``bge-small-zh`` could not
+    succeed under any configuration this repository supports, so this gate
+    refused every 3.8 run — which is why extraction quality has been carried as
+    unmeasured rather than measured and bad.
+
+    ``mempalace_backend_env`` is the one place that mapping lives, so asking it
+    keeps the expectation correct when a provider is added. What the marker can
+    prove is narrower than before and the printed line says so: under an
+    endpoint provider it establishes the provider, not which model answers.
     """
 
-    if not configured:
+    from eidolon.memory.infrastructure.mempalace_backend import mempalace_backend_env
+    from eidolon.memory.infrastructure.palace_inventory import palace_embedder
+
+    expected = (mempalace_backend_env(settings).get("MEMPALACE_EMBEDDING_MODEL") or "").strip()
+    if not expected:
         print(
-            "[FAIL] embedding.model is empty in the project settings.\n"
+            "[FAIL] the settings resolve to no MemPalace embedder at all.\n"
             "       MemPalace then picks its own default (minilm, English-only),\n"
             "       so the run would measure a retriever nobody deploys.",
             file=sys.stderr,
         )
         raise SystemExit(2)
 
-    markers = sorted(palace_root.glob("*/mempalace_embedder.json"))
-    if not markers:
+    palaces = sorted(p.parent for p in palace_root.glob("*/mempalace_embedder.json"))
+    if not palaces:
         print(
             f"[FAIL] no mempalace_embedder.json under {palace_root}; cannot "
             f"confirm which embedder built this palace.",
@@ -151,23 +169,25 @@ def require_expected_embedder(palace_root: Path, *, configured: str) -> None:
         )
         raise SystemExit(2)
 
-    doc = json.loads(markers[0].read_text(encoding="utf-8"))
-    actual = {
-        str(section.get("model_name") or "")
-        for section in doc.values()
-        if isinstance(section, dict)
-    }
-    if actual != {configured}:
+    # palace_embedder is the shared reader; its own docstring says a second copy
+    # of it is how two callers come to disagree about one palace. This used to be
+    # that second copy.
+    actual = {palace_embedder(path).name for path in palaces}
+    if actual != {expected}:
         print(
-            f"[FAIL] palace was built with {sorted(actual)} but the settings say "
-            f"{configured!r}.\n"
+            f"[FAIL] palace was built with {sorted(actual)} but the settings "
+            f"resolve to {expected!r}.\n"
             f"       Every number from this run would describe the wrong "
             f"retriever. Delete {palace_root} and rerun, or align the config.",
             file=sys.stderr,
         )
         raise SystemExit(2)
 
-    print(f"[check] palace embedder is {configured} (read from the palace, not the config)")
+    effective = settings.embedding.endpoint_model() or settings.embedding.model
+    print(
+        f"[check] palace embedder is {expected} (read from the palace, not the config); "
+        f"vectors come from {effective!r}"
+    )
 
 
 def extractor_counts(palace_root: Path) -> dict[str, int] | None:
@@ -1255,10 +1275,7 @@ async def amain(args: argparse.Namespace) -> int:
                 )
                 if not args.allow_partial_ingestion:
                     return 2
-            require_expected_embedder(
-                palace_root,
-                configured=(get_memory_settings().embedding.model or "").strip(),
-            )
+            require_expected_embedder(palace_root, settings=get_memory_settings())
             require_uniform_extractor(palace_root)
 
             print(

@@ -480,7 +480,7 @@ palace 而不是进程——一个进程可以持有很多 palace，这正是 1:
 | NATS 一个 consumer 服务所有 space | 通配 subject 辅助函数已存在；`turn_processor` 本来就从 payload 取 space；工具面的固定句柄阻塞已解除 | `agent_runner` 改订通配 subject 会改变已发布的运行拓扑。本地测试无法证伪它，需要一次真实 Pi E2E 才算数 |
 | 单端点 / discovery | | supervisor 掌管进程拓扑——**按你的指示暂缓** |
 | 收窄 MCP 响应 | `RecallResult` 按设计不含 `kg_triples` | agent 侧实际是 3 个文件：`infra/memory/port_adapter.py:133-141` 解析、`core/types/memory.py:61` 持有、`domain/context/compiler.py` 6 处消费。比先前记的「`port_adapter.py:201` 一处」和「17 处」都不准，已按实测更正——需要两个仓库同批 |
-| 四个公开 benchmark | 口径已对齐、探针已跑两次、超时已按实测调正 | **抽取质量目前仍是未知数** —— 前两次探针的准确率测的是等待预算而非记忆，见下 |
+| 四个公开 benchmark | 口径已对齐、探针已跑两次、超时已按实测调正 | 公开 benchmark 本身仍未跑。**但抽取质量不再是未知数**：2026-09-01 用 `bench_memory_retrieve_quality` 做了一次受控 A/B，见下 |
 
 ## 目前最重要的一件事：召回，不是抽取
 

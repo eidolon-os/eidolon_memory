@@ -116,68 +116,85 @@ def test_the_bench_exits_before_spawning_anything() -> None:
 # said so; the numbers just looked like poor retrieval.
 
 
-def test_an_empty_configured_embedder_is_refused(tmp_path: Path) -> None:
-    """Empty does not mean "use the default", it means "we do not know".
+def _settings_for(provider: str, model: str):
+    """Project settings with one embedder swapped in, everything else as shipped."""
 
-    MemPalace fills the gap with minilm, so an empty setting silently selects a
-    retriever nobody deploys.
+    from eidolon.memory.config.memory_settings import MemorySettings
+
+    embedding: dict = {"provider": provider, "model": model}
+    if provider == "http":
+        embedding["http"] = {
+            "base_url": "http://127.0.0.1:8760/v1",
+            "model": model,
+            "dimension": 512,
+        }
+    return MemorySettings.model_validate({"embedding": embedding})
+
+
+def _palace_built_with(root: Path, name: str) -> None:
+    palace = root / "b64_space"
+    palace.mkdir(exist_ok=True)
+    (palace / "mempalace_embedder.json").write_text(
+        json.dumps(
+            {
+                "mempalace_drawers": {"model_name": name},
+                "mempalace_closets": {"model_name": name},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_the_production_endpoint_configuration_can_pass(tmp_path: Path) -> None:
+    """The gate has to be satisfiable by what actually ships.
+
+    3.8 storage takes vectors through the public openai-compat provider, so the
+    palace marker says ``openai-compat`` whatever model answers the endpoint.
+    The gate compared that to ``embedding.model`` — ``bge-small-zh`` — which no
+    supported configuration can produce, so it refused every 3.8 run and the
+    quality figure has been carried as unmeasured ever since. A guard that
+    cannot pass does not protect anything; it just stops the measurement.
     """
 
     from scripts.benchmark.bench_memory_retrieve_quality import (
         require_expected_embedder,
     )
 
-    with pytest.raises(SystemExit) as raised:
-        require_expected_embedder(tmp_path, configured="")
+    _palace_built_with(tmp_path, "openai-compat")
 
-    assert raised.value.code == 2
+    require_expected_embedder(tmp_path, settings=_settings_for("http", "bge-small-zh"))
 
 
 def test_a_mismatched_palace_embedder_is_refused(tmp_path: Path) -> None:
-    """The palace's own record is the authority, not the config we passed it."""
+    """The palace's own record is the authority, not the config we passed it.
 
-    import json
+    This is the case the gate exists for: an offline run leaves minilm behind,
+    and reporting its recall as the deployed retriever's is the exact failure
+    that made an earlier benchmark measure the wrong thing.
+    """
 
     from scripts.benchmark.bench_memory_retrieve_quality import (
         require_expected_embedder,
     )
 
-    palace = tmp_path / "b64_space"
-    palace.mkdir()
-    (palace / "mempalace_embedder.json").write_text(
-        json.dumps(
-            {
-                "mempalace_drawers": {"model_name": "minilm"},
-                "mempalace_closets": {"model_name": "minilm"},
-            }
-        ),
-        encoding="utf-8",
-    )
+    _palace_built_with(tmp_path, "minilm")
 
     with pytest.raises(SystemExit) as raised:
-        require_expected_embedder(tmp_path, configured="embeddinggemma")
+        require_expected_embedder(tmp_path, settings=_settings_for("http", "bge-small-zh"))
 
     assert raised.value.code == 2
 
 
-def test_a_matching_palace_embedder_passes(tmp_path: Path) -> None:
+def test_a_native_mempalace_embedder_is_matched_by_its_own_name(tmp_path: Path) -> None:
+    """The expectation is derived per provider, not hardcoded to one of them."""
+
     from scripts.benchmark.bench_memory_retrieve_quality import (
         require_expected_embedder,
     )
 
-    palace = tmp_path / "b64_space"
-    palace.mkdir()
-    (palace / "mempalace_embedder.json").write_text(
-        json.dumps(
-            {
-                "mempalace_drawers": {"model_name": "embeddinggemma"},
-                "mempalace_closets": {"model_name": "embeddinggemma"},
-            }
-        ),
-        encoding="utf-8",
-    )
+    _palace_built_with(tmp_path, "embeddinggemma")
 
-    require_expected_embedder(tmp_path, configured="embeddinggemma")
+    require_expected_embedder(tmp_path, settings=_settings_for("mempalace", "embeddinggemma"))
 
 
 def test_a_missing_marker_is_refused(tmp_path: Path) -> None:
@@ -188,6 +205,6 @@ def test_a_missing_marker_is_refused(tmp_path: Path) -> None:
     )
 
     with pytest.raises(SystemExit) as raised:
-        require_expected_embedder(tmp_path, configured="embeddinggemma")
+        require_expected_embedder(tmp_path, settings=_settings_for("http", "bge-small-zh"))
 
     assert raised.value.code == 2

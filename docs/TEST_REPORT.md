@@ -86,6 +86,57 @@ Memory **1182 passed, 13 skipped, 3 deselected in 15m11s**; Agent **602 passed,
 The CJK release blockers above are unchanged.  Nothing in this pass touches
 MemPalace's tokenizer, and none of it makes the integrated Pi release eligible.
 
+### The prompt change, measured — 2026-09-01
+
+The steward prompt was shortened to stop asking for fields the service
+overwrites, and `evidence_quote` was added because the two prompts disagreed
+about it.  That is a change to what the model is asked for, so it was carried as
+the one unmeasured thing in the release.  It is measured now, by a controlled
+A/B on `scripts/benchmark/bench_memory_retrieve_quality.py` — same corpus, same
+query battery, same retriever, one variable.
+
+| | correct | fragments | active triples | steward failures |
+|---|---|---|---|---|
+| Old prompt (`a490f8b`) | 18/48 — 37.5% | 39 | 20 | 5 / 35 ingests |
+| New prompt (`9f0ac36`) | **20/48 — 41.7%** | 41 | 25 | 4 / 46 ingests |
+
+**The claim this supports is "no regression", not "+2".**  The two runs did not
+ingest identical material — five discarded turns against four — so the
+difference is inside what one run each can resolve.  What it does establish is
+that the new prompt is not worse on any axis measured: it extracted more
+material and scored no lower.  Recall latency was p95 16.8ms against 16.7ms.
+
+Neither number is comparable to the 21/49 in `ARCHITECTURE.md`.  That was the
+pre-3.8 stack with an in-process embedder and a 49-query battery; this is 3.8
+storage through the openai-compat provider against 48.
+
+#### Why this had not been measured before
+
+The bench refused to report.  `require_expected_embedder` compared the palace's
+recorded embedder against `embedding.model` — `bge-small-zh` — but 3.8 storage
+takes vectors through the public openai-compat provider, so MemPalace records
+`openai-compat` whatever model answers the endpoint, and `provider: local` is
+refused outright by the 3.8 backend.  No supported configuration could satisfy
+the comparison, so every 3.8 run exited 2 and extraction quality stayed
+"unknown" rather than measured.
+
+The expectation is now derived from `mempalace_backend_env`, which is the one
+place the provider-to-recorded-name mapping lives, and the marker is read
+through `palace_inventory.palace_embedder` — whose own docstring says a second
+copy of it is how two callers come to disagree about one palace.  This gate was
+that second copy.  The guard keeps its purpose: a palace built offline still
+records `minilm`, still mismatches, still refuses.
+
+#### A fourth instance of the closed class
+
+Both runs were dominated by the same failure, and it is not the prompt's:
+`MemoryIntent.occurred_at` blank fails validation and discards the whole
+decision — 4 of 4 failures in the new-prompt run, 4 of 5 in the old.  The turn's
+own timestamp is authoritative for that field, which makes it the same shape as
+`memory_space_id` and `source_turn_id`: a field the pipeline is about to supply
+deciding whether the memory exists.  It is recorded here and not fixed; the
+guard added for fragments does not cover `MemoryIntent`.
+
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637
 passed, 7 skipped, 25 deselected**; Mobile **671 passed, 5 skipped**. Mobile had
