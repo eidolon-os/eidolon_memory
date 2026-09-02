@@ -210,21 +210,20 @@ async def test_the_sentence_stays_on_the_device_that_heard_it() -> None:
     assert drawer.scope == "session"
 
 
-def test_the_shipped_default_keeps_the_layer_on() -> None:
-    """On, after the three defects that made it harmful were found and fixed.
+def test_the_shipped_default_keeps_the_layer_off() -> None:
+    """Off, because the drawers it writes cannot be forgotten.
 
-    It first measured 13/43 against 25/43 for distillation alone. All three
-    causes are now closed — a fixed room that made turns overwrite, a
-    ``current_device`` scope with no device stamped so the rows were invisible
-    to everyone, and visibility post-filtered after the fetch so they spent
-    slots anyway. Re-measured: 29/43 for a caller carrying its device and
-    25/43 for one that is not, against 25 either way without the layer.
-
-    Pinned so switching it off is also a decision someone makes on purpose.
+    Four rounds on the device left four drawers in the real Owner Realm.
+    ``forget_source_event`` answered ``applied`` and deleted nothing; the
+    exact-id path refused and said why — "privacy mutation refused a
+    non-canonical drawer". Forgetting converges because every drawer has a
+    ledger assertion behind it, and a ``source_event_id`` in metadata is not
+    one. Registering the drawer as evidence is a design change, not a setting,
+    so this stays off until that exists.
     """
     from eidolon.memory.config.memory_settings import load_memory_settings
 
-    assert load_memory_settings().worker.verbatim_retention_days > 0
+    assert load_memory_settings().worker.verbatim_retention_days == 0
 
 
 # ── the bound ────────────────────────────────────────────────────────────────

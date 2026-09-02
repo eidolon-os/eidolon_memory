@@ -314,6 +314,40 @@ KG 段走模板，**抽屉段渲染抽屉原文**，而抽屉段覆盖 38/48。�
 len(corpus)` 把两层的抽屉一起数，于是投影到一半就判定就绪、列举跑早了。计数当代理的老问题，
 这次以竞态形式出现。
 
+#### 真机验证否掉了这一层：它写出产品无法遗忘的数据
+
+发布 `20260902-memory-verbatim-1` 到 Pi（sdk pin 回 Host 那份），对真实 Owner Realm 跑 4 轮。
+
+**先说成立的部分。** 原文写入在真机上确实是毫秒级：
+
+```
+verbatim_ms=79  steward_ms=29269  fragments_ms=77  total_ms=29428
+verbatim_ms=61  steward_ms=19210  kg_ms=63        total_ms=19336
+verbatim_ms=52  steward_ms=20587  fragments_ms=71  total_ms=20711
+verbatim_ms=49  steward_ms=21916  kg_ms=75        total_ms=22043
+```
+
+**49–79 毫秒可读，对同轮 19–29 秒的 steward。** 4/4 轮通过、零写入失败、零 steward 失败、
+三 Companion 零越权、召回 p95 21–31ms。
+
+**然后是否掉它的部分。** 四轮结束后真实 Realm 里**残留 4 条原文抽屉**，而合约的清理报告是
+`applied` + `source_event_tombstoned=True`。两条隐私路径都删不掉：
+
+- `forget_source_event`：对四条全部返回 `applied` / `tombstoned=True`，**一条没删**。它解析的是
+  账本里注册过的 assertion 的投影，而原始轮次不是 assertion。**这是一次谎报成功的删除。**
+- 精确 ID 的操作员路径：直接拒绝，并说明了理由 ——
+  `privacy mutation refused a non-canonical drawer`。
+
+**那个守卫是对的，这一层是错的。** 遗忘之所以能收敛，是因为每个抽屉背后都有账本 assertion；
+在 metadata 里带一个 `source_event_id` 不是同一件事。原文抽屉必须**先在账本里注册为证据**
+（带自己的 assertion）才能被写进去 —— 这是设计变更，不是配置项。
+
+所以该层重新默认关闭，代码保留以便上述测量可复现。
+
+**第四次同形状的守护真空，也是最贵的一次。** 我断言了抽屉带 `source_event_id`（它带了），
+**没断言 forget 真的删得掉它**。前三次代价是绿掉的测试，这一次代价是用户真实 Realm 里
+4 条删不掉的残留。**测字段不是测行为。**
+
 
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637

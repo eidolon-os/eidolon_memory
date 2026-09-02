@@ -467,7 +467,26 @@ class WorkerConfig(BaseModel):
     # Set to a positive number to re-enable once the read path is understood.
     # The write side, its bound and its tests stay in place so the measurement
     # is repeatable rather than lost.
-    verbatim_retention_days: int = Field(default=180, ge=0)
+    # OFF. The layer writes drawers the product cannot forget.
+    #
+    # Verified on the device 2026-09-02: four rounds left four drawers in the
+    # real Owner Realm, and neither privacy path can remove them.
+    # ``forget_source_event`` reports ``applied`` with
+    # ``source_event_tombstoned=True`` and deletes nothing, because it resolves
+    # projections of ledger-registered assertions and a raw turn is not one.
+    # The exact-id operator path refuses outright, and its refusal names the
+    # reason: "privacy mutation refused a non-canonical drawer".
+    #
+    # That guard is correct and this layer is wrong. Forgetting converges
+    # because every drawer has a ledger assertion behind it; carrying a
+    # ``source_event_id`` in metadata is not the same thing. A verbatim drawer
+    # has to be *registered* — as evidence, with its own assertion — before it
+    # can be written at all, and that is a design change, not a setting.
+    #
+    # Kept as code rather than reverted so the measurements stay reproducible:
+    # 49-79ms to readable against 19-29s for the steward, and +4 of 43 on
+    # recall when the caller carries its device.
+    verbatim_retention_days: int = Field(default=0, ge=0)
     verbatim_max_records: int = Field(default=20_000, ge=100)
     verbatim_prune_every_writes: int = Field(default=200, ge=1)
 
