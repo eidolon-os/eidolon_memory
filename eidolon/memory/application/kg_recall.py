@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from eidolon.memory.domain.kg import KgTripleRecord
+from eidolon.memory.domain.predicates import fact_sentence
 
 
 def _now_iso() -> str:
@@ -160,13 +161,7 @@ def plain_triple_sentence(t: KgTripleRecord) -> str:
     literal phrase from ever matching.
     """
 
-    subject = _entity_label(t.subject)
-    object_ = _entity_label(t.object)
-    if t.predicate == "holds_role":
-        if str(t.subject).startswith("pet:"):
-            return f"{subject} 的品种/身份是 {object_}"
-        return f"{subject} 的角色/身份是 {object_}"
-    return _predicate_template(t.predicate).format(s=subject, o=object_)
+    return fact_sentence(t.subject, t.predicate, t.object)
 
 
 def transcribe_triple(t: KgTripleRecord) -> str:
@@ -232,76 +227,3 @@ def transcribe_triples(triples: list[KgTripleRecord]) -> str:
     if not triples:
         return ""
     return "\n".join(f"- {transcribe_triple(t)}" for t in triples)
-
-
-#: Predicate → sentence template. ``{s}`` is the subject, ``{o}`` the object.
-#:
-#: Every entry is a *full* template on purpose. The table used to mix two shapes:
-#: relational predicates held a fragment with an ellipsis where the object went
-#: ("是…的孩子"), while the rest held a bare verb ("喜欢"), and the renderer
-#: concatenated subject + entry + object for both. So the eight relational ones
-#: came out as "铁锤 是…的孩子 用户" and "用户 在…工作 某公司" — reaching the model
-#: as broken sentences, in exactly the kinship and employment relations the
-#: kinship_alias benchmark category tests. One shape makes that unrepresentable,
-#: and a test asserts every entry carries both slots.
-_PREDICATE_ZH = {
-    "child_of": "{s} 是 {o} 的孩子",
-    "parent_of": "{s} 是 {o} 的父母",
-    "partner_of": "{s} 是 {o} 的伴侣",
-    "sibling_of": "{s} 是 {o} 的兄弟姐妹",
-    "friend_of": "{s} 和 {o} 是朋友",
-    "colleague_of": "{s} 和 {o} 是同事",
-    "works_at": "{s} 在 {o} 工作",
-    "lives_in": "{s} 住在 {o}",
-    "studies_at": "{s} 在 {o} 学习",
-    "holds_role": "{s} 担任 {o}",
-    "born_in": "{s} 出生于 {o}",
-    "likes": "{s} 喜欢 {o}",
-    "dislikes": "{s} 不喜欢 {o}",
-    "prefers": "{s} 偏好 {o}",
-    "does": "{s} 做 {o}",
-    "practices": "{s} 在练习 {o}",
-    "owns": "{s} 拥有 {o}",
-    "uses": "{s} 在使用 {o}",
-    "promised": "{s} 承诺 {o}",
-    "committed_to": "{s} 承诺要 {o}",
-    "planned_to": "{s} 计划 {o}",
-    "has_state": "{s} 处于状态 {o}",
-    "has_emotion": "{s} 感受到 {o}",
-    "has_concern": "{s} 担心 {o}",
-    "worried_about": "{s} 担心 {o}",
-    "struggles_with": "{s} 在困扰于 {o}",
-    "has_health_condition": "{s} 患有 {o}",
-    "takes_medication": "{s} 在服用 {o}",
-    "has_symptom": "{s} 有症状 {o}",
-    "attended": "{s} 参加了 {o}",
-    "experienced": "{s} 经历了 {o}",
-    "achieved": "{s} 达成了 {o}",
-}
-
-
-def _predicate_template(p: str) -> str:
-    """The sentence shape for ``p``, with ``{s}``/``{o}`` for subject and object.
-
-    An unknown predicate falls back to bare juxtaposition, which is ugly but
-    still parseable — better than dropping the fact.
-    """
-
-    return _PREDICATE_ZH.get(p, "{s} " + p + " {o}")
-
-
-#: The graph stores the owner as the literal subject ``self``. Left untranslated
-#: it reaches the model as "self 计划 去日本" — a schema token presented as part
-#: of a fact about the user.
-_SELF_LABEL = "用户"
-
-
-def _entity_label(value: object) -> str:
-    text = str(value or "")
-    if text == "self":
-        return _SELF_LABEL
-    prefix, sep, label = text.partition(":")
-    if sep and prefix.isascii() and prefix.replace("_", "").isalnum() and label:
-        return label
-    return text
-

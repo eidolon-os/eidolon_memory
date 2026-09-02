@@ -226,7 +226,7 @@ def test_every_predicate_template_carries_both_slots() -> None:
     drops the subject. Neither raises — the line just states something else.
     """
 
-    from eidolon.memory.application.kg_recall import _PREDICATE_ZH
+    from eidolon.memory.domain.predicates import _PREDICATE_TEMPLATES as _PREDICATE_ZH
 
     for predicate, template in _PREDICATE_ZH.items():
         assert "{s}" in template, f"{predicate} has no subject slot: {template!r}"

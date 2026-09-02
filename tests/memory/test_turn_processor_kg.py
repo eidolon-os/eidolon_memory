@@ -163,8 +163,10 @@ async def test_kg_failure_leaves_projection_pending_and_naks(settings, backend, 
     assert msg.nak_calls == ["nak"]
     # The deterministic canonical drawer landed; redelivery will repair KG.
     rows = await backend.get_all("")
-    assert any("self likes tea" in (r.value or "") for r in rows)
-    row = next(r for r in rows if "self likes tea" in (r.value or ""))
+    # The sentence, not the triple. This read "self likes tea" while the writer
+    # embedded raw schema tokens; the assertion outlived the defect it recorded.
+    assert any("用户 喜欢 tea" in (r.value or "") for r in rows)
+    row = next(r for r in rows if "用户 喜欢 tea" in (r.value or ""))
     assert row.metadata["owner_id"] == "alice"
     assert row.metadata["companion_id"] == "test"
     assert row.metadata["memory_realm_id"] == MEMORY_SPACE_ID

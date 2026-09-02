@@ -251,3 +251,106 @@ def predicate_definitions() -> tuple[PredicateDefinition, ...]:
     """Stable registry snapshot for validation and product introspection."""
 
     return tuple(_PREDICATES[predicate] for predicate in KG_PREDICATE_VALUES)
+
+
+# ─── how a fact reads ────────────────────────────────────────────────────────
+#
+# These live beside the ontology rather than beside either caller because both
+# paths need the same answer and used to disagree about it. The read path
+# rendered a triple into Chinese through this table; the write path built the
+# drawer that gets *embedded* with a bare f-string, so half of a palace's
+# canonical drawers read "self owns pet:铁锤" while the deployed embedder is a
+# Chinese model being asked to match "我家狗多大" against them. A fix on
+# 2026-08-04 corrected the renderer and missed the writer, which is the half
+# retrieval depends on.
+
+#: Predicate → sentence template. ``{s}`` is the subject, ``{o}`` the object.
+#:
+#: Every entry is a *full* template on purpose. The table used to mix two shapes:
+#: relational predicates held a fragment with an ellipsis where the object went
+#: ("是…的孩子"), while the rest held a bare verb ("喜欢"), and the renderer
+#: concatenated subject + entry + object for both. So the eight relational ones
+#: came out as "铁锤 是…的孩子 用户" and "用户 在…工作 某公司" — reaching the model
+#: as broken sentences, in exactly the kinship and employment relations the
+#: kinship_alias benchmark category tests. One shape makes that unrepresentable,
+#: and a test asserts every entry carries both slots.
+_PREDICATE_TEMPLATES = {
+    "child_of": "{s} 是 {o} 的孩子",
+    "parent_of": "{s} 是 {o} 的父母",
+    "partner_of": "{s} 是 {o} 的伴侣",
+    "sibling_of": "{s} 是 {o} 的兄弟姐妹",
+    "friend_of": "{s} 和 {o} 是朋友",
+    "colleague_of": "{s} 和 {o} 是同事",
+    "works_at": "{s} 在 {o} 工作",
+    "lives_in": "{s} 住在 {o}",
+    "studies_at": "{s} 在 {o} 学习",
+    "holds_role": "{s} 担任 {o}",
+    "born_in": "{s} 出生于 {o}",
+    "likes": "{s} 喜欢 {o}",
+    "dislikes": "{s} 不喜欢 {o}",
+    "prefers": "{s} 偏好 {o}",
+    "does": "{s} 做 {o}",
+    "practices": "{s} 在练习 {o}",
+    "owns": "{s} 拥有 {o}",
+    "uses": "{s} 在使用 {o}",
+    "promised": "{s} 承诺 {o}",
+    "committed_to": "{s} 承诺要 {o}",
+    "planned_to": "{s} 计划 {o}",
+    "has_state": "{s} 处于状态 {o}",
+    "has_emotion": "{s} 感受到 {o}",
+    "has_concern": "{s} 担心 {o}",
+    "worried_about": "{s} 担心 {o}",
+    "struggles_with": "{s} 在困扰于 {o}",
+    "has_health_condition": "{s} 患有 {o}",
+    "takes_medication": "{s} 在服用 {o}",
+    "has_symptom": "{s} 有症状 {o}",
+    "attended": "{s} 参加了 {o}",
+    "experienced": "{s} 经历了 {o}",
+    "achieved": "{s} 达成了 {o}",
+}
+
+
+def predicate_template(p: str) -> str:
+    """The sentence shape for ``p``, with ``{s}``/``{o}`` for subject and object.
+
+    An unknown predicate falls back to bare juxtaposition, which is ugly but
+    still parseable — better than dropping the fact.
+    """
+
+    return _PREDICATE_TEMPLATES.get(p, "{s} " + p + " {o}")
+
+
+#: The graph stores the owner as the literal subject ``self``. Left untranslated
+#: it reaches the model as "self 计划 去日本" — a schema token presented as part
+#: of a fact about the user.
+SELF_LABEL = "用户"
+
+
+def entity_label(value: object) -> str:
+    text = str(value or "")
+    if text == "self":
+        return SELF_LABEL
+    prefix, sep, label = text.partition(":")
+    if sep and prefix.isascii() and prefix.replace("_", "").isalnum() and label:
+        return label
+    return text
+
+
+def fact_sentence(subject: object, predicate: str, object_: object) -> str:
+    """One statement as the sentence a person would say to mean it.
+
+    This is what a drawer stores and what the ``[MEMORY]`` block renders, and
+    those must be the same string: the drawer is embedded and matched against
+    the user's own wording, so a schema token in it is a fact the retriever
+    cannot find and the model reads as noise.
+    """
+
+    s = entity_label(subject)
+    o = entity_label(object_)
+    if predicate == "holds_role":
+        # A breed is not a job. The graph uses one predicate for both because
+        # the distinction is about the subject, not the relation.
+        if str(subject).startswith("pet:"):
+            return f"{s} 的品种/身份是 {o}"
+        return f"{s} 的角色/身份是 {o}"
+    return predicate_template(predicate).format(s=s, o=o)

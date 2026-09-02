@@ -210,6 +210,50 @@ top-5 名额。这给 `test_steward_prompt_does_not_send_assistant_text` 那条�
 就照上面的口径重写：同一个 `recall_with_kg_fusion`、`top_k=5`、`kg=None`、单一 wing/room、
 仅 `user_text`。
 
+### 抽屉里的 schema token — 2026-09-02
+
+`_drawer_for_triple` 用裸 f-string 造抽屉正文：`f"{subject} {predicate} {object}"`。所以
+run C 的 palace 里 **18/38 个抽屉**存的是 `self owns pet:铁锤`、`self partner_of wife`、
+`mother has_state 失眠`。读路径一直有中文模板（`_PREDICATE_ZH`，32 条）和实体标注
+（`self`→`用户`、剥 `pet:`/`project:` 前缀），写路径一条都没用。
+
+`ARCHITECTURE.md` 把这一类记为 2026-08-04 已修（"`self` 这个 schema token 也没被翻译"）。
+那次**修了渲染器，漏了写入者**。
+
+**我先提的理由是错的，实测否掉了。** 假设是"中文 embedder 匹配不上英文 schema token，翻译
+能提升召回"。做法：拿 run C 的 palace 原样复制，只把那些正文是裸三元组的抽屉重渲染，抽取结果
+逐字节相同，同一个 `recall_with_kg_fusion`、同 `top_k`、同判定：
+
+| | kg=None | kg 参与 |
+|---|---|---|
+| 旧句式 | 25/43 | 25/43 |
+| 新句式 | 24/43 | 24/43 |
+
+**−1，落在 ±2 噪声内 —— 对检索没有可测影响。** 新句式赢 2 条（`emotion-003`、
+`preference-003`），输 3 条（`future-002`、`preference-004`、`time-004`）。原因可定位：
+`expected_vector_contains` 里是 `失眠`、`铁锤`、`王芳` 这些**宾语**，而宾语在旧形式里本来就是
+中文，缺的从来不是那个词。BGE 对混合串的容忍度比预期高。
+
+**没被否掉的理由是模型读到的文本。** run C 的 48 条查询里，**38 条**的 `[MEMORY]` 块含未翻译
+schema token：
+
+```
+- [2026-09-02] self owns pet:铁锤
+- [2026-09-02] pet:铁锤 has_emotion 怕针
+- [2026-09-02] mother has_state
+```
+
+KG 段走模板，**抽屉段渲染抽屉原文**，而抽屉段覆盖 38/48。所以 2026-08-04 那次修复漏掉的正是
+到达模型的那一半。
+
+改动本身是把两份表示合并成一份：模板与 `entity_label` 移进 `domain/predicates.py`
+（`7773204` 引入的单一 predicate ontology 所在处），`fact_sentence()` 一个纯函数，读写两侧
+都调它。32/32 覆盖，无新增配置项。
+
+**守护测试第一版是空的，sabotage 抓到了。** 它比较 `fact_sentence` 和
+`plain_triple_sentence`——两者都走同一个函数——所以把写路径退回 f-string 全绿。这正是
+2026-08-04 留下的同一个真空。现在断言 `_drawer_for_triple` 实际产出的 content，退回即红。
+
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637
 passed, 7 skipped, 25 deselected**; Mobile **671 passed, 5 skipped**. Mobile had

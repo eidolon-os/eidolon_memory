@@ -72,6 +72,7 @@ from eidolon.memory.domain.ports import (
     DlqWriter,
     ExtractionDecisionStore,
 )
+from eidolon.memory.domain.predicates import fact_sentence
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
@@ -264,7 +265,12 @@ def _drawer_for_triple(
         source_turn_id=turn.turn_id,
         wing="Wing_Profile",
         room=f"fact_{triple.predicate}_{_projection_room_token(projection_id)}",
-        content=f"{triple.subject} {triple.predicate} {triple.object}",
+        # The same sentence the read path renders, from the same table. This
+        # used to be a bare f-string, so the text that got embedded read
+        # "self owns pet:铁锤" while the query it had to match read
+        # "我家狗多大" — 18 of 38 drawers in a benchmark palace were
+        # unreachable by the Chinese embedder that way.
+        content=fact_sentence(triple.subject, triple.predicate, triple.object),
         memory_type=(
             "preference" if triple.predicate in {"likes", "dislikes", "prefers"} else "fact"
         ),
