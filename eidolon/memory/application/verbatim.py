@@ -84,7 +84,12 @@ def verbatim_drawer(turn: ConversationTurnPayload) -> MemoryFragment | None:
         source_turn_id=turn.turn_id,
         session_id=turn.context.session_id,
         wing=VERBATIM_WING,
-        room=VERBATIM_ROOM,
+        # One room per turn, because the room *is* the drawer identity —
+        # ``_doc_id(space, room)``. Canonical projections use a unique room per
+        # projection for exactly this reason; a fixed room here made every turn
+        # overwrite the one before it, and the unit tests missed it because each
+        # publishes a single turn.
+        room=f"{VERBATIM_ROOM}:{turn.turn_id}",
         content=text,
         # The person's own words are the evidence for anything derived from
         # them; ``evidence_quote`` on a fragment means the same thing one level
@@ -110,6 +115,13 @@ def verbatim_drawer(turn: ConversationTurnPayload) -> MemoryFragment | None:
         # and that projection carries its own scope decided on the content.
         scope="session",
         visibility="current_device",
+        # Which device that is. Without this the visibility rule —
+        # ``context.device_id in {source_device, target_device}`` — could never
+        # be true, so these drawers were invisible to *every* caller while
+        # still spending slots in the retrieval window. That is what made a
+        # palace holding 40 of them return none and starve the canonical rows
+        # beside them down from five hits to one.
+        source_device_id=turn.context.device_id,
         metadata={
             "source": VERBATIM_SOURCE,
             # Forgetting resolves by exact source event across every

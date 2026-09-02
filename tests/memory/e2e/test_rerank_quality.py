@@ -25,11 +25,20 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
 async def _list_fragment_count(session) -> int:
+    """Projected drawers only, which is what this count was ever a proxy for.
+
+    It gates the readiness wait, and the turn's own sentence is now filed
+    beside each projection. Counting both made the predicate true after half
+    the corpus had been projected — the listing then ran early and the exact
+    strings this test asserts were simply not there yet. A race, not a
+    mismatch, and one a plain total cannot express.
+    """
     result = await session.call_tool("eidolon_memory_list", {"limit": 1000})
     payload = mcp_tool_json(result)
     if not isinstance(payload, dict):
         return 0
-    return len(payload.get("records") or [])
+    records = payload.get("records") or []
+    return sum(1 for row in records if (row.get("metadata") or {}).get("source") != "turn-verbatim")
 
 
 async def _recall_top_values(session, context, *, query: str, top_k: int = 3) -> list[str]:
@@ -121,10 +130,7 @@ async def test_rerank_pipeline_preserves_exact_projection_recall(
 
         ok = await wait_for_visible(session, predicate=_ready, timeout_s=90)
         count = await _list_fragment_count(session)
-        assert ok, (
-            f"{label} palace did not reach {expected_fragments} fragments "
-            f"(got {count})"
-        )
+        assert ok, f"{label} palace did not reach {expected_fragments} fragments (got {count})"
         return count
 
     await _publish_corpus(h_on, corpus, len(corpus))

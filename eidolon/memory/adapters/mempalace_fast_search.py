@@ -19,6 +19,10 @@ def search_memories_shared_embedding(
     wings: list[str],
     room: str | None,
     audiences: tuple[str, ...] | None = None,
+    #: The caller's device, so ``current_device`` rows it cannot be shown
+    #: are excluded by the query instead of after it. See
+    #: ``_device_visibility_filter``.
+    device_id: str | None = None,
     n_results: int,
     query_embedding: list[float] | None = None,
     skip_closets: bool = True,
@@ -64,7 +68,7 @@ def search_memories_shared_embedding(
         )
         _record_ms(diagnostics, "storage_open_ms", open_started)
         metric = str(drawers_col.distance_metric)
-        where = _combined_where(wings, room, audiences)
+        where = _combined_where(wings, room, audiences, device_id)
         limit = max(n_results * max(3, len(wings) * 3), n_results)
         query_started = time.perf_counter()
         drawer_results = _query_collection(
@@ -110,9 +114,7 @@ def search_memories_shared_embedding(
     return hits[: max(n_results * len(wings), n_results)]
 
 
-def _record_ms(
-    diagnostics: dict[str, float] | None, key: str, started: float
-) -> None:
+def _record_ms(diagnostics: dict[str, float] | None, key: str, started: float) -> None:
     if diagnostics is not None:
         diagnostics[key] = round((time.perf_counter() - started) * 1000, 3)
 
@@ -154,9 +156,7 @@ def _search_sqlite_fallback(
                 continue
             row = dict(raw)
             metadata = row.get("metadata") or {}
-            if audiences is not None and str(
-                metadata.get("audience") or "owner"
-            ) not in audiences:
+            if audiences is not None and str(metadata.get("audience") or "owner") not in audiences:
                 continue
             key = (
                 str(row.get("text") or ""),
@@ -180,12 +180,50 @@ def _search_sqlite_fallback(
     return hits[: max(n_results * max(1, len(wings)), n_results)]
 
 
+def _device_visibility_filter(device_id: str | None) -> dict[str, Any]:
+    """Rows this caller could actually be shown, as a query predicate.
+
+    Audience was already pushed into the query and device visibility was not,
+    so ``current_device`` rows were fetched into the ``n_results`` window and
+    then dropped by ``recall_policy``. A population of them therefore starves
+    recall of everything else: a palace with 40 such drawers beside 38 visible
+    ones returned one hit where the 38 alone returned five.
+
+    That is not hypothetical and not new — the steward writes
+    ``visibility=current_device`` for device-local facts, so the read path has
+    always had this, only at a smaller scale.
+
+    Deliberately only subtractive of what the post-filter would drop anyway:
+    ``private`` is left entirely to ``recall_policy``, which stays the
+    authority. This exists so invisible rows do not spend slots, not to decide
+    visibility in two places.
+
+    ``visibility``, ``source_device_id`` and ``target_device_id`` are stamped
+    unconditionally on every drawer — empty strings when absent — so ``$ne``
+    cannot silently exclude a row for lacking the key.
+    """
+
+    device = str(device_id or "").strip()
+    if not device:
+        # No device means ``current_device`` can never match, so the whole
+        # class is unreachable for this caller.
+        return {"visibility": {"$ne": "current_device"}}
+    return {
+        "$or": [
+            {"visibility": {"$ne": "current_device"}},
+            {"source_device_id": device},
+            {"target_device_id": device},
+        ]
+    }
+
+
 def _combined_where(
     wings: list[str],
     room: str | None,
     audiences: tuple[str, ...] | None,
+    device_id: str | None = None,
 ) -> dict[str, Any] | None:
-    if not wings and not room and audiences is None:
+    if not wings and not room and audiences is None and device_id is None:
         return None
     wing_filter: dict[str, Any] | None
     if not wings:
@@ -197,6 +235,10 @@ def _combined_where(
     filters = [item for item in (wing_filter, {"room": room} if room else None) if item]
     if audiences is not None:
         filters.append({"audience": {"$in": list(audiences)}})
+        # Paired with the audience clause on purpose: both answer "may this
+        # caller be shown this row", and pushing one down while post-filtering
+        # the other is what let invisible rows spend the window.
+        filters.append(_device_visibility_filter(device_id))
     if not filters:
         return None
     if len(filters) == 1:

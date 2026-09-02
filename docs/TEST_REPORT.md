@@ -284,7 +284,36 @@ KG 段走模板，**抽屉段渲染抽屉原文**，而抽屉段覆盖 38/48。�
 3. **未解释**：真实 Chroma palace 存下了 40 条原文抽屉，而即使 `device_id` 匹配、搜索仍返回
    0 条。给 `device_id` 赋值前后结果相同（都是 1 行），所以不是可见性。原因未知。
 
-因此该层**默认关闭**，写入侧、边界和测试保留以便复现。第 3 条搞清楚之前不重新打开。
+三条原因全部查清并修掉，该层重新打开 — 2026-09-02
+
+| | 原因 | 归属 |
+|---|---|---|
+| 1 | 抽屉身份是 `(space, room)`，固定 room 让每轮覆盖上一轮 | 我的 bug |
+| 2 | 设成 `visibility=current_device` 却没盖 `source_device_id`，于是 `context.device_id ∈ {source, target}` 永远为假——**这些抽屉对任何调用方永远不可见，同时照样占取回窗** | 我的 bug，也是先前"未解释"的那条 |
+| 3 | 可见性在按 wing 取回 `n_results=top_k` **之后**才过滤，不可见的行先占名额再被丢 | 读路径既有结构问题 |
+
+修完重测（同一 palace、同一 embedder、无 LLM，确定性）：
+
+| | 43 条可答 |
+|---|---|
+| 仅蒸馏 | 25 |
+| 蒸馏 + 原文，调用方带 `device_id` | **29（+4）** |
+| 蒸馏 + 原文，调用方不带 `device_id` | 25（+0，原来是 13） |
+
+第 3 条的修法是把设备可见性谓词像 `audience` 一样推进查询（`_device_visibility_filter`），
+**只做减法**：只排除后置过滤本来也会丢的行，`private` 完全留给 `recall_policy`，避免可见性在
+两处判断。这条独立于原文层也该修——steward 本来就给设备本地事实写 `current_device`，读路径
+今天已经有这个饥饿，只是规模小。
+
+**第三次同形状的守护真空。** 第一版测试只测 `_device_visibility_filter` 本身，删掉把它接进
+`_combined_where` 的那一行，测试全绿。今天这个形状出现了三次（`fact_sentence`、
+`_drawer_for_triple`、这次），三次都是**测了 helper 没测接线**，而只有接线会静默回归。现在断言
+`_combined_where` 的实际产出，sabotage 即红。
+
+`test_rerank_quality` 那个失败是**竞态而不是断言不符**：就绪判据 `_list_fragment_count >=
+len(corpus)` 把两层的抽屉一起数，于是投影到一半就判定就绪、列举跑早了。计数当代理的老问题，
+这次以竞态形式出现。
+
 
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637

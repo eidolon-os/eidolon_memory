@@ -199,6 +199,7 @@ class LockedBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        device_id: str | None = None,
     ) -> list[MemoryWireRecord]:
         return await self._serialized(
             lambda: self._inner.search(
@@ -207,6 +208,7 @@ class LockedBackend(MemoryBackend):
                 n_results=n_results,
                 room=room,
                 audiences=audiences,
+                device_id=device_id,
             ),
             name="search",
             write=False,
@@ -220,6 +222,7 @@ class LockedBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        device_id: str | None = None,
         skip_closets: bool = False,
         diagnostics: dict[str, float] | None = None,
     ) -> list[MemoryWireRecord]:
@@ -233,6 +236,7 @@ class LockedBackend(MemoryBackend):
                 n_results=n_results,
                 room=room,
                 audiences=audiences,
+                device_id=device_id,
                 skip_closets=skip_closets,
                 diagnostics=diagnostics,
             ),

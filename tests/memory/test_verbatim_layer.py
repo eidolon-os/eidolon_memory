@@ -210,20 +210,21 @@ async def test_the_sentence_stays_on_the_device_that_heard_it() -> None:
     assert drawer.scope == "session"
 
 
-def test_the_shipped_default_keeps_the_layer_off() -> None:
-    """Measured 13/43 against 25/43 with both layers in one palace.
+def test_the_shipped_default_keeps_the_layer_on() -> None:
+    """On, after the three defects that made it harmful were found and fixed.
 
-    Twelve queries lost and none gained: the 84-86% union combined two
-    measurements taken separately, and recall has a single top_k budget the
-    two layers share. Two causes are known — the drawer id is (space, room) so
-    a fixed room overwrites, and visibility is post-filtered after a top_k
-    fetch — and one is not, which is why this is off rather than tuned.
+    It first measured 13/43 against 25/43 for distillation alone. All three
+    causes are now closed — a fixed room that made turns overwrite, a
+    ``current_device`` scope with no device stamped so the rows were invisible
+    to everyone, and visibility post-filtered after the fetch so they spent
+    slots anyway. Re-measured: 29/43 for a caller carrying its device and
+    25/43 for one that is not, against 25 either way without the layer.
 
-    Pinned so re-enabling is a decision someone makes on purpose.
+    Pinned so switching it off is also a decision someone makes on purpose.
     """
     from eidolon.memory.config.memory_settings import load_memory_settings
 
-    assert load_memory_settings().worker.verbatim_retention_days == 0
+    assert load_memory_settings().worker.verbatim_retention_days > 0
 
 
 # ── the bound ────────────────────────────────────────────────────────────────
@@ -307,3 +308,96 @@ async def test_a_failing_store_does_not_take_the_turn_down() -> None:
             raise RuntimeError("chroma unavailable")
 
     assert await prune_verbatim(_Broken([]), "s", retention_days=30, max_records=10) == 0
+
+
+# ── the window the invisible rows used to fill ───────────────────────────────
+
+
+def test_a_caller_without_a_device_cannot_be_shown_device_scoped_rows() -> None:
+    """Pushed into the query, beside the audience clause that was already there.
+
+    Visibility used to be checked only after a top_k fetch, so device-scoped
+    rows spent slots and were then dropped. Measured: a palace with 40 of them
+    beside 38 visible drawers returned 13 of 43 where the 38 alone returned 25.
+    With the predicate in the query it returns 25 — the population no longer
+    costs anything it cannot pay for.
+    """
+    from eidolon.memory.adapters.mempalace_fast_search import _device_visibility_filter
+
+    assert _device_visibility_filter(None) == {"visibility": {"$ne": "current_device"}}
+    assert _device_visibility_filter("") == {"visibility": {"$ne": "current_device"}}
+
+
+def test_a_caller_with_a_device_still_sees_its_own_rows() -> None:
+    """Subtractive only: it removes what the post-filter would remove anyway.
+
+    ``private`` is deliberately absent — ``recall_policy`` stays the authority
+    on that, and deciding visibility in two places is how the two come to
+    disagree.
+    """
+    from eidolon.memory.adapters.mempalace_fast_search import _device_visibility_filter
+
+    clause = _device_visibility_filter("device-a")
+
+    assert clause == {
+        "$or": [
+            {"visibility": {"$ne": "current_device"}},
+            {"source_device_id": "device-a"},
+            {"target_device_id": "device-a"},
+        ]
+    }
+
+
+def test_the_where_clause_actually_carries_the_device_predicate() -> None:
+    """Asserted on ``_combined_where``, because the helper is not the defect.
+
+    The first version of these tests checked ``_device_visibility_filter`` in
+    isolation, so deleting the line that appends it to the query left every one
+    of them green. That is the third time today a guard tested a helper instead
+    of its wiring; the wiring is the only part that can regress silently.
+    """
+    from eidolon.memory.adapters.mempalace_fast_search import _combined_where
+
+    clause = _combined_where(["Wing_Profile"], None, ("owner",), "device-a")
+
+    assert clause is not None
+    flattened = repr(clause)
+    assert "source_device_id" in flattened
+    assert "current_device" in flattened
+
+    # And the caller with no device still gets the exclusion, not nothing.
+    assert "current_device" in repr(_combined_where([], None, ("owner",), None))
+
+
+def test_the_drawer_records_the_device_it_claims_to_be_scoped_to() -> None:
+    """Without this the scope is unsatisfiable rather than restrictive.
+
+    ``visibility=current_device`` is checked as ``context.device_id in
+    {source_device, target_device}``. Stamping the first and not the second
+    made every one of these drawers invisible to every caller forever, while
+    still occupying the retrieval window — which is what took recall from five
+    hits to one.
+    """
+    from eidolon_memory_contracts import ConversationTurnPayload
+
+    drawer = verbatim_drawer(ConversationTurnPayload.model_validate(_payload()))
+
+    assert drawer is not None
+    assert drawer.source_device_id == "device"
+
+
+def test_each_turn_gets_its_own_drawer() -> None:
+    """The room is the drawer identity — ``_doc_id(space, room)``.
+
+    Canonical projections use a unique room per projection for exactly this
+    reason. A fixed room made every turn overwrite the one before it, and the
+    tests above missed it because each publishes a single turn.
+    """
+    from eidolon_memory_contracts import ConversationTurnPayload
+
+    rooms = {
+        verbatim_drawer(ConversationTurnPayload.model_validate(_payload(turn_id=t))).room
+        for t in ("turn-a", "turn-b", "turn-c")
+    }
+
+    assert len(rooms) == 3

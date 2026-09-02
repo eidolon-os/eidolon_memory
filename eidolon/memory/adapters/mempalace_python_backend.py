@@ -160,6 +160,7 @@ class MemPalacePythonBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        device_id: str | None = None,
     ) -> list[MemoryWireRecord]:
         return await asyncio.to_thread(
             self.search_sync,
@@ -168,6 +169,7 @@ class MemPalacePythonBackend(MemoryBackend):
             n_results=n_results,
             room=room,
             audiences=audiences,
+            device_id=device_id,
         )
 
     def search_sync(
@@ -178,6 +180,7 @@ class MemPalacePythonBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        device_id: str | None = None,
     ) -> list[MemoryWireRecord]:
         if self._settings.mempalace.offline_embedding:
             # Query the collection directly with a hash vector. MemPalace's
@@ -211,6 +214,7 @@ class MemPalacePythonBackend(MemoryBackend):
             wings=[wing],
             room=room,
             audiences=audiences,
+            device_id=device_id,
             n_results=n_results,
             skip_closets=False,
         )
@@ -228,6 +232,7 @@ class MemPalacePythonBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        device_id: str | None = None,
         skip_closets: bool = False,
         diagnostics: dict[str, float] | None = None,
     ) -> list[MemoryWireRecord]:
@@ -239,6 +244,7 @@ class MemPalacePythonBackend(MemoryBackend):
             n_results=n_results,
             room=room,
             audiences=audiences,
+            device_id=device_id,
             skip_closets=skip_closets,
             diagnostics=diagnostics,
         )
@@ -251,6 +257,7 @@ class MemPalacePythonBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        device_id: str | None = None,
         skip_closets: bool = False,
         diagnostics: dict[str, float] | None = None,
     ) -> list[MemoryWireRecord]:
@@ -282,6 +289,7 @@ class MemPalacePythonBackend(MemoryBackend):
             wings=wings,
             room=room,
             audiences=audiences,
+            device_id=device_id,
             n_results=n_results,
             skip_closets=skip_closets,
             diagnostics=diagnostics,

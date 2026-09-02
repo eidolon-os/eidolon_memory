@@ -60,6 +60,9 @@ class MemoryReader(Protocol):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        #: The caller's device. Rows scoped to a different one are excluded by
+        #: the query rather than after it — see ``_device_visibility_filter``.
+        device_id: str | None = None,
     ) -> list[MemoryWireRecord]:
         """Semantic search scoped to a wing (user / palace id)."""
 
@@ -83,6 +86,9 @@ class ScopedMemoryReader(Protocol):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        #: The caller's device. Rows scoped to a different one are excluded by
+        #: the query rather than after it — see ``_device_visibility_filter``.
+        device_id: str | None = None,
         skip_closets: bool = False,
         diagnostics: dict[str, float] | None = None,
     ) -> list[MemoryWireRecord]:

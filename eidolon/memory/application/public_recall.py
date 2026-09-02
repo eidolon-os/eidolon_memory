@@ -574,6 +574,11 @@ async def search_all_wings_mcp_style(
                 wings=wings,
                 room=room,
                 audiences=audiences,
+                # Excludes rows scoped to another device in the query rather
+                # than after it: a population of them otherwise fills the
+                # n_results window and is then dropped, starving recall of
+                # everything visible beside them.
+                device_id=context.device_id,
                 n_results=top_k,
                 skip_closets=(settings.runtime.read.voice_skip_closets if for_voice else False),
                 diagnostics=diagnostics,
@@ -616,6 +621,11 @@ async def search_all_wings_mcp_style(
                     n_results=top_k,
                     room=room,
                     audiences=audiences,
+                    # Excludes rows scoped to another device in the query rather
+                    # than after it: a population of them otherwise fills the
+                    # n_results window and is then dropped, starving recall of
+                    # everything visible beside them.
+                    device_id=context.device_id,
                 )
                 # memory_space_id is stamped at the source (backend.search →
                 # parse_search_tool_payload with the palace's authoritative id).

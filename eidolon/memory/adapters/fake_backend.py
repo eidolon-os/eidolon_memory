@@ -38,6 +38,7 @@ class FakeMemoryBackend:
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        device_id: str | None = None,
     ) -> list[MemoryWireRecord]:
         self.searches.append((query, wing, n_results, room))
         hits: list[MemoryWireRecord] = []

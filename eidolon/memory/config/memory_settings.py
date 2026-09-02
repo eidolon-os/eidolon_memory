@@ -467,7 +467,7 @@ class WorkerConfig(BaseModel):
     # Set to a positive number to re-enable once the read path is understood.
     # The write side, its bound and its tests stay in place so the measurement
     # is repeatable rather than lost.
-    verbatim_retention_days: int = Field(default=0, ge=0)
+    verbatim_retention_days: int = Field(default=180, ge=0)
     verbatim_max_records: int = Field(default=20_000, ge=100)
     verbatim_prune_every_writes: int = Field(default=200, ge=1)
 
