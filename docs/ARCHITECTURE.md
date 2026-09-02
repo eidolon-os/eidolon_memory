@@ -62,7 +62,7 @@ VectorStorePort ───── MemPalacePythonBackend  chroma
 KnowledgeGraphPort ── SqliteKnowledgeGraph    schema 与查询在 kg_sql.py，一处定义
                                               （单实现；方言参数已随 PG 图一起删掉）
 
-EmbeddingPort ─────── OnnxSentenceEmbedder    进程内 ONNX,9 个模型,默认 bge-small-zh
+EmbeddingPort ─────── OnnxSentenceEmbedder    进程内 ONNX,8 个模型,默认 bge-small-zh
                   ├── HttpEmbedder            OpenAI 兼容的 /v1/embeddings
                   └── MemPalaceEmbedder       把 mempalace 自己那两个包成同一个形状
 
@@ -120,16 +120,16 @@ backend 的名字。两条在写出来时都抓到了真实违规。
 可补偿投影。其余 ledger 记录抽取、命令、同步和承诺状态。不存在“自然 turn 的 Chroma 事实”
 与“显式 fact 的 ledger 事实”两套互相竞争的真相。
 
-6 个 ledger，共 **10 张表**：
+6 个 ledger，共 **13 张表**（2026-09-02 从 `ledger_sql.py` 与 `extraction_decisions.py` 的 `CREATE TABLE` 实测）：
 
 | ledger | 表 | 存什么 | 丢了会怎样 |
 |---|---|---|---|
-| `extraction_decisions` | 1 | steward 对每个 turn 的抽取结论 | 重放同一 turn 会**再问一次模型**，可能得到不同结论 |
+| `extraction_decisions` | 2 | steward 对每个 turn 的抽取结论，加隐私 tombstone | 重放同一 turn 会**再问一次模型**；tombstone 丢了则**删过的 source event 可被重放复活** |
 | `sync_events` | 1 | 哪些离线批次已应用 | 设备重连时**重放已写入的 turn** |
 | `dlq_entries` | 1 | 处理失败的 turn 原文 | 失败的 turn **无从查看、无从重放** |
 | `command_status` | 1 | 异步命令到了哪一步 | 查不到写入结果。**这一个是投影，可重建** |
-| **`commitments`** | 2 | 承诺 + 不可变修订史 | **承诺查询返回空** |
-| **`canonical_facts`** | 4 | 已确认事实 + 证据 + 失效 + 重新激活 | **纠正过的事实继续被召回** |
+| **`commitments`** | 3 | 承诺 + 不可变修订史 + 隐私表 | **承诺查询返回空** |
+| **`canonical_facts`** | 5 | 已确认事实 + 证据 + 失效 + 重新激活 + 遗忘 | **纠正过的事实继续被召回**；遗忘表丢了则**硬删除无法收敛** |
 
 ### 为什么后两个是产品行为而不是记账
 
@@ -167,7 +167,7 @@ mark_invalidated()                   ← 两个投影完成后 ledger 标记完�
    会让命令重新显示为 accepted，但**永不会**让未应用的显示为成功）。而 `dlq_entries` 和
    `sync_events` 丢了就是丢数据。这个区别直接决定了 schema 守卫的行为——前者空表重建，
    后者指名拒绝。
-3. **行为定义在 Port 上而不是文件上**。47 个契约测试断言的是"重放的 turn 被识别""claim
+3. **行为定义在 Port 上而不是文件上**。契约测试断言的是"重放的 turn 被识别""claim
    不会交给两个 worker""已应用的命令不被降级"，没有一个碰 SQLite。这曾用于证明两种存储
    等价；现在只有一种存储，但这个性质留下了——夹在 SQL 语句里的状态机是没有数据库就测
    不了的状态机。
@@ -504,10 +504,10 @@ palace 而不是进程——一个进程可以持有很多 palace，这正是 1:
 | 脱离 Eidolon OS 独立 | 核心代码不 import 任何 `eidolon_*` 包——由两个守护测试强制（静态 AST 扫描，加一个屏蔽 OS 包后加载所有 entrypoint 的子进程）。contracts 的 46 个测试在只装 pydantic 时通过。**精确说**：核心依赖里唯一的 `eidolon-*` 是 `eidolon-memory-contracts`，那是本仓自己的包（`path = "./contracts"`，仅依赖 pydantic）；`eidolon-data` 只出现在可选的 `eidolon-os` extra 和 dev 里 |
 | 契约包自持 | 12 文件 1230 行，仅依赖 pydantic |
 | `MemoryReadContract` 已实现 | 8 个方法全部在 `MemoryService` 上；契约**就是**服务本身 |
-| 自有图 | 41 个 SQLite 测试；schema 与查询在 `kg_sql.py` 一处定义。audience 是列、在 SQL 里过滤；时间戳写入时归一，区间判断是普通 SQL |
+| 自有图 | schema 与查询在 `kg_sql.py` 一处定义。audience 是列、在 SQL 里过滤；时间戳写入时归一，区间判断是普通 SQL |
 | 中文 embedder，公共 API | Eidolon embedding port 生成带 query/document 前缀的 512 维向量；MemPalace 3.8 公共 collection API 接收显式向量。没有私有 provider/cache 注入 |
 | **embedder 完全隔离** | 抽象层只剩 `identity()` / `embed_documents` / `embed_queries`；chroma 那套形状退到一个 adapter 里；三个实现（进程内 ONNX、hosted HTTP、mempalace 自己那两个）；换实现只改 `embedding.provider` 一行。**真跑过**：对着一个 OpenAI 兼容端点端到端建出 palace，chroma 持久化了声明的宽度，再用 `provider: local` 去读被 `EmbedderIdentityMismatchError` 挡住并报出两个名字 |
-| ledger 行为定义在 Port 上 | 47 个契约测试，无一碰 SQLite |
+| ledger 行为定义在 Port 上 | 契约测试断言 Port 行为，无一碰 SQLite |
 | commitment 状态机在存储之外 | 抽成纯函数，查源码断言副本不会悄悄回来 |
 | **local only** | 云端实现全部删除：PG ledger、PG 图、`SharedStoreRouter`、milvus 配置管道、云端 profile、两个 extra |
 | ledger 写入有界 | 每 ledger 在 event loop 里串行化，外加一个低于线程池规模的进程级上限 |
@@ -560,7 +560,15 @@ palace 而不是进程——一个进程可以持有很多 palace，这正是 1:
 triple 36→33、灌入 1286s→1442s），`correct` 21/49 一模一样，逐查询零翻转。所以
 bge 比 embeddinggemma 少的那 2 个答案**不是噪声**，是真差异——上面那条"偏向
 embeddinggemma"的免责因此被削弱（它那次 39 个 fragment 比 bge 的 35 多，但实测这个
-指标对语料差异不敏感）。同时这也意味着这套 harness 能把变化归因到变化，可以当回归门禁用。
+指标对语料差异不敏感）。
+
+> **2026-09-02 更正：这段的"方差为零"只对 3.8 之前的栈成立，不要再当结论用。**
+> 3.8 上同配置三次是 18 / 20 / 19（48 条），也就是 ±2；本节下方"21/49 落在 ±1 带内
+> （磁盘记录 21/20/20/20/21/20）"其实早就跟"零翻转"矛盾，只是没人对上。
+> 后果是**这套 harness 单跑不能当回归门禁**——两条查询以内的差异它分辨不出来，
+> 每个配置至少要重复跑。本节及下方所有 `21/49`、五个 embedder 的对比表，全部是
+> 3.8 之前、进程内 embedder、49 条查询的口径，与当前部署不可直接比较。
+> 测量与方法见 `docs/TEST_REPORT.md`「What three runs say about the benchmark itself」。
 
 **这三次运行都带着一个渲染缺陷，2026-08-04 才发现并修掉**：`_PREDICATE_ZH` 里 32 个谓词
 有 8 个用的是"是…的孩子"这种带省略号的片段，而渲染器只是把 subject + 片段 + object 直接

@@ -465,11 +465,11 @@ storage stack. The isolated run is the proof.
 
 | Suite | Tests | Enforces |
 |---|---|---|
-| `test_kg_sqlite` | 41 | The graph port's behaviour |
-| `test_backend_contract` | 14 | Vector port, and the 5-field hot-path minimum |
-| `test_layering` | 10 | Every ledger satisfies its port; the logic layer imports no storage library and compares no backend name |
+| `test_kg_sqlite` | 81 | The graph port's behaviour |
+| `test_backend_contract` | 15 | Vector port, and the 5-field hot-path minimum |
+| `test_layering` | 13 | Every ledger satisfies its port; the logic layer imports no storage library and compares no backend name |
 | `test_backend_capabilities` | 16 | Warming and room enumeration are optional, correct when absent, and **survive the LockedBackend wrapper** |
-| `test_os_import_boundary` | 4 | Core imports no `eidolon_*` package — static scan plus a subprocess load with OS packages blocked |
+| `test_os_import_boundary` | 3 | Core imports no `eidolon_*` package — static scan plus a subprocess load with OS packages blocked |
 | `test_lazy_import_guard` | 2 | No unjustified deferred imports |
 
 The two boundary suites were sabotage-verified: a violation was injected
@@ -490,7 +490,7 @@ uses**, because decorator plus capability discovery is a silent-failure surface.
 
 ### The abstraction layer, as measured
 
-25 protocols in `domain/`. Every one has a consumer, which is worth stating
+26 protocols in `domain/` (counted 2026-09-02). Every one has a consumer, which is worth stating
 because an unused protocol is a layer that looks like a boundary and enforces
 nothing:
 
