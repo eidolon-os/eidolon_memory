@@ -63,6 +63,48 @@ def test_required_identity_and_claim_fields_reject_blank(field: str) -> None:
         _intent(**{field: "   "})
 
 
+@pytest.mark.parametrize(
+    "field", ["target_id", "subject", "predicate", "object", "occurred_at", "tool_call_id"]
+)
+def test_optional_text_reads_blank_as_absent(field: str) -> None:
+    """Absent is already legal for these, so a blank spelling of it must be too.
+
+    ``occurred_at`` is the case that cost real turns. The turn processor fills
+    it from the turn's own timestamp when it arrives as ``None``; when it
+    arrived as ``""`` this model raised, and all-or-nothing validation threw
+    away every fragment and triple extracted from that turn. One field, two
+    spellings of "I have no timestamp", opposite outcomes.
+    """
+
+    intent = _intent(**{field: "   "})
+
+    assert getattr(intent, field) is None
+
+
+def test_no_optional_text_field_can_be_failed_by_a_blank() -> None:
+    """Stated over the fields rather than a list of them.
+
+    A seventh optional string added later gets this behaviour by being
+    optional, not by someone remembering to add it to a parametrize list —
+    which is how ``occurred_at`` came to differ from the fields beside it.
+    """
+
+    import typing
+
+    optional_text = [
+        name
+        for name, info in MemoryIntent.model_fields.items()
+        if info.annotation is not None
+        and type(None) in typing.get_args(info.annotation)
+        and str in typing.get_args(info.annotation)
+    ]
+    assert optional_text, "no optional string fields found; this test is now vacuous"
+
+    for field in optional_text:
+        intent = _intent(**{field: "  "})
+        assert getattr(intent, field) is None, f"{field} did not read blank as absent"
+
+
 def test_authority_and_operation_are_closed_contracts() -> None:
     with pytest.raises(ValidationError):
         _intent(authority="system_guess")
