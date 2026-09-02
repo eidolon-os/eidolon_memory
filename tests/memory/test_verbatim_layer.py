@@ -31,9 +31,18 @@ MEMORY_SPACE_ID = "r:alice:default"
 
 @pytest.fixture
 def settings():
+    """Explicitly on. The shipped default is off, for reasons the config states.
+
+    A test of this layer that inherited the default would silently become a
+    test of nothing the day the default changed — which is exactly what
+    happened when it did.
+    """
     from eidolon.memory.config.memory_settings import load_memory_settings
 
-    return load_memory_settings()
+    base = load_memory_settings()
+    return base.model_copy(
+        update={"worker": base.worker.model_copy(update={"verbatim_retention_days": 180})}
+    )
 
 
 @pytest.fixture
@@ -199,6 +208,22 @@ async def test_the_sentence_stays_on_the_device_that_heard_it() -> None:
     assert drawer is not None
     assert drawer.visibility == "current_device"
     assert drawer.scope == "session"
+
+
+def test_the_shipped_default_keeps_the_layer_off() -> None:
+    """Measured 13/43 against 25/43 with both layers in one palace.
+
+    Twelve queries lost and none gained: the 84-86% union combined two
+    measurements taken separately, and recall has a single top_k budget the
+    two layers share. Two causes are known — the drawer id is (space, room) so
+    a fixed room overwrites, and visibility is post-filtered after a top_k
+    fetch — and one is not, which is why this is off rather than tuned.
+
+    Pinned so re-enabling is a decision someone makes on purpose.
+    """
+    from eidolon.memory.config.memory_settings import load_memory_settings
+
+    assert load_memory_settings().worker.verbatim_retention_days == 0
 
 
 # ── the bound ────────────────────────────────────────────────────────────────

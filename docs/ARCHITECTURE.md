@@ -260,7 +260,32 @@ steward 照旧异步在其上叠加结构。
   泄漏到所有设备（一个 multidevice E2E 当场抓到），猜 `current_device` 只是少服务。这也是更
   诚实的描述：跨设备的是蒸馏出的事实，原文是这次交互自己的记录。
 
-`worker.verbatim_retention_days = 0` 关闭整层，回到 2026-09-02 之前的行为。
+**这一层当前默认关闭（`worker.verbatim_retention_days = 0`），因为读取侧是错的。**
+
+写入侧是对的、有界的、有测试的。但把两层放进同一个 palace、走真实召回路径实测：
+
+| | 43 条可答查询 |
+|---|---|
+| 仅蒸馏 | 25 |
+| 蒸馏 + 原文 | **13** |
+
+**丢了 12 条，一条没赢。** 那个 84–86% 的并集是把两层**分别**测出来在纸上取并，而召回只有
+一个 `top_k` 预算、两层共享它。
+
+两个原因已知，一个没解释清：
+
+1. **抽屉身份是 `(space, room)`**（`_doc_id(space, room)`）。canonical 抽屉用
+   `room=f"fact_{predicate}_{projection_id}"`，每条唯一 —— 正是为了这个。原文层用了固定的
+   `room="conversation"`，于是每一轮覆盖上一轮。
+2. **可见性是后置过滤**：`recall_policy` 在按 wing 取回 `n_results=top_k` 之后才判
+   `current_device`，所以设备域的行先占名额再被丢弃。
+3. **没解释清的**：真实 Chroma palace 里确实存下了 40 条原文抽屉，而即使调用方的 `device_id`
+   匹配，搜索仍然一条都不返回。原因未知。
+
+**一个行为解释不清的层，不该开着。** 写入、边界和测试全部保留，所以这个测量可复现而不是丢失；
+读取侧搞清楚之后把这个值改成正数即可。
+
+`test_the_shipped_default_keeps_the_layer_off` 钉住这个决定，让重新打开必须是有人刻意做的。
 
 ---
 

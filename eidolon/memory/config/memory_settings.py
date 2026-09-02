@@ -447,7 +447,27 @@ class WorkerConfig(BaseModel):
     # backstop for a burst.
     #
     # ``0`` disables the layer entirely, which is the pre-2026-09-02 behaviour.
-    verbatim_retention_days: int = Field(default=180, ge=0)
+    # DEFAULT OFF as of 2026-09-02, after measurement.
+    #
+    # The layer is correct on the write side and wrong on the read side. In one
+    # palace holding both layers, recall through the production path scored
+    # 13/43 against 25/43 for distillation alone — twelve queries lost, none
+    # gained. The paper union of 84-86% combined two measurements taken
+    # separately; recall has one top_k budget and the two layers share it.
+    #
+    # Two causes are known and one is not. The drawer id is (space, room), so
+    # a fixed room makes every turn overwrite the last — canonical drawers use
+    # a unique room per projection for exactly this reason and this layer did
+    # not. Visibility is post-filtered per wing after a top_k fetch, so
+    # device-scoped rows spend slots and are then dropped. Neither explains
+    # why the real palace stores 40 verbatim rows and returns none of them
+    # even to a caller whose device matches, and shipping a layer whose
+    # behaviour is not explained is worse than not shipping it.
+    #
+    # Set to a positive number to re-enable once the read path is understood.
+    # The write side, its bound and its tests stay in place so the measurement
+    # is repeatable rather than lost.
+    verbatim_retention_days: int = Field(default=0, ge=0)
     verbatim_max_records: int = Field(default=20_000, ge=100)
     verbatim_prune_every_writes: int = Field(default=200, ge=1)
 

@@ -254,6 +254,38 @@ KG 段走模板，**抽屉段渲染抽屉原文**，而抽屉段覆盖 38/48。�
 `plain_triple_sentence`——两者都走同一个函数——所以把写路径退回 f-string 全绿。这正是
 2026-08-04 留下的同一个真空。现在断言 `_drawer_for_triple` 实际产出的 content，退回即红。
 
+### 原文层：并集在纸上成立，在召回路径上不成立 — 2026-09-02
+
+规模测试（CLongEval 8379 条真实中文话语稀释）说原文层活得下来：40 抽屉 32/43、8040 抽屉
+27/43，退化次线性，p95 15→40ms。于是实现并提交了写入侧。
+
+**然后验证读取侧，结果是反的。** 把两层放进同一个 palace、走 `recall_with_kg_fusion`：
+
+| | 43 条可答 | kg=None | kg 参与 |
+|---|---|---|---|
+| 仅蒸馏 | 25 | 25 | 25 |
+| 蒸馏 + 原文 | **13** | 13 | 13 |
+
+丢 12 条、赢 0 条，两种 KG 条件完全一致。丢的是 `event-002`、`future-002`、`kinship-001`、
+`kinship-005`、`kinship-006`、`preference-001`、`preference-002`、`preference-004`、
+`pronoun-001`、`time-001`、`time-004`、`topic-007`。
+
+**方法论教训写在前面**：先前那个 84–86% 是把两层**各自**测出来在纸上取并集。召回只有一个
+`top_k` 预算、两层共享，所以"并集"这个算法本身不对应任何真实调用。**分别测两个候选方案，
+不能推出把它们放在一起会怎样。**
+
+诊断到的：
+
+1. 抽屉身份是 `(space, room)`。canonical 用 `room=f"fact_{predicate}_{projection_id}"`
+   每条唯一；原文层用固定 `room="conversation"`，每轮覆盖上一轮。fake backend 上可直接观察到。
+   单元测试没抓到，因为它们每次只发一轮。
+2. 可见性是后置过滤（`recall_policy` 在 `n_results=top_k` 取回之后才判 `current_device`），
+   设备域的行先占名额再被丢弃。
+3. **未解释**：真实 Chroma palace 存下了 40 条原文抽屉，而即使 `device_id` 匹配、搜索仍返回
+   0 条。给 `device_id` 赋值前后结果相同（都是 1 行），所以不是可见性。原因未知。
+
+因此该层**默认关闭**，写入侧、边界和测试保留以便复现。第 3 条搞清楚之前不重新打开。
+
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637
 passed, 7 skipped, 25 deselected**; Mobile **671 passed, 5 skipped**. Mobile had
