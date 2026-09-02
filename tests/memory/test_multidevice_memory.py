@@ -277,5 +277,10 @@ async def test_device_sync_batch_dedupes_events(tmp_path) -> None:
     )
 
     assert msg1.acked and msg2.acked
-    assert len(backend.fragments) == 1
+    # Excluding the verbatim evidence layer: this counts projections, and the
+    # turn's own sentence is filed beside them now.
+    projected = [
+        f for f in backend.fragments if (f.metadata or {}).get("source") != "turn-verbatim"
+    ]
+    assert len(projected) == 1
     assert await ledger.seen(event_id="event-1", idempotency_hash="hash-1")

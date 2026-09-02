@@ -33,6 +33,21 @@ from eidolon.memory.infrastructure.extraction_decisions import ExtractionDecisio
 MEMORY_SPACE_ID = "r:alice:default"
 
 
+def _canonical_docs(backend) -> dict:
+    """Drawers the steward projected, excluding the verbatim evidence layer.
+
+    These assertions counted every drawer as a proxy for "one projection per
+    fact". The proxy stopped holding when the turn's own sentence started being
+    filed beside the projection; the property they test did not change.
+    """
+
+    return {
+        key: row
+        for key, row in backend.inner.docs.items()
+        if (row.metadata or {}).get("source") != "turn-verbatim"
+    }
+
+
 def _turn(turn_id: str = "turn-1", *, user_text: str = "我喜欢绿茶") -> ConversationTurnPayload:
     return ConversationTurnPayload(
         turn_id=turn_id,
@@ -192,7 +207,12 @@ async def test_projection_retry_reuses_persisted_decision_without_rerunning_stew
             self.failures_left = 1
 
         async def ingest_fragment(self, fragment: MemoryFragment) -> None:
-            if self.failures_left:
+            # Targeted at the canonical projection rather than "the first
+            # write". The turn's own sentence is filed before the steward runs,
+            # so first-write injection landed there instead and the projection
+            # this test is about never failed.
+            canonical = fragment.metadata.get("source") == "canonical-natural"
+            if canonical and self.failures_left:
                 self.failures_left -= 1
                 raise RuntimeError("transient projection failure")
             await super().ingest_fragment(fragment)
@@ -229,7 +249,7 @@ async def test_projection_retry_reuses_persisted_decision_without_rerunning_stew
 
     steward.decide.assert_awaited_once()
     second.ack.assert_awaited_once()
-    assert len(backend.inner.docs) == 1
+    assert len(_canonical_docs(backend)) == 1
     stored = await store.get(MEMORY_SPACE_ID, turn.turn_id, "test:v1")
     assert stored is not None
     assert len(stored.intents) == 1
@@ -264,7 +284,7 @@ async def test_same_turn_redelivered_100_times_has_one_extraction(tmp_path: Path
         msg.ack.assert_awaited_once()
 
     steward.decide.assert_awaited_once()
-    assert len(backend.inner.docs) == 1
+    assert len(_canonical_docs(backend)) == 1
 
 
 @pytest.mark.asyncio

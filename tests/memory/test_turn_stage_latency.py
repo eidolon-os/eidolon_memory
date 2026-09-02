@@ -155,7 +155,8 @@ async def test_a_fragment_turn_reports_the_stages_it_actually_ran(
     )
 
     assert msg.ack_calls == ["ack"]
-    assert _delta(before, _stage_counts()) == {"steward", "fragments", "total"}
+    # ``verbatim`` is the turn's own sentence, filed before the steward runs.
+    assert _delta(before, _stage_counts()) == {"verbatim", "steward", "fragments", "total"}
 
 
 async def test_a_graph_turn_separates_graph_time_from_steward_time(

@@ -435,6 +435,22 @@ class WorkerConfig(BaseModel):
 
     sync_every_n_turns: int = 5  # PASSIVE checkpoint cadence (D3)
 
+    # The person's own sentence, filed before the steward runs and kept for a
+    # window. Six of 43 benchmark queries are answerable only from it, and
+    # without it a missed extraction is unrecoverable — the decision ledger
+    # keeps a hash, not the text.
+    #
+    # The window is not a tuning knob, it is the shape of the measurement:
+    # verbatim scores 74.4% at 40 drawers and 62.8% at 8040, so its value
+    # decays with volume while its cost grows with it. 180 days of ordinary
+    # companion use stays inside the range measured; max_records is the
+    # backstop for a burst.
+    #
+    # ``0`` disables the layer entirely, which is the pre-2026-09-02 behaviour.
+    verbatim_retention_days: int = Field(default=180, ge=0)
+    verbatim_max_records: int = Field(default=20_000, ge=100)
+    verbatim_prune_every_writes: int = Field(default=200, ge=1)
+
 
 class CommandStatusConfig(BaseModel):
     """Bound the asynchronous command projection over multi-year runtimes."""

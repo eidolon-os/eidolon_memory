@@ -33,6 +33,21 @@ MEMORY_SPACE_ID = "r:alice:default"
 AUDIENCE = companion_audience("companion-default")
 
 
+def _canonical_docs(backend) -> dict:
+    """Drawers the steward projected, excluding the verbatim evidence layer.
+
+    These assertions counted every drawer as a proxy for "one projection per
+    fact". The proxy stopped holding when the turn's own sentence started being
+    filed beside the projection; the property they test did not change.
+    """
+
+    return {
+        key: row
+        for key, row in backend.inner.docs.items()
+        if (row.metadata or {}).get("source") != "turn-verbatim"
+    }
+
+
 class _StatefulKG:
     def __init__(self) -> None:
         self.rows: dict[tuple[str, str, str], SimpleNamespace] = {}
@@ -67,9 +82,7 @@ class _FailOnceMarkStore:
     async def register(self, intent, *, targets):
         return await self.inner.register(intent, targets=targets)
 
-    async def get_fact(
-        self, memory_space_id, audience, subject, predicate, object_value
-    ):
+    async def get_fact(self, memory_space_id, audience, subject, predicate, object_value):
         return await self.inner.get_fact(
             memory_space_id, audience, subject, predicate, object_value
         )
@@ -78,9 +91,7 @@ class _FailOnceMarkStore:
         return await self.inner.register_reactivation(intent, targets=targets)
 
     async def mark_reactivated(self, memory_space_id, intent_id, *, targets=None):
-        await self.inner.mark_reactivated(
-            memory_space_id, intent_id, targets=targets
-        )
+        await self.inner.mark_reactivated(memory_space_id, intent_id, targets=targets)
 
     async def mark_projection_pending(
         self,
@@ -282,7 +293,7 @@ async def test_automatic_then_explicit_adds_evidence_and_only_projects_drawer(
         "oolong",
     )
     assert kg.add_triple.await_count == 1
-    assert len(backend.inner.docs) == 1
+    assert len(_canonical_docs(backend)) == 1
     assert await ledger.evidence_count(assertion_id) == 2
 
 
@@ -373,7 +384,7 @@ async def test_explicit_then_automatic_reuses_both_existing_projections(
         "oolong",
     )
     assert kg.add_triple.await_count == 1
-    assert len(backend.inner.docs) == 1
+    assert len(_canonical_docs(backend)) == 1
     assert await ledger.evidence_count(assertion_id) == 2
 
 
@@ -396,7 +407,7 @@ async def test_repeated_automatic_fact_keeps_one_projection_and_two_evidence(
         "oolong",
     )
     assert kg.add_triple.await_count == 1
-    assert len(backend.inner.docs) == 1
+    assert len(_canonical_docs(backend)) == 1
     assert await ledger.evidence_count(assertion_id) == 2
 
 
@@ -502,10 +513,7 @@ async def test_exact_change_archives_canonical_drawer_and_keeps_fact_history(
 
     old_drawer = await backend.get_by_source_turn_id(
         MEMORY_SPACE_ID,
-        "canonical:"
-        + canonical_assertion_id(
-            MEMORY_SPACE_ID, AUDIENCE, "self", "likes", "oolong"
-        ),
+        "canonical:" + canonical_assertion_id(MEMORY_SPACE_ID, AUDIENCE, "self", "likes", "oolong"),
     )
     assert old_drawer is not None
     assert old_drawer.metadata["privacy"] == "do_not_recall"
@@ -550,9 +558,7 @@ async def test_automatic_fact_can_become_current_again_after_correction(
 
     assert ("self", "likes", "oolong") in kg.rows
     assert kg.add_triple.await_count == 2
-    fact = await ledger.get_fact(
-        MEMORY_SPACE_ID, AUDIENCE, "self", "likes", "oolong"
-    )
+    fact = await ledger.get_fact(MEMORY_SPACE_ID, AUDIENCE, "self", "likes", "oolong")
     assert fact is not None
     assert fact.state == "active"
     assert fact.projection_id.endswith(":activation:2")
@@ -596,17 +602,11 @@ async def test_explicit_single_slot_update_supersedes_old_fact_via_existing_port
     assert result.startswith("memoryintent:fact:")
     assert ("self", "lives_in", "常州") not in kg.rows
     assert ("self", "lives_in", "苏州") in kg.rows
-    old_id = canonical_assertion_id(
-        MEMORY_SPACE_ID, AUDIENCE, "self", "lives_in", "常州"
-    )
-    old_drawer = await backend.get_by_source_turn_id(
-        MEMORY_SPACE_ID, f"canonical:{old_id}"
-    )
+    old_id = canonical_assertion_id(MEMORY_SPACE_ID, AUDIENCE, "self", "lives_in", "常州")
+    old_drawer = await backend.get_by_source_turn_id(MEMORY_SPACE_ID, f"canonical:{old_id}")
     assert old_drawer is not None
     assert old_drawer.metadata["privacy"] == "do_not_recall"
-    active = await ledger.active_for_slot(
-        MEMORY_SPACE_ID, AUDIENCE, "self", "lives_in"
-    )
+    active = await ledger.active_for_slot(MEMORY_SPACE_ID, AUDIENCE, "self", "lives_in")
     assert [fact.object for fact in active] == ["苏州"]
     stats = await ledger.stats()
     assert stats.assertions_active == 1
@@ -673,12 +673,8 @@ async def test_explicit_exact_update_reactivates_without_stale_replay_damage(
     original = _explicit_command()
     correction = _exact_correction_command()
 
-    await apply_explicit_intent(
-        backend, kg, original, canonical_facts=ledger
-    )
-    await apply_explicit_intent(
-        backend, kg, correction, canonical_facts=ledger
-    )
+    await apply_explicit_intent(backend, kg, original, canonical_facts=ledger)
+    await apply_explicit_intent(backend, kg, correction, canonical_facts=ledger)
     reactivated = await apply_explicit_intent(
         backend,
         kg,
@@ -699,14 +695,10 @@ async def test_explicit_exact_update_reactivates_without_stale_replay_damage(
     assert sum(row.metadata.get("privacy") == "do_not_recall" for row in matching) == 1
     assert sum(row.metadata.get("privacy") == "normal" for row in matching) == 1
 
-    stale_replay = await apply_explicit_intent(
-        backend, kg, correction, canonical_facts=ledger
-    )
+    stale_replay = await apply_explicit_intent(backend, kg, correction, canonical_facts=ledger)
     assert stale_replay.startswith("invalidated:")
     assert ("self", "likes", "oolong") in kg.rows
-    history = await ledger.history(
-        MEMORY_SPACE_ID, "self", "likes", object_value="oolong"
-    )
+    history = await ledger.history(MEMORY_SPACE_ID, "self", "likes", object_value="oolong")
     assert history[0].fact.state == "active"
     assert [event.transition for event in history[0].transitions] == [
         "invalidated",
@@ -743,7 +735,13 @@ async def test_same_natural_fact_is_isolated_per_companion(tmp_path) -> None:
         )
         msg.ack.assert_awaited_once()
 
-    docs = await backend.get_all(MEMORY_SPACE_ID)
+    # Canonical projections only — the verbatim layer files the turn's own
+    # sentence beside them, and it carries no assertion identity by design.
+    docs = [
+        row
+        for row in await backend.get_all(MEMORY_SPACE_ID)
+        if (row.metadata or {}).get("source") == "canonical-natural"
+    ]
     assert {row.metadata["audience"] for row in docs} == {
         AUDIENCE,
         companion_audience("other"),
@@ -755,9 +753,9 @@ async def test_same_natural_fact_is_isolated_per_companion(tmp_path) -> None:
         AUDIENCE,
         companion_audience("other"),
     }
-    assert {
-        call.kwargs["assertion_id"] for call in calls
-    } == {row.metadata["assertion_id"] for row in docs}
+    assert {call.kwargs["assertion_id"] for call in calls} == {
+        row.metadata["assertion_id"] for row in docs
+    }
     assert (await ledger.stats()).assertions_total == 2
 
 

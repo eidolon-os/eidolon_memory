@@ -57,6 +57,7 @@ from eidolon.memory.application.steward.common import (
     apply_privacy_actions,
     stamp_fragment_identity,
 )
+from eidolon.memory.application.verbatim import prune_verbatim, verbatim_drawer
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_dlq_log_path
 from eidolon.memory.domain.command_status import CommandStatus
 from eidolon.memory.domain.extraction_decision import (
@@ -78,6 +79,15 @@ from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
+
+#: Turns absorbed since the last verbatim prune, per space. Counted on the
+#: write rather than in a background task because the consolidator — the
+#: obvious host for a sweep — is an opt-in supervised subprocess and is not
+#: running in production, so a sweep hung there would never have executed.
+#: ``command_status`` made the same choice for the same reason, and riding
+#: the write means retention cannot be switched off separately from the
+#: writes it bounds.
+_verbatim_writes_since_prune: dict[str, int] = {}
 
 
 class StewardProtocol(Protocol):
@@ -462,6 +472,31 @@ async def process_turn_message(
         await msg.ack()
         return
 
+    # ── the person's own sentence, before anything can reject it ────────────
+    #
+    # First because that is the point: the turn is readable in milliseconds
+    # and survives every way the steward can fail. Four times this month a
+    # blank non-substantive field discarded a whole turn's extraction; none
+    # of those would have cost the sentence itself.
+    #
+    # Failure here is logged and swallowed. This layer exists to guarantee a
+    # turn is not lost, and NAKing over its own drawer would let the
+    # guarantee take down the extraction that worked without it.
+    retention_days = settings.worker.verbatim_retention_days
+    if retention_days > 0:
+        try:
+            with stages.stage("verbatim"):
+                drawer = verbatim_drawer(turn)
+                if drawer is not None:
+                    await ingest_memory_fragment(backend, drawer)
+        except Exception as exc:  # noqa: BLE001 - never fail a turn over this
+            log.warning(
+                "verbatim_write_failed",
+                error=str(exc),
+                turn_id=turn.turn_id,
+                memory_space_id=memory_space_id,
+            )
+
     # ── decide ─────────────────────────────────────────────────────────────
     try:
         with stages.stage("steward"):
@@ -842,6 +877,22 @@ async def process_turn_message(
     # The ``*_ms`` fields say which stage owned this turn. They are here rather
     # than only in the histogram because an end-to-end latency outlier is
     # always about one turn, and a percentile cannot name one.
+    if retention_days > 0:
+        # After the turn, not before it: the sentence is already readable, so
+        # a scan here costs nothing a caller is waiting on.
+        seen = _verbatim_writes_since_prune.get(memory_space_id, 0) + 1
+        if seen >= settings.worker.verbatim_prune_every_writes:
+            _verbatim_writes_since_prune[memory_space_id] = 0
+            with stages.stage("verbatim_prune"):
+                await prune_verbatim(
+                    backend,
+                    memory_space_id,
+                    retention_days=retention_days,
+                    max_records=settings.worker.verbatim_max_records,
+                )
+        else:
+            _verbatim_writes_since_prune[memory_space_id] = seen
+
     stages.observe_total()
     log.info(
         "turn_processed",
