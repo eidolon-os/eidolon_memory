@@ -186,6 +186,52 @@ router 是句柄的唯一来源，这一点由测试强制（`test_layering.py`�
 ledger。曾有一段时间 sync ledger 被构造两次——router 一个、订阅循环一个——同一文件两把写
 锁，串行化在两者之间不生效；当时无害仅因为 router 那个恰好没有消费者。
 
+### 三条写路径规则，以及我们违反了哪几条
+
+2026-09-02 读 MemPalace 3.8 源码时发现，上游把三条规则写在了代码注释里。它们不是风格偏好，
+每一条都对着一个具体的失效模式。我们对前两条是相反的，第三条我们没有。
+
+**规则一：写路径永不丢一轮。** `convo_miner.file_conversation_exchange` 在 wing 名字非法时
+降级到 `wing_general` 而不是报错，理由原文是 *"dropping a turn over a config typo would break
+the verbatim / 100%-recall promise"*。
+
+我们相反。到 2026-09-02 为止，同一形状的缺陷修了四个——`memory_space_id`、
+`source_turn_id`、`occurred_at`、`evidence_quote`——都是「一个非实质字段为空 → 整轮抽取作废
+并重投」。前两个的教训在 `steward/llm.py` 的 docstring 里记过，之后还是又出了两次。
+
+**根因不是这四个字段，是这条规则从未被表述。** 每次都靠实测撞出来再打补丁。而且这个类不止
+在 Memory：同一天另一条线在 setup descriptor 的可选字段 `device_base_id` 上发现了第五个实例
+（缺失接受、空串让整份 descriptor 作废，Dart 绑定同形状），目前生产方够不到，方向已定为「空
+等于没有，消费方按缺失处理」。**所以它是工作区级的缺陷类，不是本仓局部问题。**
+
+结构上的根因是校验顺序：身份/来源字段的填充（`stamp_fragment_identity`）跑在校验**之后**，
+所以 `_parse_decision` 只能逐个把字段「取回」。填充如果在校验之前，这一类不可能存在。
+
+**规则二：LLM 是可选的，而且在后面。** `closet_llm.py` 原文：*"Regex closets are always created
+by the miner; this path regenerates them **afterward**. Core memory operations remain API-free
+by design."*
+
+我们的 steward 是必需的、而且在最前面。后果是可测的：一轮对话的可读时间 17–75 秒，其中
+steward 占 99.4–99.9%；steward 失败等于这一轮没有记忆。
+
+还有一处具体的代码问题：`process_turn_message` 的失效模型注释说「projection 失败 → NAK /
+DLQ，重投恢复未完成的投影」。这对**投影**是对的——重放投影很便宜。但同一个失效模型被套用在
+**抽取**上，而抽取是全系统最贵的单次操作。代码把两者当同一件事，所以一次字段校验失败要重跑
+整个 17–75 秒的抽取。
+
+**规则三：verbatim 是地板，结构只是排序信号。** `searcher.py` 原文：*"Closets are a ranking
+**signal**, never a gate, so weak closets can only help, **never hide drawers the direct path
+would have found**."*
+
+**我们没有地板。** palace 里只有 steward 产物（`turn_processor` 只有三处 ingest，全是蒸馏
+结果），抽取决策账本只存 `input_hash` 不存原文。所以 steward 在写入那一刻漏掉的东西，在
+Memory 里永远不存在——不能重排序、不能重抽取、不能靠改进检索捞回来。
+
+这条的代价被量过一次，见 `docs/TEST_REPORT.md` 的「verbatim 与蒸馏」一节：仅用户原文的
+verbatim 在同一套查询上拿 32/43，单次蒸馏 25–28/43，两者并集 36–37/43，各有 6 条是对方拿不到
+的。**要不要加这个地板层是一个未决的设计决定**，代价是 Memory 里持久保存全部用户话语、体积
+随对话线性增长；这里只记录测量结果，不预设结论。
+
 ---
 
 ## embedder：公开接口与模型契约

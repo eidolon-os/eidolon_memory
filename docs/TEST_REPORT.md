@@ -164,6 +164,52 @@ latency was the stable measurement throughout: p95 16.7ms, 16.8ms, 16.8ms.
 
 Using this as a gate needs repeated runs per configuration, not one.
 
+### verbatim 与蒸馏 — 2026-09-02，本地测量
+
+一个问题，其余全部固定：**把 40 轮语料原样入库、全程不用 LLM，同一套查询的 top-5 召回能不能
+拿到每条标注要求的证据串？**
+
+可比是因为它走同一个 `recall_with_kg_fusion`、同一个 `top_k`、同一个 embedder，并套用基准
+scorer 同一个子串判定。指标是 `vector_hit` 而不是基准的 `correct`：`correct` 把缺失的 KG 证据
+组算作失败，用它给一个无图的 palace 打分等于回答一个没人问的问题。verbatim 侧全部落在同一个
+wing/room，按语料自带的 `wing_hint` 路由会白送它蒸馏侧必须自己挣的信息。
+
+| | 43 条可答查询命中 | LLM 调用 | 可读时间 |
+|---|---|---|---|
+| verbatim，仅用户原文 | **32（74.4%）** | **0** | 毫秒 |
+| verbatim，user + assistant | 31（72.1%） | 0 | 毫秒 |
+| 蒸馏 A / B / C | 28 / 28 / 25（58–65%） | 每 40 轮 40 次 | 每轮 17–75s |
+| 仅用户原文 ∪ 单次蒸馏 | **36–37（84–86%）** | | |
+
+**只存用户原文比连 assistant 一起存更好**，31 → 32。助手的复述不带新信息，只稀释嵌入并挤占
+top-5 名额。这给 `test_steward_prompt_does_not_send_assistant_text` 那条既有规则补了一个检索
+侧的理由，而不只是「别把模型散文当第二个事实源」。
+
+**两者互补，各有 6 条是对方拿不到的**（verbatim 用仅用户原文，蒸馏取三次并集）：
+
+- 仅 verbatim：`王芳呢`、`我老婆和我吵架`、`它身体怎么样`、`我有什么爱好`、`我有什么健康问题`、
+  `我和宠物的事` —— 代词、模糊、宽泛类。原话在库里，所以能中。
+- 仅蒸馏：`我什么时候开心`、`我去医院的事`、`我答应了妈妈什么`、`我计划去哪里`、
+  `我答应了什么事情`、`最近开心的事` —— **抽象**类。原始对话里从来没有「我答应了…」这种措辞，
+  是 steward 写出了那个句子。
+
+读法：**verbatim 答「说过什么」，蒸馏答「这意味着什么」。** 41.7% 的整例正确率因此不是检索
+得分，是一次性抽取的天花板——换 embedder 或加 rerank 都动不了那 6 条，它们不在库里。
+
+#### 有效性威胁，按重要性
+
+1. **规模未验证。** 40 轮的 palace 很小。verbatim 每轮一条、随对话线性增长，蒸馏事实有界
+   （40 轮 → 38 个抽屉）。一万轮时的检索表现没有数据。MemPalace 自带 `dialect.py`（AAAK 压缩）
+   和 `dedup.py` 两个零 API 模块看起来是为这个问题准备的，本仓都没用过也没测过。
+2. **只测了证据可检索性。** 蒸馏还产出 KG 事实、canonical 失效链、commitment 生命周期，
+   verbatim 一个都不给。这些是产品核心，不在这个指标里。
+3. **两次 verbatim 运行是确定性的**（无 LLM），32 可复现；蒸馏侧有 ±2 方差，所以「仅蒸馏 6 条」
+   取的是三次并集而不是单次。
+
+复现脚本没有进仓——它建临时 palace、写 40 条、跑 48 查询，属于一次性测量而不是门禁。要重跑
+就照上面的口径重写：同一个 `recall_with_kg_fusion`、`top_k=5`、`kg=None`、单一 wing/room、
+仅 `user_text`。
+
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637
 passed, 7 skipped, 25 deselected**; Mobile **671 passed, 5 skipped**. Mobile had
