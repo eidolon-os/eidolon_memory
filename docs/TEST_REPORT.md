@@ -127,15 +127,42 @@ copy of it is how two callers come to disagree about one palace.  This gate was
 that second copy.  The guard keeps its purpose: a palace built offline still
 records `minilm`, still mismatches, still refuses.
 
-#### A fourth instance of the closed class
+#### A fourth instance of the closed class, and closing it
 
 Both runs were dominated by the same failure, and it is not the prompt's:
 `MemoryIntent.occurred_at` blank fails validation and discards the whole
-decision — 4 of 4 failures in the new-prompt run, 4 of 5 in the old.  The turn's
-own timestamp is authoritative for that field, which makes it the same shape as
-`memory_space_id` and `source_turn_id`: a field the pipeline is about to supply
-deciding whether the memory exists.  It is recorded here and not fixed; the
-guard added for fragments does not cover `MemoryIntent`.
+decision — 4 of 4 failures in the new-prompt run, 4 of 5 in the old.  The field
+is `str | None`, and the turn processor fills it with the turn's own timestamp
+when it arrives as `None`.  So one field had two spellings of "I have no
+timestamp", one repaired and one fatal.
+
+Fixed in `34e4aae`, and re-measured on the same corpus and battery:
+
+| | correct | ingest wait | steward failures | `occurred_at` | deliveries for 40 turns | fragments | active triples |
+|---|---|---|---|---|---|---|---|
+| Old prompt | 18/48 | 1611s | 5 | 4 | 45 | 39 | 20 |
+| New prompt | 20/48 | 1974s | 4 | 4 | 46 | 41 | 25 |
+| New prompt + fix | 19/48 | 1755s | **1** | **0** | **42** | 38 | 18 |
+
+The class is closed: the one failure left is the model returning something that
+is not JSON at all, which is a model fault and not a validation one.
+
+**The gain is write cost, and it is not a quality gain.**  Every discarded
+decision was retried and the retry succeeded, so the memory was delayed rather
+than lost — which is exactly what the Pi log showed for the 118.6s round.
+Removing the retries removes wasted model calls (five or six extra deliveries
+per 40 turns, down to two) and removes the worst-case per-turn latency; it does
+not add material.  The prediction that it would improve extraction was wrong.
+
+#### What three runs say about the benchmark itself
+
+18, 20 and 19 of 48.  `ARCHITECTURE.md` records zero run-to-run variance for
+this harness — 21/49 twice with no per-query flips — but that was the pre-3.8
+stack.  On 3.8 the spread is ±2, so **no single-run comparison in this session
+could resolve a two-query difference**, including the prompt A/B above.  Read
+latency was the stable measurement throughout: p95 16.7ms, 16.8ms, 16.8ms.
+
+Using this as a gate needs repeated runs per configuration, not one.
 
 Cross-repository gates run against the final merged source set: Agent **605
 passed, 1 skipped** and its live contract harness **13/13**; Channel **1637
