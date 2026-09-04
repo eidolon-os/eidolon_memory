@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from eidolon.memory.adapters.mempalace_fast_search import (
+    _combined_where,
+    _device_visibility_filter,
     _score_results,
     search_memories_shared_embedding,
 )
@@ -29,6 +31,31 @@ def test_score_results_uses_metric_aware_similarity_for_l2() -> None:
     )
 
     assert rows[0]["similarity"] == pytest.approx(0.25)
+
+
+def test_a_caller_without_a_device_excludes_device_scoped_rows_in_the_query() -> None:
+    assert _device_visibility_filter(None) == {"visibility": {"$ne": "current_device"}}
+    assert _device_visibility_filter("") == {"visibility": {"$ne": "current_device"}}
+
+
+def test_a_caller_with_a_device_keeps_only_its_device_scoped_rows() -> None:
+    assert _device_visibility_filter("device-a") == {
+        "$or": [
+            {"visibility": {"$ne": "current_device"}},
+            {"source_device_id": "device-a"},
+            {"target_device_id": "device-a"},
+        ]
+    }
+
+
+def test_the_combined_where_clause_carries_the_device_predicate() -> None:
+    clause = _combined_where(["Wing_Profile"], None, ("owner",), "device-a")
+
+    assert clause is not None
+    flattened = repr(clause)
+    assert "source_device_id" in flattened
+    assert "current_device" in flattened
+    assert "current_device" in repr(_combined_where([], None, ("owner",), None))
 
 
 def test_diverged_hnsw_uses_sqlite_fallback_without_opening_vector_collection(

@@ -106,3 +106,23 @@ def test_every_domain_protocol_still_has_a_consumer() -> None:
     assert not [name for name in orphans if name != "AuditSinkPort"], (
         f"protocols used only in the file that declares them: {orphans}"
     )
+
+
+def test_no_unledgered_raw_turn_projection_can_be_enabled() -> None:
+    """A raw-turn drawer bypassed the assertion ledger and could not be forgotten.
+
+    Keeping it behind a disabled setting was still an unsafe production path:
+    configuration could re-enable a projection that violated the privacy
+    invariant. Measurements belong in the test report, not in dormant runtime
+    code.
+    """
+
+    assert not (_REPO / "eidolon" / "memory" / "application" / "verbatim.py").exists()
+
+    from eidolon.memory.config.memory_settings import WorkerConfig
+
+    assert not {name for name in WorkerConfig.model_fields if name.startswith("verbatim_")}
+    turn_processor = (
+        _REPO / "eidolon" / "memory" / "application" / "turn_processor.py"
+    ).read_text("utf-8")
+    assert "turn-verbatim" not in turn_processor

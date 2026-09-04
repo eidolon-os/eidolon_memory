@@ -33,21 +33,6 @@ MEMORY_SPACE_ID = "r:alice:default"
 AUDIENCE = companion_audience("companion-default")
 
 
-def _canonical_docs(backend) -> dict:
-    """Drawers the steward projected, excluding the verbatim evidence layer.
-
-    These assertions counted every drawer as a proxy for "one projection per
-    fact". The proxy stopped holding when the turn's own sentence started being
-    filed beside the projection; the property they test did not change.
-    """
-
-    return {
-        key: row
-        for key, row in backend.inner.docs.items()
-        if (row.metadata or {}).get("source") != "turn-verbatim"
-    }
-
-
 class _StatefulKG:
     def __init__(self) -> None:
         self.rows: dict[tuple[str, str, str], SimpleNamespace] = {}
@@ -293,7 +278,7 @@ async def test_automatic_then_explicit_adds_evidence_and_only_projects_drawer(
         "oolong",
     )
     assert kg.add_triple.await_count == 1
-    assert len(_canonical_docs(backend)) == 1
+    assert len(backend.inner.docs) == 1
     assert await ledger.evidence_count(assertion_id) == 2
 
 
@@ -384,7 +369,7 @@ async def test_explicit_then_automatic_reuses_both_existing_projections(
         "oolong",
     )
     assert kg.add_triple.await_count == 1
-    assert len(_canonical_docs(backend)) == 1
+    assert len(backend.inner.docs) == 1
     assert await ledger.evidence_count(assertion_id) == 2
 
 
@@ -407,7 +392,7 @@ async def test_repeated_automatic_fact_keeps_one_projection_and_two_evidence(
         "oolong",
     )
     assert kg.add_triple.await_count == 1
-    assert len(_canonical_docs(backend)) == 1
+    assert len(backend.inner.docs) == 1
     assert await ledger.evidence_count(assertion_id) == 2
 
 
@@ -735,13 +720,7 @@ async def test_same_natural_fact_is_isolated_per_companion(tmp_path) -> None:
         )
         msg.ack.assert_awaited_once()
 
-    # Canonical projections only — the verbatim layer files the turn's own
-    # sentence beside them, and it carries no assertion identity by design.
-    docs = [
-        row
-        for row in await backend.get_all(MEMORY_SPACE_ID)
-        if (row.metadata or {}).get("source") == "canonical-natural"
-    ]
+    docs = await backend.get_all(MEMORY_SPACE_ID)
     assert {row.metadata["audience"] for row in docs} == {
         AUDIENCE,
         companion_audience("other"),

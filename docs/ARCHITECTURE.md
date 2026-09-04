@@ -186,10 +186,12 @@ router 是句柄的唯一来源，这一点由测试强制（`test_layering.py`�
 ledger。曾有一段时间 sync ledger 被构造两次——router 一个、订阅循环一个——同一文件两把写
 锁，串行化在两者之间不生效；当时无害仅因为 router 那个恰好没有消费者。
 
-### 三条写路径规则，以及我们违反了哪几条
+### 三条写路径规则，以及 Eidolon 的边界
 
 2026-09-02 读 MemPalace 3.8 源码时发现，上游把三条规则写在了代码注释里。它们不是风格偏好，
-每一条都对着一个具体的失效模式。我们对前两条是相反的，第三条我们没有。
+每一条都对着一个具体的失效模式。但 MemPalace 的“原文 drawer”不是 Eidolon 可以直接照搬的
+事实模型：这里所有长期可召回数据必须先有 assertion/evidence ledger identity，才能成为可删除、
+可补偿的投影。
 
 **规则一：写路径永不丢一轮。** `convo_miner.file_conversation_exchange` 在 wing 名字非法时
 降级到 `wing_general` 而不是报错，理由原文是 *"dropping a turn over a config typo would break
@@ -204,93 +206,38 @@ the verbatim / 100%-recall promise"*。
 （缺失接受、空串让整份 descriptor 作废，Dart 绑定同形状），目前生产方够不到，方向已定为「空
 等于没有，消费方按缺失处理」。**所以它是工作区级的缺陷类，不是本仓局部问题。**
 
-结构上的根因是校验顺序：身份/来源字段的填充（`stamp_fragment_identity`）跑在校验**之后**，
-所以 `_parse_decision` 只能逐个把字段「取回」。填充如果在校验之前，这一类不可能存在。
+身份/来源字段现在由服务在校验前收回，prompt 也不再要求模型填写最终会被覆盖的字段；可选文本的
+空串统一按缺失处理。守护测试从 `stamp_fragment_identity` 实际覆盖的字段推导约束，新增字段不会
+依赖人工同步另一份列表。
 
 **规则二：LLM 是可选的，而且在后面。** `closet_llm.py` 原文：*"Regex closets are always created
 by the miner; this path regenerates them **afterward**. Core memory operations remain API-free
 by design."*
 
-我们的 steward 是必需的、而且在最前面。后果是可测的：一轮对话的可读时间 17–75 秒，其中
-steward 占 99.4–99.9%；steward 失败等于这一轮没有记忆。
+Eidolon 的 steward 仍是结构化长期记忆生成器，运行在 Agent 对话响应之外的 durable NATS 消费
+路径。后果是可测的：一轮记忆物化为 17–75 秒，其中 steward 占 99.4–99.9%；它不阻塞当前对话，
+但决定长期记忆何时可读。
 
-还有一处具体的代码问题：`process_turn_message` 的失效模型注释说「projection 失败 → NAK /
-DLQ，重投恢复未完成的投影」。这对**投影**是对的——重放投影很便宜。但同一个失效模型被套用在
-**抽取**上，而抽取是全系统最贵的单次操作。代码把两者当同一件事，所以一次字段校验失败要重跑
-整个 17–75 秒的抽取。
+抽取决定成功后写入 decision ledger；投影失败只重放已有决定，不重新调用模型。模型调用本身失败
+才重投抽取，超过上限进入 DLQ。`steward`、`privacy`、`fragments`、`kg` 与 `total` 分阶段计时，
+materialisation budget 独立于最终 readback timeout。
 
 **规则三：verbatim 是地板，结构只是排序信号。** `searcher.py` 原文：*"Closets are a ranking
 **signal**, never a gate, so weak closets can only help, **never hide drawers the direct path
 would have found**."*
 
-**2026-09-02 之前我们没有地板**，现在有了，见下。
+MemPalace 的这条原则在 Eidolon 中落实为：结构化结果只能帮助排序，不能绕过 ledger 成为第二套
+事实源。2026-09-02 曾试验把用户原话直接写成 drawer；真实 Pi 证明它虽然 49–79ms 可读，却无法
+通过 ledger-first forget 删除。该生产路径、配置和专属测试已全部删除，测量与失败证据保留在
+`docs/TEST_REPORT.md`。
 
-### 原文证据层
+若未来需要长期保留原话，必须先把它注册为 ledger evidence/assertion，再作为可追踪、可补偿的
+投影实现；不能恢复直接写 drawer 的捷径。当前的可恢复地板是 Agent history + durable NATS +
+decision ledger/DLQ，而不是另一套可召回事实库。
 
-`application/verbatim.py`。收到一轮对话时，把**用户说的那句原文**在 steward 之前无条件落库；
-steward 照旧异步在其上叠加结构。
-
-**为什么加**：同一套 48 查询上，蒸馏答 25–28/43，仅用户原文答 32/43，**各有 6 条是对方拿不到
-的**——原文答「说过什么」（代词、模糊指代、`上周聊了什么`），蒸馏答「这意味着什么」
-（`我答应了什么`，用户从没这么说过）。而且在此之前，steward 当场漏掉的东西**永远不存在**：
-决策账本只存 `input_hash` 不存原文，没有第二次机会。41.7% 因此不是检索得分，是一次性抽取的
-天花板。
-
-**为什么有界**：规模是实测的，用 CLongEval 的 8379 条真实中文陪伴式话语稀释（同语言同体裁）：
-
-| 库中抽屉 | 命中/43 | p95 |
-|---|---|---|
-| 40 | 32 (74.4%) | 15.1ms |
-| 540 | 29 (67.4%) | 14.5ms |
-| 2040 | 28 (65.1%) | 20.2ms |
-| 8040 | 27 (62.8%) | 40.3ms |
-
-退化次线性，200 倍体量仍落在蒸馏于 40 抽屉时的区间内。但曲线形状正是保留窗不可省的理由：
-**原文的价值随体量衰减，成本随体量增长**，全存等于在最不需要的地方花最多的钱。
-
-**三个不重复造轮子的决定**：
-
-- 保留形状照抄 `CommandStatusConfig`（`retention_days` + `max_records` +
-  `prune_every_writes`，写路径每 N 次触发）。consolidator 本是清扫的显然宿主，也是错的——
-  它是 opt-in 的被监管子进程，**生产里没在跑**，挂上去等于又造一个不会被调用的机制。
-- 删除复用 `forget` 的 `source_event_id` 解析：抽屉带这个标签，现有隐私路径已经覆盖它，
-  不需要第二条删除路。
-- 可见性是 `session` / `current_device`。scope 取决于内容、由 steward 决定，而写入时
-  steward 还没跑；两种猜法不对称——猜 `all_devices` 会把「这台设备在客厅，麦克风需要校准」
-  泄漏到所有设备（一个 multidevice E2E 当场抓到），猜 `current_device` 只是少服务。这也是更
-  诚实的描述：跨设备的是蒸馏出的事实，原文是这次交互自己的记录。
-
-**这一层默认开启（`worker.verbatim_retention_days = 180`）**，但它先被实测否掉过一次，
-三个缺陷修掉后才打开。
-
-写入侧是对的、有界的、有测试的。但把两层放进同一个 palace、走真实召回路径实测：
-
-| | 43 条可答查询 |
-|---|---|
-| 仅蒸馏 | 25 |
-| 蒸馏 + 原文 | **13** |
-
-**丢了 12 条，一条没赢。** 那个 84–86% 的并集是把两层**分别**测出来在纸上取并，而召回只有
-一个 `top_k` 预算、两层共享它。
-
-三个原因，全部查清并修掉：
-
-1. **抽屉身份是 `(space, room)`**（`_doc_id(space, room)`）。canonical 抽屉用
-   `room=f"fact_{predicate}_{projection_id}"`，每条唯一 —— 正是为了这个。原文层用了固定的
-   `room="conversation"`，于是每一轮覆盖上一轮。
-2. **可见性是后置过滤**：`recall_policy` 在按 wing 取回 `n_results=top_k` 之后才判
-   `current_device`，所以设备域的行先占名额再被丢弃。
-3. **设成 `current_device` 却没盖 `source_device_id`**。可见性规则是
-   `context.device_id ∈ {source_device, target_device}`，两者都空则永远为假——这些抽屉
-   **对任何调用方永远不可见，同时照样占取回窗**。这就是先前"未解释"的那条。
-
-修完重测：调用方带 `device_id` 时 **25 → 29（+4）**，不带时 25 → 25（+0，原来是 13）。
-
-第 3 条的修法是把设备可见性谓词像 `audience` 一样推进查询（`_device_visibility_filter`），
-只做减法。**这条独立于原文层也该修**——steward 本来就给设备本地事实写 `current_device`，
-读路径今天已经有这个饥饿，只是规模小。
-
-`test_the_shipped_default_keeps_the_layer_on` 钉住这个决定，让关掉它也必须是刻意的。
+试验同时暴露了一个与该功能无关的真实读路径缺陷：不可见的 `current_device` 行会先占用 top-k，
+再被后置策略丢弃。设备可见性现已与 audience 一起下推到 Chroma 公共查询条件；后置
+`recall_policy` 仍是最终权限判断，两处不各自发明语义。
 
 ---
 
