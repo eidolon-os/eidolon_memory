@@ -369,6 +369,15 @@ verbatim_ms=49  steward_ms=21916  kg_ms=75        total_ms=22043
 snapshot/restore、隐私生命周期和读路径 E2E 均执行。Ruff 通过；沙箱内唯一失败的 3 个
 `test_bench_preflight` 是 loopback bind 被禁止，在沙箱外单独重跑 **10/10 passed**。
 
+同一源码集完成离线 Pi 发布资格验证：`eidolon-release bundle` 生成
+`20260904-memory-final-cab72b6`，目标 `linux/aarch64`、`cutover_mode=reversible`、9 个带摘要
+制品、无构建 notes，Memory revision 为 `cab72b6b3ae780c569a9da4c8d40fa1a1acbfe32`。
+
+Pi 在本轮收口时已离线，因此以下结果**没有被声称为通过**：release 激活后的
+status/doctor/app-ready、2026-09-02 四条不可删除试验 drawer 的精确清理、live Realm 与 Box-3
+HIL。它们是设备恢复在线后的发布验收清单，不是本地测试可以替代的事实。当前结论是
+**可发布候选**，不是**已发布生产版本**。
+
 
 Cross-repository gates rerun 2026-09-04 against the current source set: Agent
 **603 passed, 1 skipped**; Channel **1462 passed, 7 skipped, 23 deselected,
