@@ -123,7 +123,7 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 │   │     ├─ MemPalacePythonBackend × 1 (LockedBackend)             │
 │   │     │   └─ chroma.sqlite3            (单 PersistentClient)    │
 │   │     └─ SqliteKnowledgeGraph  (本服务自写,非 mempalace)         │
-│   │         └─ knowledge_graph.sqlite3   (statements + mentions)   │
+│   │         └─ <realm>.ledgers/knowledge_graph.sqlite3             │
 │   │                                                                │
 │   ├─ (opt-in) eidolon-memory-consolidator --user-id=alice ─────────┤  Phase 4
 │   │     主题摘要 worker:MCP 读 drawers → LLM → NATS cmd 写主题     │
@@ -136,6 +136,7 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 │   两个用户起就比每进程各带一份权重更省,并发下也更快                     │
 │                                                                    │
 │  palace 物理隔离: $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<id>/ │
+│  ledger/KG: 同一父目录下的 <id>.ledgers/                           │
 └────────────────────────────────────────────────────────────────────┘
                               ▲             ▲
                               │             │
@@ -145,8 +146,8 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 ```
 
 **D1 铁律**:每份 palace 文件只被**一个进程**持有(避免 chromadb 多进程 corruption)。
-外部访问**必须**通过 MCP / NATS / Discovery,**不要**自己开 `KnowledgeGraph` /
-`chromadb.PersistentClient` 去碰 palace 目录。consolidator 也遵守此律——它是"另一个
+外部访问**必须**通过 MCP / NATS / Discovery,**不要**自己开 `SqliteKnowledgeGraph` /
+`chromadb.PersistentClient` 去碰存储目录。consolidator 也遵守此律——它是"另一个
 客户端"(MCP 读 + NATS 写),不持 chroma 句柄。
 
 ### 2.2 分层架构(DDD,7 个包)
@@ -712,10 +713,16 @@ supervisor:
 $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<memory_space_id>/
   ├─ chroma.sqlite3              # 向量 + 元数据 (chromadb, WAL)
   ├─ chroma.sqlite3-wal
-  ├─ knowledge_graph.sqlite3     # bi-temporal KG (mempalace.KnowledgeGraph)
-  ├─ knowledge_graph.sqlite3-wal
   └─ mempalace.yaml              # mempalace 自身配置
+
+$EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<memory_space_id>.ledgers/
+  ├─ knowledge_graph.sqlite3     # Eidolon bi-temporal KG
+  ├─ knowledge_graph.sqlite3-wal
+  └─ *.sqlite3                   # canonical facts、commitments、decision、DLQ 等 ledger
 ```
+
+ledger/KG 刻意位于 Palace 的兄弟目录：MemPalace repair 会整体替换 Palace 目录，把 Eidolon
+账本放在里面会导致静默丢失。
 
 **绝不要把 palace 目录放在 iCloud / Dropbox / OneDrive / NFS** — 启动时会拒绝。
 

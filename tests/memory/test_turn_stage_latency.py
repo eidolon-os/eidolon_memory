@@ -155,8 +155,6 @@ async def test_a_fragment_turn_reports_the_stages_it_actually_ran(
     )
 
     assert msg.ack_calls == ["ack"]
-    # No ``verbatim``: the layer ships off, because the drawers it writes
-    # cannot be forgotten. See test_the_shipped_default_keeps_the_layer_off.
     assert _delta(before, _stage_counts()) == {"steward", "fragments", "total"}
 
 

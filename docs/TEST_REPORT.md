@@ -348,11 +348,33 @@ verbatim_ms=49  steward_ms=21916  kg_ms=75        total_ms=22043
 **没断言 forget 真的删得掉它**。前三次代价是绿掉的测试，这一次代价是用户真实 Realm 里
 4 条删不掉的残留。**测字段不是测行为。**
 
+#### 最终处置：不安全路径已删除 — 2026-09-04
 
-Cross-repository gates run against the final merged source set: Agent **605
-passed, 1 skipped** and its live contract harness **13/13**; Channel **1637
-passed, 7 skipped, 25 deselected**; Mobile **671 passed, 5 skipped**. Mobile had
-unrelated device-commissioning work in progress and was tested read-only.
+默认关闭仍不满足隐私边界：配置可以重新开启一条已知无法遗忘的生产路径，相关分支和清扫逻辑
+也继续占据 turn processor。最终处置不是继续加开关：
+
+- 删除 `application/verbatim.py`、三个 `worker.verbatim_*` 配置项以及 turn processor 的写入/
+  prune 分支；
+- 删除只证明该不安全路径自身行为的测试，恢复 canonical projection 测试直接断言唯一投影；
+- 保留由试验发现、且独立成立的 device visibility 查询下推，并把它的接线测试移到
+  `test_mempalace_fast_search.py`；
+- 增加结构守卫：生产模块、配置入口或 turn processor 中任何一个重新出现，测试立即失败。
+
+原文层的性能与失败数据保留在本节作为被否决方案的证据，不再作为可部署能力。未来若重新讨论
+原文证据，前置条件是先注册 ledger assertion/evidence identity，再走现有投影与 forget 协议；
+不得直接写 drawer。
+
+最终源码集重新执行完整 Memory 套件：**1205 passed, 13 skipped, 3 deselected in 15m32s**。
+其中 live-Realm/Pi 专用用例按标记跳过；真实本机 NATS、Memory 子进程、Chroma、重启恢复、
+snapshot/restore、隐私生命周期和读路径 E2E 均执行。Ruff 通过；沙箱内唯一失败的 3 个
+`test_bench_preflight` 是 loopback bind 被禁止，在沙箱外单独重跑 **10/10 passed**。
+
+
+Cross-repository gates rerun 2026-09-04 against the current source set: Agent
+**603 passed, 1 skipped**; Channel **1462 passed, 7 skipped, 23 deselected,
+13 xfailed**; Mobile **673 passed, 5 skipped**. These are repository-local full
+suites; the live Host contract and Box-3 HIL are recorded separately after the
+final Pi release rather than being implied by these counts.
 
 The deterministic real-process recall gate uses exact projected text. Its
 offline hash embedder intentionally has no semantic meaning, so paraphrase

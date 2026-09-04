@@ -25,20 +25,11 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
 async def _list_fragment_count(session) -> int:
-    """Projected drawers only, which is what this count was ever a proxy for.
-
-    It gates the readiness wait, and the turn's own sentence is now filed
-    beside each projection. Counting both made the predicate true after half
-    the corpus had been projected — the listing then ran early and the exact
-    strings this test asserts were simply not there yet. A race, not a
-    mismatch, and one a plain total cannot express.
-    """
     result = await session.call_tool("eidolon_memory_list", {"limit": 1000})
     payload = mcp_tool_json(result)
     if not isinstance(payload, dict):
         return 0
-    records = payload.get("records") or []
-    return sum(1 for row in records if (row.get("metadata") or {}).get("source") != "turn-verbatim")
+    return len(payload.get("records") or [])
 
 
 async def _recall_top_values(session, context, *, query: str, top_k: int = 3) -> list[str]:
