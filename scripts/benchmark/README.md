@@ -16,7 +16,7 @@
 | **Steward 操作级质量** | `eval_steward_prompt.py` | triples precision ≥ 0.85 / recall ≥ 0.70；invalidations precision ≥ 0.90；should-write ≥ 0.90；privacy errors = 0 |
 | **真实召回证据质量** | `bench_memory_retrieve_quality.py` | 报告 full-case accuracy、evidence-group recall、omissions、clean abstention 与 latency |
 
-## 6 个 bench（各自独立）
+## 7 个 bench（各自独立）
 
 ### R-01 `bench_read_livekit.py` — recall 端到端
 
@@ -96,6 +96,25 @@ Memory 检索边界不返回无依据证据，Agent 最终是否诚实拒答由 
 报告同时保留端到端 MCP latency，避免通过无限扩大 top-k/context 换取表面准确率。
 只验证真实管线契约时可用 `--steward-mode test-verbatim --min-triples 0
 --min-fragments 5`；质量报告必须保留默认 `llm`，两种结果不得混为同一基线。
+
+### E-01 `bench_onnx_embedder_cpu.py` — 嵌入器 CPU 核分配基线
+
+```bash
+taskset -c 4-7 .venv/bin/python scripts/benchmark/bench_onnx_embedder_cpu.py \
+    --threads 4 --tag a76x4
+```
+
+复刻 `OnnxSentenceEmbedder` 的完整形状（CLS pooling、pad/truncate 512、L2
+归一、batch 32），量的是**换 CPU 核会怎样**，用来决定 big.LITTLE 主机上
+嵌入器该跑在哪几个核。输出单行 JSON（`ms_per_doc`、`query_p50_ms` 等），
+无 SLA 门限——它是选型依据，不是回归门。
+
+RK3588 实测：A76×4 = 14.27 ms/doc，A55×4 = 56.76，**8 核全开 = 15.81
+反而比只用 4 个大核慢**（ORT 均分工作量，整批等最慢的 A55 线程）。
+结论是小核必须**排除**，不是"顺便加上"。`--threads` 要等于绑的核数。
+
+模型目录用 `--model-dir` 或 `BGE_MODEL_DIR` 指定，需含
+`onnx/model_quantized.onnx` 与 `tokenizer.json`。
 
 ## 一键全跑
 
