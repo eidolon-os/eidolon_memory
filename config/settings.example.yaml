@@ -54,9 +54,9 @@ embedding:
   # (benchmarks/results/bge-base-pi5):
   #
   #   model            dim    R@1     MRR@10   on disk   ms/doc (Pi 5)
-  #   bge-small-zh     512   67.2%    0.753      47MB       6.5
-  #   bge-base-zh      768   70.9%    0.787     198MB      32.5   ← the Pi
-  #   bge-large-zh    1024   73.9%    0.813     626MB     104.1   ← a workstation
+  #   bge-small-zh     512   67.2%    0.753      47MB       6.5   ← the Pi
+  #   bge-base-zh      768   70.9%    0.787     198MB      32.5
+  #   bge-large-zh    1024   73.9%    0.813     626MB     104.1
   #
   # An earlier version of this comment carried a 43-query table and concluded the
   # three sizes could not be told apart, so the cheapest should win. **At 1000
