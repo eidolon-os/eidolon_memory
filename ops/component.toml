@@ -87,13 +87,19 @@ install_root = "/var/lib/eidolon/models/bge-small-zh"
 # demand or falls back to something slow, and the difference is not visible
 # from anything a release reports.
 
+# The revision in both URLs is a commit and not a branch, for the same reason
+# every other pinned artifact names something immutable: a branch can be moved
+# under a digest, and then the pin fails rather than the file being wrong.
+
 [[artifacts.files]]
 path = "onnx/model_quantized.onnx"
 sha256 = "15b717c382bcb518ba457b93ea6850ede7f4f1cd8937454aa06972366cd19bcc"
+url = "https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/75c43b069aac4d136ba6bc1122f995fedcfd2781/onnx/model_quantized.onnx"
 
 [[artifacts.files]]
 path = "tokenizer.json"
 sha256 = "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26"
+url = "https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/75c43b069aac4d136ba6bc1122f995fedcfd2781/tokenizer.json"
 
 [[state.authority]]
 path = "/var/lib/eidolon/memory"
