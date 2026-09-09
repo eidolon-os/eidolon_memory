@@ -11,7 +11,7 @@ What this process does own:
 
 * the FastMCP control plane on its configured port (Admin / Claude IDE)
 * the JetStream subscriber for ``eidolon.memory.{turn,cmd,sync}.<token>``
-* the steward, in-process — writes never leave here
+* the steward and sole storage writer; model execution uses a storage-free child
 
 LiveKit pipelines in the same process call the recall path directly via
 ``LiveKitRecallService``, sharing the space's lock through the same backend.
@@ -199,6 +199,7 @@ async def _nats_subscriber_loop(
     commitments: CommitmentLedger,
     stop: asyncio.Event,
     ready: asyncio.Event | None = None,
+    steward: Any,
 ) -> None:
     """In-process JetStream pull-subscriber for both turn + command subjects."""
     import nats
@@ -212,7 +213,6 @@ async def _nats_subscriber_loop(
     query_subject = memory_list_drawers_query_subject(memory_space_id)
     ledger = sync
 
-    steward = create_steward(settings)
     sync_every = max(1, settings.worker.sync_every_n_turns)
     writes_since_checkpoint = 0
 
@@ -575,6 +575,7 @@ def _compose_starlette_lifespan(
             )
 
         sub_task: asyncio.Task | None = None
+        steward = create_steward(settings)
         if nats_disabled:
             log.warning(
                 "agent_runner_nats_disabled",
@@ -597,6 +598,7 @@ def _compose_starlette_lifespan(
                     commitments=commitments,
                     stop=stop_event,
                     ready=nats_ready_event,
+                    steward=steward,
                 ),
                 name=f"nats-sub-{memory_space_id}",
             )
@@ -619,6 +621,9 @@ def _compose_starlette_lifespan(
                 yield
         finally:
             stop_event.set()
+            # Retire model execution before draining NATS; an in-flight model
+            # must not outlive the runner while subscriptions are closing.
+            await steward.aclose()
             with contextlib.suppress(Exception):
                 if sub_task is not None:
                     await asyncio.wait_for(sub_task, timeout=5.0)

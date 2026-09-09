@@ -42,6 +42,9 @@ class NoOpSteward:
     def extraction_version(self) -> str:
         return "noop:v1"
 
+    async def aclose(self) -> None:
+        pass
+
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         del turn  # ack-only path
         delay = os.environ.get(_TEST_TURN_DELAY_ENV, "").strip()

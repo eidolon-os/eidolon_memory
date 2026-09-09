@@ -150,6 +150,11 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 `chromadb.PersistentClient` 去碰存储目录。consolidator 也遵守此律——它是"另一个
 客户端"(MCP 读 + NATS 写),不持 chroma 句柄。
 
+模型执行与存储执行分开：每个 runner 按需启动一个持久的模型子进程，隔离 LiteLLM 的
+同步初始化、provider SDK 和模型请求。它只接收请求并返回响应，不打开 palace/ledger。
+runner 继续负责证据校验、决策持久化、投影和 NATS ACK。慢模型影响新记忆何时可读，
+不应阻塞已有记忆的召回或 MCP 健康探测。见 [模型执行边界](docs/MODEL_EXECUTION_BOUNDARY.md)。
+
 ### 2.2 分层架构(DDD,7 个包)
 
 依赖**单向向下**,下层不 import 上层:
@@ -447,7 +452,7 @@ curl http://127.0.0.1:8020/api/discovery/agent-routing
 
 ## 5. 集成路径二:NATS JetStream(对话写入热路径)
 
-**这是写入语义记忆的唯一标准路径**——发一条 `ConversationTurnPayload`,agent_runner 的同进程 steward 会异步抽取出 fragments(向量片段) + triples(KG 事实) + privacy_actions,然后落盘。
+**这是写入语义记忆的唯一标准路径**——发一条 `ConversationTurnPayload`,agent_runner 的 steward 委托模型子进程抽取，在本进程校验 fragments(向量片段) + triples(KG 事实) + privacy_actions,然后落盘。
 
 ### 5.1 Subject
 

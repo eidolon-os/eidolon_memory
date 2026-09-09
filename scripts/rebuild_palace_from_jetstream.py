@@ -188,6 +188,7 @@ async def _replay(
                     break
                 continue
     finally:
+        await steward.aclose()
         try:
             await nc.drain()
         except Exception:

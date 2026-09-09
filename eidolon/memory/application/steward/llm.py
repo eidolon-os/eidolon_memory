@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from eidolon_memory_contracts import ConversationTurnPayload
@@ -15,6 +16,7 @@ from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import StewardOutputError
 from eidolon.memory.domain.fragments import is_usable_extension
 from eidolon.memory.domain.steward import StewardDecision
+from eidolon.memory.infrastructure.llm_process import IsolatedLLMCompletion
 from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
@@ -22,13 +24,21 @@ log = get_logger(__name__)
 
 
 class LiteLLMSteward:
-    """Steward that asks a local OpenAI-compatible model to extract memories."""
+    """Semantic extraction using a local or remote model behind an execution boundary."""
 
     def __init__(
         self,
         settings: MemorySettings,
+        *,
+        completion: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self._settings = settings
+        self._executor = IsolatedLLMCompletion() if completion is None else None
+        self._completion = completion if completion is not None else self._executor
+
+    async def aclose(self) -> None:
+        if self._executor is not None:
+            await self._executor.aclose()
 
     @property
     def extraction_version(self) -> str:
@@ -96,8 +106,6 @@ class LiteLLMSteward:
         return decision
 
     async def _call_llm(self, turn: ConversationTurnPayload) -> str:
-        from litellm import acompletion
-
         messages = [
             {"role": "system", "content": self._settings.render_steward_prompt()},
             {"role": "user", "content": self._render_user_prompt(turn)},
@@ -113,7 +121,8 @@ class LiteLLMSteward:
         api_key = self._settings.llm.resolve_api_key()
         if api_key:
             kwargs["api_key"] = api_key
-        response = await acompletion(**kwargs)
+        assert self._completion is not None
+        response = await self._completion(**kwargs)
         return _extract_content(response)
 
     def _render_user_prompt(self, turn: ConversationTurnPayload) -> str:

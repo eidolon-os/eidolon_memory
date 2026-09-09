@@ -23,6 +23,9 @@ class VerbatimTestSteward:
     def extraction_version(self) -> str:
         return "test-verbatim:v1"
 
+    async def aclose(self) -> None:
+        pass
+
     async def decide(self, turn: ConversationTurnPayload) -> StewardDecision:
         text = turn.user_text.strip()
         if not text:

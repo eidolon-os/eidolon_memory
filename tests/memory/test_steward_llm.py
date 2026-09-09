@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import pathlib
-import sys
-from types import SimpleNamespace
 
 import pytest
 from eidolon_memory_contracts import ConversationTurnPayload, build_memory_actor_context
@@ -71,8 +69,9 @@ async def test_llm_steward_accepts_valid_json(monkeypatch: pytest.MonkeyPatch):
             ]
         }
 
-    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
-    decision = await LiteLLMSteward(_settings_local_llm()).decide(_turn())
+    decision = await LiteLLMSteward(_settings_local_llm(), completion=fake_acompletion).decide(
+        _turn()
+    )
     assert decision.should_write
     assert decision.fragments[0].memory_id
     assert decision.fragments[0].metadata["steward"] == "llm"
@@ -95,9 +94,8 @@ async def test_llm_steward_rejects_invalid_json_for_durable_retry(
     async def fake_acompletion(**_kwargs):
         return {"choices": [{"message": {"content": "not json"}}]}
 
-    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
     with pytest.raises(Exception, match="invalid LLM steward output"):
-        await LiteLLMSteward(_settings_local_llm()).decide(_turn())
+        await LiteLLMSteward(_settings_local_llm(), completion=fake_acompletion).decide(_turn())
 
 
 @pytest.mark.asyncio
@@ -138,10 +136,8 @@ async def test_llm_steward_requires_verbatim_user_evidence(
             ]
         }
 
-    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
-
     with pytest.raises(Exception, match="evidence_quote"):
-        await LiteLLMSteward(_settings_local_llm()).decide(_turn())
+        await LiteLLMSteward(_settings_local_llm(), completion=fake_acompletion).decide(_turn())
 
 
 @pytest.mark.asyncio
@@ -202,10 +198,9 @@ async def test_privacy_actions_are_semantic_structured_output_not_phrase_matchin
             ]
         }
 
-    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
     turn = _turn().model_copy(update={"user_text": user_text})
 
-    decision = await LiteLLMSteward(_settings_local_llm()).decide(turn)
+    decision = await LiteLLMSteward(_settings_local_llm(), completion=fake_acompletion).decide(turn)
 
     assert decision.fragments == []
     assert decision.triples == []
@@ -247,8 +242,7 @@ async def _decide_with(monkeypatch, settings, fragments_json: list[str]):
         )
         return {"choices": [{"message": {"content": body}}]}
 
-    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
-    return await LiteLLMSteward(settings).decide(_turn())
+    return await LiteLLMSteward(settings, completion=fake_acompletion).decide(_turn())
 
 
 @pytest.mark.asyncio

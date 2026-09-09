@@ -342,22 +342,26 @@ async def _amain(args) -> int:
 
     results = []
     errors: list[dict[str, str]] = []
-    for s in samples:
-        try:
-            r = await _run_one(s, steward, user_id)
-        except Exception as exc:
-            print(f"[eval][ERR] {s['name']}: {exc}")
-            errors.append({"name": s["name"], "error": str(exc)})
-            continue
-        results.append(r)
-        print(
-            f"  {s['name']:<32s} "
-            f"t-tp={r['triples']['tp']:<2d} t-fp={r['triples']['fp']:<2d} "
-            f"i-tp={r['invalidations']['tp']:<2d} "
-            f"m-tp={r['mentions']['tp']:<2d} m-fp={r['mentions']['fp']:<2d} "
-            f"priv={'✓' if r['privacy_ok'] else '✗'} "
-            f"{r['elapsed_ms']}ms"
-        )
+    try:
+        for s in samples:
+            try:
+                r = await _run_one(s, steward, user_id)
+            except Exception as exc:
+                print(f"[eval][ERR] {s['name']}: {exc}")
+                errors.append({"name": s["name"], "error": str(exc)})
+                continue
+            results.append(r)
+            print(
+                f"  {s['name']:<32s} "
+                f"t-tp={r['triples']['tp']:<2d} t-fp={r['triples']['fp']:<2d} "
+                f"i-tp={r['invalidations']['tp']:<2d} "
+                f"m-tp={r['mentions']['tp']:<2d} m-fp={r['mentions']['fp']:<2d} "
+                f"priv={'✓' if r['privacy_ok'] else '✗'} "
+                f"{r['elapsed_ms']}ms"
+            )
+
+    finally:
+        await steward.aclose()
 
     agg = _aggregate(results, requested_count=len(samples))
     report = {

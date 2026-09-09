@@ -100,6 +100,8 @@ class LlmConfig(BaseModel):
     # trips the timeout, and litellm's retries turn one slow turn into ~93s.
     # Extraction runs on the bus, not in anyone's reply, so waiting longer for a
     # real answer beats retrying three times for none.
+    # The model executor enforces this as a total budget including cold SDK
+    # initialization and provider retries, independently of recall deadlines.
     timeout_seconds: float = 90.0
     # Extraction is a replayable decision, not creative generation.
     temperature: float = 0.0

@@ -21,6 +21,10 @@
 
 ## 分层
 
+2026-09-09 补充：[模型执行边界](MODEL_EXECUTION_BOUNDARY.md)。结构化决策与存储仍由
+runner 持有；LiteLLM 初始化和调用已移入无存储句柄的子进程。异步函数不保证其中的
+SDK 初始化不会同步阻塞，因此 NATS 异步写入本身不足以隔离实时读取。
+
 `find <层> -name '*.py' | wc -l` 与 `-exec cat {} + | wc -l`，含子包。上一版这张表漏了
 子包（`infrastructure/nats/` 之类），所以几个数字偏小。
 
