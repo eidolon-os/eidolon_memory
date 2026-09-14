@@ -15,6 +15,7 @@ from typing import BinaryIO
 
 from eidolon_memory_contracts import memory_space_storage_name
 
+from eidolon.memory.config.palace_directory import LEDGERS_DIR_SUFFIX
 from eidolon.memory.infrastructure.nats.names import nats_safe_name
 
 CONFIRMATION = "DELETE_ALL_MEMORY_HISTORY_KEEP_REALMS"
@@ -52,8 +53,7 @@ def realm_registry_digest(registry_db: Path) -> str:
     )
     try:
         rows = connection.execute(
-            "SELECT realm_id, owner_id, companion_id, status "
-            "FROM memory_realms ORDER BY realm_id"
+            "SELECT realm_id, owner_id, companion_id, status FROM memory_realms ORDER BY realm_id"
         ).fetchall()
     finally:
         connection.close()
@@ -70,6 +70,10 @@ def validate_reset_scope(palaces_root: Path, realm_ids: list[str]) -> dict[str, 
     expected = {
         realm_id: palaces_root / memory_space_storage_name(realm_id) for realm_id in realm_ids
     }
+    for palace in expected.values():
+        for path in (palace, Path(str(palace) + LEDGERS_DIR_SUFFIX)):
+            if path.is_symlink() or (path.exists() and not path.is_dir()):
+                raise HistoryResetSafetyError(f"unsafe history directory: {path}")
     missing = [realm_id for realm_id, path in expected.items() if not path.is_dir()]
     actual_names = {
         path.name
@@ -77,9 +81,10 @@ def validate_reset_scope(palaces_root: Path, realm_ids: list[str]) -> dict[str, 
         if path.is_dir() and not path.name.startswith(".")
     }
     expected_names = {path.name for path in expected.values()}
+    ledger_names = {name + LEDGERS_DIR_SUFFIX for name in expected_names}
     unexpected = sorted(
         name
-        for name in actual_names - expected_names
+        for name in actual_names - expected_names - ledger_names
         if not (
             (match := _REPAIR_ARCHIVE_RE.fullmatch(name))
             and match.group("storage") in expected_names
@@ -109,7 +114,12 @@ def clear_repair_archives(palaces_root: Path, palace_paths: list[Path]) -> list[
 
 
 @contextmanager
-def acquire_realm_reset_locks(run_dir: Path, realm_ids: list[str]) -> Iterator[None]:
+def acquire_realm_reset_locks(
+    run_dir: Path,
+    realm_ids: list[str],
+    *,
+    palace_by_realm: dict[str, Path] | None = None,
+) -> Iterator[None]:
     """Prove every Realm owner is stopped and hold its lock through reset."""
 
     run_dir = Path(run_dir).expanduser().resolve()
@@ -117,13 +127,19 @@ def acquire_realm_reset_locks(run_dir: Path, realm_ids: list[str]) -> Iterator[N
     with ExitStack() as stack:
         handles: list[BinaryIO] = []
         for realm_id in realm_ids:
-            path = run_dir / f"eidolon-memory-agent-{nats_safe_name(realm_id)}.lock"
-            handle = stack.enter_context(path.open("a+b"))
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise HistoryResetSafetyError(f"Realm owner is still running: {realm_id}") from exc
-            handles.append(handle)
+            paths = [run_dir / f"eidolon-memory-agent-{nats_safe_name(realm_id)}.lock"]
+            if palace_by_realm is not None:
+                directory = str(palace_by_realm[realm_id].resolve())
+                paths.append(run_dir / f"eidolon-memory-palace-{nats_safe_name(directory)}.lock")
+            for path in paths:
+                handle = stack.enter_context(path.open("a+b"))
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise HistoryResetSafetyError(
+                        f"Realm owner is still running: {realm_id} ({path.name})"
+                    ) from exc
+                handles.append(handle)
         try:
             yield
         finally:
@@ -132,20 +148,26 @@ def acquire_realm_reset_locks(run_dir: Path, realm_ids: list[str]) -> Iterator[N
 
 
 def clear_palace_contents(palace_path: Path) -> int:
-    """Remove every artifact inside a Palace but keep the Realm directory."""
-
-    palace_path = Path(palace_path).expanduser().resolve()
+    """Clear the palace and sibling ledgers, preserving both directory identities."""
+    palace_path = Path(palace_path).expanduser().absolute()
+    directories = (palace_path, Path(str(palace_path) + LEDGERS_DIR_SUFFIX))
+    for directory in directories:
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise HistoryResetSafetyError(f"unsafe history directory: {directory}")
     if not palace_path.is_dir():
         raise HistoryResetSafetyError(f"Palace directory is missing: {palace_path}")
     removed = 0
-    for child in list(palace_path.iterdir()):
-        if child.is_symlink() or child.is_file():
-            child.unlink()
-        elif child.is_dir():
-            shutil.rmtree(child)
-        else:
-            raise HistoryResetSafetyError(f"unsupported Palace entry: {child}")
-        removed += 1
+    for directory in directories:
+        if not directory.exists():
+            continue
+        for child in list(directory.iterdir()):
+            if child.is_symlink() or child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                shutil.rmtree(child)
+            else:
+                raise HistoryResetSafetyError(f"unsupported history entry: {child}")
+            removed += 1
     return removed
 
 

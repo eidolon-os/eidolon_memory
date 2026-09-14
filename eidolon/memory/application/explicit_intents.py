@@ -238,7 +238,7 @@ async def apply_explicit_intent(
                 _optional_attribute(attributes, "source_instance_id") or cmd.issuer
             ),
             wing=wing,
-            room=f"assertion:{_projection_room_token(projection_identity)}",
+            room=f"assertion_{_projection_room_token(projection_identity)}",
             content=intent.raw_claim,
             memory_type=memory_type,
             importance=importance,
@@ -408,8 +408,6 @@ async def _prepare_explicit_update(
 
 
 def _projection_room_token(projection_identity: str) -> str:
-    if ":activation:" not in projection_identity:
-        return projection_identity[-16:]
     return hashlib.sha256(projection_identity.encode("utf-8")).hexdigest()[:16]
 
 

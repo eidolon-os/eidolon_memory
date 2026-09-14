@@ -37,18 +37,20 @@ def test_scoped_search_is_owned_by_mempalace_adapter(
 
     def _scoped(query: str, palace_path: str, **kwargs):
         captured.update({"query": query, "palace_path": palace_path, **kwargs})
+        from eidolon.memory.adapters.mempalace_results import storage_record
+
         return [
-            {
-                "text": "likes green tea",
-                "wing": "Wing_Profile",
-                "room": "preference",
-                "similarity": 0.9,
-                "metadata": {
+            storage_record(
+                "drawer_actual",
+                "likes green tea",
+                {
                     "wing": "Wing_Profile",
                     "room": "preference",
                     "privacy": "normal",
+                    "similarity": 0.9,
                 },
-            }
+                memory_space_id=kwargs["memory_space_id"],
+            )
         ]
 
     monkeypatch.setattr(
@@ -209,9 +211,7 @@ def test_search_sync_keeps_vector_for_inconclusive_probe(
         captured.update(kwargs)
         return QueryResult.empty()
 
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_fast_search._query_collection", _query
-    )
+    monkeypatch.setattr("eidolon.memory.adapters.mempalace_fast_search._query_collection", _query)
     monkeypatch.setattr(
         "mempalace.palace.get_collection",
         lambda *_args, **_kwargs: SimpleNamespace(distance_metric="cosine"),
@@ -220,138 +220,6 @@ def test_search_sync_keeps_vector_for_inconclusive_probe(
     backend = MemPalacePythonBackend(load_memory_settings(), "/tmp/palace")
     assert backend.search_sync("hello", wing="Wing_Profile") == []
     assert captured["query_embeddings"] == [[1.0, 0.0]]
-
-
-def test_chroma_search_rehydrates_archived_privacy_before_recall(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.search_memories_shared_embedding",
-        lambda *_args, **_kwargs: [
-                {
-                    "text": "我喜欢喝绿茶",
-                    "wing": "Wing_Profile",
-                    "room": "tea",
-                    "similarity": 0.99,
-                    "metadata": {
-                        "wing": "Wing_Profile",
-                        "room": "tea",
-                        "privacy": "do_not_recall",
-                        "memory_space_id": "default.alice.default",
-                        "_storage_metadata_verified": True,
-                    },
-                }
-            ],
-    )
-    backend = MemPalacePythonBackend(
-        load_memory_settings(),
-        "/tmp/palace",
-        memory_space_id="default.alice.default",
-    )
-
-    assert backend.search_sync("绿茶", wing="Wing_Profile") == []
-
-
-def test_chroma_search_metadata_hydration_is_bounded_to_current_hits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
-    calls = 0
-
-    def _search(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        return [
-            {
-                "text": "我住在常州",
-                "wing": "Wing_Profile",
-                "room": "home",
-                "similarity": 0.99,
-                "metadata": {
-                    "wing": "Wing_Profile",
-                    "room": "home",
-                    "privacy": "normal",
-                    "memory_space_id": "default.alice.default",
-                    "_storage_metadata_verified": True,
-                },
-            }
-        ]
-
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.search_memories_shared_embedding",
-        _search,
-    )
-    backend = MemPalacePythonBackend(
-        load_memory_settings(),
-        "/tmp/palace",
-        memory_space_id="default.alice.default",
-    )
-
-    hits = backend.search_sync("常州", wing="Wing_Profile")
-
-    assert [hit.value for hit in hits] == ["我住在常州"]
-    assert calls == 1
-
-
-def test_chroma_search_drops_hit_when_storage_metadata_cannot_be_verified(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.search_memories_shared_embedding",
-        lambda *_args, **_kwargs: [
-                {
-                    "text": "无法验证来源的旧记录",
-                    "wing": "Wing_Profile",
-                    "room": "legacy",
-                    "similarity": 0.99,
-                    "metadata": {"_storage_metadata_verified": False},
-                }
-            ],
-    )
-    backend = MemPalacePythonBackend(
-        load_memory_settings(),
-        "/tmp/palace",
-        memory_space_id="default.alice.default",
-    )
-
-    assert backend.search_sync("旧记录", wing="Wing_Profile") == []
-
-
-def test_chroma_search_reconstructs_json_drawer_id_from_exact_raw_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
-    raw_text = '{"topic": "长期偏好", "items": ["茶", "散步"]}'
-    monkeypatch.setattr(
-        "eidolon.memory.adapters.mempalace_python_backend.search_memories_shared_embedding",
-        lambda *_args, **_kwargs: [
-                {
-                    "text": raw_text,
-                    "wing": "Wing_Theme",
-                    "room": "theme",
-                    "similarity": 0.99,
-                    "metadata": {
-                        "wing": "Wing_Theme",
-                        "room": "theme",
-                        "privacy": "normal",
-                        "memory_space_id": "default.alice.default",
-                        "_storage_metadata_verified": True,
-                    },
-                }
-            ],
-    )
-    backend = MemPalacePythonBackend(
-        load_memory_settings(),
-        "/tmp/palace",
-        memory_space_id="default.alice.default",
-    )
-
-    hits = backend.search_sync("偏好", wing="Wing_Theme")
-
-    assert hits[0].key == "theme"
-    assert hits[0].value == {"topic": "长期偏好", "items": ["茶", "散步"]}
 
 
 def test_the_vector_port_is_the_same_surface_under_either_name() -> None:
@@ -411,9 +279,7 @@ async def test_recall_needs_no_more_than_the_hot_path_fields() -> None:
         backend,
         load_memory_settings(),
         query="colour",
-        context=MemoryActorContext(
-            memory_realm_id=space, owner_id="alice", companion_id="default"
-        ),
+        context=MemoryActorContext(memory_realm_id=space, owner_id="alice", companion_id="default"),
         top_k=5,
         kg=None,
         for_voice=False,

@@ -177,9 +177,7 @@ async def test_reads_overlap_and_a_write_still_excludes_them() -> None:
         backend.ingest_text(wing="W1", room="R1", text="t", metadata=None),
         *[backend.search(f"during{i}", wing="W1") for i in range(4)],
     )
-    assert reads_during_write == 0, (
-        f"{reads_during_write} read(s) ran while a write held the lock"
-    )
+    assert reads_during_write == 0, f"{reads_during_write} read(s) ran while a write held the lock"
 
 
 @pytest.mark.asyncio
@@ -282,3 +280,57 @@ async def test_writing_no_fragments_touches_nothing() -> None:
             raise AssertionError("an empty turn must not reach the store")
 
     await LockedBackend(Loud()).ingest_fragments([])
+
+
+async def test_close_drains_cancelled_worker_and_rejects_new_work():
+    from eidolon.memory.domain.errors import MemoryBackendUnavailable
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    closed = []
+
+    class Store(FakeMemoryBackend):
+        async def get_all(self, *args, **kwargs):
+            started.set()
+            await release.wait()
+            return []
+
+        async def aclose(self):
+            assert release.is_set()
+            closed.append(True)
+
+    backend = LockedBackend(Store())
+    caller = asyncio.create_task(backend.get_all("realm"))
+    await started.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    closing = asyncio.create_task(backend.aclose())
+    await asyncio.sleep(0)
+    assert not closing.done()
+    with pytest.raises(MemoryBackendUnavailable, match="closing"):
+        await backend.get_all("realm")
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert not closed
+    release.set()
+    await backend.aclose()
+    await backend.aclose()
+    assert closed == [True]
+
+
+async def test_close_failure_is_visible_and_retryable():
+    attempts = []
+
+    class Store(FakeMemoryBackend):
+        async def aclose(self):
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise RuntimeError("close failed")
+
+    backend = LockedBackend(Store())
+    with pytest.raises(RuntimeError, match="close failed"):
+        await backend.aclose()
+    await backend.aclose()
+    assert len(attempts) == 2

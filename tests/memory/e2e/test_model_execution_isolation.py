@@ -71,3 +71,74 @@ async def test_recall_and_discovery_survive_blocking_model_then_see_written_fact
         )
         assert not recalled.get("degraded"), recalled
         assert "乌龙茶" in recalled.get("context", ""), recalled
+
+
+async def test_replayed_turn_after_restart_does_not_reextract_or_duplicate(
+    live_agent_runner,
+    mcp_session,
+    isolated_model_sdk,
+):
+    import nats
+
+    from eidolon.memory.config.memory_settings import MemorySettings
+    from eidolon.memory.infrastructure.nats.names import memory_consumer_name
+
+    settings = {"llm": {"model": "openai/test", "timeout_seconds": 15}}
+    handle = live_agent_runner(user_id="model-replay", steward_mode="llm", extra_settings=settings)
+    turn_id = "persisted-decision-turn"
+    await nats_publish_turn(
+        handle.nats_url,
+        user_id=handle.user_id,
+        user_text="我喜欢乌龙茶",
+        assistant_text="好的",
+        turn_id=turn_id,
+    )
+
+    async def rows(session):
+        return mcp_tool_json(await session.call_tool("eidolon_memory_list", {"limit": 100}))[
+            "records"
+        ]
+
+    async with mcp_session(handle.mcp_url) as session:
+
+        async def landed(s):
+            return any("乌龙茶" in row["value"] for row in await rows(s))
+
+        assert await wait_for_visible(session, predicate=landed, timeout_s=20)
+        before = await rows(session)
+    assert isolated_model_sdk.read_text().count("call_started") == 1
+    handle.kill()
+    assert handle.process.returncode == 0
+    restarted = live_agent_runner(
+        user_id=handle.user_id, steward_mode="llm", keep_palace=True, extra_settings=settings
+    )
+    client = await nats.connect(handle.nats_url)
+    try:
+        js = client.jetstream()
+        cfg = MemorySettings().nats
+        durable = memory_consumer_name(cfg.durable_prefix, handle.user_id)
+        previous = (await js.consumer_info(cfg.stream, durable)).delivered.consumer_seq
+        await nats_publish_turn(
+            handle.nats_url,
+            user_id=handle.user_id,
+            user_text="我喜欢乌龙茶",
+            assistant_text="好的",
+            turn_id=turn_id,
+        )
+        # Observe a new delivery and ACK, so a quick unchanged read cannot pass prematurely.
+        async with asyncio.timeout(20):
+            while True:
+                state = await js.consumer_info(cfg.stream, durable)
+                if (
+                    state.delivered.consumer_seq > previous
+                    and state.num_pending == 0
+                    and state.num_ack_pending == 0
+                ):
+                    break
+                await asyncio.sleep(0.05)
+    finally:
+        await client.close()
+    async with mcp_session(restarted.mcp_url) as session:
+        after = await rows(session)
+        assert {row["key"] for row in after} == {row["key"] for row in before}
+    assert isolated_model_sdk.read_text().count("call_started") == 1

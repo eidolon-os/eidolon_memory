@@ -48,7 +48,7 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
-from eidolon.memory.domain.errors import MemoryBackendUnsupported
+from eidolon.memory.domain.errors import MemoryBackendUnavailable, MemoryBackendUnsupported
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.space_lock import SpaceLock
@@ -70,6 +70,25 @@ class LockedBackend(MemoryBackend):
         # continues running.  Keep operation-owned tasks alive so the Realm lock
         # is released only when the actual backend operation has terminated.
         self._operations: set[asyncio.Task[Any]] = set()
+        self._closing = False
+        self._close_task: asyncio.Task[None] | None = None
+
+    async def aclose(self) -> None:
+        """Drain actual workers before closing storage; caller cancellation cannot release it."""
+        self._closing = True
+        if self._close_task is None or (
+            self._close_task.done() and self._close_task.exception() is not None
+        ):
+            self._close_task = asyncio.create_task(self._close())
+        await asyncio.shield(self._close_task)
+
+    async def _close(self) -> None:
+        if self._operations:
+            await asyncio.gather(*self._operations, return_exceptions=True)
+        async with self._lock.writer():
+            close = getattr(self._inner, "aclose", None)
+            if close is not None:
+                await close()
 
     @property
     def lock(self) -> SpaceLock:
@@ -108,14 +127,13 @@ class LockedBackend(MemoryBackend):
     async def warm_read_path(self, *, wings) -> None:
         """Warm the inner store, if it can be warmed.
 
-        Unserialised: this runs at startup before the process accepts traffic,
-        so there is nothing to serialise against.
+        Tracked like reads so shutdown also waits for a cancelled warmup.
         """
 
         warm = getattr(self._inner, "warm_read_path", None)
         if warm is None:
             return
-        await warm(wings=wings)
+        await self._serialized(lambda: warm(wings=wings), name="warm_read_path", write=False)
 
     async def room_graph(self):
         """Enumerate rooms under the lock, if the inner store can do it at all.
@@ -150,6 +168,8 @@ class LockedBackend(MemoryBackend):
         releasing the lock on caller cancellation would allow unsafe overlap.
         """
 
+        if self._closing:
+            raise MemoryBackendUnavailable("memory backend is closing")
         started = asyncio.Event()
         held = self._lock.writer() if write else self._lock.reader()
         waited_from = time.perf_counter()

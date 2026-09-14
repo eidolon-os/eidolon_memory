@@ -7,8 +7,8 @@
 # variable holding the value; put those in config/.env.
 
 runtime:
-  # Empty uses $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8. This epoch boundary
-  # deliberately leaves pre-3.8 Palace data untouched.
+  # Empty uses $EIDOLON_STATE_ROOT/memory/mempalaces-v3.9. This epoch boundary
+  # deliberately leaves pre-3.9 Palace data untouched.
   palaces_root: ""
   # Optional root for per-Realm SQLite/Chroma temp directories. Empty uses
   # <palaces_root>/.process-tmp. Env: EIDOLON_MEMORY_PROCESS_TMP_ROOT.
@@ -19,7 +19,7 @@ runtime:
 mempalace:
   # chroma keeps vectors in a file in the palace directory.
   backend: chroma
-  # The embedder is configured in the `embedding` section below. MemPalace 3.8
+  # The embedder is configured in the `embedding` section below. MemPalace 3.9
   # receives explicit vectors through its public API. The four old keys
   # (embedding_model, embedding_device, embedding_model_dir, embedding_threads)
   # are still accepted for compatibility and folded into that section at load;

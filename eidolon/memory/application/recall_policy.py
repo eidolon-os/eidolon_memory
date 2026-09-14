@@ -10,6 +10,7 @@ from eidolon_memory_contracts import (
     MemoryActorContext,
 )
 
+from eidolon.memory.adapters.recall_ranking import record_retrieval_score
 from eidolon.memory.application.scope_policy import (
     MissingInteractionIdentity,
     interaction_readable_audiences,
@@ -206,7 +207,7 @@ class RecallPolicyRegistry:
         visible.sort(
             key=lambda r: (
                 self.score(r, context=context, query=query),
-                float((r.metadata or {}).get("similarity") or 0.0),
+                record_retrieval_score(r),
             ),
             reverse=True,
         )

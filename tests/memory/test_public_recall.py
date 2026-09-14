@@ -130,60 +130,26 @@ def test_visible_filters_privacy_metadata():
     assert not recall_record_visible_for_context(priv, _context())
 
 
-def test_parse_search_payload_stamps_default_memory_space_id():
-    """Root fix: vector hits lose their memory_space_id (mempalace drops custom
-    metadata), so the caller-supplied authoritative id must be used instead of
-    the bogus wing-name fallback that would fail recall's visibility gate."""
-    from eidolon.memory.adapters.search_payload import parse_search_tool_payload
+def test_storage_result_preserves_authoritative_space_and_rejects_other_space():
+    from eidolon.memory.adapters.mempalace_results import storage_record
 
-    # A vector hit as mempalace returns it: wing/room/text, NO memory_space_id.
-    stripped = {"results": [{"wing": "Wing_Life", "room": "r1", "text": "plain drawer"}]}
-    assert (
-        parse_search_tool_payload(stripped, default_memory_space_id="realm-1")[0].memory_space_id
-        == "realm-1"
+    ctx = _context()
+    rec = storage_record(
+        "drawer_a",
+        "alice fact",
+        {"wing": "Wing_Life", "room": "r1"},
+        memory_space_id=ctx.memory_space_id,
     )
-    # Backwards-compat: no default supplied → legacy wing fallback.
-    assert parse_search_tool_payload(stripped)[0].memory_space_id == "Wing_Life"
-    # Metadata-carried id (get_all / sqlite_exact paths) always wins over the
-    # default, so a genuinely cross-space record keeps its real id.
-    with_meta = {
-        "results": [
-            {
-                "wing": "Wing_Life",
-                "room": "r1",
-                "text": "x",
-                "metadata": {"memory_space_id": "realm-2"},
-            }
-        ]
-    }
-    assert (
-        parse_search_tool_payload(with_meta, default_memory_space_id="realm-1")[0].memory_space_id
-        == "realm-2"
-    )
-
-
-def test_stamped_vector_hit_visible_and_cross_space_rejected():
-    """A stripped vector hit stamped with the caller's space is recalled (not
-    filtered), while a hit that carries a different real space id is rejected."""
-    from eidolon.memory.adapters.search_payload import parse_search_tool_payload
-
-    ctx = _context()  # memory_space_id == "default.alice.default"
-    hit = {"results": [{"wing": "Wing_Life", "room": "r1", "text": "alice fact"}]}
-    rec = parse_search_tool_payload(hit, default_memory_space_id=ctx.memory_space_id)[0]
+    assert rec.memory_space_id == ctx.memory_space_id
     assert recall_record_visible_for_context(rec, ctx)
-
-    other = {
-        "results": [
-            {
-                "wing": "Wing_Life",
-                "room": "r1",
-                "text": "bob fact",
-                "metadata": {"memory_space_id": "default.bob.default"},
-            }
-        ]
-    }
-    rec_other = parse_search_tool_payload(other, default_memory_space_id=ctx.memory_space_id)[0]
-    assert not recall_record_visible_for_context(rec_other, ctx)
+    other = storage_record(
+        "drawer_b",
+        "bob fact",
+        {"memory_space_id": "default.bob.default", "wing": "Wing_Life"},
+        memory_space_id=ctx.memory_space_id,
+    )
+    assert other.memory_space_id == "default.bob.default"
+    assert not recall_record_visible_for_context(other, ctx)
 
 
 @pytest.mark.asyncio

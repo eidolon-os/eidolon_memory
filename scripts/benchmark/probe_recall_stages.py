@@ -86,7 +86,6 @@ async def _timed_recall(
     """Run a single voice recall, reporting per-stage timings (ms)."""
     from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
     from eidolon.memory.adapters.recall_ranking import rank_records_by_similarity
-    from eidolon.memory.adapters.search_payload import parse_search_tool_payload
     from eidolon.memory.application.public_recall import (
         _resolve_wings,
         recall_record_visible_for_context,
@@ -132,15 +131,13 @@ async def _timed_recall(
             room=None,
             n_results=top_k,
             skip_closets=settings.runtime.read.voice_skip_closets,
+            memory_space_id=context.memory_space_id,
         )
         stages["vector_query_ms"] = (time.perf_counter() - t2) * 1000
 
     # ── filter + rank ──
     t3 = time.perf_counter()
-    records = parse_search_tool_payload(
-        {"results": raw_hits},
-        default_memory_space_id=context.memory_space_id,
-    )
+    records = raw_hits
     records = [r for r in records if recall_record_visible_for_context(r, context)]
     records = rank_records_by_similarity(records, top_k=top_k)
     stages["filter_rank_ms"] = (time.perf_counter() - t3) * 1000

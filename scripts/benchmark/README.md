@@ -116,22 +116,17 @@ RK3588 实测：A76×4 = 14.27 ms/doc，A55×4 = 56.76，**8 核全开 = 15.81
 模型目录用 `--model-dir` 或 `BGE_MODEL_DIR` 指定，需含
 `onnx/model_quantized.onnx` 与 `tokenizer.json`。
 
-## 一键全跑
+## 升级回归
+
+旧 `run_memory_perf_report.sh` 使用已删除的 sqlite_exact、rules 和三段空间 ID，
+现已移除。版本升级验收直接复用完整测试，不再维护第二套启动配置：
 
 ```bash
-# 起 NATS 后:
-scripts/benchmark/run_memory_perf_report.sh \
-    --user-id bench --port 18030 --read-count 100 --write-count 5 --voice
+.venv/bin/python -m pytest tests/memory contracts/tests -q
 ```
 
-orchestrator 会:
-1. spawn 一个 agent_runner subprocess(user `bench`,port 18030)
-2. 可选 `--seed S|M|L` 灌 100 / 1000 / 5000 条假 drawer
-3. 跑 R-01 + W-01,落盘 JSON + log 到 `reports/memory_perf_<ts>/`
-4. 生成 `summary.md`(对照 SLA)
-5. 拆 agent_runner
-
-`--skip-pytest` 跳测试;`--skip-write` 跳 W-01(W-01 慢,~10 分钟)。
+性能分析可使用本目录的 `bench_mempalace_chroma_lifecycle.py` 和
+`probe_recall_stages.py`；历史报告只代表当时版本，不能作为本轮性能结论。
 
 ## 怎么解读 reports/
 
@@ -156,7 +151,6 @@ orchestrator 会:
 | `report.py` | `percentiles()` + `sla_pass()` 共享 helper |
 | `seed_palace.py` | S/M/L = 100/1000/5000 条 dummy drawer 灌入 |
 | `_run_scale_one.sh` | 给 orchestrator 当 inner loop |
-| `run_memory_perf_report.sh` | 主入口,管 agent_runner 生命周期 + 产出汇总 |
 
 ## 不在范围
 

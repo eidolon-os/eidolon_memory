@@ -1442,7 +1442,7 @@ async def _ingest_theme(backend: Any, cmd: ConsolidatorIngestThemeCommand) -> st
         target_device_id=None,
         source_instance_id="consolidator",
         wing="Wing_Theme",
-        room=f"theme:{cmd.request_id[:16]}",
+        room=f"theme_{_projection_room_token(cmd.request_id)}",
         content=cmd.text,
         memory_type="profile",  # closest existing type for high-level summaries
         importance=4,

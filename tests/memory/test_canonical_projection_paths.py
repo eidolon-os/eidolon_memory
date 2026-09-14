@@ -697,7 +697,12 @@ def test_reactivation_projection_rooms_do_not_collide_between_facts() -> None:
 
     assert first != second
     assert len(first) == 16
-    assert _projection_room_token("fact:0123456789abcdef") == "0123456789abcdef"
+    assert _projection_room_token("fact:0123456789abcdef") == _projection_room_token(
+        "fact:0123456789abcdef"
+    )
+    assert _projection_room_token("first:same-suffix") != _projection_room_token(
+        "second:same-suffix"
+    )
 
 
 @pytest.mark.asyncio

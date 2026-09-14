@@ -112,3 +112,61 @@ def test_clear_preserves_palace_directory_but_removes_all_contents(tmp_path: Pat
     assert removed == 3
     assert palace.is_dir()
     assert list(palace.iterdir()) == []
+
+
+def test_reset_includes_sibling_ledgers_and_keeps_other_space(tmp_path):
+    from eidolon.memory.config.palace_directory import LEDGER_FILENAMES
+
+    palace = tmp_path / memory_space_storage_name("realm-a")
+    palace.mkdir()
+    ledgers = Path(str(palace) + ".ledgers")
+    ledgers.mkdir()
+    for filename in LEDGER_FILENAMES:
+        (ledgers / filename).write_bytes(b"old memory")
+    (palace / "chroma.sqlite3").write_bytes(b"old vector")
+    assert validate_reset_scope(tmp_path, ["realm-a"]) == {"realm-a": palace}
+    other = tmp_path / memory_space_storage_name("realm-b")
+    other.mkdir()
+    marker = other / "kept"
+    marker.write_text("other realm")
+    assert clear_palace_contents(palace) == len(LEDGER_FILENAMES) + 1
+    assert list(palace.iterdir()) == list(ledgers.iterdir()) == []
+    assert marker.read_text() == "other realm"
+
+
+@pytest.mark.parametrize("linked", ["palace", "ledgers"])
+def test_reset_rejects_linked_history_directory_before_deleting(tmp_path, linked):
+    palace = tmp_path / memory_space_storage_name("realm-a")
+    ledgers = Path(str(palace) + ".ledgers")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "kept").write_text("keep")
+    if linked == "palace":
+        palace.symlink_to(outside, target_is_directory=True)
+    else:
+        palace.mkdir()
+        (palace / "kept").write_text("keep")
+        ledgers.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(HistoryResetSafetyError, match="unsafe"):
+        validate_reset_scope(tmp_path, ["realm-a"])
+    with pytest.raises(HistoryResetSafetyError, match="unsafe"):
+        clear_palace_contents(palace)
+    assert (outside / "kept").read_text() == "keep"
+
+
+def test_reset_rejects_palace_held_under_another_realm_name(tmp_path):
+    import fcntl
+
+    from eidolon.memory.infrastructure.history_reset import acquire_realm_reset_locks
+    from eidolon.memory.infrastructure.nats.names import nats_safe_name
+
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    run = tmp_path / "run"
+    run.mkdir()
+    lock = run / f"eidolon-memory-palace-{nats_safe_name(str(palace.resolve()))}.lock"
+    with lock.open("a+b") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(HistoryResetSafetyError, match="still running"):
+            with acquire_realm_reset_locks(run, ["alice"], palace_by_realm={"alice": palace}):
+                pytest.fail("held palace must not be reset")

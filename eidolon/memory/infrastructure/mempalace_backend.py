@@ -9,7 +9,6 @@ checks for the supported backends we may run in development.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
 import sqlite3
@@ -110,7 +109,7 @@ def mempalace_backend_env(
 ) -> dict[str, str]:
     """Return an environment with backend and embedder selection applied.
 
-    MemPalace 3.8 has a public OpenAI-compatible provider.  Production uses that
+    MemPalace 3.9 has a public OpenAI-compatible provider.  Production uses that
     provider for collection identity while Eidolon passes document/query vectors
     explicitly through ``BaseCollection``.  That keeps BGE's two embedding roles
     under our ``EmbeddingPort`` without reaching MemPalace's private provider
@@ -152,7 +151,7 @@ def mempalace_backend_env(
     elif provider == "mempalace":
         env.pop(_OFFLINE_EMBEDDING_ENV, None)
         env["MEMPALACE_EMBEDDING_MODEL"] = embedding.model.strip().lower()
-        # MemPalace 3.8 has no public model-directory setting. Configuration
+        # MemPalace 3.9 has no public model-directory setting. Configuration
         # validation rejects one rather than installing a process-wide download
         # hook or exporting an environment variable upstream never reads.
         env.pop("MEMPALACE_EMBEDDING_MODEL_DIR", None)
@@ -163,7 +162,7 @@ def mempalace_backend_env(
             env["MEMPALACE_EMBEDDING_THREADS"] = str(embedding.threads)
     else:
         raise ValueError(
-            "MemPalace 3.8 storage requires embedding.provider=http (the official "
+            "MemPalace 3.9 storage requires embedding.provider=http (the official "
             "openai-compat provider) or a native MemPalace embedder. Local Eidolon "
             "embedders cannot be installed through a public MemPalace API; run the "
             "existing eidolon-memory-embedder service instead of injecting private "
@@ -273,10 +272,7 @@ def inspect_backend_artifact(
         )
     if size == 0:
         return BackendArtifactStatus(backend, path, "invalid", 0, "empty artifact")
-    if backend in _SQLITE_REQUIRED_TABLES:
-        state, detail = _inspect_sqlite_artifact(path, _SQLITE_REQUIRED_TABLES[backend])
-    else:
-        state, detail = _inspect_json_artifact(path)
+    state, detail = _inspect_sqlite_artifact(path, _SQLITE_REQUIRED_TABLES[backend])
     return BackendArtifactStatus(backend, path, state, size, detail)
 
 
@@ -298,39 +294,11 @@ def inspect_configured_backend(
         for backend in sorted(SUPPORTED_MEMPALACE_BACKENDS)
     )
     selected = next(a for a in artifacts if a.backend == configured)
-    # The two "foreign" branches below cannot fire while one backend is
-    # supported: the set has a single member, so there is no other artifact to
-    # find. They are written over the set rather than over a pair of names, so
-    # they come back with a second entry — but until there is one, the state this
-    # function really distinguishes is whether the configured store is valid,
-    # empty, or unreadable. Said here because a reader would otherwise take the
-    # conflict handling for protection that is currently active.
-    foreign_valid = [
-        a.backend for a in artifacts if a.backend != configured and a.state == "valid"
-    ]
-    foreign_invalid = [
-        a for a in artifacts if a.backend != configured and a.state == "invalid"
-    ]
-    if foreign_valid:
-        return BackendArtifactReport(
-            configured,
-            "conflict",
-            f"configured backend {configured!r} conflicts with valid artifacts: "
-            f"{', '.join(foreign_valid)}",
-            artifacts,
-        )
     if selected.state == "invalid":
         return BackendArtifactReport(
             configured,
             "invalid",
             f"configured backend {configured!r} artifact is invalid: {selected.detail}",
-            artifacts,
-        )
-    if foreign_invalid:
-        return BackendArtifactReport(
-            configured,
-            "stale_artifact",
-            "; ".join(f"{a.backend}: {a.detail}" for a in foreign_invalid),
             artifacts,
         )
     if selected.state == "valid":
@@ -372,7 +340,7 @@ def reconcile_configured_backend(
                 inspect_configured_backend(palace, configured_backend),
                 removed_artifacts=tuple(removed),
             )
-    if report.state in {"conflict", "invalid", "stale_artifact"}:
+    if report.state == "invalid":
         raise BackendArtifactError(report)
     return report
 
@@ -404,16 +372,6 @@ def _inspect_sqlite_artifact(
     missing = sorted(required_tables - tables)
     if missing:
         return "invalid", f"missing required tables: {', '.join(missing)}"
-    return "valid", ""
-
-
-def _inspect_json_artifact(path: Path) -> tuple[str, str]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return "invalid", f"{type(exc).__name__}: {exc}"
-    if not isinstance(payload, dict):
-        return "invalid", "marker must contain a JSON object"
     return "valid", ""
 
 

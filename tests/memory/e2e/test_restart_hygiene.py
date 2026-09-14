@@ -1,172 +1,102 @@
-"""Phase 0 e2e — restart hygiene + post-lazy-import-fix sanity.
-
-Story:
-    1. Spawn an agent_runner (clean palace).
-    2. Publish 30 turns via NATS(write path).
-    3. Wait for the worker to drain & ingest(MCP list reflects writes).
-    4. Touch a source file ON DISK(simulates a `git pull` or hot edit).
-    5. Call MCP `eidolon_memory_recall_context` again — should still work.
-       Pre-Phase-0a this would emit ``ImportError`` for stale lazy imports;
-       post-fix, every cross-package import is module-level so the lookup
-       happens once at process start and cannot drift.
-    6. Kill the agent_runner; respawn against the same palace; recall still
-       works — proves data durability across restart (chroma + KG persisted).
-
-Marker: ``@pytest.mark.e2e`` — gated; run via
-    ``.venv/bin/python -m pytest tests/memory/e2e/ -m e2e -v``
-"""
+"""A real process restart preserves vector/KG/ledger state and pending writes."""
 
 from __future__ import annotations
-
-import asyncio
-from pathlib import Path
 
 import pytest
 
 from tests.memory.e2e.conftest import (
     e2e_actor_context,
-    load_companion_corpus,
     mcp_tool_json,
-    nats_publish_turn,
+    nats_publish_assertion,
     wait_for_visible,
 )
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
-async def _list_record_count(session) -> int:
-    """Count records via the MCP `eidolon_memory_list` tool."""
-    result = await session.call_tool("eidolon_memory_list", {"limit": 1000})
-    payload = mcp_tool_json(result)
-    if not isinstance(payload, dict):
-        return 0
-    return len(payload.get("records") or [])
-
-
-async def _recall_works(session, context, *, query: str = "self") -> bool:
-    """Confirm `eidolon_memory_recall_context` returns without ImportError."""
-    try:
-        result = await session.call_tool(
-            "eidolon_memory_recall_context",
-            {"query": query, "context": context, "top_k": 3, "voice": False},
-        )
-    except Exception:
-        return False
-    # The bug we're guarding against would surface as `isError=True` with
-    # "ImportError" in the text content. Tolerate empty results (no data
-    # for "self" is fine), but no MCP-level error.
-    if getattr(result, "isError", False):
-        return False
-    return True
-
-
-async def test_lazy_import_no_longer_breaks_after_source_touch(
-    live_agent_runner, mcp_session
+async def test_recall_and_pending_commands_survive_same_space_restart(
+    live_agent_runner,
+    mcp_session,
 ):
-    """Core regression for commit ecde449's ImportError bug.
+    first = live_agent_runner(user_id="restart_state", steward_mode="noop")
+    fact = "person:restart likes topic:oolong"
+    request = await nats_publish_assertion(
+        first.nats_url,
+        user_id=first.user_id,
+        text=fact,
+        wing="Wing_Life",
+        subject="person:restart",
+        predicate="likes",
+        object_value="topic:oolong",
+    )
 
-    With Phase 0a's lazy-import cleanup,touching the source file should be
-    irrelevant — all `eidolon.memory.*` imports happen at process start.
-    Whether the *new* version drifts on disk or not, the *running* process
-    binds an internally consistent module set.
-    """
-    handle = live_agent_runner(user_id="e2e_p0_a", steward_mode="noop")
-    corpus = load_companion_corpus()
-    ctx = e2e_actor_context(handle.user_id)
+    async def snapshot(session):
+        records = mcp_tool_json(await session.call_tool("eidolon_memory_list", {"limit": 100}))
+        graph = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_kg_snapshot", {"max_triples": 100, "current_only": True}
+            )
+        )
+        return records["records"], graph["triples"]
 
-    async with mcp_session(handle.mcp_url) as session:
-        # ─── write path: publish 30 turns via NATS ────────────────────────
-        for entry in corpus[:30]:
-            await nats_publish_turn(
-                handle.nats_url,
-                user_id=handle.user_id,
-                user_text=entry["user_text"],
-                assistant_text=entry["assistant_text"],
-                turn_id=entry["turn_id"],
+    async with mcp_session(first.mcp_url) as session:
+
+        async def landed(s):
+            records, triples = await snapshot(s)
+            return any(r["value"] == fact for r in records) and any(
+                t["subject"] == "person:restart" and t["object"] == "topic:oolong" for t in triples
             )
 
-        # ─── wait for the worker to ingest (rule-mode steward) ─────────────
-        # steward_mode=noop → worker still acks the messages but writes no
-        # fragments. Confirm the agent processed them by observing the
-        # status counter or just sleeping a beat.
-        async def _drained(s) -> bool:
-            # 30 publishes are ack'd quickly even in noop steward mode.
-            # We don't strictly need the fragments — we need the agent_runner
-            # alive and processing.
-            return await _recall_works(s, ctx)
-
-        assert await wait_for_visible(session, predicate=_drained, timeout_s=30), (
-            "agent_runner did not reach a working recall state after 30 NATS publishes"
+        assert await wait_for_visible(session, predicate=landed, timeout_s=30)
+        before, triples_before = await snapshot(session)
+        status = mcp_tool_json(
+            await session.call_tool("eidolon_memory_command_status", {"request_id": request})
         )
+        assert status["status"] == "applied"
 
-        # ─── touch a source file (simulates `git pull` / IDE save) ────────
-        source = Path(__file__).resolve().parents[3] / "eidolon/memory/application/kg_recall.py"
-        assert source.is_file(), f"expected source at {source}"
-        original_mtime = source.stat().st_mtime
-        source.touch()
-        assert source.stat().st_mtime > original_mtime, "touch didn't bump mtime"
-
-        # ─── recall MUST still work after source change(no ImportError) ──
-        assert await _recall_works(session, ctx, query="self"), (
-            "MCP recall_context failed after source touch — lazy import "
-            "regression(see commit ecde449 + tests/memory/test_lazy_import_guard.py)"
+    first.kill()
+    assert first.process.returncode == 0, "restart must follow a completed graceful shutdown"
+    pending_fact = "重启期间发布的记忆仍须处理"
+    pending = await nats_publish_assertion(
+        first.nats_url,
+        user_id=first.user_id,
+        text=pending_fact,
+    )
+    second = live_agent_runner(user_id=first.user_id, steward_mode="noop", keep_palace=True)
+    assert second.palace_dir == first.palace_dir
+    async with mcp_session(second.mcp_url) as session:
+        assert await landed(session)
+        after, triples_after = await snapshot(session)
+        old_ids = {r["key"] for r in before if r["value"] == fact}
+        assert {r["key"] for r in after if r["value"] == fact} == old_ids
+        assert {(t["subject"], t["predicate"], t["object"]) for t in triples_before} <= {
+            (t["subject"], t["predicate"], t["object"]) for t in triples_after
+        }
+        status = mcp_tool_json(
+            await session.call_tool("eidolon_memory_command_status", {"request_id": request})
         )
-        assert await _recall_works(session, ctx, query="铁锤"), (
-            "MCP recall_context failed for natural-language query after source touch"
-        )
+        assert status["status"] == "applied"
 
-
-async def test_recall_survives_agent_restart(live_agent_runner, mcp_session):
-    """Same palace, fresh process — vector + KG must persist across SIGTERM."""
-    # First spawn: publish some turns, then kill.
-    h1 = live_agent_runner(user_id="e2e_p0_b", steward_mode="noop")
-    ctx1 = e2e_actor_context(h1.user_id)
-    async with mcp_session(h1.mcp_url) as session:
-        for entry in load_companion_corpus()[:10]:
-            await nats_publish_turn(
-                h1.nats_url,
-                user_id=h1.user_id,
-                user_text=entry["user_text"],
-                assistant_text=entry["assistant_text"],
-                turn_id=entry["turn_id"],
+        async def pending_applied(s):
+            result = mcp_tool_json(
+                await s.call_tool("eidolon_memory_command_status", {"request_id": pending})
             )
-        assert await wait_for_visible(
-            session, predicate=lambda s: _recall_works(s, ctx1), timeout_s=20
-        ), "first agent did not respond to recall"
+            return result.get("status") == "applied"
 
-    h1.kill()
-    # Allow port release & WAL checkpoint to settle.
-    await asyncio.sleep(2)
+        assert await wait_for_visible(session, predicate=pending_applied, timeout_s=30)
+        rows, _ = await snapshot(session)
+        assert any(r["value"] == pending_fact for r in rows)
 
-    # Second spawn: SAME user_id (same palace) — palace IS NOT wiped between
-    # spawns in this test, because we want to verify persistence. The
-    # fixture's default behaviour is to wipe, so override by spawning a fresh
-    # handle with a DIFFERENT user_id and palace... but that defeats the test.
-    # Workaround: take a copy of the palace before spawn 2 and restore.
-    # Simpler: skip the wipe by re-using the same user_id WITHIN a single test
-    # is impossible with our fixture (wipes on every spawn). Use a different
-    # port and copy the palace.
-    import shutil
-    backup = h1.palace_dir.with_suffix(".backup")
-    shutil.copytree(h1.palace_dir, backup, dirs_exist_ok=True)
-
-    h2 = live_agent_runner(user_id="e2e_p0_b_restart", steward_mode="noop")
-    ctx2 = e2e_actor_context(h2.user_id)
-    # Copy the backed-up palace contents into the new spawn's palace dir
-    # so we test "same data, different process".
-    for item in backup.iterdir():
-        dst = h2.palace_dir / item.name
-        if item.is_file():
-            shutil.copy2(item, dst)
-        else:
-            shutil.copytree(item, dst, dirs_exist_ok=True)
-
-    # The newly spawned agent has fresh chromadb client; need to give it a
-    # chance to re-read the files we just copied (it already opened the
-    # palace at spawn, but with empty data — chromadb reads on demand).
-    await asyncio.sleep(1)
-
-    async with mcp_session(h2.mcp_url) as session:
-        assert await _recall_works(session, ctx2, query="self"), (
-            "second agent_runner cannot recall after palace handoff"
+    async with mcp_session(second.agent_mcp_url) as session:
+        recalled = mcp_tool_json(
+            await session.call_tool(
+                "eidolon_memory_recall_context",
+                {
+                    "query": fact,
+                    "context": e2e_actor_context(second.user_id),
+                    "voice": False,
+                },
+            )
         )
+        assert not recalled.get("degraded"), recalled
+        assert fact in recalled["context"]

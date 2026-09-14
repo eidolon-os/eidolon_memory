@@ -89,7 +89,11 @@ def main() -> None:
     palace_by_realm = validate_reset_scope(args.palaces_root, realm_ids)
     process_tmp_root = args.palaces_root.resolve() / ".process-tmp"
 
-    with acquire_realm_reset_locks(resolve_run_dir(settings), realm_ids):
+    with acquire_realm_reset_locks(
+        resolve_run_dir(settings),
+        realm_ids,
+        palace_by_realm=palace_by_realm,
+    ):
         nats_result = asyncio.run(
             _purge_nats(
                 settings.nats.url,
@@ -99,8 +103,7 @@ def main() -> None:
             )
         )
         removed = {
-            realm_id: clear_palace_contents(palace_by_realm[realm_id])
-            for realm_id in realm_ids
+            realm_id: clear_palace_contents(palace_by_realm[realm_id]) for realm_id in realm_ids
         }
         removed_archives = clear_repair_archives(
             args.palaces_root,

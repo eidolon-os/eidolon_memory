@@ -15,7 +15,7 @@ Chroma persists. The whole section travels as one JSON variable rather than as a
 field per setting, so adding a setting does not also mean remembering to plumb it.
 
 ``active_embedder`` is the process's encoder for explicit document and query
-vectors. MemPalace 3.8 exposes those parameters on its public collection API, so
+vectors. MemPalace 3.9 exposes those parameters on its public collection API, so
 the storage layer no longer installs anything into MemPalace's private provider
 cache.
 """

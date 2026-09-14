@@ -9,10 +9,13 @@ import math
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mempalace.backends.base import GetResult
 
 from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
-from eidolon.memory.adapters.search_payload import parse_search_tool_payload
+from eidolon.memory.adapters.mempalace_results import storage_record
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.domain.errors import (
     MemoryBackendUnavailable,
@@ -22,7 +25,7 @@ from eidolon.memory.domain.errors import (
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.room_graph import RoomGraphSnapshot, RoomNode
-from eidolon.memory.domain.wire import MemoryWireRecord, parse_memory_datetime
+from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.embedder_factory import active_embedder
 from eidolon.memory.infrastructure.mempalace_backend import selected_mempalace_backend
 from eidolon.memory.support.logging import get_logger
@@ -58,11 +61,6 @@ class MemPalacePythonBackend(MemoryBackend):
     ) -> None:
         self._settings = settings
         self._palace = palace_path
-        # A palace hosts exactly one memory space. MemPalace's vector search
-        # drops custom metadata, so search hits come back without a
-        # ``memory_space_id`` — this authoritative id is stamped onto them so
-        # recall's visibility gate (which compares against the caller's space)
-        # doesn't reject every vector hit. See parse_search_tool_payload.
         self._memory_space_id = memory_space_id
 
     async def room_graph(self) -> RoomGraphSnapshot | None:
@@ -74,13 +72,15 @@ class MemPalacePythonBackend(MemoryBackend):
         """
 
         def _read() -> RoomGraphSnapshot | None:
+            from mempalace.config import MempalaceConfig
             from mempalace.palace import get_collection
             from mempalace.palace_graph import build_graph, graph_stats
 
             collection = get_collection(self._palace, create=False, read_only=True)
             if collection is None:
                 return None
-            raw_nodes, _raw_edges = build_graph(col=collection)
+            config = MempalaceConfig(palace_path=self._palace)
+            raw_nodes, _raw_edges = build_graph(col=collection, config=config)
             return RoomGraphSnapshot(
                 rooms={
                     room: RoomNode(
@@ -90,7 +90,7 @@ class MemPalacePythonBackend(MemoryBackend):
                     )
                     for room, data in raw_nodes.items()
                 },
-                stats=graph_stats(col=collection),
+                stats=graph_stats(col=collection, config=config),
             )
 
         return await asyncio.to_thread(_read)
@@ -182,47 +182,14 @@ class MemPalacePythonBackend(MemoryBackend):
         audiences: tuple[str, ...] | None = None,
         device_id: str | None = None,
     ) -> list[MemoryWireRecord]:
-        if self._settings.mempalace.offline_embedding:
-            # Query the collection directly with a hash vector. MemPalace's
-            # searcher would invoke the real embedder, which is the thing this
-            # mode exists to avoid; ranking is not meaningful here anyway.
-            try:
-                collection = _get_read_collection(self._palace)
-                where: dict[str, Any] = {"wing": wing}
-                if room:
-                    where = {"$and": [where, {"room": room}]}
-                if audiences is not None:
-                    audience_filter = {"audience": {"$in": list(audiences)}}
-                    where = {"$and": [where, audience_filter]}
-                result = collection.query(
-                    query_embeddings=[
-                        _deterministic_embedding(query, dim=_offline_embedding_dim(self._settings))
-                    ],
-                    n_results=n_results,
-                    where=where,
-                    include=["documents", "metadatas", "distances"],
-                )
-                return apply_recall_policy(_records_from_query_result(result), self._settings)
-            except ImportError as exc:
-                raise MemoryBackendUnavailable("mempalace package is not installed") from exc
-            except Exception as exc:
-                raise MemoryBackendUnavailable(str(exc)) from exc
-
-        raw = search_memories_shared_embedding(
+        return self.search_scoped_sync(
             query,
-            self._palace,
             wings=[wing],
+            n_results=n_results,
             room=room,
             audiences=audiences,
             device_id=device_id,
-            n_results=n_results,
-            skip_closets=False,
         )
-        records = parse_search_tool_payload(
-            {"results": raw},
-            default_memory_space_id=self._memory_space_id,
-        )
-        return apply_recall_policy(records, self._settings)
 
     async def search_scoped(
         self,
@@ -261,29 +228,10 @@ class MemPalacePythonBackend(MemoryBackend):
         skip_closets: bool = False,
         diagnostics: dict[str, float] | None = None,
     ) -> list[MemoryWireRecord]:
+        embedding = None
         if self._settings.mempalace.offline_embedding:
-            try:
-                collection = _get_read_collection(self._palace)
-                filters: list[dict[str, Any]] = [{"wing": {"$in": list(wings)}}]
-                if room:
-                    filters.append({"room": room})
-                if audiences is not None:
-                    filters.append({"audience": {"$in": list(audiences)}})
-                where = filters[0] if len(filters) == 1 else {"$and": filters}
-                result = collection.query(
-                    query_embeddings=[
-                        _deterministic_embedding(query, dim=_offline_embedding_dim(self._settings))
-                    ],
-                    n_results=n_results,
-                    where=where,
-                    include=["documents", "metadatas", "distances"],
-                )
-                return apply_recall_policy(_records_from_query_result(result), self._settings)
-            except ImportError as exc:
-                raise MemoryBackendUnavailable("mempalace package is not installed") from exc
-            except Exception as exc:
-                raise MemoryBackendUnavailable(str(exc)) from exc
-        raw = search_memories_shared_embedding(
+            embedding = _deterministic_embedding(query, dim=_offline_embedding_dim(self._settings))
+        records = search_memories_shared_embedding(
             query,
             self._palace,
             wings=wings,
@@ -292,16 +240,21 @@ class MemPalacePythonBackend(MemoryBackend):
             device_id=device_id,
             n_results=n_results,
             skip_closets=skip_closets,
+            query_embedding=embedding,
             diagnostics=diagnostics,
+            memory_space_id=self._memory_space_id,
         )
-        records = parse_search_tool_payload(
-            {"results": raw},
-            default_memory_space_id=self._memory_space_id,
-        )
-        # Unlike MemPalace's public search payload, the scoped adapter reads
-        # Chroma's stored metadata directly, so privacy/provenance are already
-        # present and no second collection.get hydration round is required.
         return apply_recall_policy(records, self._settings)
+
+    async def aclose(self) -> None:
+        """Release this palace through MemPalace's public lifecycle API."""
+
+        def close() -> None:
+            from mempalace.palace import get_backend_for_palace
+
+            get_backend_for_palace(self._palace).close_palace(self._palace)
+
+        await asyncio.to_thread(close)
 
     async def ingest_text(
         self,
@@ -393,7 +346,7 @@ class MemPalacePythonBackend(MemoryBackend):
         rows: list[tuple[str, str, dict[str, Any]]],
     ) -> None:
         try:
-            present = set(_ids(collection.get(ids=[r[0] for r in rows], include=[])))
+            present = set(collection.get(ids=[r[0] for r in rows], include=[]).ids)
             fresh = [r for r in rows if r[0] not in present]
             if not fresh:
                 return
@@ -419,7 +372,7 @@ class MemPalacePythonBackend(MemoryBackend):
                 ]
             collection.upsert(**upsert_kwargs)
 
-            written = set(_ids(collection.get(ids=[r[0] for r in fresh], include=[])))
+            written = set(collection.get(ids=[r[0] for r in fresh], include=[]).ids)
             missing = [r[0] for r in fresh if r[0] not in written]
             if missing:
                 msg = (
@@ -485,7 +438,7 @@ class MemPalacePythonBackend(MemoryBackend):
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
         except Exception as exc:
             raise MemoryBackendUnavailable(str(exc)) from exc
-        if not _ids(result):
+        if not result.ids:
             return None
         return _record_from_get_result(result, 0, drawer_id=key)
 
@@ -515,7 +468,7 @@ class MemPalacePythonBackend(MemoryBackend):
             raise MemoryBackendUnavailable("mempalace package is not installed") from exc
         except Exception as exc:
             raise MemoryBackendUnavailable(str(exc)) from exc
-        found = _ids(result)
+        found = result.ids
         return [
             _record_from_get_result(result, index, drawer_id=drawer_id)
             for index, drawer_id in enumerate(found)
@@ -548,7 +501,7 @@ class MemPalacePythonBackend(MemoryBackend):
                 )
                 return [
                     _record_from_get_result(result, idx, drawer_id=drawer_id)
-                    for idx, drawer_id in enumerate(_ids(result))
+                    for idx, drawer_id in enumerate(result.ids)
                 ]
             except Exception as exc:
                 raise MemoryBackendUnavailable(str(exc)) from exc
@@ -564,14 +517,10 @@ class MemPalacePythonBackend(MemoryBackend):
             )
             return [
                 _record_from_get_result(result, idx, drawer_id=drawer_id)
-                for idx, drawer_id in enumerate(_ids(result))
+                for idx, drawer_id in enumerate(result.ids)
             ]
-        except Exception:
-            merged = _merge_tenant_queries(collection, tenant_id=tenant)
-            sliced = merged[offset or 0 :]
-            if limit is not None:
-                sliced = sliced[:limit]
-            return sliced
+        except Exception as exc:
+            raise MemoryBackendUnavailable(str(exc)) from exc
 
     async def get_by_source_turn_id(
         self,
@@ -598,23 +547,11 @@ class MemPalacePythonBackend(MemoryBackend):
                 include=["documents", "metadatas"],
                 limit=1,
             )
-            ids = _ids(result)
+            ids = result.ids
             if ids:
                 return _record_from_get_result(result, 0, drawer_id=ids[0])
-        except Exception:
-            pass
-
-        try:
-            result = collection.get(
-                where={"source_turn_id": turn},
-                include=["documents", "metadatas"],
-            )
         except Exception as exc:
             raise MemoryBackendUnavailable(str(exc)) from exc
-        for idx, drawer_id in enumerate(_ids(result)):
-            rec = _record_from_get_result(result, idx, drawer_id=drawer_id)
-            if rec.memory_space_id == tenant or rec.metadata.get("memory_space_id") == tenant:
-                return rec
         return None
 
     async def delete(self, memory_space_id: str, key: str) -> None:
@@ -632,8 +569,8 @@ class MemPalacePythonBackend(MemoryBackend):
             )
             collection.delete(ids=unique_ids)
             remaining = collection.get(ids=unique_ids, include=[])
-            if _ids(remaining):
-                msg = f"drawers remain visible after delete: {_ids(remaining)!r}"
+            if remaining.ids:
+                msg = f"drawers remain visible after delete: {remaining.ids!r}"
                 raise MemoryBackendWriteFailed(msg)
             return unique_ids
         except ImportError as exc:
@@ -653,10 +590,10 @@ class MemPalacePythonBackend(MemoryBackend):
                 memory_space_id=memory_space_id,
                 authoritative_space_id=self._memory_space_id,
             )
-            existing_ids = _ids(existing)
+            existing_ids = existing.ids
             if not existing_ids:
                 return []
-            metadata_by_id = dict(zip(existing_ids, _metadatas(existing), strict=False))
+            metadata_by_id = dict(zip(existing_ids, existing.metadatas, strict=False))
             archived_at = _now_iso()
             updated = [
                 _metadata_for_chroma(
@@ -672,7 +609,7 @@ class MemPalacePythonBackend(MemoryBackend):
             collection.update(ids=existing_ids, metadatas=updated)
 
             verified = collection.get(ids=existing_ids, include=["metadatas"])
-            verified_by_id = dict(zip(_ids(verified), _metadatas(verified), strict=False))
+            verified_by_id = dict(zip(verified.ids, verified.metadatas, strict=False))
             failed = [
                 drawer_id
                 for drawer_id in existing_ids
@@ -688,23 +625,6 @@ class MemPalacePythonBackend(MemoryBackend):
             raise
         except Exception as exc:
             raise MemoryBackendWriteFailed(str(exc)) from exc
-
-
-def _merge_tenant_queries(collection: Any, *, tenant_id: str) -> list[MemoryWireRecord]:
-    """Fallback for old Chroma versions that reject the primary ``where`` call."""
-    by_id: dict[str, MemoryWireRecord] = {}
-
-    try:
-        u = collection.get(
-            where={"memory_space_id": tenant_id},
-            include=["documents", "metadatas"],
-        )
-        for idx, drawer_id in enumerate(_ids(u)):
-            by_id[drawer_id] = _record_from_get_result(u, idx, drawer_id=drawer_id)
-    except Exception:
-        pass
-
-    return list(by_id.values())
 
 
 def apply_recall_policy(
@@ -742,31 +662,15 @@ def _get_write_collection(palace_path: str, *, create: bool):
 
 
 def _sanitize_name(value: str, field_name: str) -> str:
-    try:
-        from mempalace.config import sanitize_name
+    from mempalace.config import sanitize_name
 
-        return sanitize_name(value, field_name)
-    except ImportError:
-        raise
-    except Exception:
-        value = value.strip()
-        if not value:
-            raise ValueError(f"{field_name} cannot be blank")
-        return value
+    return sanitize_name(value, field_name)
 
 
 def _sanitize_content(value: str) -> str:
-    try:
-        from mempalace.config import sanitize_content
+    from mempalace.config import sanitize_content
 
-        return sanitize_content(value)
-    except ImportError:
-        raise
-    except Exception:
-        value = value.strip()
-        if not value:
-            raise ValueError("content cannot be blank")
-        return value
+    return sanitize_content(value)
 
 
 def _drawer_id(wing: str, room: str, content: str) -> str:
@@ -830,31 +734,6 @@ def _metadata_for_chroma(metadata: dict[str, Any]) -> dict[str, Any]:
     return out or {"source": "eidolon-memory"}
 
 
-def _drawer_content_text(value: Any) -> str:
-    """Recover deterministic drawer content from parsed search values."""
-    if isinstance(value, dict | list):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return str(value or "")
-
-
-def _ids(result: Any) -> list[str]:
-    if isinstance(result, dict):
-        return list(result.get("ids") or [])
-    return list(getattr(result, "ids", []) or [])
-
-
-def _documents(result: Any) -> list[str]:
-    if isinstance(result, dict):
-        return list(result.get("documents") or [])
-    return list(getattr(result, "documents", []) or [])
-
-
-def _metadatas(result: Any) -> list[dict[str, Any]]:
-    if isinstance(result, dict):
-        return list(result.get("metadatas") or [])
-    return list(getattr(result, "metadatas", []) or [])
-
-
 def _validated_privacy_drawer_ids(keys: list[str]) -> list[str]:
     unique_ids = list(dict.fromkeys(str(key).strip() for key in keys if str(key).strip()))
     if not unique_ids or any(not key.startswith("drawer_") for key in unique_ids):
@@ -872,8 +751,8 @@ def _assert_privacy_batch_tenant(
     expected = memory_space_id.strip()
     if not expected:
         raise MemoryBackendWriteFailed("memory_space_id is required for privacy mutation")
-    drawer_ids = _ids(result)
-    metadatas = _metadatas(result)
+    drawer_ids = result.ids
+    metadatas = result.metadatas
     if len(metadatas) != len(drawer_ids) or any(
         not isinstance(metadata, dict) for metadata in metadatas
     ):
@@ -888,64 +767,12 @@ def _assert_privacy_batch_tenant(
             raise MemoryBackendWriteFailed(msg)
 
 
-def _record_from_get_result(result: Any, index: int, *, drawer_id: str) -> MemoryWireRecord:
-    docs = _documents(result)
-    metas = _metadatas(result)
-    meta = metas[index] if index < len(metas) and isinstance(metas[index], dict) else {}
-    content = docs[index] if index < len(docs) else ""
-    wing = str(meta.get("wing", "default"))
-    room = str(meta.get("room", drawer_id))
-    memory_space_id = str(meta.get("memory_space_id") or wing)
-    return MemoryWireRecord(
-        memory_space_id=memory_space_id,
-        key=drawer_id or room,
-        value=content,
-        # Preserve the *stored* ``source`` (for example an assertion projection,
-        # "consolidator") — it's the write-time provenance that recall
-        # ranking + theme rendering key off. Only default to
-        # "mempalace-python" when the drawer carried no source at all.
-        # ``wing``/``room`` stay authoritative (read-time placement).
-        metadata={"source": "mempalace-python", **meta, "wing": wing, "room": room},
-        created_at=parse_memory_datetime(meta.get("created_at") or meta.get("filed_at")),
-        updated_at=parse_memory_datetime(meta.get("updated_at")),
+def _record_from_get_result(result: GetResult, index: int, *, drawer_id: str) -> MemoryWireRecord:
+    if len(result.ids) != len(result.documents) or len(result.ids) != len(result.metadatas):
+        raise MemoryBackendUnavailable("misaligned MemPalace get result")
+    return storage_record(
+        drawer_id,
+        result.documents[index],
+        result.metadatas[index],
+        search=False,
     )
-
-
-def _nested(result: Any, name: str) -> list[Any]:
-    if isinstance(result, dict):
-        value = result.get(name) or []
-    else:
-        value = getattr(result, name, []) or []
-    if value and isinstance(value[0], list):
-        return list(value[0])
-    return list(value)
-
-
-def _records_from_query_result(result: Any) -> list[MemoryWireRecord]:
-    ids = [str(v) for v in _nested(result, "ids")]
-    docs = [str(v) for v in _nested(result, "documents")]
-    metas = _nested(result, "metadatas")
-    distances = _nested(result, "distances")
-    records: list[MemoryWireRecord] = []
-    for idx, drawer_id in enumerate(ids):
-        meta = metas[idx] if idx < len(metas) and isinstance(metas[idx], dict) else {}
-        if idx < len(distances):
-            try:
-                distance = float(distances[idx])
-                meta = {**meta, "distance": distance, "similarity": max(0.0, 1.0 - distance)}
-            except (TypeError, ValueError):
-                pass
-        content = docs[idx] if idx < len(docs) else ""
-        wing = str(meta.get("wing", "default"))
-        room = str(meta.get("room", drawer_id))
-        records.append(
-            MemoryWireRecord(
-                memory_space_id=str(meta.get("memory_space_id") or wing),
-                key=drawer_id or room,
-                value=content,
-                metadata={"source": "mempalace-python", **meta, "wing": wing, "room": room},
-                created_at=parse_memory_datetime(meta.get("created_at") or meta.get("filed_at")),
-                updated_at=parse_memory_datetime(meta.get("updated_at")),
-            )
-        )
-    return records

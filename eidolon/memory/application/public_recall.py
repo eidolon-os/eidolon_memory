@@ -340,7 +340,7 @@ async def _fetch_themes(
     # fetched unconditionally they leak onto out-of-scope queries (a pet
     # theme surfacing on "我家鸟会说话吗"). Drop themes whose cosine
     # similarity is below the configured floor. ``similarity`` is stamped by
-    # ``parse_search_tool_payload``; absent (e.g. fakes) → keep the hit so
+    # ``storage_record``; absent (e.g. fakes) → keep the hit so
     # tests that don't model similarity still see themes.
     floor = float(settings.recall.theme_min_similarity)
     if floor <= 0.0:
@@ -628,7 +628,7 @@ async def search_all_wings_mcp_style(
                     device_id=context.device_id,
                 )
                 # memory_space_id is stamped at the source (backend.search →
-                # parse_search_tool_payload with the palace's authoritative id).
+                # storage_record with the palace's authoritative id).
                 return [r for r in found if recall_record_visible_for_context(r, context)]
 
         batches = await asyncio.gather(*[_one(wid) for wid in wings], return_exceptions=True)

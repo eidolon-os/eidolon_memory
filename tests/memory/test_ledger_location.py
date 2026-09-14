@@ -23,12 +23,10 @@ reports becomes true because the files are somewhere else.
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
-from eidolon.memory.adapters.local_palace_router import _adopt_ledgers_beside_the_palace
 from eidolon.memory.config.memory_settings import MemorySettings
 from eidolon.memory.config.palace_directory import (
     LEDGER_FILENAMES,
@@ -87,76 +85,9 @@ def test_a_palace_rename_leaves_our_databases_untouched(tmp_path: Path) -> None:
         assert (ledgers / filename).read_text(encoding="utf-8") == filename
 
 
-def test_an_existing_palace_migrates_on_open(tmp_path: Path) -> None:
-    """Deployments already have these files in the old place.
-
-    Done on resolve rather than as a step someone has to run, because a migration
-    that has to be remembered is one that gets skipped on the machine that matters.
-    """
-
-    palace = tmp_path / "b64_space"
-    ledgers = tmp_path / "b64_space.ledgers"
-    palace.mkdir()
-    (palace / "chroma.sqlite3").write_text("theirs", encoding="utf-8")
-    for filename in LEDGER_FILENAMES:
-        (palace / filename).write_text(filename, encoding="utf-8")
-    # A live write-ahead log alongside its database.
-    (palace / "knowledge_graph.sqlite3-wal").write_text("wal", encoding="utf-8")
-
-    _adopt_ledgers_beside_the_palace(palace, ledgers)
-
-    assert sorted(p.name for p in palace.iterdir()) == ["chroma.sqlite3"]
-    assert (ledgers / "commitments.sqlite3").read_text(encoding="utf-8") == (
-        "commitments.sqlite3"
-    )
-    # The sidecar moved with its database. Left behind, it would silently discard
-    # everything committed to the log but not yet checkpointed — for the graph,
-    # the most recent turns.
-    assert (ledgers / "knowledge_graph.sqlite3-wal").is_file()
-
-
-def test_migrating_twice_changes_nothing(tmp_path: Path) -> None:
-    """It runs on every open, so it has to be a no-op after the first."""
-
-    palace = tmp_path / "b64_space"
-    ledgers = tmp_path / "b64_space.ledgers"
-    palace.mkdir()
-    for filename in LEDGER_FILENAMES:
-        (palace / filename).write_text("original", encoding="utf-8")
-
-    _adopt_ledgers_beside_the_palace(palace, ledgers)
-    _adopt_ledgers_beside_the_palace(palace, ledgers)
-
-    assert sorted(p.name for p in ledgers.iterdir()) == sorted(LEDGER_FILENAMES)
-
-
-def test_a_stale_copy_left_behind_never_overwrites_the_live_one(tmp_path: Path) -> None:
-    """The case that would lose data if this used ``os.replace``.
-
-    Two files with the same name means the destination is the live one — the space
-    has been served from the new layout already — and the copy in the palace is
-    what a MemPalace rebuild restored from an archive. Overwriting would discard
-    everything written since.
-    """
-
-    palace = tmp_path / "b64_space"
-    ledgers = tmp_path / "b64_space.ledgers"
-    palace.mkdir()
-    ledgers.mkdir()
-    (palace / "commitments.sqlite3").write_text("stale, restored from an archive", "utf-8")
-    (ledgers / "commitments.sqlite3").write_text("live", encoding="utf-8")
-
-    _adopt_ledgers_beside_the_palace(palace, ledgers)
-
-    assert (ledgers / "commitments.sqlite3").read_text(encoding="utf-8") == "live"
-    assert (palace / "commitments.sqlite3").is_file(), "the stale copy is left for an operator"
-
-
 @pytest.mark.parametrize("filename", LEDGER_FILENAMES)
 def test_every_ledger_is_named_in_one_place(filename: str, tmp_path: Path) -> None:
-    """The migration works off ``LEDGER_FILENAMES``. A seventh ledger added to the
-    router and not to that tuple would keep being written inside the palace, and be
-    lost by the next repair — silently, since nothing else reads the list."""
+    """The reset inventory must cover every database opened by the router."""
 
     source = Path("eidolon/memory/adapters/local_palace_router.py").read_text(encoding="utf-8")
 
@@ -169,32 +100,9 @@ def test_the_router_opens_nothing_of_ours_inside_the_palace() -> None:
     """The other direction: a ledger the router still opens at ``palace_path``."""
 
     source = Path("eidolon/memory/adapters/local_palace_router.py").read_text(encoding="utf-8")
-    offenders = [
-        name for name in LEDGER_FILENAMES if f'palace_path / "{name}"' in source
-    ]
+    offenders = [name for name in LEDGER_FILENAMES if f'palace_path / "{name}"' in source]
 
     assert not offenders, f"still opened inside MemPalace's directory: {offenders}"
-
-
-def test_a_real_sqlite_file_survives_the_move(tmp_path: Path) -> None:
-    """Not just the bytes — the database is still openable afterwards."""
-
-    palace = tmp_path / "b64_space"
-    ledgers = tmp_path / "b64_space.ledgers"
-    palace.mkdir()
-    connection = sqlite3.connect(palace / "commitments.sqlite3")
-    connection.execute("CREATE TABLE t (x TEXT)")
-    connection.execute("INSERT INTO t VALUES ('kept')")
-    connection.commit()
-    connection.close()
-
-    _adopt_ledgers_beside_the_palace(palace, ledgers)
-
-    moved = sqlite3.connect(ledgers / "commitments.sqlite3")
-    try:
-        assert moved.execute("SELECT x FROM t").fetchone()[0] == "kept"
-    finally:
-        moved.close()
 
 
 def test_the_inventory_counts_our_tables_and_not_mempalace_s() -> None:

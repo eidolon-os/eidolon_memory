@@ -23,32 +23,6 @@ _INTERNAL_METADATA_KEYS = frozenset(
 )
 
 
-def vector_fields_from_hit(row: dict[str, Any]) -> tuple[float, dict[str, Any]]:
-    """Return (similarity for ranking/API, internal-only metadata fields)."""
-    dist = row.get("distance")
-    sim = row.get("similarity")
-    if sim is not None:
-        similarity = float(sim)
-    elif dist is not None:
-        similarity = max(0.0, 1.0 - float(dist))
-    else:
-        legacy = row.get("score")
-        if legacy is not None:
-            # Historical bug: score sometimes held distance; treat as distance if > 1.
-            val = float(legacy)
-            similarity = max(0.0, 1.0 - val) if val > 1.0 else val
-        else:
-            similarity = 0.0
-
-    internal: dict[str, Any] = {}
-    if dist is not None:
-        internal["_distance"] = float(dist)
-    eff = row.get("effective_distance")
-    if eff is not None:
-        internal["_effective_distance"] = float(eff)
-    return similarity, internal
-
-
 def record_similarity(rec: MemoryWireRecord) -> float:
     raw = rec.metadata.get("similarity")
     if raw is not None:
@@ -65,13 +39,18 @@ def record_similarity(rec: MemoryWireRecord) -> float:
     return 0.0
 
 
+def record_retrieval_score(rec: MemoryWireRecord) -> float:
+    """Internal rank signal; public similarity remains the raw vector score."""
+    return float(rec.metadata.get("_retrieval_score", record_similarity(rec)))
+
+
 def rank_records_by_similarity(
     hits: list[MemoryWireRecord],
     *,
     top_k: int,
 ) -> list[MemoryWireRecord]:
     """Global re-rank after multi-wing merge (O(n log n), n ≈ wings × per-wing top_k)."""
-    ordered = sorted(hits, key=record_similarity, reverse=True)
+    ordered = sorted(hits, key=record_retrieval_score, reverse=True)
     return ordered[: max(1, top_k)]
 
 

@@ -262,3 +262,21 @@ async def test_deleted_canonical_fact_cannot_be_reactivated_by_later_replay(
             and row.get("object") == obj
             for row in snapshot["triples"]
         )
+
+    # Tombstones and scrubbed projections also survive a fresh native client/process.
+    handle.kill()
+    assert handle.process.returncode == 0
+    restarted = live_agent_runner(user_id=handle.user_id, steward_mode="noop", keep_palace=True)
+    async with mcp_session(restarted.mcp_url) as session:
+        replay_id = await nats_publish_assertion(
+            restarted.nats_url,
+            user_id=restarted.user_id,
+            text=fact,
+            wing="Wing_Life",
+            subject=subject,
+            predicate="likes",
+            object_value=obj,
+            operation_hint="update",
+        )
+        assert (await _wait_for_command(session, replay_id))["status"] == "failed"
+        assert not any(obj in value for value in await _recall_values(session, context, obj))

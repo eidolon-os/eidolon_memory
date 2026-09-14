@@ -21,6 +21,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,9 +38,15 @@ from eidolon_memory_contracts import (
     envelope_memory_payload,
     memory_command_subject,
     memory_space_storage_name,
+    memory_sync_subject,
 )
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from nats.js.errors import NotFoundError
+
+from eidolon.memory.application.discovery import probe_mcp_http
+from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.infrastructure.nats.names import memory_consumer_name
 
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -144,78 +151,52 @@ def live_nats(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
 # ─── agent_runner lifecycle ────────────────────────────────────────────────
 
 
+def _run_fixture_async(coro):
+    # Spawn is synchronous even when invoked by an async test. Propagate errors.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result(timeout=60)
+
+
 def _wait_mcp_ready(port: int, *, timeout_s: float = 45.0) -> bool:
-    """Poll both MCP surfaces until each responds with ANY non-5xx HTTP status.
+    """Both real MCP sessions must initialize; a 404 is not readiness."""
 
-    A successful TCP+HTTP round-trip means uvicorn + FastMCP are up; we don't care
-    which status code FastMCP picks for a bare GET.
-
-    **Both** paths, not just the agent's. Nearly every e2e test drives operator
-    tools, which live on ``/ops/mcp``; checking only ``/mcp`` would report a healthy
-    start for a process whose operator surface failed to mount, and every one of
-    those tests would then fail on a 404 that says nothing about why.
-    """
-    deadline = time.monotonic() + timeout_s
-    paths = ("/mcp/", "/ops/mcp/")
-    while time.monotonic() < deadline:
-        try:
-            responses = [
-                httpx.get(f"http://127.0.0.1:{port}{path}", timeout=1.0, trust_env=False)
-                for path in paths
-            ]
-            # Any non-5xx HTTP response means uvicorn + FastMCP are up. A
-            # 502/500 means the MCP endpoint is alive but unhealthy; keep
-            # polling so startup failures surface with the agent log tail.
-            if all(response.status_code < 500 for response in responses):
+    async def ready():
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            results = await asyncio.gather(
+                *(
+                    probe_mcp_http(f"http://127.0.0.1:{port}{path}", timeout_seconds=1)
+                    for path in ("/mcp", "/ops/mcp")
+                )
+            )
+            if all(results):
                 return True
-        except (
-            httpx.ConnectError,
-            httpx.ReadError,
-            httpx.RemoteProtocolError,
-            httpx.TimeoutException,
-        ):
-            pass
-        time.sleep(0.5)
-    return False
+            await asyncio.sleep(0.2)
+        return False
+
+    return _run_fixture_async(ready())
 
 
 async def _delete_e2e_durables(nats_url: str, user_id: str) -> None:
-    """Reset the JetStream state for ``memory_space_id`` so the next spawn starts
-    from a virgin subscription with no stale messages.
-
-    Three steps, each best-effort:
-
-      1. Delete the durable turn + cmd consumers (prior spawn's pending /
-         in-flight messages are wiped along with the consumer).
-      2. Purge any stream messages whose subject is the user's turn /
-         cmd subject — without this a fresh durable with
-         ``DeliverAllPolicy`` would re-deliver every leftover message
-         from prior test runs.
-
-    Failures are swallowed: on the very first spawn the durable / messages
-    simply don't exist yet, and we don't want the fixture to flake.
-    """
-    try:
-        nc = await nats.connect(nats_url)
-    except Exception:
-        return
+    """Reset only this test realm, using the same subjects/names as the runner."""
+    nc = await nats.connect(nats_url, connect_timeout=3, max_reconnect_attempts=0)
     try:
         js = nc.jetstream()
-        # 1) drop durables
-        for suffix in ("", "-cmd"):
-            name = f"eidolon-memory-agent{suffix}-{user_id}"
+        settings = MemorySettings().nats
+        for role in ("turn", "cmd", "sync"):
+            name = memory_consumer_name(settings.durable_prefix, user_id, role=role)
             try:
-                await js.delete_consumer("MEMORY_TURNS", name)
-            except Exception:
+                await js.delete_consumer(settings.stream, name)
+            except NotFoundError:
                 pass
-        # 2) purge stream messages on this user's subjects
         for subject in (
             conversation_turn_subject(user_id),
             memory_command_subject(user_id),
+            memory_sync_subject(user_id),
         ):
             try:
-                await js.purge_stream("MEMORY_TURNS", subject=subject)
-            except Exception:
+                await js.purge_stream(settings.stream, subject=subject)
+            except NotFoundError:
                 pass
     finally:
         await nc.close()
@@ -330,8 +311,10 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         # from a copy. Those cannot be written as a spawn with a different
         # ``user_id`` — the palace directory is named after the space id, and
         # copying files between two of them is a test of copytree.
-        if palace_dir.exists() and not keep_palace:
-            shutil.rmtree(palace_dir)
+        if not keep_palace:
+            for directory in (palace_dir, Path(str(palace_dir) + ".ledgers")):
+                if directory.exists():
+                    shutil.rmtree(directory)
         # Keep SQLite/Chroma temporary files isolated per agent process as
         # well as the persistent Palace itself.  On macOS, leaving child
         # processes on pytest's shared /private/var/folders TMPDIR reproduces
@@ -343,32 +326,8 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         if process_tmp_dir.exists():
             shutil.rmtree(process_tmp_dir)
         process_tmp_dir.mkdir(parents=True, exist_ok=True)
-        # Wipe any stale JetStream state for this user — prior crashes or
-        # aborted runs leave pending messages that would otherwise bleed
-        # into this spawn's pull subscription. ``_spawn`` is sync but the
-        # cleanup is async; in pytest-asyncio context there's a running
-        # loop, so use ``run_until_complete`` via a fresh helper loop to
-        # avoid "asyncio.run() cannot be called from a running event loop".
-        try:
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # We're inside the test's loop — spin a dedicated thread.
-                    import threading
-
-                    t = threading.Thread(
-                        target=lambda: asyncio.new_event_loop().run_until_complete(
-                            _delete_e2e_durables(live_nats, memory_space_id)
-                        )
-                    )
-                    t.start()
-                    t.join(timeout=10)
-                else:
-                    loop.run_until_complete(_delete_e2e_durables(live_nats, memory_space_id))
-            except RuntimeError:
-                asyncio.run(_delete_e2e_durables(live_nats, memory_space_id))
-        except Exception:  # noqa: BLE001 - best-effort cleanup
-            pass
+        if not keep_palace:
+            _run_fixture_async(_delete_e2e_durables(live_nats, memory_space_id))
 
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         log_dir = _REPORTS_ROOT / f"e2e_{memory_space_id}_{ts}"
@@ -574,6 +533,7 @@ class _AgentHandle:
                 self.process.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+                self.process.wait(timeout=5)
 
 
 # ─── MCP session helper ────────────────────────────────────────────────────
@@ -821,6 +781,7 @@ async def nats_publish_assertion(
     object_value: str | None = None,
     operation_hint: str = "confirm",
     companion_id: str = "e2e",
+    attributes: dict[str, Any] | None = None,
 ) -> str:
     """Publish an administrative assertion to the command subject.
 
@@ -847,6 +808,7 @@ async def nats_publish_assertion(
                     "memory_type": memory_type,
                     "importance": 5,
                     "source_instance_id": companion_id,
+                    **(attributes or {}),
                 },
             },
         }

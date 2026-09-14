@@ -310,3 +310,109 @@ def test_both_claims_are_taken_and_the_space_filename_is_pinned(
             for handle in handles:
                 handle.close()
         router._locks.clear()
+
+
+async def test_cancelled_open_is_owned_until_shutdown_finishes(settings, monkeypatch):
+    import threading
+
+    from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+
+    entered = threading.Event()
+    release = threading.Event()
+    closed = []
+
+    class Store(FakeMemoryBackend):
+        async def aclose(self):
+            closed.append(True)
+
+    router = LocalPalaceRouter(settings)
+
+    def build(space_id):
+        entered.set()
+        assert release.wait(timeout=5)
+        return MemorySpaceRuntime(space_id=space_id, backend=Store(), palace_path="unused")
+
+    monkeypatch.setattr(router, "_build", build)
+    opening = asyncio.create_task(router.resolve("alice"))
+    assert await asyncio.to_thread(entered.wait, 5)
+    opening.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await opening
+    closing = asyncio.create_task(router.aclose())
+    await asyncio.sleep(0)
+    assert not closing.done()
+    release.set()
+    await closing
+    assert closed == [True]
+    assert router.held_spaces() == []
+    with pytest.raises(MemorySpaceUnavailable, match="closing"):
+        await router.resolve("alice")
+
+
+async def test_real_close_reopen_preserves_rows_and_other_palace(settings):
+    router = LocalPalaceRouter(settings)
+    alice = await router.resolve("close-alice")
+    bob = await router.resolve("close-bob")
+    try:
+        for runtime in (alice, bob):
+            await runtime.backend.ingest_text(
+                wing="Wing_Life",
+                room="tea",
+                text=runtime.space_id,
+                metadata={"memory_space_id": runtime.space_id, "source_turn_id": "turn-1"},
+            )
+        await alice.backend.aclose()
+        assert (await bob.backend.get_all(bob.space_id))[0].value == bob.space_id
+    finally:
+        await router.aclose()
+    reopened = LocalPalaceRouter(settings)
+    try:
+        runtime = await reopened.resolve("close-alice")
+        rows = await runtime.backend.get_all(runtime.space_id)
+        assert len(rows) == 1
+        assert rows[0].value == "close-alice"
+        hits = await runtime.backend.search("close-alice", wing="Wing_Life")
+        assert hits[0].metadata["_storage_id"] == rows[0].key
+        assert hits[0].metadata["source_turn_id"] == "turn-1"
+    finally:
+        await reopened.aclose()
+
+
+async def test_failed_close_retains_ownership_until_retry(settings, monkeypatch):
+    router = LocalPalaceRouter(settings)
+    runtime = await router.resolve("failed-close")
+    original_close = runtime.backend.inner.aclose
+
+    async def fail_close():
+        raise RuntimeError("cannot close native client")
+
+    monkeypatch.setattr(runtime.backend.inner, "aclose", fail_close)
+    with pytest.raises(RuntimeError, match="cannot close"):
+        await router.aclose()
+    contender = LocalPalaceRouter(settings)
+    try:
+        with pytest.raises(MemorySpaceUnavailable, match="already owned"):
+            await contender.resolve("failed-close")
+        monkeypatch.setattr(runtime.backend.inner, "aclose", original_close)
+        await router.aclose()
+        assert (await contender.resolve("failed-close")).space_id == "failed-close"
+    finally:
+        await contender.aclose()
+        await router.aclose()
+
+
+async def test_initialization_failure_releases_both_claims(settings, monkeypatch):
+    router = LocalPalaceRouter(settings)
+
+    def fail(*args):
+        raise RuntimeError("ledger initialization failed")
+
+    monkeypatch.setattr(router, "_assert_ledgers_intact", fail)
+    with pytest.raises(RuntimeError, match="ledger initialization"):
+        await router.resolve("failed-open")
+    other = LocalPalaceRouter(settings)
+    try:
+        assert (await other.resolve("failed-open")).space_id == "failed-open"
+    finally:
+        await other.aclose()
+        await router.aclose()

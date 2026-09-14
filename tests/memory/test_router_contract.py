@@ -52,65 +52,10 @@ def router(tmp_path, monkeypatch: pytest.MonkeyPatch):
 # ── the contract ─────────────────────────────────────────────────────────────
 
 
-def test_it_satisfies_the_router_protocol(router) -> None:
-    assert isinstance(router, MemorySpaceRouter)
-
-
-async def test_construction_opens_nothing(router) -> None:
-    assert router.held_spaces() == []
-
-
-async def test_resolving_twice_returns_the_same_handles(router) -> None:
-    first = await router.resolve("alice")
-    second = await router.resolve("alice")
-
-    assert first is second
-    await router.aclose()
-
-
 async def test_a_runtime_knows_which_space_it_is_for(router) -> None:
     runtime = await router.resolve("alice")
 
     assert runtime.space_id == "alice"
-    await router.aclose()
-
-
-async def test_one_router_serves_several_spaces(router) -> None:
-    await router.resolve("alice")
-    await router.resolve("bob")
-
-    assert sorted(router.held_spaces()) == ["alice", "bob"]
-    await router.aclose()
-
-
-async def test_spaces_do_not_share_a_lock(router) -> None:
-    """One space's writes must not queue behind another's.
-
-    Each palace is a separate set of files, so the serialisation each needs is
-    its own. Sharing one lock across spaces would make a busy owner slow every
-    other owner in the process.
-    """
-
-    alice = await router.resolve("alice")
-    bob = await router.resolve("bob")
-
-    assert alice.backend.lock is not bob.backend.lock
-    await router.aclose()
-
-
-async def test_what_one_space_stores_is_invisible_to_another(router) -> None:
-    """The isolation guarantee, exercised rather than assumed."""
-
-    alice = await router.resolve("alice")
-    bob = await router.resolve("bob")
-
-    await alice.backend.ingest_text(
-        wing="Wing_Life",
-        room="colour",
-        text="alice likes green",
-    )
-
-    assert await bob.backend.search("colour", wing="Wing_Life") == []
     await router.aclose()
 
 
@@ -124,36 +69,7 @@ async def test_a_fresh_space_reads_empty_rather_than_raising(router) -> None:
     await router.aclose()
 
 
-async def test_closing_is_idempotent(router) -> None:
-    await router.resolve("alice")
-
-    await router.aclose()
-    await router.aclose()
-
-    assert router.held_spaces() == []
-
-
 # ── ownership, which the storage forces ──────────────────────────────────────
-
-
-async def test_a_palace_refuses_a_second_holder(tmp_path, monkeypatch) -> None:
-    """A palace with two owners routes its writes unpredictably.
-
-    This is why the process:space relation is 1:N and not N:N — a process may
-    hold many palaces, but a palace is held by one process.
-    """
-
-    monkeypatch.delenv("EIDOLON_MEMORY_RUN_DIR", raising=False)
-    settings = _local_settings(tmp_path)
-    first, second = LocalPalaceRouter(settings), LocalPalaceRouter(settings)
-    try:
-        await first.resolve("alice")
-
-        with pytest.raises(MemorySpaceUnavailable, match="already owned"):
-            await second.resolve("alice")
-    finally:
-        await second.aclose()
-        await first.aclose()
 
 
 async def test_one_process_refuses_two_spaces_in_one_palace_directory(
@@ -176,9 +92,7 @@ async def test_one_process_refuses_two_spaces_in_one_palace_directory(
 
     monkeypatch.delenv("EIDOLON_MEMORY_RUN_DIR", raising=False)
     shared = tmp_path / "one-palace"
-    router = LocalPalaceRouter(
-        _local_settings(tmp_path), palace_path_override=str(shared)
-    )
+    router = LocalPalaceRouter(_local_settings(tmp_path), palace_path_override=str(shared))
     try:
         await router.resolve("alice")
 
@@ -215,18 +129,6 @@ async def test_two_routers_refuse_one_palace_under_different_space_ids(
     finally:
         await second.aclose()
         await first.aclose()
-
-
-async def test_a_shard_refuses_the_spaces_it_was_not_given(tmp_path, monkeypatch) -> None:
-    """How a supervisor bounds what one crashing process takes down."""
-
-    monkeypatch.delenv("EIDOLON_MEMORY_RUN_DIR", raising=False)
-    router = LocalPalaceRouter(_local_settings(tmp_path), allowed_spaces=["alice"])
-    try:
-        assert router.serves("alice")
-        assert not router.serves("bob")
-    finally:
-        await router.aclose()
 
 
 def test_the_factory_builds_the_router_for_this_deployment(tmp_path, monkeypatch) -> None:

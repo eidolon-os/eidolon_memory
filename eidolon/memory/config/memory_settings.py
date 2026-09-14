@@ -150,7 +150,7 @@ class RuntimeConfig(BaseModel):
     so the repo only ships code.
     """
 
-    palaces_root: str = ""  # default $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8
+    palaces_root: str = ""  # default $EIDOLON_STATE_ROOT/memory/mempalaces-v3.9
     # Per-Realm SQLite/Chroma temporary files. Empty keeps them beside the
     # Palace root under ``.process-tmp``; env EIDOLON_MEMORY_PROCESS_TMP_ROOT
     # wins. The supervisor activates this before the child imports Chroma.
@@ -252,7 +252,7 @@ class EmbeddingConfig(BaseModel):
     # ONNX Runtime execution provider for ``local``: auto, cpu, cuda, coreml, dml.
     device: str = ""
     # An operator's local copy of the model files. Eidolon's local implementation
-    # reads it directly. MemPalace 3.8 exposes no public local-directory setting,
+    # reads it directly. MemPalace 3.9 exposes no public local-directory setting,
     # so the validator refuses this option for its native providers.
     model_dir: str = ""
     # Explicit ORT intra-op cap. 0 keeps the native default (≈ core count),
@@ -319,7 +319,7 @@ class EmbeddingConfig(BaseModel):
         if resolved_provider == "mempalace" and self.model_dir.strip():
             raise ValueError(
                 "embedding.model_dir is only supported by Eidolon's local provider; "
-                "MemPalace 3.8 has no public local model-directory interface"
+                "MemPalace 3.9 has no public local model-directory interface"
             )
 
         return self

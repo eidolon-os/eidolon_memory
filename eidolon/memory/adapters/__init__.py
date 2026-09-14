@@ -6,12 +6,10 @@ from eidolon.memory.adapters.mempalace_python_backend import (
     MemPalacePythonBackend,
     apply_recall_policy,
 )
-from eidolon.memory.adapters.search_payload import parse_search_tool_payload
 
 __all__ = [
     "FakeMemoryBackend",
     "LockedBackend",
     "MemPalacePythonBackend",
     "apply_recall_policy",
-    "parse_search_tool_payload",
 ]

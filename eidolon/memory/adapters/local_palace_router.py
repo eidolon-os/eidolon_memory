@@ -39,7 +39,6 @@ from eidolon.memory.adapters.locked_backend import LockedBackend
 from eidolon.memory.adapters.mempalace_python_backend import MemPalacePythonBackend
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_run_dir
 from eidolon.memory.config.palace_directory import (
-    LEDGER_FILENAMES,
     LEDGERS_DIR_SUFFIX,
     resolve_ledgers_for_memory_space,
     resolve_palace_for_memory_space,
@@ -78,52 +77,6 @@ from eidolon.memory.support import metrics
 from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
-
-
-def _adopt_ledgers_beside_the_palace(palace_path: Path, ledgers_path: Path) -> None:
-    """Move a space's Eidolon-owned databases out of MemPalace's directory.
-
-    Runs on every open and does nothing once done, so an existing deployment
-    migrates the first time each space is resolved rather than needing a step
-    someone has to remember. Idempotent: a file already at the destination is left
-    alone and the stale copy is not moved over it.
-
-    ``os.replace`` is not used for that reason. Two files with the same name means
-    the destination is the live one — the space has already been served from the
-    new layout — and the leftover in the palace is what a MemPalace rebuild would
-    have restored from an archive. Overwriting would lose whatever was written
-    since.
-
-    The ``-wal`` and ``-shm`` sidecars move with their database. Leaving them
-    behind would silently discard anything committed to the write-ahead log but
-    not yet checkpointed, which for the graph is the most recent turns.
-    """
-
-    if not palace_path.is_dir():
-        return
-
-    moved: list[str] = []
-    for filename in LEDGER_FILENAMES:
-        for suffix in ("", "-wal", "-shm"):
-            source = palace_path / f"{filename}{suffix}"
-            if not source.is_file():
-                continue
-            destination = ledgers_path / f"{filename}{suffix}"
-            if destination.exists():
-                continue
-            ledgers_path.mkdir(parents=True, exist_ok=True)
-            source.rename(destination)
-            moved.append(source.name)
-
-    if moved:
-        log.info(
-            "space_ledgers_moved_out_of_palace",
-            palace=str(palace_path),
-            ledgers=str(ledgers_path),
-            moved=moved,
-            reason="mempalace repair renames the palace directory and restores only "
-            "knowledge_graph.sqlite3",
-        )
 
 
 class LocalPalaceRouter:
@@ -178,6 +131,9 @@ class LocalPalaceRouter:
         # an entry, so resolving different spaces does not serialise, and a space
         # under construction is built once rather than twice.
         self._pool_lock = asyncio.Lock()
+        self._closing = False
+        self._close_task: asyncio.Task[None] | None = None
+        self._opening: set[asyncio.Task[MemorySpaceRuntime]] = set()
 
     def serves(self, space_id: str) -> bool:
         if self._allowed is None:
@@ -185,6 +141,20 @@ class LocalPalaceRouter:
         return space_id in self._allowed
 
     async def resolve(self, space_id: str) -> MemorySpaceRuntime:
+        if self._closing:
+            raise MemorySpaceUnavailable("memory router is closing")
+        task = asyncio.create_task(self._resolve(space_id))
+        self._opening.add(task)
+
+        def completed(done: asyncio.Task[MemorySpaceRuntime]) -> None:
+            self._opening.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(completed)
+        return await asyncio.shield(task)
+
+    async def _resolve(self, space_id: str) -> MemorySpaceRuntime:
         existing = self._runtimes.get(space_id)
         if existing is not None:
             return existing
@@ -193,6 +163,8 @@ class LocalPalaceRouter:
             raise UnknownMemorySpace(f"this deployment does not serve memory space {space_id!r}")
 
         async with self._pool_lock:
+            if self._closing:
+                raise MemorySpaceUnavailable("memory router is closing")
             # Re-check: another caller may have built it while we waited.
             existing = self._runtimes.get(space_id)
             if existing is not None:
@@ -234,50 +206,57 @@ class LocalPalaceRouter:
             if self._palace_path_override
             else resolve_ledgers_for_memory_space(self._settings, space_id)
         )
-        self._prepare_palace(space_id, palace_path)
-        _adopt_ledgers_beside_the_palace(palace_path, ledgers_path)
-        self._assert_ledgers_intact(space_id, ledgers_path)
+        try:
+            self._prepare_palace(space_id, palace_path)
+            self._assert_ledgers_intact(space_id, ledgers_path)
+        except Exception:
+            self._release_claims(space_id)
+            raise
 
-        backend = LockedBackend(
-            MemPalacePythonBackend(self._settings, str(palace_path), memory_space_id=space_id)
-        )
         kg = None
-        if self._settings.kg.enabled:
-            # Shares the vector store's lock: a turn writes to both, and one
-            # critical section over the pair beats an ordering between two.
-            kg = SqliteKnowledgeGraph(
-                ledgers_path / "knowledge_graph.sqlite3",
-                space_id=space_id,
-                lock=backend.lock,
+        try:
+            backend = LockedBackend(
+                MemPalacePythonBackend(self._settings, str(palace_path), memory_space_id=space_id)
             )
-
-        return MemorySpaceRuntime(
-            space_id=space_id,
-            backend=backend,
-            palace_path=str(palace_path),
-            kg=kg,
-            ledgers=SpaceLedgers(
-                command_status=CommandStatusLedger(
-                    ledgers_path / "command_status.sqlite3",
+            if self._settings.kg.enabled:
+                # Shares the vector store's lock: a turn writes to both, and one
+                # critical section over the pair beats an ordering between two.
+                kg = SqliteKnowledgeGraph(
+                    ledgers_path / "knowledge_graph.sqlite3",
                     space_id=space_id,
-                    retention_days=self._settings.command_status.retention_days,
-                    max_records=self._settings.command_status.max_records,
-                    prune_every_writes=self._settings.command_status.prune_every_writes,
+                    lock=backend.lock,
+                )
+
+            return MemorySpaceRuntime(
+                space_id=space_id,
+                backend=backend,
+                palace_path=str(palace_path),
+                kg=kg,
+                ledgers=SpaceLedgers(
+                    command_status=CommandStatusLedger(
+                        ledgers_path / "command_status.sqlite3",
+                        space_id=space_id,
+                        retention_days=self._settings.command_status.retention_days,
+                        max_records=self._settings.command_status.max_records,
+                        prune_every_writes=self._settings.command_status.prune_every_writes,
+                    ),
+                    dlq=DlqLedger(ledgers_path / "dlq.sqlite3", space_id=space_id),
+                    decisions=ExtractionDecisionLedger(
+                        ledgers_path / "extraction_decisions.sqlite3"
+                    ),
+                    canonical_facts=CanonicalFactLedger(ledgers_path / "canonical_facts.sqlite3"),
+                    commitments=CommitmentLedger(ledgers_path / "commitments.sqlite3"),
+                    sync=SyncLedger(ledgers_path / "sync_ledger.sqlite3", space_id=space_id),
                 ),
-                dlq=DlqLedger(ledgers_path / "dlq.sqlite3", space_id=space_id),
-                decisions=ExtractionDecisionLedger(ledgers_path / "extraction_decisions.sqlite3"),
-                canonical_facts=CanonicalFactLedger(ledgers_path / "canonical_facts.sqlite3"),
-                commitments=CommitmentLedger(ledgers_path / "commitments.sqlite3"),
-                sync=SyncLedger(ledgers_path / "sync_ledger.sqlite3", space_id=space_id),
-            ),
-        )
+            )
+        except Exception:
+            if kg is not None:
+                kg.close()
+            self._release_claims(space_id)
+            raise
 
     def _assert_ledgers_intact(self, space_id: str, ledgers_path: Path) -> None:
         """Integrity-check the graph, once it is where we keep it.
-
-        Separate from ``_prepare_palace`` because it runs *after* the migration
-        above — checking the old location would pass on a file that is no longer
-        the one being opened.
 
         Only what already exists is checked. The graph creates its schema on open,
         so a first run has nothing here yet, and an absent file is not a corrupt
@@ -466,32 +445,39 @@ class LocalPalaceRouter:
 
         return sorted(self._runtimes)
 
-    async def aclose(self) -> None:
-        runtimes, self._runtimes = self._runtimes, {}
-        for space_id, runtime in runtimes.items():
-            if runtime.kg is not None:
-                try:
-                    runtime.kg.close()
-                except Exception as exc:  # noqa: BLE001 - shutdown is best-effort
-                    log.warning(
-                        "space_runtime_kg_close_failed",
-                        memory_space_id=space_id,
-                        error=str(exc),
-                    )
+    def _release_claims(self, space_id: str) -> None:
+        for handle in self._locks.pop(space_id, []):
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+        self._palace_dirs = {
+            path: owner for path, owner in self._palace_dirs.items() if owner != space_id
+        }
 
-        # Release the claims last, so nothing else can take a space while we are
-        # still closing its databases.
-        metrics.SPACES_HELD.set(0)
-        self._palace_dirs.clear()
-        locks, self._locks = self._locks, {}
-        for space_id, handles in locks.items():
-            try:
-                for handle in handles:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                    handle.close()
-            except Exception as exc:  # noqa: BLE001 - shutdown is best-effort
-                log.warning(
-                    "space_lock_release_failed",
-                    memory_space_id=space_id,
-                    error=str(exc),
-                )
+    async def aclose(self) -> None:
+        self._closing = True
+        if self._close_task is None or (
+            self._close_task.done() and self._close_task.exception() is not None
+        ):
+            self._close_task = asyncio.create_task(self._close())
+        await asyncio.shield(self._close_task)
+
+    async def _close(self) -> None:
+        async with self._pool_lock:
+            for space_id, runtime in list(self._runtimes.items()):
+                close = getattr(runtime.backend, "aclose", None)
+                if close is not None:
+                    await close()
+                if runtime.kg is not None:
+                    # The graph shares the backend lock, and may have its own workers.
+                    lock = getattr(runtime.backend, "lock", None)
+                    if lock is not None:
+                        async with lock.writer():
+                            runtime.kg.close()
+                    else:
+                        runtime.kg.close()
+                self._release_claims(space_id)
+                del self._runtimes[space_id]
+                metrics.SPACES_HELD.set(len(self._runtimes))
+            # Also release claims left by an interrupted/failed initialization.
+            for space_id in list(self._locks):
+                self._release_claims(space_id)

@@ -85,7 +85,7 @@ def palace_environment(
     initialise, the runner never started, and the Eidolon ran with no memory at
     all while everything else looked healthy.
 
-    MemPalace 3.8 keys every writer lock by the normalized Palace path, but keeps
+    MemPalace 3.9 keys every writer lock by the normalized Palace path, but keeps
     those locks under ``~/.mempalace/locks``. All Palace processes therefore use
     one writable service home, not one HOME per Palace: different HOME values for
     the same Palace create different lock files and defeat upstream's exclusion.

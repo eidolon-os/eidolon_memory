@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import math
 import time
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mempalace.backends.base import QueryResult
 
 from eidolon.memory.adapters.mempalace_query_embedding import embed_query_vector
+from eidolon.memory.adapters.mempalace_results import storage_record
 from eidolon.memory.domain.errors import MemoryBackendUnavailable
+from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.infrastructure.mempalace_hnsw import probe_hnsw_safety
 
 
@@ -28,8 +32,11 @@ def search_memories_shared_embedding(
     skip_closets: bool = True,
     collection_name: str | None = None,
     diagnostics: dict[str, float] | None = None,
-) -> list[dict[str, Any]]:
+    memory_space_id: str | None = None,
+) -> list[MemoryWireRecord]:
     """Search multiple wings using a single precomputed query embedding."""
+    if n_results <= 0:
+        return []
     total_started = time.perf_counter()
     probe_started = time.perf_counter()
     hnsw_safety = probe_hnsw_safety(palace_path, collection_name)
@@ -40,7 +47,6 @@ def search_memories_shared_embedding(
             palace_path,
             wings=wings,
             room=room,
-            audiences=audiences,
             n_results=n_results,
             collection_name=collection_name,
         )
@@ -78,7 +84,6 @@ def search_memories_shared_embedding(
             where=where,
         )
         _record_ms(diagnostics, "chroma_query_ms", query_started)
-        post_filter = False
 
         closet_boost_by_source = {}
         if not skip_closets:
@@ -88,10 +93,6 @@ def search_memories_shared_embedding(
                 query_embeddings=vec,
                 n_results=n_results,
                 where=where,
-                post_filter=post_filter,
-                wings=wings,
-                room=room,
-                audiences=audiences,
             )
             _record_ms(diagnostics, "closet_query_ms", closet_started)
     except Exception as exc:
@@ -100,16 +101,12 @@ def search_memories_shared_embedding(
     scoring_started = time.perf_counter()
     hits = _score_results(
         drawer_results,
-        wings=wings,
-        room=room,
-        audiences=audiences,
         n_results=max(n_results * len(wings), n_results),
         closet_boost_by_source=closet_boost_by_source,
-        post_filter=post_filter,
         metric=metric,
+        memory_space_id=memory_space_id,
     )
     _record_ms(diagnostics, "storage_rank_ms", scoring_started)
-    hits.sort(key=lambda h: float(h.get("similarity", 0.0)), reverse=True)
     _record_ms(diagnostics, "vector_storage_total_ms", total_started)
     return hits[: max(n_results * len(wings), n_results)]
 
@@ -125,59 +122,36 @@ def _search_sqlite_fallback(
     *,
     wings: list[str],
     room: str | None,
-    audiences: tuple[str, ...] | None,
     n_results: int,
     collection_name: str | None,
-) -> list[dict[str, Any]]:
-    """Use MemPalace's SQLite BM25 path without opening an unsafe HNSW segment."""
-
+) -> list[MemoryWireRecord]:
+    """Probe SQLite without unsafe HNSW access; 3.9 cannot verify nonempty hits' visibility."""
     try:
         from mempalace.searcher import search_memories
-    except ImportError as exc:
-        raise MemoryBackendUnavailable("mempalace package is not installed") from exc
 
-    hits: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
-    for wing in wings or [None]:
-        payload = search_memories(
-            query=query,
-            palace_path=palace_path,
-            wing=wing,
-            room=room,
-            n_results=n_results,
-            vector_disabled=True,
-            collection_name=collection_name,
-        )
-        if isinstance(payload, dict) and payload.get("error"):
-            raise MemoryBackendUnavailable(str(payload["error"]))
-        rows = payload.get("results", []) if isinstance(payload, dict) else []
-        for raw in rows:
-            if not isinstance(raw, dict):
-                continue
-            row = dict(raw)
-            metadata = row.get("metadata") or {}
-            if audiences is not None and str(metadata.get("audience") or "owner") not in audiences:
-                continue
-            key = (
-                str(row.get("text") or ""),
-                str(row.get("wing") or wing or ""),
-                str(row.get("room") or ""),
-                str(row.get("source_path") or row.get("source_file") or ""),
+        for wing in wings or [None]:
+            payload = search_memories(
+                query=query,
+                palace_path=palace_path,
+                wing=wing,
+                room=room,
+                n_results=n_results,
+                vector_disabled=True,
+                collection_name=collection_name,
             )
-            if key in seen:
-                continue
-            seen.add(key)
-            hits.append(row)
-
-    def _rank(row: dict[str, Any]) -> float:
-        for key in ("hybrid_score", "bm25_score", "similarity"):
-            value = row.get(key)
-            if isinstance(value, (int, float)):
-                return float(value)
-        return 0.0
-
-    hits.sort(key=_rank, reverse=True)
-    return hits[: max(n_results * max(1, len(wings)), n_results)]
+            if payload.get("error"):
+                raise MemoryBackendUnavailable(str(payload["error"]))
+            if payload.get("results"):
+                # 3.9's public fallback strips permission metadata. A broad metadata
+                # scan or private SQL hydration would introduce a second read path.
+                raise MemoryBackendUnavailable(
+                    "MemPalace SQLite fallback omitted visibility metadata"
+                )
+    except MemoryBackendUnavailable:
+        raise
+    except Exception as exc:
+        raise MemoryBackendUnavailable(str(exc)) from exc
+    return []
 
 
 def _device_visibility_filter(device_id: str | None) -> dict[str, Any]:
@@ -279,7 +253,11 @@ def _first_batch(result: Any, field: str) -> list[Any]:
     """Read one query batch from MemPalace's public typed result."""
 
     batches = getattr(result, field)
-    return list(batches[0]) if batches else []
+    if len(batches) != 1:
+        if not batches and not result.ids:
+            return []
+        raise MemoryBackendUnavailable("expected one MemPalace query batch")
+    return list(batches[0])
 
 
 def _apply_distance_boost(distance: float, boost: float, metric: str) -> float:
@@ -289,32 +267,12 @@ def _apply_distance_boost(distance: float, boost: float, metric: str) -> float:
     return max(0.0, effective)
 
 
-def _matches_scope(
-    meta: dict[str, Any],
-    *,
-    wings: list[str],
-    room: str | None,
-    audiences: tuple[str, ...] | None = None,
-) -> bool:
-    if wings and meta.get("wing") not in set(wings):
-        return False
-    if room and meta.get("room") != room:
-        return False
-    if audiences is not None and str(meta.get("audience") or "owner") not in audiences:
-        return False
-    return True
-
-
 def _closet_boosts(
     palace_path: str,
     *,
     query_embeddings: list[list[float]],
     n_results: int,
     where: dict[str, Any] | None,
-    post_filter: bool,
-    wings: list[str],
-    room: str | None,
-    audiences: tuple[str, ...] | None,
 ) -> dict[str, tuple]:
     try:
         from mempalace.palace import get_collection
@@ -341,13 +299,6 @@ def _closet_boosts(
             )
         ):
             cmeta = cmeta or {}
-            if post_filter and not _matches_scope(
-                cmeta,
-                wings=wings,
-                room=room,
-                audiences=audiences,
-            ):
-                continue
             source = cmeta.get("source_file", "")
             if source and source not in out:
                 out[source] = (rank, cdist, (cdoc or "")[:200])
@@ -357,36 +308,28 @@ def _closet_boosts(
 
 
 def _score_results(
-    drawer_results,
+    drawer_results: QueryResult,
     *,
-    wings: list[str],
-    room: str | None,
-    audiences: tuple[str, ...] | None,
     n_results: int,
     closet_boost_by_source: dict[str, tuple],
-    post_filter: bool,
     metric: str = "cosine",
-) -> list[dict[str, Any]]:
+    memory_space_id: str | None = None,
+) -> list[MemoryWireRecord]:
     closet_rank_boosts = [0.40, 0.25, 0.15, 0.08, 0.04]
     closet_distance_cap = 1.5
 
-    scored: list[dict[str, Any]] = []
-    for doc, meta, dist in zip(
-        _first_batch(drawer_results, "documents"),
-        _first_batch(drawer_results, "metadatas"),
-        _first_batch(drawer_results, "distances"),
-    ):
+    scored: list[MemoryWireRecord] = []
+    batches = [
+        _first_batch(drawer_results, field)
+        for field in ("ids", "documents", "metadatas", "distances")
+    ]
+    if len({len(batch) for batch in batches}) != 1:
+        raise MemoryBackendUnavailable("misaligned MemPalace query result")
+    for drawer_id, doc, meta, dist in zip(*batches, strict=True):
         # These metadata came from the same Chroma query as the vector hit, not
         # from MemPalace's older lossy public search payload. Mark that provenance
         # explicitly so privacy filtering never needs a second hydration read.
         meta = {**(meta or {}), "_storage_metadata_verified": True}
-        if post_filter and not _matches_scope(
-            meta,
-            wings=wings,
-            room=room,
-            audiences=audiences,
-        ):
-            continue
         doc = doc or ""
         source = meta.get("source_file", "") or ""
         boost = 0.0
@@ -395,21 +338,19 @@ def _score_results(
             if c_dist <= closet_distance_cap and c_rank < len(closet_rank_boosts):
                 boost = closet_rank_boosts[c_rank]
         effective_dist = _apply_distance_boost(float(dist), boost, metric)
-        scored.append(
-            {
-                "text": doc,
-                "wing": meta.get("wing", "unknown"),
-                "room": meta.get("room", "unknown"),
-                "source_file": Path(source).name if source else "?",
-                "distance": round(float(dist), 4),
-                "similarity": round(_distance_to_similarity(effective_dist, metric), 3),
-                "_sort_key": effective_dist,
-                "metadata": meta,
-            }
+        record = storage_record(
+            drawer_id,
+            doc,
+            meta,
+            memory_space_id=memory_space_id,
         )
+        record.metadata.update(
+            similarity=round(_distance_to_similarity(float(dist), metric), 3),
+            _distance=float(dist),
+            _effective_distance=effective_dist,
+            _retrieval_score=_distance_to_similarity(effective_dist, metric),
+        )
+        scored.append(record)
 
-    scored.sort(key=lambda h: h["_sort_key"])
-    trimmed = scored[:n_results]
-    for h in trimmed:
-        h.pop("_sort_key", None)
-    return trimmed
+    scored.sort(key=lambda r: r.metadata["_retrieval_score"], reverse=True)
+    return scored[:n_results]

@@ -135,7 +135,7 @@ runtime = await router.resolve(space_id)   # backend / kg / ledgers
 │   一份 ONNX 会话给整块板,上面每个 agent 用 provider: http 指过来       │
 │   两个用户起就比每进程各带一份权重更省,并发下也更快                     │
 │                                                                    │
-│  palace 物理隔离: $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<id>/ │
+│  palace 物理隔离: $EIDOLON_STATE_ROOT/memory/mempalaces-v3.9/<id>/ │
 │  ledger/KG: 同一父目录下的 <id>.ledgers/                           │
 └────────────────────────────────────────────────────────────────────┘
                               ▲             ▲
@@ -715,12 +715,12 @@ supervisor:
 ### 8.3 Palace 目录布局
 
 ```
-$EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<memory_space_id>/
+$EIDOLON_STATE_ROOT/memory/mempalaces-v3.9/<memory_space_id>/
   ├─ chroma.sqlite3              # 向量 + 元数据 (chromadb, WAL)
   ├─ chroma.sqlite3-wal
   └─ mempalace.yaml              # mempalace 自身配置
 
-$EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<memory_space_id>.ledgers/
+$EIDOLON_STATE_ROOT/memory/mempalaces-v3.9/<memory_space_id>.ledgers/
   ├─ knowledge_graph.sqlite3     # Eidolon bi-temporal KG
   ├─ knowledge_graph.sqlite3-wal
   └─ *.sqlite3                   # canonical facts、commitments、decision、DLQ 等 ledger
@@ -822,7 +822,7 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
 - **local only**:已落地。云端实现整体删除 —— PG 的 6 个 ledger、PG 图、无状态 router、
   milvus 配置管道、云端 profile、两个 extra。抽象层保留。
 - **中文 embedder**:已落地。`bge-small-zh`(512 维)通过 Eidolon 的公开 embedding port
-  生成 document/query vectors,再交给 MemPalace 3.8 的公开 collection API；不注入私有
+  生成 document/query vectors,再交给 MemPalace 3.9 的公开 collection API；不注入私有
   provider、embedder cache 或 SQLite 热路径。选型实测见 `docs/ARCHITECTURE.md`。
 - **MCP 契约统一**:易失 `working_memory` 已移除；Agent 只消费长期投影及其证据。
   `kg_triples` 仍是 Agent 回答可追踪事实所需的正式证据字段，不再被描述成临时内部字段。

@@ -521,10 +521,15 @@ async def _nats_subscriber_loop(
             reconnect_delay = min(reconnect_delay * 2, _MAX_RECONNECT_DELAY)
         finally:
             if nc is not None:
+                # Workers have already stopped. Draining pull subscriptions can
+                # wait for replies to abandoned fetches; flush final ACKs, then
+                # close the transport while durable consumers remain on the broker.
                 try:
-                    await nc.drain()
+                    await nc.flush(timeout=2)
                 except Exception:
                     pass
+                finally:
+                    await nc.close()
     log.info("agent_runner_nats_stopped", memory_space_id=memory_space_id)
 
 
@@ -656,7 +661,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help=(
             "Override palace directory "
-            "(default $EIDOLON_STATE_ROOT/memory/mempalaces-v3.8/<memory_space_id>)"
+            "(default $EIDOLON_STATE_ROOT/memory/mempalaces-v3.9/<memory_space_id>)"
         ),
     )
     # Whose memory this space is. Not a scope check — the space is already the
@@ -899,13 +904,15 @@ def _run_service(
         access_log=False,
     )
     server = uvicorn.Server(config)
-    try:
-        asyncio.run(server.serve())
-    finally:
-        # The router holds this process's claim on every space it opened, so
-        # releasing is its business now rather than a lone file handle's.
-        with contextlib.suppress(Exception):
-            asyncio.run(router.aclose())
+    async def serve() -> None:
+        try:
+            await server.serve()
+        finally:
+            # Drain storage workers while their owning event loop is still alive.
+            # A second asyncio.run would cancel them before releasing native clients.
+            await router.aclose()
+
+    asyncio.run(serve())
 
 
 if __name__ == "__main__":

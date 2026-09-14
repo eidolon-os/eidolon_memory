@@ -2,29 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
+from eidolon.memory.adapters.mempalace_results import storage_record
 from eidolon.memory.adapters.recall_ranking import (
     rank_records_by_similarity,
-    vector_fields_from_hit,
 )
-from eidolon.memory.adapters.search_payload import parse_search_tool_payload
 from eidolon.memory.application.public_recall import wire_record_to_public_dict
 from eidolon.memory.domain.wire import MemoryWireRecord
-
-
-def test_vector_fields_prefers_similarity_over_distance():
-    sim, internal = vector_fields_from_hit(
-        {"distance": 0.9, "similarity": 0.42, "text": "x"}
-    )
-    assert sim == 0.42
-    assert internal["_distance"] == 0.9
-
-
-def test_vector_fields_derives_similarity_from_distance():
-    sim, internal = vector_fields_from_hit({"distance": 0.6, "text": "铁锤"})
-    assert sim == pytest.approx(0.4)
-    assert internal["_distance"] == 0.6
 
 
 def test_rank_records_by_similarity_descending():
@@ -46,25 +29,26 @@ def test_rank_records_by_similarity_descending():
     assert [r.key for r in out] == ["b", "a"]
 
 
-def test_parse_search_payload_exposes_similarity_not_score():
-    rows = parse_search_tool_payload(
+def test_boost_changes_order_without_changing_public_similarity():
+    boosted = storage_record(
+        "drawer_a",
+        "boosted",
         {
-            "results": [
-                {
-                    "text": "用户提到：铁锤是一只边境牧羊犬",
-                    "wing": "Wing_Life",
-                    "room": "event_general",
-                    "distance": 0.6,
-                    "similarity": 0.55,
-                }
-            ]
-        }
+            "similarity": 0.4,
+            "_distance": 0.6,
+            "_retrieval_score": 0.9,
+            "source_turn_id": "turn-a",
+            "source_file": "note.md",
+        },
     )
-    assert rows[0].metadata["similarity"] == 0.55
-    assert "score" not in rows[0].metadata
-    assert rows[0].metadata["_distance"] == 0.6
+    direct = storage_record("drawer_b", "direct", {"similarity": 0.8})
+    assert rank_records_by_similarity([direct, boosted], top_k=2) == [boosted, direct]
+    public = wire_record_to_public_dict(boosted)
+    assert public["metadata"]["similarity"] == 0.4
+    assert public["metadata"]["source_turn_id"] == "turn-a"
+    assert not any(k.startswith("_") for k in public["metadata"])
 
-    public = wire_record_to_public_dict(rows[0])
-    assert public["metadata"]["similarity"] == 0.55
-    assert "score" not in public["metadata"]
-    assert "_distance" not in public["metadata"]
+
+def test_equal_scores_preserve_input_order():
+    rows = [storage_record(f"drawer_{i}", str(i), {"similarity": 0.5}) for i in range(3)]
+    assert rank_records_by_similarity(rows, top_k=2) == rows[:2]
