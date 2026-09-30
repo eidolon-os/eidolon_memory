@@ -10,9 +10,13 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from eidolon_memory_contracts import OWNER_AUDIENCE, companion_audience
+from eidolon_memory_contracts.owner import MemoryRecollections
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+from eidolon.memory.config.memory_settings import load_memory_settings
 from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.entrypoints import recollections_http
 from eidolon.memory.entrypoints.owner_memory_http import owner_memory_routes
@@ -97,7 +101,8 @@ def test_answers_with_what_the_space_holds(client) -> None:
     assert body["operation"] == "memory.recollections"
     assert body["memory_space_id"] == "realm_primary"
     assert body["query"] == "散步"
-    assert body["recollections"] == [{"text": "他喜欢在下午散步"}]
+    assert body["recollections"] == [{"text": "他喜欢在下午散步", "remembered_at": None}]
+    MemoryRecollections.model_validate(body)
     # The space is the one this process serves; a caller cannot name another.
     assert service.contexts[0].memory_realm_id == "realm_primary"
     assert calls[0]["top_k"] == DEFAULT_RESULTS
@@ -108,6 +113,8 @@ def test_answers_with_what_the_space_holds(client) -> None:
     # "Could not look" and "there is nothing" are different answers, and this
     # is the surface where a person asked the question that distinguishes them.
     assert calls[0]["raise_on_degraded"] is True
+    # No Companion named: the Owner asking about their own memory.
+    assert calls[0]["owner_view"] is True
 
 
 def test_storage_value_and_time_are_projected_as_a_recollection() -> None:
@@ -118,7 +125,7 @@ def test_storage_value_and_time_are_projected_as_a_recollection() -> None:
         metadata={"occurred_at": "2026-08-28T04:24:36Z"},
     )
 
-    assert recollections_http._recollection_view(record) == {
+    assert recollections_http._recollection_view(record).model_dump() == {
         "text": "用户喜欢乌龙茶",
         "remembered_at": "2026-08-28T04:24:36+00:00",
     }
@@ -203,3 +210,67 @@ def test_a_runner_is_spawned_with_the_environment_it_needs_to_embed(
     assert environment["MEMPALACE_PALACE_PATH"] == "/tmp/palace"
     # And still its own temp isolation, which is what it used to have alone.
     assert environment["TMPDIR"] == environment["SQLITE_TMPDIR"]
+
+
+
+class _RealRuntime:
+    def __init__(self, backend: FakeMemoryBackend) -> None:
+        self.backend = backend
+        self.palace_path = "/tmp/palace"
+
+
+class _RealService:
+    def __init__(self, backend: FakeMemoryBackend) -> None:
+        self._runtime = _RealRuntime(backend)
+
+    async def runtime_for(self, context: Any) -> _RealRuntime:
+        return self._runtime
+
+
+async def test_the_owner_and_each_companion_search_their_own_scope() -> None:
+    """The real search, not a stand-in: the seam that hid a 503 for a month.
+
+    Asking without ``companion_id`` raised ``MissingInteractionIdentity`` inside
+    the search once read identity failed closed, and the catch-all answered
+    "memory is unavailable". The fixture above replaces the search, so it could
+    not see that. This drives it over the fake backend with one memory per
+    audience.
+    """
+
+    backend = FakeMemoryBackend()
+    for key, audience in (
+        ("tea", OWNER_AUDIENCE),
+        ("walk", companion_audience("c_mochi")),
+        ("chess", companion_audience("c_nori")),
+    ):
+        await backend.ingest_text(
+            wing="Wing_Life",
+            room=key,
+            text=f"散步和{key}",
+            metadata={"memory_space_id": "realm_primary", "audience": audience},
+        )
+    app = Starlette(
+        routes=owner_memory_routes(
+            service=_RealService(backend),  # type: ignore[arg-type]
+            settings=load_memory_settings(),
+            memory_space_id="realm_primary",
+            owner_id="owner-1",
+            service_token=SERVICE_TOKEN,
+        )
+    )
+
+    def texts(response) -> set[str]:
+        assert response.status_code == 200, response.text
+        body = MemoryRecollections.model_validate(response.json())
+        return {item.text for item in body.recollections}
+
+    with TestClient(app) as http:
+        owner = http.get("/api/memory/v1/recollections", params={"q": "散步"}, headers=AUTH)
+        mochi = http.get(
+            "/api/memory/v1/recollections",
+            params={"q": "散步", "companion_id": "c_mochi"},
+            headers=AUTH,
+        )
+
+    assert texts(owner) == {"散步和tea", "散步和walk", "散步和chess"}
+    assert texts(mochi) == {"散步和tea", "散步和walk"}

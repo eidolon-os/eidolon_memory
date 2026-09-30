@@ -200,9 +200,17 @@ class RecallPolicyRegistry:
         query: str,
         top_k: int,
         include_private: bool = False,
+        every_audience: bool = False,
     ) -> list[MemoryWireRecord]:
         visible = [
-            r for r in records if self.visible(r, context=context, include_private=include_private)
+            r
+            for r in records
+            if self.visible(
+                r,
+                context=context,
+                include_private=include_private,
+                every_audience=every_audience,
+            )
         ]
         visible.sort(
             key=lambda r: (

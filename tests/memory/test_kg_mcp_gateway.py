@@ -80,7 +80,7 @@ async def test_privacy_preview_is_read_only_and_confirm_publishes_exact_ids(
             memory_space_id=SPACE,
             key=key,
             value=text,
-            metadata={"memory_space_id": SPACE, "wing": "Wing_Profile"},
+            metadata={"memory_space_id": SPACE, "wing": "Wing_Profile", "assertion_id": f"a-{key}"},
         )
     preview_tool = next(
         tool

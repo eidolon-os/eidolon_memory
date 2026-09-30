@@ -1067,7 +1067,7 @@ class SqliteKnowledgeGraph:
         self,
         entity_name: str | None = None,
         *,
-        audiences: tuple[str, ...],
+        audiences: tuple[str, ...] | None,
         since: str | None = None,
         until: str | None = None,
         limit: int = 100,
@@ -1083,14 +1083,14 @@ class SqliteKnowledgeGraph:
     def _timeline_sync(
         self,
         entity_name: str | None,
-        audiences: tuple[str, ...],
+        audiences: tuple[str, ...] | None,
         since: str | None,
         until: str | None,
         limit: int,
         current_only: bool,
         include_sensitive: bool,
     ) -> list[KgTripleRecord]:
-        if not audiences:
+        if audiences is not None and not audiences:
             return []
         clauses = ["s.space_id = ?"]
         params: list[Any] = [self._space_id]
@@ -1112,8 +1112,9 @@ class SqliteKnowledgeGraph:
         if end:
             clauses.append("(s.valid_from IS NULL OR s.valid_from <= ?)")
             params.append(end)
-        clauses.append(audience_filter(len(audiences)))
-        params.extend(audiences)
+        if audiences is not None:
+            clauses.append(audience_filter(len(audiences)))
+            params.extend(audiences)
         sql = (
             f"SELECT {SELECT_COLUMNS} {JOIN_ENTITIES} "
             f"WHERE {' AND '.join(clauses)} "

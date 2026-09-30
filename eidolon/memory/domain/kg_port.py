@@ -242,7 +242,7 @@ class KnowledgeGraphPort(Protocol):
         self,
         entity_name: str | None = None,
         *,
-        audiences: tuple[str, ...],
+        audiences: tuple[str, ...] | None,
         since: str | None = None,
         until: str | None = None,
         limit: int = 100,
@@ -250,6 +250,9 @@ class KnowledgeGraphPort(Protocol):
         include_sensitive: bool = False,
     ) -> list[KgTripleRecord]:
         """Statements ordered by when they became true. For operators.
+
+        ``audiences=None`` is every audience in this space: the Owner reading
+        their own graph, never a Companion. An empty tuple still reads nothing.
 
         The one read that returns ended statements — that is what a timeline is
         for. ``current_only`` narrows to open ones, and belongs here rather than in

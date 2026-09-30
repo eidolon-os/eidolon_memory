@@ -14,13 +14,24 @@ of them hands out filesystem paths.
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from eidolon_memory_contracts import (
     PrivacyMutationCommand,
     readable_audiences,
+)
+from eidolon_memory_contracts.owner import (
+    MemoryBrowse,
+    MemoryEntries,
+    MemoryExport,
+    MemoryGraph,
+    MemoryStatus,
+    OwnerForgetEntry,
+    OwnerForgetOutcome,
+    OwnerForgetPreview,
+    OwnerForgetProgress,
+    OwnerWireModel,
 )
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -31,11 +42,15 @@ from eidolon.memory.application.command_delivery import publish_with_status
 from eidolon.memory.application.forget import (
     ForgetResolutionLimitExceeded,
     find_forget_candidates,
+    forget_target_is_resolvable,
 )
 from eidolon.memory.application.materialization import inspect_materialization
 from eidolon.memory.application.memory_service import MemoryService
 from eidolon.memory.application.mempalace_hierarchy import build_owner_browse
-from eidolon.memory.application.owner_entries import build_owner_entries
+from eidolon.memory.application.owner_entries import (
+    build_owner_entries,
+    decode_entries_cursor,
+)
 from eidolon.memory.application.owner_export import build_owner_export
 from eidolon.memory.application.recall_policy import RecallPolicyRegistry
 from eidolon.memory.config.memory_settings import MemorySettings
@@ -58,7 +73,11 @@ EXPORT_PATH = "/api/memory/v1/export"
 ENTRIES_PATH = "/api/memory/v1/entries"
 FORGET_PREVIEW_PATH = "/api/memory/v1/forget/preview"
 FORGET_CONFIRM_PATH = "/api/memory/v1/forget/confirm"
+FORGET_STATUS_PATH = "/api/memory/v1/forget/status"
 GRAPH_PATH = "/api/memory/v1/graph"
+#: Prefix of every command a person's confirm publishes. The rest is the preview
+#: id the token carries, so one decision is one command however often it is sent.
+FORGET_REQUEST_PREFIX = "owner-forget-"
 
 #: How much of the palace one browse reads. A bound is required — the scan is a
 #: full enumeration — and it is not a page: the roll-up needs the whole window to
@@ -86,13 +105,48 @@ DEFAULT_GRAPH_EDGES = 160
 MAXIMUM_GRAPH_EDGES = 400
 
 
+def _answer(model: OwnerWireModel) -> JSONResponse:
+    """Serialize through the shared contract; the Host parses the same model."""
+
+    return JSONResponse(model.model_dump(mode="json"))
+
+
+def _audience_scope(companion_id: str | None) -> str:
+    return f"companion:{companion_id}" if companion_id else "owner"
+
+
+def _parse_instant(raw: str, name: str) -> datetime | JSONResponse:
+    try:
+        when = datetime.fromisoformat(raw)
+    except ValueError:
+        # A "+" in a query string means a space, so an unencoded offset arrives
+        # here mangled. Saying so turns a confusing afternoon into a one-line
+        # fix; repairing it would be this boundary guessing at an encoding.
+        hint = " (an unencoded + in the offset arrives as a space)" if " " in raw else ""
+        return JSONResponse(
+            {"detail": f"{name} must be an ISO 8601 instant{hint}"},
+            status_code=422,
+        )
+    if when.tzinfo is None:
+        # A naive instant would be compared against timezone-aware record times
+        # and raise; asking for the offset beats guessing UTC.
+        return JSONResponse({"detail": f"{name} must carry a timezone offset"}, status_code=422)
+    return when
+
+
 def status_handler(
     *,
     service: MemoryService,
     memory_space_id: str,
     owner_id: str | None = None,
 ) -> Handler:
-    """Return the same storage-backed status every Host consumer sees."""
+    """Whether this realm's projections have caught up, for the operator cockpit.
+
+    Reads the materialization proof directly rather than ``MemoryService.status``:
+    that one adds process diagnostics (``spaces_held``, ``graph_configured``)
+    which are not part of this contract, and spreading them here is how the
+    Host's strict parse came to reject every status this realm sent.
+    """
 
     async def handle(request: Request) -> Response:
         companion_id = (request.query_params.get("companion_id") or "").strip() or None
@@ -102,7 +156,8 @@ def status_handler(
             companion_id=companion_id,
         )
         try:
-            status = await service.status(context)
+            runtime = await service.runtime_for(context)
+            status = await inspect_materialization(runtime)
         except Exception as exc:  # noqa: BLE001 - status is a failure boundary
             log.exception(
                 "owner_memory_status_failed",
@@ -110,16 +165,14 @@ def status_handler(
                 error=str(exc),
             )
             return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
-        return JSONResponse(
-            {
-                "contract_version": "1",
-                "operation": "memory.status",
-                "memory_realm_id": memory_space_id,
-                "memory_space_id": memory_space_id,
-                "audience_scope": (f"companion:{companion_id}" if companion_id else "owner"),
-                "ready": status.ready,
+        return _answer(
+            MemoryStatus(
+                memory_realm_id=memory_space_id,
+                memory_space_id=memory_space_id,
+                audience_scope=_audience_scope(companion_id),
+                ready=status.ready,
                 **status.details,
-            }
+            )
         )
 
     return handle
@@ -132,7 +185,11 @@ def graph_handler(
     memory_space_id: str,
     owner_id: str | None = None,
 ) -> Handler:
-    """A bounded, audience-scoped knowledge graph for the Owner's viewer."""
+    """A bounded knowledge graph for the Owner's viewer.
+
+    Without ``companion_id`` it is the Owner's own graph — every audience in the
+    realm. With one, it is what that Companion can recall.
+    """
 
     del settings
 
@@ -151,18 +208,9 @@ def graph_handler(
         try:
             runtime = await service.runtime_for(context)
             if runtime.kg is None:
-                return JSONResponse(
-                    {
-                        "contract_version": "1",
-                        "operation": "memory.graph",
-                        "memory_space_id": memory_space_id,
-                        "nodes": [],
-                        "edges": [],
-                        "truncated": False,
-                    }
-                )
+                return _answer(MemoryGraph(memory_space_id=memory_space_id, truncated=False))
             rows = await runtime.kg.timeline(
-                audiences=readable_audiences(companion_id),
+                audiences=readable_audiences(companion_id) if companion_id else None,
                 limit=limit + 1,
                 current_only=True,
                 include_sensitive=False,
@@ -180,28 +228,30 @@ def graph_handler(
         for row in visible:
             degree[row.subject] = degree.get(row.subject, 0) + 1
             degree[row.object] = degree.get(row.object, 0) + 1
-        return JSONResponse(
-            {
-                "contract_version": "1",
-                "operation": "memory.graph",
-                "memory_space_id": memory_space_id,
-                "nodes": [
-                    {"node_id": name, "label": name, "degree": count}
-                    for name, count in sorted(degree.items(), key=lambda item: (-item[1], item[0]))
-                ],
-                "edges": [
-                    {
-                        "edge_id": row.id,
-                        "subject": row.subject,
-                        "predicate": row.predicate,
-                        "object": row.object,
-                        "confidence": row.confidence,
-                        "recorded_at": row.recorded_at or "",
-                    }
-                    for row in visible
-                ],
-                "truncated": len(rows) > limit,
-            }
+        return _answer(
+            MemoryGraph.model_validate(
+                {
+                    "memory_space_id": memory_space_id,
+                    "nodes": [
+                        {"node_id": name, "label": name, "degree": count}
+                        for name, count in sorted(
+                            degree.items(), key=lambda item: (-item[1], item[0])
+                        )
+                    ],
+                    "edges": [
+                        {
+                            "edge_id": row.id,
+                            "subject": row.subject,
+                            "predicate": row.predicate,
+                            "object": row.object,
+                            "confidence": row.confidence,
+                            "recorded_at": row.recorded_at or "",
+                        }
+                        for row in visible
+                    ],
+                    "truncated": len(rows) > limit,
+                }
+            )
         )
 
     return handle
@@ -221,9 +271,19 @@ def browse_handler(
     recalled — including their own privacy wing, and (once anything is marked
     companion-private) another Companion's statements.
 
-    ``companion_id`` selects one Companion view. Without it this authenticated
-    route shows Owner Shared only. This is an explicit privileged read mode,
-    never an identity fallback on the ordinary Agent MCP surface.
+    ``companion_id`` selects one Companion's view: what that Eidolon can recall.
+    Without it this is the Owner reading their own memory, so every audience in
+    the realm is in scope — the audience axis says which of their Eidolons was
+    told a thing, not what the person may see (docs/跨系统/memory重构0828.md:
+    "Owner 级记忆库/export 可以读取 Owner 拥有的全部 Scope"). Every other rule
+    still applies: the privacy wing, archived and device-scoped records stay out.
+    This is a privileged read mode of this authenticated route, never an identity
+    fallback on the Agent MCP surface.
+
+    No materialization status here. Whether projections have caught up is an
+    operator's question, answered by ``status`` for Mission Control; a person's
+    library that carried it showed 「正在整理」 forever for a projection that had
+    failed, and it cost a ledger read on every browse.
     """
 
     policy = RecallPolicyRegistry.default()
@@ -249,12 +309,11 @@ def browse_handler(
                 visible=lambda record: policy.visible(
                     record,
                     context=context,
-                    owner_shared_only=companion_id is None,
+                    every_audience=companion_id is None,
                 ),
                 max_records=scan,
                 max_titles_per_room=TITLES_PER_ROOM,
             )
-            materialization = await inspect_materialization(runtime)
         except Exception as exc:  # noqa: BLE001 - a read must not take the process down
             log.exception(
                 "owner_browse_failed",
@@ -265,18 +324,14 @@ def browse_handler(
             # to a person, and only one of them is a reason to worry.
             return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
 
-        return JSONResponse(
-            {
-                "contract_version": "1",
-                "operation": "memory.browse",
-                "memory_space_id": memory_space_id,
-                "audience_scope": (f"companion:{companion_id}" if companion_id else "owner"),
-                "materialization": {
-                    "ready": materialization.ready,
-                    **materialization.details,
-                },
-                **browse,
-            }
+        return _answer(
+            MemoryBrowse.model_validate(
+                {
+                    "memory_space_id": memory_space_id,
+                    "audience_scope": _audience_scope(companion_id),
+                    **browse,
+                }
+            )
         )
 
     return handle
@@ -340,14 +395,14 @@ def export_handler(
             # Eidolon remembers nothing.
             return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
 
-        return JSONResponse(
-            {
-                "contract_version": "1",
-                "operation": "memory.export",
-                "memory_space_id": memory_space_id,
-                "taken_at": datetime.now(UTC).isoformat(),
-                **export,
-            }
+        return _answer(
+            MemoryExport.model_validate(
+                {
+                    "memory_space_id": memory_space_id,
+                    "taken_at": datetime.now(UTC).isoformat(),
+                    **export,
+                }
+            )
         )
 
     return handle
@@ -360,11 +415,18 @@ def entries_handler(
     memory_space_id: str,
     owner_id: str | None = None,
 ) -> Handler:
-    """What was recorded at or after ``since``, newest first.
+    """What was recorded at or after ``since``, newest first, a page at a time.
 
     ``since`` is required and has no default. A day depends on where the person
     is, and this process does not know; inventing a timezone here would make
     "今日" mean something different from what their phone shows them.
+
+    ``cursor`` is the previous page's ``next_cursor``. Without paging, a window
+    whose newest page was full could never show anything older — however far
+    the client moved ``since``, the older entries only joined the cut-off tail.
+
+    Without ``companion_id`` this is the Owner's own memory, every audience, as
+    in the browse.
     """
 
     policy = RecallPolicyRegistry.default()
@@ -373,23 +435,15 @@ def entries_handler(
         raw_since = (request.query_params.get("since") or "").strip()
         if not raw_since:
             return JSONResponse({"detail": "since is required"}, status_code=422)
-        try:
-            since = datetime.fromisoformat(raw_since)
-        except ValueError:
-            # A "+" in a query string means a space, so an unencoded offset
-            # arrives here mangled. Saying so turns a confusing afternoon into
-            # a one-line fix; the alternative — repairing it — would be this
-            # boundary guessing at a caller's encoding.
-            hint = " (an unencoded + in the offset arrives as a space)" if " " in raw_since else ""
-            return JSONResponse(
-                {"detail": f"since must be an ISO 8601 instant{hint}"},
-                status_code=422,
-            )
-        if since.tzinfo is None:
-            # A naive instant would be compared against timezone-aware record
-            # times and raise; asking for the offset is better than guessing UTC
-            # and answering for the wrong day.
-            return JSONResponse({"detail": "since must carry a timezone offset"}, status_code=422)
+        since = _parse_instant(raw_since, "since")
+        if isinstance(since, JSONResponse):
+            return since
+        cursor = (request.query_params.get("cursor") or "").strip() or None
+        if cursor is not None:
+            try:
+                decode_entries_cursor(cursor)
+            except ValueError as exc:
+                return JSONResponse({"detail": str(exc)}, status_code=422)
         try:
             limit = int(request.query_params.get("limit", DEFAULT_ENTRIES))
         except ValueError:
@@ -409,9 +463,10 @@ def entries_handler(
                 visible=lambda record: policy.visible(
                     record,
                     context=context,
-                    owner_shared_only=companion_id is None,
+                    every_audience=companion_id is None,
                 ),
                 since=since,
+                cursor=cursor,
                 limit=limit,
                 max_records=DEFAULT_SCAN,
             )
@@ -423,14 +478,14 @@ def entries_handler(
             )
             return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
 
-        return JSONResponse(
-            {
-                "contract_version": "1",
-                "operation": "memory.entries",
-                "memory_space_id": memory_space_id,
-                "since": since.isoformat(),
-                **entries,
-            }
+        return _answer(
+            MemoryEntries.model_validate(
+                {
+                    "memory_space_id": memory_space_id,
+                    "since": since.isoformat(),
+                    **entries,
+                }
+            )
         )
 
     return handle
@@ -449,6 +504,10 @@ def forget_preview_handler(
     That binding is the point — a person confirms *what they saw*, not a topic
     that may have matched something else by the time they pressed the button.
 
+    Always a deletion. The archive this realm also knows has no way back in the
+    product, so offering it to a person would present a permanent change as a
+    reversible one; the Agent's steward path keeps it for its own reasons.
+
     No audience filter, deliberately. The actor here is the Owner and the space
     is the Owner's; filtering by a Companion's audience would leave a person
     unable to remove something they had asked one Eidolon in particular to keep,
@@ -460,9 +519,16 @@ def forget_preview_handler(
         target = (request.query_params.get("target") or "").strip()
         if not target:
             return JSONResponse({"detail": "target is required"}, status_code=422)
-        action = (request.query_params.get("action") or "delete").strip()
-        if action not in {"archive", "delete"}:
-            return JSONResponse({"detail": "action must be archive or delete"}, status_code=422)
+        if not forget_target_is_resolvable(target):
+            # One meaningful character matches nearly everything. That is "say
+            # more", not "you never told it that" — which would be false.
+            return _answer(
+                OwnerForgetPreview(
+                    status="too_broad",
+                    target=target,
+                    detail="target is too short to resolve",
+                )
+            )
 
         context = actor_context(
             memory_space_id=memory_space_id,
@@ -477,20 +543,29 @@ def forget_preview_handler(
                 target,
                 commitments=getattr(getattr(runtime, "ledgers", None), "commitments", None),
             )
+            if not candidates:
+                # No token: there is nothing to confirm, and issuing one anyway
+                # would let a person press a button that deletes nothing and says
+                # it worked.
+                return _answer(OwnerForgetPreview(status="not_found", target=target))
+            token, proof = service.privacy_signer.issue(
+                memory_space_id=memory_space_id,
+                action="delete",
+                target=target,
+                drawer_ids=[
+                    candidate.key for candidate in candidates if candidate.key.startswith("drawer_")
+                ],
+                commitment_ids=[
+                    candidate.key
+                    for candidate in candidates
+                    if candidate.key.startswith("commitment:")
+                ],
+            )
         except ForgetResolutionLimitExceeded as exc:
             # Too many matches to show, so nothing is offered to confirm. A
             # partial set would be the one outcome worse than refusing: the
             # person would believe the rest was kept when it was merely unseen.
-            return JSONResponse(
-                {
-                    "contract_version": "1",
-                    "operation": "memory.forget-preview",
-                    "status": "too_broad",
-                    "target": target,
-                    "detail": str(exc),
-                },
-                status_code=200,
-            )
+            return _answer(OwnerForgetPreview(status="too_broad", target=target, detail=str(exc)))
         except Exception as exc:  # noqa: BLE001 - a read must not take the process down
             log.exception(
                 "owner_forget_preview_failed",
@@ -499,50 +574,32 @@ def forget_preview_handler(
             )
             return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
 
-        if not candidates:
-            # No token: there is nothing to confirm, and issuing one anyway
-            # would let a person press a button that deletes nothing and says
-            # it worked.
-            return JSONResponse(
-                {
-                    "contract_version": "1",
-                    "operation": "memory.forget-preview",
-                    "status": "not_found",
-                    "target": target,
-                    "entries": [],
-                }
+        return _answer(
+            OwnerForgetPreview(
+                status="preview",
+                target=target,
+                entries=tuple(
+                    OwnerForgetEntry(
+                        entry_id=candidate.key,
+                        preview=candidate.text,
+                        score=candidate.score,
+                    )
+                    for candidate in candidates
+                ),
+                #: More than one thing, or an inexact match. The client asks again
+                #: rather than treating a guess as an instruction.
+                needs_confirmation=len(candidates) > 1
+                or any(candidate.score < 1.0 for candidate in candidates),
+                confirmation_token=token,
+                expires_at=proof.expires_at,
             )
-
-        token, proof = service.privacy_signer.issue(
-            memory_space_id=memory_space_id,
-            action=action,  # type: ignore[arg-type]
-            target=target,
-            drawer_ids=[
-                candidate.key for candidate in candidates if candidate.key.startswith("drawer_")
-            ],
-            commitment_ids=[
-                candidate.key for candidate in candidates if candidate.key.startswith("commitment:")
-            ],
-        )
-        ambiguous = len(candidates) > 1 or any(candidate.score < 1.0 for candidate in candidates)
-        return JSONResponse(
-            {
-                "contract_version": "1",
-                "operation": "memory.forget-preview",
-                "status": "preview",
-                "target": target,
-                "action": action,
-                "entries": [candidate.to_dict() for candidate in candidates],
-                #: True when the match was not exact or hit more than one thing.
-                #: A client must ask again in that case rather than treating a
-                #: guess as an instruction.
-                "needs_confirmation": action == "delete" and ambiguous,
-                "confirmation_token": token,
-                "expires_at": proof.expires_at,
-            }
         )
 
     return handle
+
+
+def _forget_request_id(preview_id: str) -> str:
+    return f"{FORGET_REQUEST_PREFIX}{preview_id}"
 
 
 def forget_confirm_handler(
@@ -560,6 +617,16 @@ def forget_confirm_handler(
     it. A confirm that arrived without one — or with one from another space, or
     expired — is refused rather than re-resolved, because re-resolving would act
     on whatever the topic matches *now*.
+
+    Idempotent. The command's ``request_id`` is derived from the preview the
+    token came from, so one decision is one command: a second confirm of the
+    same token is answered from the ledger and never published again. (A fresh
+    id per confirm used to re-apply a delete whose drawers were already gone,
+    which failed three times into the dead-letter queue while the person had
+    been told it was accepted.) That includes ``failed``: the ledger keeps a
+    failed command failed until something applies it, so a republish under the
+    same id would read as failed while it ran. Trying again is a new preview,
+    which is a new decision; recovering the old one is the operator's replay.
     """
 
     async def handle(request: Request) -> Response:
@@ -572,26 +639,50 @@ def forget_confirm_handler(
             # Forged, expired, or minted for another space. All three are the
             # same answer to the caller: this token cannot be acted on.
             return JSONResponse({"detail": str(exc)}, status_code=409)
+        if proof.action != "delete":
+            # Minted by the Agent's steward path, which may archive. A person's
+            # confirm acts only on what a person's preview offered.
+            return JSONResponse(
+                {"detail": "this confirmation was not issued for an Owner forget"},
+                status_code=409,
+            )
 
-        command = PrivacyMutationCommand(
-            request_id=uuid.uuid4().hex,
-            memory_space_id=memory_space_id,
-            issued_at=_now_iso(),
-            #: ``admin``, not ``agent``. The contract's two values already carry
-            #: the distinction that matters to someone reading this ledger later:
-            #: whether the Eidolon decided on its own, or a person asked through
-            #: a management surface. A third value for "the Owner in particular"
-            #: would be a cross-repo contract change for a nuance these two
-            #: already express.
-            issuer="admin",
-            action=proof.action,
-            drawer_ids=proof.drawer_ids,
-            commitment_ids=proof.commitment_ids,
-            preview_id=proof.preview_id,
-            target=proof.target,
-        )
+        request_id = _forget_request_id(proof.preview_id)
+        entry_count = len(proof.drawer_ids) + len(proof.commitment_ids)
+
+        def outcome(status: str) -> JSONResponse:
+            return _answer(
+                OwnerForgetOutcome(
+                    request_id=request_id,
+                    status=status,  # type: ignore[arg-type]
+                    target=proof.target,
+                    entry_count=entry_count,
+                )
+            )
+
         try:
-            outcome = await publish_with_status(
+            existing = (
+                await command_status.get(request_id) if command_status is not None else None
+            )
+            if existing is not None:
+                return outcome(existing.status)
+
+            command = PrivacyMutationCommand(
+                request_id=request_id,
+                memory_space_id=memory_space_id,
+                issued_at=_now_iso(),
+                #: ``admin``, not ``agent``. The contract's two values already
+                #: carry the distinction that matters to someone reading this
+                #: ledger later: whether the Eidolon decided on its own, or a
+                #: person asked through a management surface.
+                issuer="admin",
+                action=proof.action,
+                drawer_ids=proof.drawer_ids,
+                commitment_ids=proof.commitment_ids,
+                preview_id=proof.preview_id,
+                target=proof.target,
+            )
+            published = await publish_with_status(
                 command_publisher,
                 command_status,
                 command,
@@ -604,17 +695,50 @@ def forget_confirm_handler(
                 error=str(exc),
             )
             return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
+        if published.get("status") == "failed":
+            log.warning(
+                "owner_forget_confirm_not_applied",
+                memory_space_id=memory_space_id,
+                request_id=request_id,
+                error=str(published.get("error") or ""),
+            )
+        return outcome(str(published["status"]))
 
-        return JSONResponse(
-            {
-                "contract_version": "1",
-                "operation": "memory.forget-confirm",
-                "action": proof.action,
-                "target": proof.target,
-                "entry_count": len(proof.drawer_ids) + len(proof.commitment_ids),
-                **outcome,
-            }
-        )
+    return handle
+
+
+def forget_status_handler(
+    *,
+    memory_space_id: str,
+    command_status: Any,
+) -> Handler:
+    """Where a confirmed forget has got to.
+
+    The confirm answers after a short wait, and applying runs on the worker —
+    so ``accepted`` is the usual first answer. Without this read a person was
+    told 「已受理，正在生效」 and had no way to learn whether it ever happened,
+    or whether it failed into the dead-letter queue.
+
+    Only ids this surface minted are answered: the ledger also holds the Agent's
+    commands, which are not a person's to read.
+    """
+
+    async def handle(request: Request) -> Response:
+        request_id = (request.query_params.get("request_id") or "").strip()
+        if not request_id.startswith(FORGET_REQUEST_PREFIX):
+            return JSONResponse({"detail": "request_id is not an Owner forget"}, status_code=422)
+        try:
+            record = await command_status.get(request_id)
+        except Exception as exc:  # noqa: BLE001 - a read must not take the process down
+            log.exception(
+                "owner_forget_status_failed",
+                memory_space_id=memory_space_id,
+                error=str(exc),
+            )
+            return JSONResponse({"detail": "memory is unavailable"}, status_code=503)
+        if record is None:
+            return JSONResponse({"detail": "no such forget"}, status_code=404)
+        return _answer(OwnerForgetProgress(request_id=request_id, status=record.status))
 
     return handle
 
@@ -677,5 +801,13 @@ def owner_memory_routes(
                 owner_id=owner_id,
             ),
             ["POST"],
+        )
+    if command_status is not None:
+        routes[FORGET_STATUS_PATH] = (
+            forget_status_handler(
+                memory_space_id=memory_space_id,
+                command_status=command_status,
+            ),
+            ["GET"],
         )
     return memory_api_routes(service_token=service_token, routes=routes)

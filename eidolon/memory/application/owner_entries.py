@@ -20,6 +20,8 @@ depends on where the person is, and this process does not know; the caller says
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -36,8 +38,15 @@ async def build_owner_entries(
     since: datetime,
     limit: int,
     max_records: int,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
-    """Entries at or after ``since``, newest first.
+    """Entries at or after ``since``, newest first, one page at a time.
+
+    ``cursor`` is the ``next_cursor`` of the previous page. It is a keyset over
+    (time, entry id), not a time alone: facts drawn from one turn share its
+    timestamp, and an exclusive time bound would skip every entry tied with the
+    last one shown. Opaque to callers, so the page boundary stays this module's.
+    Raises ``ValueError`` for a cursor it did not issue.
 
     ``visible`` is the same predicate the browse passes — the policy recall
     uses — so a person is never shown here what their Eidolon could not have
@@ -50,6 +59,7 @@ async def build_owner_entries(
     both look like the read working.
     """
 
+    before = decode_entries_cursor(cursor) if cursor else None
     scanned, capped = await scan_records(backend, max_records=max_records)
     allowed = [record for record in scanned if visible(record)]
 
@@ -60,11 +70,12 @@ async def build_owner_entries(
         if when is None:
             undated += 1
             continue
-        if when >= since:
+        if when >= since and (before is None or (when, record.key) < before):
             dated.append((when, record))
 
-    dated.sort(key=lambda pair: pair[0], reverse=True)
+    dated.sort(key=lambda pair: (pair[0], pair[1].key), reverse=True)
     page = dated[:limit]
+    more = len(dated) > len(page)
 
     return {
         "entries": [
@@ -84,7 +95,9 @@ async def build_owner_entries(
         "entry_count": len(page),
         #: In the window and not listed, because the page ended. Distinct from
         #: ``truncated``, which is about the scan.
-        "more_in_window": len(dated) > len(page),
+        "more_in_window": more,
+        #: Where the next page starts. Present exactly when there is one.
+        "next_cursor": encode_entries_cursor(page[-1][0], page[-1][1].key) if more else None,
         #: Present, visible, and holding no usable time. Reported rather than
         #: hidden: a person whose entry never appears in any day's list should be
         #: able to find out that is why.
@@ -105,3 +118,25 @@ def _preview(value: Any, *, limit: int = 160) -> str:
     text = value if isinstance(value, str) else str(value or "")
     collapsed = " ".join(text.split())
     return collapsed if len(collapsed) <= limit else f"{collapsed[: limit - 1]}…"
+
+
+def encode_entries_cursor(when: datetime, key: str) -> str:
+    """The position after (``when``, ``key``), as an opaque token."""
+
+    raw = json.dumps({"t": when.isoformat(), "k": key}, ensure_ascii=False, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def decode_entries_cursor(token: str) -> tuple[datetime, str]:
+    """The (time, entry id) a token names, or ``ValueError`` if this did not issue it."""
+
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        when = datetime.fromisoformat(payload["t"])
+        key = payload["k"]
+    except (ValueError, KeyError, TypeError, UnicodeError) as exc:
+        raise ValueError("cursor was not issued by this memory") from exc
+    if when.tzinfo is None or not isinstance(key, str) or not key:
+        raise ValueError("cursor was not issued by this memory")
+    return when, key

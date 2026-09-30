@@ -143,7 +143,7 @@ async def test_a_preview_hands_back_a_token_its_own_confirm_accepts(tmp_path) ->
         memory_space_id=SPACE,
         key="drawer_peanut",
         value="用户对花生过敏",
-        metadata={"memory_space_id": SPACE, "wing": "Wing_Profile"},
+        metadata={"memory_space_id": SPACE, "wing": "Wing_Profile", "assertion_id": "a-1"},
     )
 
     class _Router:

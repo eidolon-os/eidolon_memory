@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import quote
 
 from eidolon_memory_contracts import OWNER_AUDIENCE, companion_audience
+from eidolon_memory_contracts.owner import MemoryEntries
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -333,3 +334,84 @@ def test_a_memory_that_cannot_be_read_is_not_a_quiet_day() -> None:
 
     assert response.status_code == 503
     assert "entries" not in response.json()
+
+
+def test_a_full_page_is_followed_by_its_cursor_to_every_older_entry() -> None:
+    """``next_cursor`` is how a client reaches what is older than the newest page.
+
+    Without it, moving ``since`` earlier only added older entries to the tail of
+    a list whose head was already full — the phone's 「看更早的」 fetched the
+    same page every time.
+    """
+    records = [
+        _Record(f"drawer_{index}", when=NOON - timedelta(minutes=index)) for index in range(5)
+    ]
+    http, _service = _client(records)
+    seen: list[str] = []
+    pages = 0
+    params = {"since": YESTERDAY.isoformat(), "limit": 2}
+    with http:
+        while True:
+            body = http.get(ENTRIES_PATH, params=params, headers=AUTH).json()
+            MemoryEntries.model_validate(body)
+            pages += 1
+            seen.extend(entry["entry_id"] for entry in body["entries"])
+            if not body["more_in_window"]:
+                assert body["next_cursor"] is None
+                break
+            params = {**params, "cursor": body["next_cursor"]}
+
+    assert seen == [f"drawer_{index}" for index in range(5)]
+    assert pages == 3
+
+
+def test_entries_sharing_a_time_are_not_skipped_at_a_page_edge() -> None:
+    """Facts drawn from one turn share its timestamp.
+
+    A page boundary expressed as a time would skip every entry tied with the
+    last one shown; the cursor is (time, entry id) so none is lost or repeated.
+    """
+    records = [_Record(f"drawer_{index}", when=NOON) for index in range(5)]
+    http, _service = _client(records)
+    seen: list[str] = []
+    params = {"since": MORNING.isoformat(), "limit": 2}
+    with http:
+        while True:
+            body = http.get(ENTRIES_PATH, params=params, headers=AUTH).json()
+            seen.extend(entry["entry_id"] for entry in body["entries"])
+            if not body["more_in_window"]:
+                break
+            params = {**params, "cursor": body["next_cursor"]}
+
+    assert sorted(seen) == [f"drawer_{index}" for index in range(5)]
+    assert len(seen) == len(set(seen)) == 5
+
+
+def test_a_cursor_this_memory_did_not_issue_is_refused() -> None:
+    http, _service = _client([])
+    with http:
+        response = http.get(
+            ENTRIES_PATH,
+            params={"since": YESTERDAY.isoformat(), "cursor": "not-a-cursor"},
+            headers=AUTH,
+        )
+
+    assert response.status_code == 422
+
+
+def test_the_owners_day_holds_every_companions_entries() -> None:
+    """No Companion named: the Owner's own memory, every audience."""
+    records = [
+        _Record("drawer_shared", when=NOON, audience=OWNER_AUDIENCE),
+        _Record("drawer_mochis", when=NOON, audience=companion_audience(MOCHI)),
+        _Record("drawer_noris", when=NOON, audience=companion_audience(NORI)),
+    ]
+    http, _service = _client(records)
+    with http:
+        body = http.get(ENTRIES_PATH, params={"since": MORNING.isoformat()}, headers=AUTH).json()
+
+    assert {entry["entry_id"] for entry in body["entries"]} == {
+        "drawer_shared",
+        "drawer_mochis",
+        "drawer_noris",
+    }

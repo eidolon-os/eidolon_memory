@@ -61,6 +61,31 @@ def _normalize(text: Any) -> str:
     return _NON_SEMANTIC_RE.sub("", str(text or "").lower())
 
 
+def forget_target_is_resolvable(target: str) -> bool:
+    """Whether these words are specific enough to resolve at all.
+
+    Fewer than two meaningful characters would match nearly everything, so the
+    scan refuses them. A caller must say so as "be more specific" rather than as
+    "nothing matched": the second is a false statement about the person's memory.
+    """
+
+    return len(_normalize(normalize_privacy_target(target))) >= 2
+
+
+def _forgettable(record: MemoryWireRecord) -> bool:
+    """Whether a confirm could actually remove this drawer.
+
+    Forgetting converges through the canonical ledger: a drawer is removed by
+    tombstoning the assertion behind it, which is also what stops a replay from
+    bringing it back. A drawer with no ``assertion_id`` has nothing to tombstone,
+    and the confirm refuses it (``privacy mutation refused a non-canonical
+    drawer``). Offering one in a preview would mint a token whose confirm fails
+    after the person was told it was accepted.
+    """
+
+    return bool(str(record.metadata.get("assertion_id") or "").strip())
+
+
 def _belongs_to_space(record: MemoryWireRecord, memory_space_id: str) -> bool:
     recorded_space = str(record.metadata.get("memory_space_id") or record.memory_space_id)
     return recorded_space == memory_space_id
@@ -92,7 +117,11 @@ async def find_forget_candidates(
     # exact-delete flows and large realms.
     if clean_target.startswith("drawer_"):
         record = await backend.get(memory_space_id, clean_target)
-        if record is None or not _belongs_to_space(record, memory_space_id):
+        if (
+            record is None
+            or not _belongs_to_space(record, memory_space_id)
+            or not _forgettable(record)
+        ):
             return []
         return [
             ForgetCandidate(
@@ -128,6 +157,8 @@ async def find_forget_candidates(
             # sends it through the assertion ledger and correctly fails as a
             # non-canonical drawer. Resolve the aggregate below instead, once.
             if str(record.metadata.get("commitment_id") or "").strip():
+                continue
+            if not _forgettable(record):
                 continue
             normalized_key = _normalize(record.key)
             normalized_text = _normalize(record.value)

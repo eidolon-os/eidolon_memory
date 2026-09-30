@@ -1121,3 +1121,28 @@ async def test_the_alias_lookup_is_a_seek_too(graph) -> None:
     assert "idx_kg_mentions_alias_audience_entity" in plan, plan
     assert "alias=?" in plan, f"the alias lookup fell back to a scan: {plan}"
     assert "idx_kg_mentions_unique (space_id=?)" not in plan, plan
+
+
+async def test_the_owner_timeline_reads_every_audience_and_a_tuple_still_filters(graph) -> None:
+    """``audiences=None`` is the Owner reading their own graph.
+
+    Every ordinary turn is written to one Companion's audience, so an Owner graph
+    filtered to the Owner layer was empty. ``None`` lifts the audience axis for
+    that one caller; an explicit tuple, which is what every Companion path
+    passes, still filters, and an empty one still reads nothing.
+    """
+
+    await graph.add_triple(subject="alice", predicate="likes", object="tea", audience=OWNER)
+    await graph.add_triple(
+        subject="alice", predicate="likes", object="jazz", audience=COMPANION_A
+    )
+    await graph.add_triple(
+        subject="alice", predicate="likes", object="chess", audience=COMPANION_B
+    )
+
+    def objects(rows) -> set[str]:
+        return {row.object for row in rows}
+
+    assert objects(await graph.timeline(audiences=None, limit=10)) == {"tea", "jazz", "chess"}
+    assert objects(await graph.timeline(audiences=BOTH_FOR_A, limit=10)) == {"tea", "jazz"}
+    assert await graph.timeline(audiences=(), limit=10) == []

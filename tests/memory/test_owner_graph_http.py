@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from eidolon_memory_contracts import OWNER_AUDIENCE, companion_audience
+from eidolon_memory_contracts.owner import MemoryGraph
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -86,7 +87,12 @@ def test_selected_companion_sees_owner_derived_and_its_private_graph() -> None:
     assert body["edges"][0]["predicate"] == "likes"
 
 
-def test_no_companion_means_owner_derived_graph_only() -> None:
+def test_no_companion_means_the_owners_whole_graph() -> None:
+    """The Owner reading their own graph: every audience (``audiences=None``).
+
+    It used to be the Owner layer only — empty, since ordinary turns are written
+    to one Companion's audience.
+    """
     graph = _Graph()
     service = _Service(graph)
     app = Starlette(
@@ -103,4 +109,5 @@ def test_no_companion_means_owner_derived_graph_only() -> None:
         response = http.get(GRAPH_PATH, headers=AUTH)
 
     assert response.status_code == 200
-    assert graph.calls[0]["audiences"] == (OWNER_AUDIENCE,)
+    assert graph.calls[0]["audiences"] is None
+    MemoryGraph.model_validate(response.json())

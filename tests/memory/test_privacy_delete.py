@@ -31,11 +31,16 @@ def test_default_forget_page_size_matches_55k_memory_latency_curve() -> None:
 
 
 def _seed(backend: FakeMemoryBackend, key: str, text: str) -> None:
+    """A drawer as every write since 2026-08-29 leaves it: backed by an assertion.
+
+    Forget resolution offers only drawers a confirm can remove, and a drawer
+    without ``assertion_id`` is one it refuses.
+    """
     backend.docs[f"{SPACE}::{key}"] = MemoryWireRecord(
         memory_space_id=SPACE,
         key=key,
         value=text,
-        metadata={"memory_space_id": SPACE, "wing": "Wing_Profile"},
+        metadata={"memory_space_id": SPACE, "wing": "Wing_Profile", "assertion_id": f"a-{key}"},
     )
 
 
@@ -142,7 +147,8 @@ async def test_find_forget_candidates_is_tenant_scoped_and_content_based() -> No
         memory_space_id="other",
         key="drawer_tea",
         value="绿茶",
-        metadata={"memory_space_id": "other"},
+        # Forgettable in its own space, so only the tenant rule can exclude it.
+        metadata={"memory_space_id": "other", "assertion_id": "a-other"},
     )
 
     candidates = await find_forget_candidates(backend, SPACE, "绿茶")

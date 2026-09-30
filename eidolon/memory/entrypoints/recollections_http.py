@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 
+from eidolon_memory_contracts.owner import MemoryRecollection, MemoryRecollections
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -40,7 +41,7 @@ MAXIMUM_RESULTS = 50
 DEFAULT_RESULTS = 10
 
 
-def _recollection_view(record: object) -> dict[str, object]:
+def _recollection_view(record: object) -> MemoryRecollection:
     """Project one storage record into the small person-facing HTTP contract."""
     value = getattr(record, "value", "")
     if isinstance(value, str):
@@ -49,11 +50,11 @@ def _recollection_view(record: object) -> dict[str, object]:
         text = ""
     else:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    result: dict[str, object] = {"text": text}
     remembered_at = getattr(record, "memory_time", None)
-    if remembered_at is not None:
-        result["remembered_at"] = remembered_at.isoformat()
-    return result
+    return MemoryRecollection(
+        text=text,
+        remembered_at=remembered_at.isoformat() if remembered_at is not None else None,
+    )
 
 
 def recollections_handler(
@@ -67,9 +68,15 @@ def recollections_handler(
 
     ``companion_id`` is a query parameter rather than an argument here, because
     the physical space belongs to the Owner and hosts the audiences of their
-    Companions. It selects a logical scope within that Realm: without it the
-    answer is the automatically derived Owner layer; with it the Owner layer
-    plus that Companion's private memory. It can never reach a sibling audience.
+    Companions. It selects a logical scope within that Realm: with it, what
+    that Companion can recall — the Owner layer plus its own audience, never a
+    sibling's. Without it, the Owner asking about their own memory, so every
+    audience in the realm is searched (the same scope as the Owner's library).
+
+    That second case used to answer 503 "memory is unavailable" on every call:
+    read identity was made to fail closed for conversations, the search raised
+    for a missing ``companion_id``, and the catch-all below reported a request
+    shape as an outage.
     """
 
     async def handle(request: Request) -> JSONResponse:
@@ -112,6 +119,7 @@ def recollections_handler(
                 # "I could not look", and it is a different answer from "there
                 # is nothing".
                 raise_on_degraded=True,
+                owner_view=companion_id is None,
             )
         except Exception as exc:  # noqa: BLE001 - a read must not take the process down
             log.exception(
@@ -124,15 +132,11 @@ def recollections_handler(
                 status_code=503,
             )
         return JSONResponse(
-            {
-                "operation": "memory.recollections",
-                "contract_version": "1",
-                "memory_space_id": memory_space_id,
-                "query": query,
-                "recollections": [
-                    _recollection_view(record) for record in records
-                ],
-            }
+            MemoryRecollections(
+                memory_space_id=memory_space_id,
+                query=query,
+                recollections=tuple(_recollection_view(record) for record in records),
+            ).model_dump(mode="json")
         )
 
     return handle

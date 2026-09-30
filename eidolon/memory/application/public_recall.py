@@ -547,12 +547,23 @@ async def search_all_wings_mcp_style(
     palace_path: str | None = None,
     raise_on_degraded: bool = False,
     diagnostics: dict[str, float] | None = None,
+    owner_view: bool = False,
 ) -> list[MemoryWireRecord]:
-    """Search configured wings in parallel, filter, rank, and cap top_k."""
+    """Search configured wings in parallel, filter, rank, and cap top_k.
+
+    ``owner_view`` is the Owner asking about their own memory through the
+    management surface: every audience in the realm is searchable, and every
+    other visibility rule still applies. It is never set on a conversation
+    path, where a Companion must only recall what it was told.
+    """
     vector_started = time.perf_counter()
     scope_started = time.perf_counter()
     wings = _resolve_wings(settings, wing=wing)
-    audiences = interaction_readable_audiences(context)
+    audiences = None if owner_view else interaction_readable_audiences(context)
+    policy = RecallPolicyRegistry.default()
+
+    def _visible(record: MemoryWireRecord) -> bool:
+        return policy.visible(record, context=context, every_audience=owner_view)
     if diagnostics is not None:
         diagnostics["scope_resolution_ms"] = _elapsed_ms(scope_started)
     vector_degraded = False
@@ -583,11 +594,7 @@ async def search_all_wings_mcp_style(
                 skip_closets=(settings.runtime.read.voice_skip_closets if for_voice else False),
                 diagnostics=diagnostics,
             )
-            hits = [
-                record
-                for record in scoped_hits
-                if recall_record_visible_for_context(record, context)
-            ]
+            hits = [record for record in scoped_hits if _visible(record)]
         except BaseException as exc:
             if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
                 raise
@@ -629,7 +636,7 @@ async def search_all_wings_mcp_style(
                 )
                 # memory_space_id is stamped at the source (backend.search →
                 # storage_record with the palace's authoritative id).
-                return [r for r in found if recall_record_visible_for_context(r, context)]
+                return [r for r in found if _visible(r)]
 
         batches = await asyncio.gather(*[_one(wid) for wid in wings], return_exceptions=True)
         hits = []
@@ -651,11 +658,12 @@ async def search_all_wings_mcp_style(
         raise MemoryBackendUnavailable("vector search degraded")
 
     hits = rank_records_by_similarity(hits, top_k=max(top_k, len(hits)))
-    result = RecallPolicyRegistry.default().rank(
+    result = policy.rank(
         hits,
         context=context,
         query=query,
         top_k=top_k,
+        every_audience=owner_view,
     )
     if diagnostics is not None:
         diagnostics["vector_pipeline_ms"] = _elapsed_ms(vector_started)

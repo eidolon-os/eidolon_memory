@@ -17,10 +17,12 @@ Two ways this could be got wrong, both silent:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from eidolon_memory_contracts import OWNER_AUDIENCE, ServiceStatus, companion_audience
+from eidolon_memory_contracts import OWNER_AUDIENCE, companion_audience
+from eidolon_memory_contracts.owner import MemoryBrowse, MemoryStatus
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -99,20 +101,6 @@ class _Service:
             raise RuntimeError("space is not resolvable")
         return self._runtime
 
-    async def status(self, context: Any) -> ServiceStatus:
-        self.contexts.append(context)
-        return ServiceStatus(
-            memory_space_id=SPACE,
-            ready=True,
-            details={
-                "data_readable": True,
-                "materialization_state": "ready",
-                "projection_pending": 0,
-                "last_materialized_at": "2026-08-29T12:00:00.123456Z",
-                "degraded_reason": "",
-            },
-        )
-
 
 class _Settings:
     """Only what the builder reads: the configured wings."""
@@ -139,11 +127,35 @@ def _wing(body: dict, wing_id: str) -> dict | None:
     return next((w for w in body["wings"] if w["wing_id"] == wing_id), None)
 
 
+class _FactLedger:
+    """Only what the materialization proof reads: the ledger's counters."""
+
+    async def stats(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            reactivations_pending=0,
+            invalidations_pending=0,
+            supersessions_pending=0,
+            forget_projections_pending=0,
+            drawer_not_projected=0,
+            kg_not_projected=0,
+            last_materialized_at="2026-08-29T12:00:00.123456Z",
+        )
+
+
 def test_status_names_realm_scope_and_storage_materialization() -> None:
+    """The real proof, through the shared contract, and nothing else.
+
+    It used to spread ``MemoryService.status`` details, which carry process
+    diagnostics (``spaces_held``, ``graph_configured``) the Host's strict parse
+    rejected — so the cockpit's memory lane read "failed" on every Host.
+    """
     http, service, _backend = _client([])
+    service._runtime.ledgers = SimpleNamespace(canonical_facts=_FactLedger())
+    service._runtime.kg = None
     with http:
         body = http.get(f"{STATUS_PATH}?companion_id={MOCHI}", headers=AUTH).json()
 
+    MemoryStatus.model_validate(body)
     assert body == {
         "contract_version": "1",
         "operation": "memory.status",
@@ -226,11 +238,13 @@ def test_a_do_not_recall_drawer_is_not_shown_either() -> None:
 
 
 def test_one_companions_private_statement_is_not_browsable_by_another() -> None:
-    """The audience axis, on this surface too.
+    """The audience axis, on this surface too — and the Owner is above it.
 
-    Nothing writes a companion audience today, so this is the mechanism being
-    kept ready rather than a behaviour in use — and it is exactly the kind of
-    filter that gets applied on one screen and forgotten on the next.
+    Every ordinary turn is written ``companion:<id>`` since 2026-08-28, so this is
+    the common case, not a mechanism kept ready. A Companion view shows the
+    Owner layer plus that Companion's own; the Owner's view is their whole
+    memory. It used to be the Owner layer only, which left a person looking at
+    an empty library while their Eidolon remembered plenty.
     """
     records = [
         _Record("shared", wing="Wing_Life", room="饮食", audience=OWNER_AUDIENCE),
@@ -251,8 +265,10 @@ def test_one_companions_private_statement_is_not_browsable_by_another() -> None:
     assert mine["entry_count"] == 2
     assert theirs["entry_count"] == 1
     assert theirs["withheld_count"] == 1
-    # No companion named: the Owner layer only, which is the safe direction.
-    assert anonymous["entry_count"] == 1
+    # No companion named: the Owner reading their own memory, every audience.
+    assert anonymous["entry_count"] == 2
+    assert anonymous["withheld_count"] == 0
+    assert anonymous["audience_scope"] == "owner"
 
 
 def test_the_answer_carries_no_operator_vocabulary() -> None:
@@ -276,16 +292,13 @@ def test_the_answer_carries_no_operator_vocabulary() -> None:
         "operation",
         "memory_space_id",
         "audience_scope",
-        "materialization",
         "wings",
         "entry_count",
         "withheld_count",
         "truncated",
     }
     assert body["audience_scope"] == "owner"
-    assert body["materialization"]["data_readable"] is True
-    assert body["materialization"]["ready"] is False
-    assert body["materialization"]["materialization_state"] == "degraded"
+    MemoryBrowse.model_validate(body)
 
 
 def test_an_empty_wing_is_not_shown() -> None:
