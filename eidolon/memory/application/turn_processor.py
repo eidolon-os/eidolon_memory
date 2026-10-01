@@ -271,6 +271,7 @@ def _drawer_for_triple(
         # "我家狗多大" — 18 of 38 drawers in a benchmark palace were
         # unreachable by the Chinese embedder that way.
         content=fact_sentence(triple.subject, triple.predicate, triple.object),
+        evidence_quote=triple.evidence_quote,
         memory_type=(
             "preference" if triple.predicate in {"likes", "dislikes", "prefers"} else "fact"
         ),

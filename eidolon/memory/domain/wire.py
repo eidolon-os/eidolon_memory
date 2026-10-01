@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from eidolon_memory_contracts.owner import MemoryProvenance
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -85,6 +86,25 @@ class MemoryWireRecord(BaseModel):
         """Lower-level MemPalace adapters still name the tenant field ``user_id``."""
 
         return self.memory_space_id
+
+    @property
+    def provenance(self) -> MemoryProvenance:
+        # Eidolon historically stored event time in filed_at. indexed_at is the
+        # actual first indexing time for both old and new Eidolon drawers; do
+        # not turn a legacy event time into a claimed learning date.
+        learned = parse_memory_datetime(self.metadata.get("indexed_at"))
+        explicit_modified = parse_memory_datetime(self.metadata.get("updated_at"))
+        modified = explicit_modified or parse_memory_datetime(self.metadata.get("last_modified"))
+        occurred = parse_memory_datetime(self.metadata.get("occurred_at"))
+        return MemoryProvenance(
+            learned_at=learned.isoformat() if learned else None,
+            last_modified_at=modified.isoformat() if modified and (
+                explicit_modified or (learned and modified > learned)
+            )
+            else None,
+            occurred_at=occurred.isoformat() if occurred else None,
+            source_quote=str(self.metadata.get("evidence_quote") or ""),
+        )
 
     def to_result_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

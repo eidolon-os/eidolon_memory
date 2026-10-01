@@ -822,8 +822,10 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
 - **local only**:已落地。云端实现整体删除 —— PG 的 6 个 ledger、PG 图、无状态 router、
   milvus 配置管道、云端 profile、两个 extra。抽象层保留。
 - **中文 embedder**:已落地。`bge-small-zh`(512 维)通过 Eidolon 的公开 embedding port
-  生成 document/query vectors,再交给 MemPalace 3.9 的公开 collection API；不注入私有
+  生成 document/query vectors,再交给 MemPalace 3.10 的公开 collection API；不注入私有
   provider、embedder cache 或 SQLite 热路径。选型实测见 `docs/ARCHITECTURE.md`。
+  3.10 升级保持原有 `mempalaces-v3.9` 数据目录；功能评估与验证见
+  [升级报告](docs/MEMPALACE_3100_ASSESSMENT_2026-10-02.md)。
 - **MCP 契约统一**:易失 `working_memory` 已移除；Agent 只消费长期投影及其证据。
   `kg_triples` 仍是 Agent 回答可追踪事实所需的正式证据字段，不再被描述成临时内部字段。
 

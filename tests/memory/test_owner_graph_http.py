@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from eidolon_memory_contracts import OWNER_AUDIENCE, companion_audience
 from eidolon_memory_contracts.owner import MemoryGraph
 from starlette.applications import Starlette
@@ -111,3 +112,80 @@ def test_no_companion_means_the_owners_whole_graph() -> None:
     assert response.status_code == 200
     assert graph.calls[0]["audiences"] is None
     MemoryGraph.model_validate(response.json())
+
+
+@pytest.mark.asyncio
+async def test_real_graph_pages_tied_dates_without_losing_scope_or_history(tmp_path, monkeypatch):
+    from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
+    from eidolon.memory.domain.space_lock import SpaceLock
+
+    monkeypatch.setattr(
+        "eidolon.memory.adapters.kg_sqlite.now_iso",
+        lambda: "2026-08-28T08:00:00Z",
+    )
+    graph = SqliteKnowledgeGraph(tmp_path / "kg.sqlite3", space_id=SPACE, lock=SpaceLock())
+    try:
+        for i in range(125):
+            await graph.add_triple(
+                subject="我",
+                predicate="likes",
+                object=f"物品{i}",
+                audience=OWNER_AUDIENCE,
+                valid_from="2026-08-28T08:00:00Z",
+            )
+        await graph.invalidate(subject="我", predicate="likes", object="物品0", ended="2026-09-01")
+        await graph.add_triple(
+            subject="我",
+            predicate="likes",
+            object="另一个伙伴的秘密",
+            audience=companion_audience("c_nori"),
+        )
+        await graph.add_triple(
+            subject="我",
+            predicate="has_health_condition",
+            object="敏感资料",
+            audience=OWNER_AUDIENCE,
+        )
+        app = Starlette(
+            routes=owner_memory_routes(
+                service=_Service(graph),
+                settings=_Settings(),
+                memory_space_id=SPACE,
+                owner_id="owner-1",
+                service_token=TOKEN,
+            )
+        )
+        with TestClient(app) as http:
+            seen = []
+            cursor = None
+            while True:
+                params = {"companion_id": "c_mochi", "limit": 17}
+                if cursor:
+                    params["cursor"] = cursor
+                response = http.get(GRAPH_PATH, params=params, headers=AUTH)
+                assert response.status_code == 200, response.text
+                page = MemoryGraph.model_validate(response.json())
+                seen.extend(edge.edge_id for edge in page.edges)
+                cursor = page.next_cursor
+                if not cursor:
+                    break
+            assert len(seen) == len(set(seen)) == 124
+            history = http.get(
+                GRAPH_PATH,
+                params={
+                    "companion_id": "c_mochi",
+                    "history": "true",
+                },
+                headers=AUTH,
+            ).json()
+            assert len(history["edges"]) == 125
+            ended = next(edge for edge in history["edges"] if edge["object"] == "物品0")
+            assert ended["valid_to"] is not None
+            assert history["history"] is True
+            assert "秘密" not in str(history)
+            assert "敏感资料" not in str(history)
+            assert (
+                http.get(GRAPH_PATH, params={"cursor": "garbage"}, headers=AUTH).status_code == 422
+            )
+    finally:
+        graph.close()

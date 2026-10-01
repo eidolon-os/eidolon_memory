@@ -85,7 +85,7 @@ def palace_environment(
     initialise, the runner never started, and the Eidolon ran with no memory at
     all while everything else looked healthy.
 
-    MemPalace 3.9 keys every writer lock by the normalized Palace path, but keeps
+    MemPalace keys every writer lock by the normalized Palace path, but keeps
     those locks under ``~/.mempalace/locks``. All Palace processes therefore use
     one writable service home, not one HOME per Palace: different HOME values for
     the same Palace create different lock files and defeat upstream's exclusion.
@@ -102,6 +102,10 @@ def palace_environment(
         else palace_path.parent / ".mempalace-home"
     )
     resolved["HOME"] = str(shared_home)
+    # 3.10 resolves fresh config through XDG, independently of its HOME-based
+    # writer locks. Keep both inside the service-owned home, including when a
+    # launching shell exports a different XDG or MemPalace config directory.
+    resolved["MEMPALACE_CONFIG_DIR"] = str(shared_home / ".mempalace")
     return resolved
 
 
@@ -116,6 +120,7 @@ def configure_shared_mempalace_home(palaces_root: Path) -> Path:
     )
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.environ["HOME"] = str(home)
+    os.environ["MEMPALACE_CONFIG_DIR"] = str(home / ".mempalace")
     return home
 
 

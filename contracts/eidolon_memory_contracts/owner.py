@@ -131,6 +131,8 @@ class MemoryGraphEdge(OwnerWireModel):
     object: str = Field(min_length=1)
     confidence: float = Field(ge=0.0, le=1.0)
     recorded_at: str = ""
+    valid_from: str | None = None
+    valid_to: str | None = None
 
 
 class MemoryGraph(OwnerWireModel):
@@ -140,11 +142,22 @@ class MemoryGraph(OwnerWireModel):
     nodes: tuple[MemoryGraphNode, ...] = ()
     edges: tuple[MemoryGraphEdge, ...] = ()
     truncated: bool
+    next_cursor: str | None = None
+    history: bool = False
 
 
 # ---------------------------------------------------------------------------
 # Entries — a window of days, newest first.
 # ---------------------------------------------------------------------------
+
+
+class MemoryProvenance(OwnerWireModel):
+    """Known dates and evidence; absent values are never reconstructed."""
+
+    learned_at: str | None = None
+    last_modified_at: str | None = None
+    occurred_at: str | None = None
+    source_quote: str = ""
 
 
 class MemoryEntry(OwnerWireModel):
@@ -156,6 +169,8 @@ class MemoryEntry(OwnerWireModel):
     wing_id: str = ""
     room_id: str = ""
     preview: str = ""
+    provenance: MemoryProvenance = Field(default_factory=MemoryProvenance)
+    value: str = ""
 
 
 class MemoryEntries(OwnerWireModel):
@@ -206,6 +221,7 @@ class MemoryExportRecord(OwnerWireModel):
     #: Who was told. An Owner export carries every audience in the realm.
     audience: str = Field(min_length=1)
     value: str
+    provenance: MemoryProvenance = Field(default_factory=MemoryProvenance)
 
 
 class MemoryExport(OwnerWireModel):
@@ -227,6 +243,7 @@ class MemoryExport(OwnerWireModel):
 class MemoryRecollection(OwnerWireModel):
     text: str
     remembered_at: str | None = None
+    provenance: MemoryProvenance = Field(default_factory=MemoryProvenance)
 
 
 class MemoryRecollections(OwnerWireModel):

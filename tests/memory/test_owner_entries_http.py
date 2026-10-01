@@ -23,6 +23,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from eidolon.memory.domain.wings import CANONICAL_WINGS
+from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.entrypoints.owner_memory_http import (
     ENTRIES_PATH,
     owner_memory_routes,
@@ -39,7 +40,7 @@ MORNING = NOON - timedelta(hours=4)
 YESTERDAY = NOON - timedelta(days=1)
 
 
-class _Record:
+class _Record(MemoryWireRecord):
     def __init__(
         self,
         key: str,
@@ -51,21 +52,23 @@ class _Record:
         audience: str | None = None,
         privacy: str | None = None,
     ) -> None:
-        self.key = key
-        self.value = value
-        self.memory_space_id = SPACE
-        self.metadata: dict[str, Any] = {
+        metadata: dict[str, Any] = {
             "memory_space_id": SPACE,
             "wing": wing,
             "room": room,
         }
         if audience is not None:
-            self.metadata["audience"] = audience
+            metadata["audience"] = audience
         if privacy is not None:
-            self.metadata["privacy"] = privacy
-        self.extensions: dict[str, Any] = {}
-        self.memory_time = when
-        self.memory_time_source = "occurred_at" if when else None
+            metadata["privacy"] = privacy
+        super().__init__(
+            memory_space_id=SPACE,
+            key=key,
+            value=value,
+            metadata=metadata,
+            memory_time=when,
+            memory_time_source="occurred_at" if when else None,
+        )
 
 
 class _Backend:
@@ -134,9 +137,7 @@ def test_entries_come_back_newest_first_within_the_window() -> None:
         ]
     )
     with http:
-        body = http.get(
-            f"{ENTRIES_PATH}?since={_since(MORNING)}", headers=AUTH
-        ).json()
+        body = http.get(f"{ENTRIES_PATH}?since={_since(MORNING)}", headers=AUTH).json()
 
     assert [entry["entry_id"] for entry in body["entries"]] == [
         "drawer_noon",
@@ -146,8 +147,33 @@ def test_entries_come_back_newest_first_within_the_window() -> None:
     assert body["since"] == MORNING.isoformat()
 
 
+def test_entries_preserve_known_dates_and_original_evidence_without_raw_metadata() -> None:
+    record = _Record("residence", when=MORNING)
+    record.metadata.update(
+        indexed_at=NOON.isoformat(),
+        occurred_at=MORNING.isoformat(),
+        updated_at=(NOON + timedelta(days=1)).isoformat(),
+        evidence_quote="我住在北京。",
+        internal_path="/private/not-for-the-owner",
+    )
+    http, _ = _client([record])
+    with http:
+        entry = http.get(f"{ENTRIES_PATH}?since={_since(MORNING)}", headers=AUTH).json()["entries"][
+            0
+        ]
+    assert entry["recorded_at"] == MORNING.isoformat()
+    assert entry["provenance"] == {
+        "learned_at": NOON.isoformat(),
+        "last_modified_at": (NOON + timedelta(days=1)).isoformat(),
+        "occurred_at": MORNING.isoformat(),
+        "source_quote": "我住在北京。",
+    }
+    assert "internal_path" not in str(entry)
+    assert entry["value"] == record.value
+
+
 def test_the_window_includes_its_own_boundary() -> None:
-    """"Since noon" includes what was recorded at noon.
+    """ "Since noon" includes what was recorded at noon.
 
     An exclusive boundary loses an entry every time a client asks for "since the
     last time I looked", which is the ordinary way this read is used.
@@ -212,15 +238,10 @@ def test_an_entry_with_no_usable_time_is_counted_not_placed() -> None:
 def test_a_full_page_says_there_is_more_in_the_window() -> None:
     """Distinct from the scan stopping: one is this answer, the other the palace."""
     http, _service = _client(
-        [
-            _Record(f"drawer_{index}", when=NOON - timedelta(minutes=index))
-            for index in range(5)
-        ]
+        [_Record(f"drawer_{index}", when=NOON - timedelta(minutes=index)) for index in range(5)]
     )
     with http:
-        body = http.get(
-            f"{ENTRIES_PATH}?since={_since(YESTERDAY)}&limit=2", headers=AUTH
-        ).json()
+        body = http.get(f"{ENTRIES_PATH}?since={_since(YESTERDAY)}&limit=2", headers=AUTH).json()
 
     assert body["entry_count"] == 2
     assert body["more_in_window"] is True
@@ -293,9 +314,7 @@ def test_an_entry_says_where_its_time_came_from() -> None:
 
 def test_a_long_entry_is_shortened_rather_than_shown_whole() -> None:
     """A list is a list. One entry that scrolls pushes the rest of the day off it."""
-    http, _service = _client(
-        [_Record("drawer_long", when=NOON, value="很长的内容" * 60)]
-    )
+    http, _service = _client([_Record("drawer_long", when=NOON, value="很长的内容" * 60)])
     with http:
         body = http.get(f"{ENTRIES_PATH}?since={_since(MORNING)}", headers=AUTH).json()
 
@@ -306,21 +325,14 @@ def test_a_long_entry_is_shortened_rather_than_shown_whole() -> None:
 
 def test_a_limit_is_bounded_rather_than_believed() -> None:
     http, _service = _client(
-        [
-            _Record(f"drawer_{index}", when=NOON - timedelta(minutes=index))
-            for index in range(3)
-        ]
+        [_Record(f"drawer_{index}", when=NOON - timedelta(minutes=index)) for index in range(3)]
     )
     with http:
         huge = http.get(
             f"{ENTRIES_PATH}?since={_since(YESTERDAY)}&limit=99999", headers=AUTH
         ).json()
-        zero = http.get(
-            f"{ENTRIES_PATH}?since={_since(YESTERDAY)}&limit=0", headers=AUTH
-        ).json()
-        text = http.get(
-            f"{ENTRIES_PATH}?since={_since(YESTERDAY)}&limit=many", headers=AUTH
-        )
+        zero = http.get(f"{ENTRIES_PATH}?since={_since(YESTERDAY)}&limit=0", headers=AUTH).json()
+        text = http.get(f"{ENTRIES_PATH}?since={_since(YESTERDAY)}&limit=many", headers=AUTH)
 
     assert huge["entry_count"] == 3
     assert zero["entry_count"] == 1

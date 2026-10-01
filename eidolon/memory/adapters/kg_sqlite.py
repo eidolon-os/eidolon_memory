@@ -1073,11 +1073,12 @@ class SqliteKnowledgeGraph:
         limit: int = 100,
         current_only: bool = False,
         include_sensitive: bool = False,
+        before: tuple[str, str, str] | None = None,
     ) -> list[KgTripleRecord]:
         async with self._lock.reader():
             return await asyncio.to_thread(
                 self._timeline_sync, entity_name, audiences, since, until, limit,
-                current_only, include_sensitive,
+                current_only, include_sensitive, before,
             )
 
     def _timeline_sync(
@@ -1089,6 +1090,7 @@ class SqliteKnowledgeGraph:
         limit: int,
         current_only: bool,
         include_sensitive: bool,
+        before: tuple[str, str, str] | None,
     ) -> list[KgTripleRecord]:
         if audiences is not None and not audiences:
             return []
@@ -1115,11 +1117,17 @@ class SqliteKnowledgeGraph:
         if audiences is not None:
             clauses.append(audience_filter(len(audiences)))
             params.extend(audiences)
+        if before is not None:
+            clauses.append("(COALESCE(s.valid_from, ''), COALESCE(s.recorded_at, ''), "
+                           "s.statement_id) "
+                           "< (?, ?, ?)")
+            params.extend(before)
         sql = (
             f"SELECT {SELECT_COLUMNS} {JOIN_ENTITIES} "
             f"WHERE {' AND '.join(clauses)} "
             f"{self._sensitive_clause(include_sensitive)} "
-            "ORDER BY s.valid_from DESC, s.recorded_at DESC LIMIT ?"
+            "ORDER BY COALESCE(s.valid_from, '') DESC, "
+            "COALESCE(s.recorded_at, '') DESC, s.statement_id DESC LIMIT ?"
         )
         params.append(max(1, limit))
         return [_to_record(row) for row in self._connection().execute(sql, params)]

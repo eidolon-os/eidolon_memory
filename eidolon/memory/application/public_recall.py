@@ -185,28 +185,6 @@ async def recall_with_kg_fusion(
         degraded_reason = f"{type(exc).__name__}: {exc}"
     kg_records = await kg_task if kg_task is not None else []
 
-    # Phase 1 — BM25 + cosine RRF rerank on vector hits. Pure in-memory,
-    # ~ms scale, fully bypassed when settings.recall.rerank_enabled = False.
-    # Defensive fallback inside rerank_bm25_rrf returns hits[:top_k] on any
-    # failure — never breaks recall.
-    rank_started = time.perf_counter()
-    if settings.recall.rerank_enabled and vector_records:
-        vector_records = rerank_bm25_rrf(
-            query,
-            vector_records,
-            top_k=top_k,
-            rrf_k=settings.recall.rerank_rrf_k,
-        )
-
-    registry = RecallPolicyRegistry.default()
-    vector_records = registry.rank(
-        vector_records,
-        context=context,
-        query=query,
-        top_k=max(top_k, len(vector_records)),
-    )
-    diagnostics["rerank_policy_ms"] = _elapsed_ms(rank_started)
-
     # The graph's second seed: one hop out from what was actually recalled.
     #
     # Here, after ranking, because the seed should be the memories this turn is
@@ -658,6 +636,11 @@ async def search_all_wings_mcp_style(
         raise MemoryBackendUnavailable("vector search degraded")
 
     hits = rank_records_by_similarity(hits, top_k=max(top_k, len(hits)))
+    rank_started = time.perf_counter()
+    if settings.recall.rerank_enabled and hits:
+        hits = rerank_bm25_rrf(
+            query, hits, top_k=len(hits), rrf_k=settings.recall.rerank_rrf_k,
+        )
     result = policy.rank(
         hits,
         context=context,
@@ -666,5 +649,6 @@ async def search_all_wings_mcp_style(
         every_audience=owner_view,
     )
     if diagnostics is not None:
+        diagnostics["rerank_policy_ms"] = _elapsed_ms(rank_started)
         diagnostics["vector_pipeline_ms"] = _elapsed_ms(vector_started)
     return result

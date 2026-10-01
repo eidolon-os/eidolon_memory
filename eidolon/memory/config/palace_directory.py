@@ -24,6 +24,8 @@ from eidolon_memory_contracts import memory_space_storage_name, validate_memory_
 
 from eidolon.memory.config.memory_settings import MemorySettings
 
+# Storage epoch, not the installed package version. MemPalace 3.10 opens the
+# same Chroma format; changing this path would hide the existing Owner realms.
 PALACE_STORAGE_EPOCH = "mempalaces-v3.9"
 
 __all__ = [

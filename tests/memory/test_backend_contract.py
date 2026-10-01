@@ -189,6 +189,8 @@ def test_search_sync_keeps_vector_for_inconclusive_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
+    from mempalace.backends.base import LexicalResult
+
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
@@ -214,7 +216,10 @@ def test_search_sync_keeps_vector_for_inconclusive_probe(
     monkeypatch.setattr("eidolon.memory.adapters.mempalace_fast_search._query_collection", _query)
     monkeypatch.setattr(
         "mempalace.palace.get_collection",
-        lambda *_args, **_kwargs: SimpleNamespace(distance_metric="cosine"),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            distance_metric="cosine",
+            lexical_search=lambda **_kwargs: LexicalResult(hits=[]),
+        ),
     )
 
     backend = MemPalacePythonBackend(load_memory_settings(), "/tmp/palace")

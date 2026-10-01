@@ -33,6 +33,7 @@ def search_memories_shared_embedding(
     collection_name: str | None = None,
     diagnostics: dict[str, float] | None = None,
     memory_space_id: str | None = None,
+    lexical_candidates: bool = False,
 ) -> list[MemoryWireRecord]:
     """Search multiple wings using a single precomputed query embedding."""
     if n_results <= 0:
@@ -84,6 +85,13 @@ def search_memories_shared_embedding(
             where=where,
         )
         _record_ms(diagnostics, "chroma_query_ms", query_started)
+        lexical_hits = []
+        if lexical_candidates:
+            lexical_started = time.perf_counter()
+            lexical_hits = drawers_col.lexical_search(
+                query=query, n_results=limit, where=where,
+            ).hits
+            _record_ms(diagnostics, "lexical_query_ms", lexical_started)
 
         closet_boost_by_source = {}
         if not skip_closets:
@@ -101,14 +109,27 @@ def search_memories_shared_embedding(
     scoring_started = time.perf_counter()
     hits = _score_results(
         drawer_results,
-        n_results=max(n_results * len(wings), n_results),
+        n_results=limit if lexical_candidates else max(n_results * len(wings), n_results),
         closet_boost_by_source=closet_boost_by_source,
         metric=metric,
         memory_space_id=memory_space_id,
     )
     _record_ms(diagnostics, "storage_rank_ms", scoring_started)
+    if lexical_candidates:
+        by_id = {hit.metadata["_storage_id"]: hit for hit in hits}
+        for hit in lexical_hits:
+            record = by_id.get(hit.id)
+            if record is None:
+                record = storage_record(
+                    hit.id, hit.document, hit.metadata, memory_space_id=memory_space_id,
+                )
+                # Lexical evidence is not a measured vector similarity.
+                record.metadata.update(similarity=None, _lexical_only=True)
+                by_id[hit.id] = record
+            record.metadata["_lexical_score"] = hit.score
+        hits = list(by_id.values())
     _record_ms(diagnostics, "vector_storage_total_ms", total_started)
-    return hits[: max(n_results * len(wings), n_results)]
+    return hits
 
 
 def _record_ms(diagnostics: dict[str, float] | None, key: str, started: float) -> None:
@@ -125,7 +146,7 @@ def _search_sqlite_fallback(
     n_results: int,
     collection_name: str | None,
 ) -> list[MemoryWireRecord]:
-    """Probe SQLite without unsafe HNSW access; 3.9 cannot verify nonempty hits' visibility."""
+    """Probe SQLite safely; upstream hits omit metadata needed to verify visibility."""
     try:
         from mempalace.searcher import search_memories
 
@@ -142,7 +163,7 @@ def _search_sqlite_fallback(
             if payload.get("error"):
                 raise MemoryBackendUnavailable(str(payload["error"]))
             if payload.get("results"):
-                # 3.9's public fallback strips permission metadata. A broad metadata
+                # The public fallback strips permission metadata. A broad metadata
                 # scan or private SQL hydration would introduce a second read path.
                 raise MemoryBackendUnavailable(
                     "MemPalace SQLite fallback omitted visibility metadata"

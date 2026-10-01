@@ -30,6 +30,95 @@ async def runtime(tmp_path, monkeypatch):
         await router.aclose()
 
 
+async def test_lexical_candidate_outside_the_vector_window_reaches_public_recall(
+    runtime,
+    monkeypatch,
+):
+    from eidolon_memory_contracts import MemoryActorContext
+    from mempalace.palace import get_collection
+
+    from eidolon.memory.application.public_recall import recall_with_kg_fusion
+
+    vector = [1.0] + [0.0] * 511
+    monkeypatch.setattr(
+        "eidolon.memory.adapters.mempalace_python_backend._deterministic_embedding",
+        lambda *_args, **_kwargs: vector,
+    )
+    col = get_collection(str(runtime.palace_path), create=False)
+    common = {
+        "memory_space_id": runtime.space_id,
+        "wing": "Wing_Work",
+        "room": "projects",
+        "audience": "companion:alice",
+        "visibility": "all_devices",
+        "scope": "persona",
+        "source_device_id": "",
+        "target_device_id": "",
+    }
+    col.upsert(
+        ids=[*[f"noise-{i}" for i in range(100)], "target", "other-companion", "other-device"],
+        documents=[
+            *[f"ordinary noise {i}" for i in range(100)],
+            "project Z9X7LAN has a Friday deadline",
+            "Z9X7LAN private detail",
+            "Z9X7LAN laptop detail",
+        ],
+        metadatas=[
+            *[common for _ in range(101)],
+            {**common, "audience": "companion:bob"},
+            {**common, "visibility": "current_device", "source_device_id": "laptop"},
+        ],
+        embeddings=[*[vector for _ in range(100)], [-1.0] + [0.0] * 511, vector, vector],
+    )
+    result = await recall_with_kg_fusion(
+        runtime.backend,
+        MemorySettings(),
+        query="Z9X7LAN",
+        top_k=2,
+        context=MemoryActorContext(
+            memory_realm_id=runtime.space_id,
+            companion_id="alice",
+            device_id="phone",
+        ),
+        kg=None,
+    )
+    rows = result["vector"]
+    assert len(rows) == 2
+    ids = {r.metadata["_storage_id"] for r in rows}
+    assert "target" in ids
+    assert not ids & {"other-companion", "other-device"}
+    target = next(r for r in rows if r.metadata["_storage_id"] == "target")
+    assert target.metadata["similarity"] is None
+    assert target.metadata["audience"] == "companion:alice"
+    assert not result["degraded"]
+
+
+async def test_fragment_preserves_evidence_and_separates_event_from_filing_time(runtime):
+    from eidolon.memory.domain.fragments import MemoryFragment
+
+    await runtime.backend.ingest_fragment(
+        MemoryFragment(
+            memory_space_id=runtime.space_id,
+            source_turn_id="time-evidence-turn",
+            wing="Wing_Profile",
+            room="residence",
+            content="用户于2015年搬到北京",
+            evidence_quote="我2015年就搬到北京了。",
+            memory_type="fact",
+            importance=4,
+            confidence=0.95,
+            occurred_at="2015-01-01T00:00:00Z",
+        )
+    )
+    record = (await runtime.backend.get_all(runtime.space_id))[0]
+    assert record.metadata["filed_at"] == record.metadata["indexed_at"]
+    assert record.provenance.learned_at != record.provenance.occurred_at
+    assert record.provenance.occurred_at == "2015-01-01T00:00:00+00:00"
+    assert record.provenance.source_quote == "我2015年就搬到北京了。"
+    assert record.provenance.last_modified_at is None
+    assert record.memory_time.isoformat() == record.provenance.occurred_at
+
+
 async def test_empty_real_store_and_typed_result_identity(runtime):
     from mempalace.backends.base import GetResult, QueryResult
     from mempalace.palace import get_collection

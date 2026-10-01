@@ -109,7 +109,7 @@ def mempalace_backend_env(
 ) -> dict[str, str]:
     """Return an environment with backend and embedder selection applied.
 
-    MemPalace 3.9 has a public OpenAI-compatible provider.  Production uses that
+    MemPalace has a public OpenAI-compatible provider. Production uses that
     provider for collection identity while Eidolon passes document/query vectors
     explicitly through ``BaseCollection``.  That keeps BGE's two embedding roles
     under our ``EmbeddingPort`` without reaching MemPalace's private provider
@@ -151,7 +151,7 @@ def mempalace_backend_env(
     elif provider == "mempalace":
         env.pop(_OFFLINE_EMBEDDING_ENV, None)
         env["MEMPALACE_EMBEDDING_MODEL"] = embedding.model.strip().lower()
-        # MemPalace 3.9 has no public model-directory setting. Configuration
+        # MemPalace has no public model-directory setting. Configuration
         # validation rejects one rather than installing a process-wide download
         # hook or exporting an environment variable upstream never reads.
         env.pop("MEMPALACE_EMBEDDING_MODEL_DIR", None)
@@ -162,7 +162,7 @@ def mempalace_backend_env(
             env["MEMPALACE_EMBEDDING_THREADS"] = str(embedding.threads)
     else:
         raise ValueError(
-            "MemPalace 3.9 storage requires embedding.provider=http (the official "
+            "MemPalace storage requires embedding.provider=http (the official "
             "openai-compat provider) or a native MemPalace embedder. Local Eidolon "
             "embedders cannot be installed through a public MemPalace API; run the "
             "existing eidolon-memory-embedder service instead of injecting private "

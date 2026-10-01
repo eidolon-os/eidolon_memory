@@ -63,6 +63,10 @@ def client(monkeypatch: pytest.MonkeyPatch):
                 memory_space_id="realm_primary",
                 key="profile:walk",
                 value="他喜欢在下午散步",
+                metadata={
+                    "indexed_at": "2026-10-02T08:00:00Z",
+                    "evidence_quote": "我喜欢在下午散步。",
+                },
             )
         ]
 
@@ -101,7 +105,18 @@ def test_answers_with_what_the_space_holds(client) -> None:
     assert body["operation"] == "memory.recollections"
     assert body["memory_space_id"] == "realm_primary"
     assert body["query"] == "散步"
-    assert body["recollections"] == [{"text": "他喜欢在下午散步", "remembered_at": None}]
+    assert body["recollections"] == [
+        {
+            "text": "他喜欢在下午散步",
+            "remembered_at": None,
+            "provenance": {
+                "learned_at": "2026-10-02T08:00:00+00:00",
+                "last_modified_at": None,
+                "occurred_at": None,
+                "source_quote": "我喜欢在下午散步。",
+            },
+        }
+    ]
     MemoryRecollections.model_validate(body)
     # The space is the one this process serves; a caller cannot name another.
     assert service.contexts[0].memory_realm_id == "realm_primary"
@@ -128,6 +143,12 @@ def test_storage_value_and_time_are_projected_as_a_recollection() -> None:
     assert recollections_http._recollection_view(record).model_dump() == {
         "text": "用户喜欢乌龙茶",
         "remembered_at": "2026-08-28T04:24:36+00:00",
+        "provenance": {
+            "learned_at": None,
+            "last_modified_at": None,
+            "occurred_at": "2026-08-28T04:24:36+00:00",
+            "source_quote": "",
+        },
     }
 
 
@@ -138,9 +159,7 @@ def test_a_limit_is_bounded_rather_than_believed(client) -> None:
     http.get("/api/memory/v1/recollections?q=x&limit=0", headers=AUTH)
     assert [call["top_k"] for call in calls] == [MAXIMUM_RESULTS, 1]
 
-    assert (
-        http.get("/api/memory/v1/recollections?q=x&limit=many", headers=AUTH).status_code == 422
-    )
+    assert http.get("/api/memory/v1/recollections?q=x&limit=many", headers=AUTH).status_code == 422
 
 
 def test_memory_being_unavailable_is_said_rather_than_answered_as_empty(
@@ -210,7 +229,6 @@ def test_a_runner_is_spawned_with_the_environment_it_needs_to_embed(
     assert environment["MEMPALACE_PALACE_PATH"] == "/tmp/palace"
     # And still its own temp isolation, which is what it used to have alone.
     assert environment["TMPDIR"] == environment["SQLITE_TMPDIR"]
-
 
 
 class _RealRuntime:

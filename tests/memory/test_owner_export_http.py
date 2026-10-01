@@ -26,6 +26,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from eidolon.memory.domain.wings import CANONICAL_WINGS
+from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.entrypoints.owner_memory_http import (
     EXPORT_PATH,
     owner_memory_routes,
@@ -42,7 +43,27 @@ MORNING = NOON - timedelta(hours=4)
 LONG = "他早上喝了乌龙茶，" * 40
 
 
-class _Record:
+def test_room_contents_include_undated_records_and_keep_the_same_visibility():
+    records = [
+        _Record("visible", when=None, wing="Wing_Life", room="饮食"),
+        _Record("other-wing", wing="Wing_Work", room="饮食"),
+        _Record("other-room", room="计划"),
+        _Record("other-companion", audience=companion_audience("c_other")),
+        _Record("private", privacy="private"),
+    ]
+    http, _ = _client(records)
+    with http:
+        response = http.get(EXPORT_PATH, headers=AUTH, params={
+            "wing": "Wing_Life", "room": "饮食", "companion_id": MOCHI,
+        })
+    assert response.status_code == 200
+    body = response.json()
+    assert [record["entry_id"] for record in body["records"]] == ["visible"]
+    assert body["undated_count"] == 1
+    assert body["record_count"] == 1
+
+
+class _Record(MemoryWireRecord):
     def __init__(
         self,
         key: str,
@@ -55,22 +76,20 @@ class _Record:
         audience: str | None = None,
         privacy: str | None = None,
     ) -> None:
-        self.key = key
-        self.value = value
-        self.memory_space_id = SPACE
-        self.metadata: dict[str, Any] = {
+        metadata: dict[str, Any] = {
             "memory_space_id": SPACE,
             "wing": wing,
             "room": room,
             "memory_type": memory_type,
         }
         if audience is not None:
-            self.metadata["audience"] = audience
+            metadata["audience"] = audience
         if privacy is not None:
-            self.metadata["privacy"] = privacy
-        self.extensions: dict[str, Any] = {}
-        self.memory_time = when
-        self.memory_time_source = "occurred_at" if when else None
+            metadata["privacy"] = privacy
+        super().__init__(
+            memory_space_id=SPACE, key=key, value=value, metadata=metadata,
+            memory_time=when, memory_time_source="occurred_at" if when else None,
+        )
 
 
 class _Backend:
@@ -199,6 +218,7 @@ def test_the_file_holds_no_internal_metadata() -> None:
         "memory_type",
         "value",
         "audience",
+        "provenance",
     }
 
 

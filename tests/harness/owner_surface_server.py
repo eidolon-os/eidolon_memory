@@ -33,8 +33,10 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
+from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
 from eidolon.memory.application.privacy_confirmation import PrivacyConfirmationSigner
 from eidolon.memory.config.memory_settings import load_memory_settings
+from eidolon.memory.domain.space_lock import SpaceLock
 from eidolon.memory.entrypoints.owner_memory_http import owner_memory_routes
 from eidolon.memory.infrastructure.command_status import CommandStatusLedger
 
@@ -56,13 +58,13 @@ SEED: tuple[tuple[str, str, str, bool, int], ...] = (
 
 
 class _Service:
-    def __init__(self, backend: FakeMemoryBackend) -> None:
+    def __init__(self, backend: FakeMemoryBackend, graph: SqliteKnowledgeGraph) -> None:
         self.privacy_signer = PrivacyConfirmationSigner()
         self._runtime = SimpleNamespace(
             space_id=SPACE,
             backend=backend,
             palace_path="/tmp/palace",
-            kg=None,
+            kg=graph,
             ledgers=SimpleNamespace(canonical_facts=None, commitments=None),
         )
 
@@ -98,15 +100,42 @@ async def _seed(backend: FakeMemoryBackend) -> None:
             "memory_space_id": SPACE,
             "audience": audience,
             "occurred_at": (NOON - timedelta(minutes=minutes)).isoformat(),
+            "evidence_quote": text,
         }
         if canonical:
             metadata["assertion_id"] = f"assert-{key}"
         await backend.ingest_text(wing="Wing_Life", room=key, text=text, metadata=metadata)
 
 
+async def _seed_graph(graph: SqliteKnowledgeGraph) -> None:
+    for index in range(180):
+        await graph.add_triple(
+            subject="我",
+            predicate="likes",
+            object=f"图谱物品{index}",
+            audience=OWNER_AUDIENCE,
+            valid_from=NOON.isoformat(),
+        )
+    await graph.invalidate(subject="我", predicate="likes", object="图谱物品0")
+    await graph.add_triple(
+        subject="我",
+        predicate="likes",
+        object="只告诉伙伴乙的内容",
+        audience=companion_audience("c_b"),
+    )
+    await graph.add_triple(
+        subject="我",
+        predicate="has_health_condition",
+        object="敏感内容",
+        audience=OWNER_AUDIENCE,
+    )
+
+
 def build(port: int, token: str, state: Path) -> Starlette:
     backend = FakeMemoryBackend()
     asyncio.run(_seed(backend))
+    graph = SqliteKnowledgeGraph(state / "kg.sqlite3", space_id=SPACE, lock=SpaceLock())
+    asyncio.run(_seed_graph(graph))
     ledger = CommandStatusLedger(state / "cmd.sqlite3", space_id=SPACE)
 
     async def discovery(_request: Any) -> JSONResponse:
@@ -129,7 +158,7 @@ def build(port: int, token: str, state: Path) -> Starlette:
         routes=[
             Route("/api/discovery/agent-routing", discovery, methods=["GET"]),
             *owner_memory_routes(
-                service=_Service(backend),  # type: ignore[arg-type]
+                service=_Service(backend, graph),  # type: ignore[arg-type]
                 settings=load_memory_settings(),
                 memory_space_id=SPACE,
                 owner_id=OWNER,

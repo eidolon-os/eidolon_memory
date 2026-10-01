@@ -20,8 +20,6 @@ depends on where the person is, and this process does not know; the caller says
 
 from __future__ import annotations
 
-import base64
-import json
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -29,6 +27,7 @@ from typing import Any
 from eidolon.memory.application.mempalace_hierarchy import scan_records
 from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.wire import MemoryWireRecord
+from eidolon.memory.support.page_cursor import decode_position, encode_position
 
 
 async def build_owner_entries(
@@ -89,6 +88,8 @@ async def build_owner_entries(
                 "wing_id": str(record.metadata.get("wing") or ""),
                 "room_id": str(record.metadata.get("room") or ""),
                 "preview": _preview(record.value),
+                "value": str(record.value or ""),
+                "provenance": record.provenance.model_dump(mode="json"),
             }
             for when, record in page
         ],
@@ -123,16 +124,14 @@ def _preview(value: Any, *, limit: int = 160) -> str:
 def encode_entries_cursor(when: datetime, key: str) -> str:
     """The position after (``when``, ``key``), as an opaque token."""
 
-    raw = json.dumps({"t": when.isoformat(), "k": key}, ensure_ascii=False, separators=(",", ":"))
-    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+    return encode_position(t=when.isoformat(), k=key)
 
 
 def decode_entries_cursor(token: str) -> tuple[datetime, str]:
     """The (time, entry id) a token names, or ``ValueError`` if this did not issue it."""
 
     try:
-        padded = token + "=" * (-len(token) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        payload = decode_position(token, fields=("t", "k"))
         when = datetime.fromisoformat(payload["t"])
         key = payload["k"]
     except (ValueError, KeyError, TypeError, UnicodeError) as exc:

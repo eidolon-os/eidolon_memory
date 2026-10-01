@@ -26,6 +26,7 @@ from eidolon.memory.application.public_recall import (
     search_all_wings_mcp_style,
 )
 from eidolon.memory.config.memory_settings import MemorySettings
+from eidolon.memory.domain.wire import MemoryWireRecord
 from eidolon.memory.entrypoints.memory_api import Handler, actor_context
 from eidolon.memory.support.logging import get_logger
 
@@ -41,19 +42,20 @@ MAXIMUM_RESULTS = 50
 DEFAULT_RESULTS = 10
 
 
-def _recollection_view(record: object) -> MemoryRecollection:
+def _recollection_view(record: MemoryWireRecord) -> MemoryRecollection:
     """Project one storage record into the small person-facing HTTP contract."""
-    value = getattr(record, "value", "")
+    value = record.value
     if isinstance(value, str):
         text = value
     elif value is None:
         text = ""
     else:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    remembered_at = getattr(record, "memory_time", None)
+    remembered_at = record.memory_time
     return MemoryRecollection(
         text=text,
         remembered_at=remembered_at.isoformat() if remembered_at is not None else None,
+        provenance=record.provenance,
     )
 
 

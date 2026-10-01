@@ -248,8 +248,9 @@ class KnowledgeGraphPort(Protocol):
         limit: int = 100,
         current_only: bool = False,
         include_sensitive: bool = False,
+        before: tuple[str, str, str] | None = None,
     ) -> list[KgTripleRecord]:
-        """Statements ordered by when they became true. For operators.
+        """Statements ordered by (valid_from, recorded_at, id), newest first.
 
         ``audiences=None`` is every audience in this space: the Owner reading
         their own graph, never a Companion. An empty tuple still reads nothing.
@@ -259,6 +260,8 @@ class KnowledgeGraphPort(Protocol):
         the caller: applied to a ``LIMIT``-ed page it silently returns fewer than
         asked for, and the caller cannot tell the difference between "that is all
         there is" and "the page was mostly history".
+        ``before`` is an exclusive keyset in that order; empty dates stand for
+        undated statements. Audience and sensitivity filters apply on every page.
         """
         ...
 

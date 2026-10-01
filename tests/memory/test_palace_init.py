@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 from eidolon.memory.infrastructure.palace_init import (
     PalaceInitError,
     _materialize_backend_collection,
+    configure_shared_mempalace_home,
     palace_environment,
 )
 
@@ -18,8 +20,31 @@ def test_palace_environment_uses_one_shared_service_home(tmp_path: Path) -> None
     env = palace_environment({"HOME": "/nonexistent", "KEPT": "yes"}, palace)
 
     assert env["HOME"] == str(tmp_path / ".mempalace-home")
+    assert env["MEMPALACE_CONFIG_DIR"] == str(tmp_path / ".mempalace-home" / ".mempalace")
     assert env["MEMPALACE_PALACE_PATH"] == str(palace)
     assert env["KEPT"] == "yes"
+
+
+def test_xdg_cannot_redirect_the_service_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mempalace.config import MempalaceConfig
+
+    service_home = tmp_path / "service-home"
+    monkeypatch.setenv("EIDOLON_MEMORY_MEMPALACE_HOME", str(service_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "desktop-config"))
+    monkeypatch.setenv("MEMPALACE_CONFIG_DIR", str(tmp_path / "another-config"))
+    # Register environment restoration before the process helper changes HOME.
+    monkeypatch.setenv("HOME", str(tmp_path / "desktop-home"))
+
+    child = palace_environment(dict(os.environ), tmp_path / "palace")
+    configure_shared_mempalace_home(tmp_path)
+
+    assert MempalaceConfig().config_dir == service_home / ".mempalace"
+    assert child["HOME"] == str(service_home)
+    assert child["MEMPALACE_CONFIG_DIR"] == str(MempalaceConfig().config_dir)
+    assert not (tmp_path / "desktop-config").exists()
+    assert not (tmp_path / "another-config").exists()
 
 
 def test_materialize_backend_timeout_is_palace_init_error(

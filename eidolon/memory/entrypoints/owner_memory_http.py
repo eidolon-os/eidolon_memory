@@ -64,6 +64,7 @@ from eidolon.memory.entrypoints.recollections_http import (
     recollections_handler,
 )
 from eidolon.memory.support.logging import get_logger
+from eidolon.memory.support.page_cursor import decode_position, encode_position
 
 log = get_logger(__name__)
 
@@ -200,6 +201,20 @@ def graph_handler(
         except ValueError:
             return JSONResponse({"detail": "limit must be a number"}, status_code=422)
         limit = max(1, min(limit, MAXIMUM_GRAPH_EDGES))
+        history_value = request.query_params.get("history", "false").lower()
+        if history_value not in {"true", "false"}:
+            return JSONResponse({"detail": "history must be true or false"}, status_code=422)
+        history = history_value == "true"
+        before = None
+        cursor = request.query_params.get("cursor")
+        if cursor:
+            try:
+                position = decode_position(cursor, fields=("v", "r", "k"))
+                if not position["k"]:
+                    raise ValueError("cursor is missing a statement id")
+                before = (position["v"], position["r"], position["k"])
+            except ValueError as exc:
+                return JSONResponse({"detail": str(exc)}, status_code=422)
         context = actor_context(
             memory_space_id=memory_space_id,
             owner_id=owner_id,
@@ -208,12 +223,15 @@ def graph_handler(
         try:
             runtime = await service.runtime_for(context)
             if runtime.kg is None:
-                return _answer(MemoryGraph(memory_space_id=memory_space_id, truncated=False))
+                return _answer(MemoryGraph(
+                    memory_space_id=memory_space_id, truncated=False, history=history,
+                ))
             rows = await runtime.kg.timeline(
                 audiences=readable_audiences(companion_id) if companion_id else None,
                 limit=limit + 1,
-                current_only=True,
+                current_only=not history,
                 include_sensitive=False,
+                before=before,
             )
         except Exception as exc:  # noqa: BLE001
             log.exception(
@@ -246,10 +264,17 @@ def graph_handler(
                             "object": row.object,
                             "confidence": row.confidence,
                             "recorded_at": row.recorded_at or "",
+                            "valid_from": row.valid_from,
+                            "valid_to": row.valid_to,
                         }
                         for row in visible
                     ],
                     "truncated": len(rows) > limit,
+                    "next_cursor": encode_position(
+                        v=visible[-1].valid_from or "", r=visible[-1].recorded_at or "",
+                        k=visible[-1].id,
+                    ) if len(rows) > limit else None,
+                    "history": history,
                 }
             )
         )
@@ -384,6 +409,8 @@ def export_handler(
                     every_audience=companion_id is None,
                 ),
                 max_records=DEFAULT_EXPORT_SCAN,
+                wing=request.query_params.get("wing"),
+                room=request.query_params.get("room"),
             )
         except Exception as exc:  # noqa: BLE001 - a read must not take the process down
             log.exception(

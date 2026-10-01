@@ -65,5 +65,5 @@ async def test_ingest_text_preserves_canonical_memory_time_and_indexed_at():
     assert rows[0].memory_time is not None
     assert rows[0].memory_time.isoformat() == "2026-05-18T20:00:00+00:00"
     assert rows[0].memory_time_source == "occurred_at"
-    assert rows[0].metadata["filed_at"] == "2026-05-18T20:00:00Z"
+    assert rows[0].metadata["filed_at"] == rows[0].metadata["indexed_at"]
     assert rows[0].metadata["indexed_at"]

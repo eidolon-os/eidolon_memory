@@ -41,6 +41,8 @@ def record_similarity(rec: MemoryWireRecord) -> float:
 
 def record_retrieval_score(rec: MemoryWireRecord) -> float:
     """Internal rank signal; public similarity remains the raw vector score."""
+    if "_rrf_rank" in rec.metadata:
+        return 1.0 / (1 + int(rec.metadata["_rrf_rank"]))
     return float(rec.metadata.get("_retrieval_score", record_similarity(rec)))
 
 
@@ -50,7 +52,11 @@ def rank_records_by_similarity(
     top_k: int,
 ) -> list[MemoryWireRecord]:
     """Global re-rank after multi-wing merge (O(n log n), n ≈ wings × per-wing top_k)."""
-    ordered = sorted(hits, key=record_retrieval_score, reverse=True)
+    ordered = sorted(
+        hits,
+        key=lambda rec: float(rec.metadata.get("_retrieval_score", record_similarity(rec))),
+        reverse=True,
+    )
     return ordered[: max(1, top_k)]
 
 

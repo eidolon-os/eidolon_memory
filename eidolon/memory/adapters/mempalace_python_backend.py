@@ -243,6 +243,7 @@ class MemPalacePythonBackend(MemoryBackend):
             query_embedding=embedding,
             diagnostics=diagnostics,
             memory_space_id=self._memory_space_id,
+            lexical_candidates=self._settings.recall.rerank_enabled,
         )
         return apply_recall_policy(records, self._settings)
 
@@ -291,11 +292,9 @@ class MemPalacePythonBackend(MemoryBackend):
         occurred_at = str(raw_meta.get("occurred_at") or raw_meta.get("memory_time") or now_iso)
         raw_meta["occurred_at"] = occurred_at
         raw_meta.setdefault("indexed_at", now_iso)
-        # MemPalace's public search currently exposes ``filed_at`` as the
-        # top-level ``created_at`` and drops custom metadata. Store the
-        # canonical memory time here so plain search still reports when the
-        # topic happened; ``indexed_at`` keeps the physical write time.
-        raw_meta["filed_at"] = occurred_at
+        # Respect MemPalace's filing-time contract. Event time stays separate;
+        # MemoryWireRecord derives it centrally for the Owner's day list.
+        raw_meta["filed_at"] = raw_meta["indexed_at"]
         meta = _metadata_for_chroma(
             {
                 **raw_meta,
@@ -416,6 +415,7 @@ class MemPalacePythonBackend(MemoryBackend):
             "source_instance_id": fragment.source_instance_id or "",
             "source_companion_id": fragment.companion_id or fragment.source_instance_id or "",
             "source_turn_id": fragment.source_turn_id,
+            "evidence_quote": fragment.evidence_quote,
             "schema_version": "2",
             "session_id": fragment.session_id or "",
             "importance": fragment.importance,
@@ -631,7 +631,7 @@ def apply_recall_policy(
     hits: list[MemoryWireRecord],
     settings: MemorySettings,
 ) -> list[MemoryWireRecord]:
-    """Filter private/archived memories and cap top_k."""
+    """Filter private/archived candidates; final top-k belongs to recall ranking."""
     blocked = {s.lower() for s in settings.recall.filter_taboo_statuses}
     filtered: list[MemoryWireRecord] = []
     for hit in hits:
@@ -646,7 +646,7 @@ def apply_recall_policy(
         if status and status in blocked:
             continue
         filtered.append(hit)
-    return filtered[: settings.recall.top_k]
+    return filtered
 
 
 def _get_read_collection(palace_path: str):

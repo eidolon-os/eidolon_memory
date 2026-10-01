@@ -40,3 +40,23 @@ def test_plain_text_and_missing_dates_remain_valid():
     assert record.memory_space_id == "other"
     assert record.value == "hello"
     assert record.created_at is None
+
+
+def test_legacy_event_date_is_not_presented_as_a_learning_date():
+    record = storage_record("legacy", "旧记忆", {
+        "filed_at": "2015-01-01T00:00:00Z",
+        "occurred_at": "2015-01-01T00:00:00Z",
+        "last_modified": "2015-01-01T00:00:00Z",
+    })
+    assert record.provenance.learned_at is None
+    assert record.provenance.last_modified_at is None
+    assert record.provenance.occurred_at == "2015-01-01T00:00:00+00:00"
+    assert record.provenance.source_quote == ""
+
+
+def test_known_change_time_is_preserved_without_guessing_creation_time():
+    record = storage_record("changed", "旧记忆", {
+        "updated_at": "2026-10-02T00:00:00Z",
+    })
+    assert record.provenance.learned_at is None
+    assert record.provenance.last_modified_at == "2026-10-02T00:00:00+00:00"

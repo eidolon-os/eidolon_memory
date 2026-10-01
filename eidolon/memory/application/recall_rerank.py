@@ -1,4 +1,4 @@
-"""Phase 1 — BM25 + cosine Reciprocal Rank Fusion (RRF).
+"""BM25 + cosine Reciprocal Rank Fusion (RRF) over the scoped candidate union.
 
 Why
 ---
@@ -14,17 +14,18 @@ each ranker contributes ``1/(rrf_k + rank)`` to the doc's final score, and
 top-K is selected on the fused score. RRF is the *industry-standard* late-
 fusion algorithm (Cormack et al. 2009);默认 ``rrf_k = 60`` 跟主流实现一致。
 
-Performance
------------
-- BM25 is O(D × T) where D = docs, T = query tokens. Typical D < 50,
-  T < 10 → < 1ms in Python on consumer hardware.
-- RRF is O(D log D). Trivial.
-- Total rerank overhead: ~5ms / recall on hot path. Voice 50ms budget intact.
+The MemPalace adapter supplies independent indexed lexical candidates and their
+BM25 scores through the public collection API. Reuse those scores here. When
+that API finds no positive lexical match, retain the existing Chinese character
+BM25 ranking over the available vector candidates. This fallback does not add
+new candidates or change the upstream tokenizer. The caller applies its final
+result cap after fusion and contextual ranking, so an early vector cap cannot
+discard the independent lexical candidates.
 
 Failure mode
 ------------
-If ``rank_bm25`` is missing或 BM25 抛错 (空 corpus / 全停用词), 退化为恒等返回
-(cosine-only)。**绝不打断 recall。**
+If no upstream lexical scores exist and ``rank_bm25`` is missing or fails,
+return the original vector order. A local rerank failure does not interrupt recall.
 """
 
 from __future__ import annotations
@@ -122,7 +123,8 @@ def rerank_bm25_rrf(
 
     Args:
         query: 用户的查询字符串
-        hits: cosine top-K 之后的 MemoryWireRecord 列表(顺序即 cosine rank)
+        hits: scoped candidate union sorted by vector score; lexical-only rows
+            have no measured cosine score and do not vote in the cosine ranking
         top_k: 返回前 N 条(融合后)
         rrf_k: RRF 平滑系数,默认 60
 
@@ -136,10 +138,20 @@ def rerank_bm25_rrf(
     if n == 1:
         return list(hits[:top_k])
 
-    cosine_ranking = list(range(n))  # hits 已经按 cosine 排好
+    cosine_ranking = [i for i, hit in enumerate(hits) if not hit.metadata.get("_lexical_only")]
 
     bm25_ranking: list[int] | None = None
-    if _BM25_AVAILABLE:
+    if any(hit.metadata.get("_lexical_score", 0) > 0 for hit in hits):
+        # Reuse the collection's indexed BM25 candidates and scores. Rebuilding
+        # BM25 over the vector window loses precisely the independent candidates
+        # the storage search recovered.
+        bm25_ranking = sorted(
+            [i for i, hit in enumerate(hits) if hit.metadata.get("_lexical_score", 0) > 0],
+            key=lambda i: (-float(hits[i].metadata["_lexical_score"]), i),
+        )
+    elif _BM25_AVAILABLE:
+        # Keep the existing Chinese character rerank when upstream's word
+        # tokenizer found no lexical match (including one-character queries).
         try:
             corpus_tokens = [_tokenize(_record_text(r)) for r in hits]
             # Skip BM25 if corpus is degenerate (e.g. all-empty docs)
@@ -163,4 +175,6 @@ def rerank_bm25_rrf(
     fused_indices = _rrf_fuse(
         [cosine_ranking, bm25_ranking], n=n, rrf_k=rrf_k
     )
+    for rank, index in enumerate(fused_indices):
+        hits[index].metadata["_rrf_rank"] = rank
     return [hits[i] for i in fused_indices[:top_k]]

@@ -319,7 +319,7 @@ class EmbeddingConfig(BaseModel):
         if resolved_provider == "mempalace" and self.model_dir.strip():
             raise ValueError(
                 "embedding.model_dir is only supported by Eidolon's local provider; "
-                "MemPalace 3.9 has no public local model-directory interface"
+                "MemPalace has no public local model-directory interface"
             )
 
         return self

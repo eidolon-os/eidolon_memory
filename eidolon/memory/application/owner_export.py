@@ -43,10 +43,10 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from eidolon.memory.application.mempalace_hierarchy import scan_records
-from eidolon.memory.domain.ports import MemoryBackend
 from eidolon_memory_contracts import OWNER_AUDIENCE
 
+from eidolon.memory.application.mempalace_hierarchy import scan_records
+from eidolon.memory.domain.ports import MemoryBackend
 from eidolon.memory.domain.wire import MemoryWireRecord
 
 #: What travels per record. Named rather than derived from the metadata mapping:
@@ -60,6 +60,7 @@ EXPORTED_FIELDS = (
     "room_id",
     "memory_type",
     "value",
+    "provenance",
     #: Who was told. Present on every record because the Owner's copy carries
     #: every audience: a file that held a companion-private memory without
     #: saying it was one would be less true than the memory it copies.
@@ -72,6 +73,8 @@ async def build_owner_export(
     *,
     visible: Callable[[MemoryWireRecord], bool],
     max_records: int,
+    wing: str | None = None,
+    room: str | None = None,
 ) -> dict[str, Any]:
     """Everything visible in this space, newest first, undated last.
 
@@ -82,7 +85,12 @@ async def build_owner_export(
     """
 
     scanned, capped = await scan_records(backend, max_records=max_records)
-    allowed = [record for record in scanned if visible(record)]
+    allowed = [
+        record for record in scanned
+        if visible(record)
+        and (wing is None or record.metadata.get("wing") == wing)
+        and (room is None or record.metadata.get("room") == room)
+    ]
 
     dated: list[tuple[datetime, MemoryWireRecord]] = []
     undated: list[MemoryWireRecord] = []
@@ -115,6 +123,7 @@ def _exported(record: MemoryWireRecord, *, when: datetime | None) -> dict[str, A
         "entry_id": record.key,
         "recorded_at": when.isoformat() if when is not None else "",
         "recorded_at_source": record.memory_time_source or "",
+        "provenance": record.provenance.model_dump(mode="json"),
         "wing_id": str(record.metadata.get("wing") or ""),
         "room_id": str(record.metadata.get("room") or ""),
         "memory_type": str(record.metadata.get("memory_type") or ""),

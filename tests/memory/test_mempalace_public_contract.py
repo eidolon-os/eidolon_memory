@@ -1,4 +1,4 @@
-"""Executable contracts for MemPalace 3.9.0 behavior Eidolon relies on."""
+"""Executable contracts for MemPalace 3.10.0 behavior Eidolon relies on."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 
-def test_runtime_is_exactly_mempalace_390() -> None:
-    assert version("mempalace") == "3.9.0"
+def test_runtime_is_exactly_mempalace_3100() -> None:
+    assert version("mempalace") == "3.10.0"
 
 
 def test_collection_api_accepts_explicit_vectors_and_read_only() -> None:
@@ -21,6 +21,18 @@ def test_collection_api_accepts_explicit_vectors_and_read_only() -> None:
     assert "embeddings" in signature(BaseCollection.upsert).parameters
     assert "query_embeddings" in signature(BaseCollection.query).parameters
     assert "read_only" in signature(get_collection).parameters
+
+
+def test_unknown_collection_is_rejected_before_storage_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from mempalace.palace import CollectionNameMismatchError, get_collection
+
+    monkeypatch.setenv("MEMPALACE_CONFIG_DIR", str(tmp_path / "config"))
+    palace = tmp_path / "palace"
+    with pytest.raises(CollectionNameMismatchError, match="orphan_drawers"):
+        get_collection(str(palace), collection_name="orphan_drawers", create=True)
+    assert not palace.exists()
 
 
 def test_search_contract_exposes_safe_vector_fallback() -> None:

@@ -1,4 +1,4 @@
-"""Prove the MemPalace 3.9 public API needed by Eidolon Memory.
+"""Prove the MemPalace 3.10 public API needed by Eidolon Memory.
 
 This deliberately avoids MemPalace private symbols.  It creates a fresh Palace,
 uses the documented OpenAI-compatible embedder for collection identity, and
@@ -54,20 +54,21 @@ def main() -> None:
     from mempalace.backends.base import BaseCollection
     from mempalace.palace import get_backend_for_palace, get_collection
 
-    if mempalace.__version__ != "3.9.0":
-        raise RuntimeError(f"expected MemPalace 3.9.0, got {mempalace.__version__}")
+    if mempalace.__version__ != "3.10.0":
+        raise RuntimeError(f"expected MemPalace 3.10.0, got {mempalace.__version__}")
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), _EmbeddingHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        with tempfile.TemporaryDirectory(prefix="eidolon-mempalace-390-") as root:
+        with tempfile.TemporaryDirectory(prefix="eidolon-mempalace-3100-") as root:
             palace = Path(root) / "fresh-palace"
             home = Path(root) / "home"
             home.mkdir()
             os.environ.update(
                 {
                     "HOME": str(home),
+                    "MEMPALACE_CONFIG_DIR": str(home / ".mempalace"),
                     "MEMPALACE_PALACE_PATH": str(palace),
                     "MEMPALACE_BACKEND": "chroma",
                     "MEMPALACE_EMBEDDING_MODEL": "openai-compat",

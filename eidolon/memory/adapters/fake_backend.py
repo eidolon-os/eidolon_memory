@@ -76,7 +76,7 @@ class FakeMemoryBackend:
         occurred_at = str(raw_meta.get("occurred_at") or raw_meta.get("memory_time") or now_iso)
         raw_meta["occurred_at"] = occurred_at
         raw_meta.setdefault("indexed_at", now_iso)
-        raw_meta.setdefault("filed_at", occurred_at)
+        raw_meta.setdefault("filed_at", raw_meta["indexed_at"])
         meta = {"source": "fake", **raw_meta, "wing": wing, "room": room}
         did = self._doc_id(str(raw_meta.get("memory_space_id") or wing), room)
         self.docs[did] = MemoryWireRecord(
@@ -105,6 +105,7 @@ class FakeMemoryBackend:
             "source_instance_id": fragment.source_instance_id or "",
             "source_companion_id": fragment.companion_id or fragment.source_instance_id or "",
             "source_turn_id": fragment.source_turn_id,
+            "evidence_quote": fragment.evidence_quote,
             "schema_version": "2",
             "session_id": fragment.session_id or "",
             "importance": fragment.importance,

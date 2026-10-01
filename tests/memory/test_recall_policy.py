@@ -27,7 +27,7 @@ def test_taboo_filtered(monkeypatch: pytest.MonkeyPatch):
     assert out[0].value == "keep"
 
 
-def test_top_k_cap(monkeypatch: pytest.MonkeyPatch):
+def test_storage_policy_keeps_candidates_for_final_ranking(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("EIDOLON_MEMORY_SETTINGS_YAML", raising=False)
     settings = load_memory_settings()
     hits = [
@@ -35,7 +35,7 @@ def test_top_k_cap(monkeypatch: pytest.MonkeyPatch):
         for i in range(20)
     ]
     out = apply_recall_policy(hits, settings)
-    assert len(out) <= settings.recall.top_k
+    assert len(out) == len(hits)
 
 
 def test_rank_does_not_use_transport_session_as_relevance() -> None:

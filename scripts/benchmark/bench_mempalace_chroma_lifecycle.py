@@ -1,4 +1,4 @@
-"""Exercise MemPalace 3.9 + Chroma lifecycle through public APIs only."""
+"""Exercise MemPalace 3.10 + Chroma lifecycle through public APIs only."""
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ def _configure(palace: Path, home: Path) -> None:
     os.environ.update(
         {
             "HOME": str(home),
+            "MEMPALACE_CONFIG_DIR": str(home / ".mempalace"),
             "MEMPALACE_PALACE_PATH": str(palace),
             "MEMPALACE_BACKEND": "chroma",
             "MEMPALACE_EMBEDDING_MODEL": "openai-compat",
@@ -159,8 +160,8 @@ def _run(palace: Path, home: Path, *, seed: int, operations: int) -> dict[str, A
     import mempalace
     from mempalace.palace import get_collection
 
-    if mempalace.__version__ != "3.9.0":
-        raise RuntimeError(f"expected MemPalace 3.9.0, got {mempalace.__version__}")
+    if mempalace.__version__ != "3.10.0":
+        raise RuntimeError(f"expected MemPalace 3.10.0, got {mempalace.__version__}")
     _configure(palace, home)
 
     writer = get_collection(str(palace), create=True, backend="chroma")
@@ -273,7 +274,7 @@ def _run(palace: Path, home: Path, *, seed: int, operations: int) -> dict[str, A
         "snapshot_count": snapshot_count,
         "sqlite_integrity": integrity,
         "max_rss_mib": rss_mib,
-        # 3.9 accepts the public read_only option. Its Chroma backend does not
+        # Chroma accepts the public read_only option. Its backend does not
         # advertise or implement a separate immutable/read-only client; readers
         # share the backend-managed PersistentClient and are isolated by Eidolon's
         # service-level reader/writer discipline.
@@ -310,7 +311,7 @@ def main() -> None:
             raise SystemExit(_worker_write(palace, home, args.item_id))
         raise SystemExit(_worker_hold(palace, home))
 
-    with tempfile.TemporaryDirectory(prefix="eidolon-mempalace-390-life-") as root:
+    with tempfile.TemporaryDirectory(prefix="eidolon-mempalace-3100-life-") as root:
         base = Path(root)
         palace = Path(args.palace).resolve() if args.palace else base / "palace"
         home = Path(args.home).resolve() if args.home else base / "home"
