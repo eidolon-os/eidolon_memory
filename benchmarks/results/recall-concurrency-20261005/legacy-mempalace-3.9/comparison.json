@@ -1,0 +1,38 @@
+{
+  "chat-warm": {
+    "samples": 168,
+    "identical_ordered_results": true,
+    "degraded_before": 0,
+    "degraded_after": 0
+  },
+  "chat-uncached": {
+    "samples": 168,
+    "identical_ordered_results": true,
+    "degraded_before": 0,
+    "degraded_after": 0
+  },
+  "chat-graph-warm": {
+    "samples": 168,
+    "identical_ordered_results": true,
+    "degraded_before": 0,
+    "degraded_after": 0
+  },
+  "chat-graph-uncached": {
+    "samples": 168,
+    "identical_ordered_results": true,
+    "degraded_before": 0,
+    "degraded_after": 0
+  },
+  "voice-warm": {
+    "samples": 168,
+    "identical_ordered_results": true,
+    "degraded_before": 0,
+    "degraded_after": 0
+  },
+  "voice-uncached": {
+    "samples": 168,
+    "identical_ordered_results": true,
+    "degraded_before": 0,
+    "degraded_after": 0
+  }
+}

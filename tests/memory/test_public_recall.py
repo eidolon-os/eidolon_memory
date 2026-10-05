@@ -330,3 +330,93 @@ async def test_recall_fusion_marks_degraded_when_voice_scoped_read_fails():
     )
     assert result["vector"] == []
     assert result["degraded"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiting_on", ["vector", "theme", "graph"])
+async def test_cancel_recall_drains_its_in_flight_channels(waiting_on):
+    import asyncio
+
+    started = {name: asyncio.Event() for name in ("vector", "theme", "graph")}
+    finished = set()
+    release = asyncio.Event()
+
+    async def read(name):
+        started[name].set()
+        try:
+            if name == waiting_on or (name == "graph" and waiting_on == "vector"):
+                await release.wait()
+            return []
+        finally:
+            finished.add(name)
+
+    class PendingBackend(FakeMemoryBackend):
+        supports_scoped_search = True
+
+        async def search_scoped(self, *args, **kwargs):
+            return await read("vector")
+
+        async def search(self, *args, **kwargs):
+            return await read("theme")
+
+    class PendingGraph:
+        async def match_entities_for_query(self, *args, **kwargs):
+            return await read("graph")
+
+    settings = get_memory_settings().model_copy(deep=True)
+    settings.recall.kg_timeout_seconds_normal = 10
+    task = asyncio.create_task(recall_with_kg_fusion(
+        PendingBackend(), settings, query="tea", context=_context(), top_k=1,
+        kg=PendingGraph(),
+    ))
+    try:
+        pending = ["vector", "graph"] if waiting_on != "theme" else ["theme"]
+        await asyncio.wait_for(
+            asyncio.gather(*(started[name].wait() for name in pending)), timeout=1,
+        )
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished == {name for name, event in started.items() if event.is_set()}
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed", ["vector", "theme", "graph"])
+async def test_recall_preserves_channel_failure_isolation(failed):
+    from eidolon.memory.domain.wire import MemoryWireRecord
+
+    fact = MemoryWireRecord(memory_space_id=MEMORY_SPACE_ID, key="fact", value="tea")
+    theme = MemoryWireRecord(memory_space_id=MEMORY_SPACE_ID, key="theme", value="tea habits")
+
+    class FailingBackend(FakeMemoryBackend):
+        supports_scoped_search = True
+
+        async def search_scoped(self, *args, **kwargs):
+            if failed == "vector":
+                raise RuntimeError("vector unavailable")
+            return [fact]
+
+        async def search(self, *args, **kwargs):
+            if failed == "theme":
+                raise RuntimeError("theme unavailable")
+            return [theme]
+
+    class FailingGraph:
+        async def match_entities_for_query(self, *args, **kwargs):
+            if failed == "graph":
+                raise RuntimeError("graph unavailable")
+            return []
+
+    result = await recall_with_kg_fusion(
+        FailingBackend(), get_memory_settings(), query="tea", context=_context(),
+        top_k=1, kg=FailingGraph(),
+    )
+    expected = {"fact", "theme"} - ({"fact"} if failed == "vector" else
+                                   {"theme"} if failed == "theme" else set())
+    assert {r.key for r in result["vector"]} == expected
+    assert result["degraded"] is (failed == "vector")
+    assert result["kg"] == []

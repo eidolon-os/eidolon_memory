@@ -164,7 +164,14 @@ async def recall_with_kg_fusion(
 
         kg_task = asyncio.create_task(_kg_seed_path())
 
-    tasks = [vector_task]
+    async def _theme_path():
+        theme_started = time.perf_counter()
+        result = await _fetch_themes(backend, query, context, settings)
+        diagnostics["theme_ms"] = _elapsed_ms(theme_started)
+        return result
+
+    theme_task = asyncio.create_task(_theme_path())
+    tasks = [vector_task, theme_task]
     if kg_task is not None:
         tasks.append(kg_task)
     try:
@@ -212,8 +219,7 @@ async def recall_with_kg_fusion(
             # information — the drawer text says it, in the person's own words. Drop
             # it and let the budget go to the hop.
             already_shown={
-                str((record.metadata or {}).get("source_turn_id") or "")
-                for record in vector_records
+                str((record.metadata or {}).get("source_turn_id") or "") for record in vector_records
             },
             limit=settings.recall.kg_max_entities * settings.recall.kg_max_triples_per_entity,
         )
@@ -226,21 +232,15 @@ async def recall_with_kg_fusion(
         # We fetch them with a dedicated search and merge ADDITIVELY (no
         # truncation of vector_records). Dedup on key avoids double-counting
         # if a theme happened to win a vector top-K slot too.
-        theme_started = time.perf_counter()
-        theme_records = await _fetch_themes(backend, query, context, settings)
+        theme_records = await theme_task
         if theme_records:
             existing_keys = {r.key for r in vector_records}
             # Themes go first in the merged list so the renderer's split-by-
             # `_is_theme_record` puts the [主题] section in front naturally.
-            merged: list[MemoryWireRecord] = [
-                r for r in theme_records if r.key not in existing_keys
-            ]
+            merged: list[MemoryWireRecord] = [r for r in theme_records if r.key not in existing_keys]
             merged.extend(vector_records)
             vector_records = merged
-        diagnostics["theme_ms"] = _elapsed_ms(theme_started)
     finally:
-        # A cancelled caller must not leave an independent graph/vector read
-        # running. LockedBackend still owns actual worker lifetimes and locks.
         for task in tasks:
             if not task.done():
                 task.cancel()

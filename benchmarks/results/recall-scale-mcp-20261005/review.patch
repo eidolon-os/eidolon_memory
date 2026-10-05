@@ -1,0 +1,486 @@
+diff --git a/benchmarks/BENCHMARKS.md b/benchmarks/BENCHMARKS.md
+index 8a2af9c..7b1efee 100644
+--- a/benchmarks/BENCHMARKS.md
++++ b/benchmarks/BENCHMARKS.md
+@@ -47,8 +47,18 @@ Voice sits comfortably inside its budget. **Chat does not** — 445ms against a
+    entire chat retrieval budget. **Fixed**: now `recall.kg_timeout_seconds_normal`,
+    default 0.3s.
+ 
+-The first two are not yet addressed, which is why chat is reported as failing its
+-target rather than quietly omitted.
++**Current-code audit (2026-10-05):** the measurements and attribution above are
++historical, not a baseline for current HEAD. The default chat path now uses the
++adapter-owned shared embedding search, including indexed lexical candidates;
++the old 5000-row fallback has not been established on that path. Themes are still
++serial. A direct parallel-theme experiment was rejected after first-call storage
++initialization failures and higher uncached-query latency. Do not remove lexical
++retrieval or add theme concurrency on the strength of this historical diagnosis.
++
++The isolated small-corpus production-entrypoint probe and raw evidence are in
++[the audit report](results/recall-concurrency-20261005/REPORT.md). It is not a
++production-scale, MCP or write-path measurement, so the historical table stays
++unchanged and the complete latency gate remains unverified.
+ 
+ ---
+ 
+@@ -534,3 +544,23 @@ Stated so the gaps are visible rather than implied by absence:
+ - **Public suites.** LongMemEval, LoCoMo, ConvoMem and MemBench are aligned on
+   method but not yet run. The in-house 49-query set is what every figure here comes
+   from.
++
++## 2026-10-05: synthetic scale through production MCP
++
++Current dirty checkout, MemPalace 3.10.0, real bge-small-zh HTTP provider on Mac:
++36 sequential-session runs, 5,760 measured calls plus 144 warmups. No errors,
++degradation or empty results. Per-run p95 ranges across two batches and repeated/new
++query strings:
++
++| Facts | chat (200ms) | chat+graph (250ms) | voice+graph (60ms) |
++|---|---:|---:|---:|
++| 1,000 | 37.6–42.6ms PASS | 41.2–45.6ms PASS | 40.7–45.9ms PASS |
++| 5,000 | 111.3–117.5ms PASS | 113.8–121.0ms PASS | 114.6–117.4ms FAIL |
++| 10,000 | 201.0–208.5ms FAIL | 204.4–210.4ms PASS | 205.0–209.7ms FAIL |
++
++High-match lexical queries materialize metadata before scope filtering in the
++current storage implementation; this is the next optimization target, with scope
++and exact-match recall semantics preserved. Synthetic repeated facts and local
++serial calls do not establish production quality, concurrency or device SLOs.
++This adds scale evidence; it does not replace the historical quality results above.
++See [report, limitations and reproducible evidence](results/recall-scale-mcp-20261005/REPORT.md).
+diff --git a/scripts/benchmark/README.md b/scripts/benchmark/README.md
+index e6f6f47..f127a08 100644
+--- a/scripts/benchmark/README.md
++++ b/scripts/benchmark/README.md
+@@ -8,7 +8,7 @@
+ 
+ | 指标 | 工具 | SLA |
+ |------|------|-----|
+-| **LiveKit recall 端到端 P95** | `bench_read_livekit.py` | ≤ 200 ms |
++| **MCP recall P95（当前优化目标）** | `bench_read_livekit.py` | voice ≤60ms / chat ≤200ms / chat+KG ≤250ms |
+ | **LiveKit recall 端到端 max** | `bench_read_livekit.py` | ≤ 300 ms (硬截止) |
+ | **JetStream turn → recall 可见 P95** | `bench_write_jetstream.py` | ≤ 5 s(steward LLM 调用主导) |
+ | **JetStream turn → recall 可见 max** | `bench_write_jetstream.py` | ≤ 15 s |
+@@ -18,18 +18,29 @@
+ 
+ ## 7 个 bench（各自独立）
+ 
+-### R-01 `bench_read_livekit.py` — recall 端到端
++### R-01 `bench_read_livekit.py` — MCP recall 端到端
+ 
+ ```bash
+-.venv/bin/python scripts/benchmark/bench_read_livekit.py \
+-    --port 18030 --user-id bench --count 100 --voice
++uv run --no-sync python scripts/benchmark/bench_read_livekit.py \
++    --url http://127.0.0.1:18030/mcp \
++    --memory-realm-id bench --owner-id benchmark --companion-id benchmark \
++    --count 160 --warmup 8 --voice --with-kg \
++    --server-manifest /path/to/server-manifest.json \
++    --out benchmarks/results/<run>/voice.json
+ ```
+ 
+-通过 MCP HTTP 调 `eidolon_memory_recall_context`,N 次采样,产出 P50/P95/P99/max。
+-`--voice` 开 LiveKit hot-path 优化(共享 ONNX embedding + skip closets),
+-`--with-kg` 启用 KG 融合。
++使用当前actor契约与Agent `/mcp` surface；旧tenant/persona/instance参数已失效，不再接受。
++复用一个MCP session，按固定查询顺序测量；`--query`可重复指定。调用方负责服务启停和隔离。
+ 
+-输出:`<out>/R-01.json`。
++原始样本包含预热、失败时延、records、KG、server trace、降级原因。MCP `isError`、畸形响应、
++超时、降级、会话建立失败均不能PASS；任何预热失败同样失败。合法空结果单独计数，不能当作
++检索质量命中。总耗时与成功调用耗时分别统计，不丢失败样本来降低p95。
++
++门槛使用上表P95目标；旧脚本内部300ms门槛和未实际执行的p99字段已移除。20次以下或小数据
++即使显示PASS也不能当完整验收。服务器provenance由启动方提供，客户端版本不能冒充服务器版本。
++
++输出格式为 `manifest / summary / warmup / per_call / sla`，`--out`必填；输出含召回内容，
++仅对合成数据或获准归档的脱敏语料使用。长期结果写入可提交目录，真实个人数据不能直接入库。
+ 
+ ### W-01 `bench_write_jetstream.py` — turn → recall 可见
+ 
+@@ -55,15 +66,25 @@ MCP recall 反验"什么时候我能查到刚发的 turn"。
+ 绕开 NATS + steward,直接 `MemPalacePythonBackend.ingest_fragment` 灌 N 条。
+ 用来回归 `chromadb.synchronous` / WAL pragma 变更对持久层延迟的影响。
+ 
+-### J `probe_recall_stages.py` — recall 抖动溯源
++### J `probe_recall_stages.py` — production recall 分段诊断
+ 
+ ```bash
+-.venv/bin/python scripts/benchmark/probe_recall_stages.py \
+-    --palace ~/eidolon/memory/mempalaces/bench --count 50
++EIDOLON_MEMORY_SETTINGS_YAML=/path/to/isolated-settings.yaml \
++uv run --no-sync python scripts/benchmark/probe_recall_stages.py \
++    --user-id bench --chat --with-kg --count 160 --warmup 8 \
++    --out benchmarks/results/<run>/chat-graph.json
+ ```
+ 
+-把一次 recall 拆成 `ONNX embed → wing fan-out → filter → rank` 4 段,
+-分别打点。用于诊断"首句 100ms+ 是哪一段在抖"。
++通过现有 LocalPalaceRouter 调用真实 `recall_with_kg_fusion`，保存其trace、原始结果ID、
++降级状态和manifest。省略`--chat`测voice，省略`--with-kg`关闭图谱。
++`--clear-cache`在每次调用前清query embedding缓存，测冷查询而非冷启动。
++
++使用隔离配置/Realm；router必须取得该空间的独占持有权。真实bge模型通过已有embedding
++HTTP服务配置，不能用测试向量宣称provider性能。预热原始样本单独保留，任何vector降级
++（包括预热）使进程退出非零。分段可重叠，不能相加得到总延迟。
++
++这不是MCP/Agent端到端或质量基准。旧版探针手工重建部分搜索，旧输出不与新版直接比较；
++`--cold-rounds`改为`--warmup`，输出结构以manifest/per_call/aggregate为准。
+ 
+ ### S `eval_steward_prompt.py` — steward 召回质量
+ 
+diff --git a/scripts/benchmark/bench_read_livekit.py b/scripts/benchmark/bench_read_livekit.py
+index fbbae80..35ede8d 100755
+--- a/scripts/benchmark/bench_read_livekit.py
++++ b/scripts/benchmark/bench_read_livekit.py
+@@ -1,14 +1,9 @@
+ #!/usr/bin/env python3
+-"""R-01: end-to-end recall latency through a running agent_runner (D1).
++"""R-01: recall latency through a running production MCP Agent surface.
+ 
+-The benchmark targets the same code path LiveKit voice pipelines use in
+-production: an MCP ``streamable-http`` client calls
+-``eidolon_memory_recall_context`` on a single-user agent_runner; each call is
+-gated by the user's ``asyncio.Lock`` and hits the same chromadb
+-PersistentClient.
+-
+-The caller is responsible for starting and tearing down the agent_runner
+-subprocess; this script is a pure load generator.
++Reuses one MCP session. Warmup, failures and raw samples remain in the report.
++The caller owns the server lifecycle and supplies its provenance; this client
++cannot infer a remote server's version or data from its own checkout.
+ """
+ 
+ from __future__ import annotations
+@@ -16,7 +11,7 @@ from __future__ import annotations
+ import argparse
+ import asyncio
+ import json
+-import random
++import shlex
+ import sys
+ import time
+ from pathlib import Path
+@@ -25,12 +20,13 @@ _ROOT = Path(__file__).resolve().parents[2]
+ if str(_ROOT) not in sys.path:
+     sys.path.insert(0, str(_ROOT))
+ 
+-import httpx
+-from mcp import ClientSession
+-from mcp.client.streamable_http import streamablehttp_client
+-from eidolon_memory_contracts import MemoryActorContext
++import httpx  # noqa: E402
++from eidolon_memory_contracts import MemoryActorContext, build_memory_actor_context  # noqa: E402
++from mcp import ClientSession  # noqa: E402
++from mcp.client.streamable_http import streamablehttp_client  # noqa: E402
+ 
+-from scripts.benchmark.report import percentiles, sla_pass  # noqa: E402
++from scripts.benchmark.manifest import code_provenance, machine_facts, utc_stamp  # noqa: E402
++from scripts.benchmark.report import percentiles  # noqa: E402
+ 
+ _DEFAULT_QUERIES = [
+     "用户最近的情绪状态",
+@@ -48,15 +44,35 @@ def _local_http_client(headers=None, timeout=None, auth=None) -> httpx.AsyncClie
+     return httpx.AsyncClient(headers=headers, timeout=timeout, auth=auth, trust_env=False)
+ 
+ 
+-def _extract_records(call_result) -> list[dict]:
+-    if not call_result.content:
+-        return []
+-    text = call_result.content[0].text or "{}"
+-    try:
+-        data = json.loads(text)
+-    except json.JSONDecodeError:
+-        return []
+-    return data.get("records") or []
++def _decode_recall(result) -> dict:
++    if result.isError:
++        raise ValueError(f"MCP tool error: {result.content}")
++    data = result.structuredContent
++    if data is None:
++        texts = [block.text for block in result.content if block.type == "text"]
++        if len(texts) != 1:
++            raise ValueError("expected one JSON recall response")
++        data = json.loads(texts[0])
++    if not isinstance(data, dict):
++        raise ValueError("recall response must be an object")
++    for field in ("records", "kg_triples"):
++        if not isinstance(data.get(field), list):
++            raise ValueError(f"recall response missing {field} list")
++    if not isinstance(data.get("degraded"), bool) or not isinstance(data.get("trace"), dict):
++        raise ValueError("recall response missing degraded/trace")
++    return data
++
++
++def _summarize(samples: list[dict]) -> dict:
++    good = [s for s in samples if s["error"] is None and not s["degraded"]]
++    return {
++        "count": len(samples),
++        "errors": sum(s["error"] is not None for s in samples),
++        "degraded": sum(s["degraded"] for s in samples),
++        "empty": sum(not s["records"] and not s["kg_triples"] for s in good),
++        "latency_ms": percentiles([s["elapsed_ms"] for s in samples]),
++        "successful_latency_ms": percentiles([s["elapsed_ms"] for s in good]),
++    }
+ 
+ 
+ async def _run(
+@@ -67,140 +83,144 @@ async def _run(
+     voice: bool,
+     with_kg: bool,
+     context: MemoryActorContext,
++    warmup: int = 8,
++    timeout_s: float = 10,
+ ) -> dict:
+-    latencies_ms: list[float] = []
+-    errors = 0
+-    hit_count = 0
+-    rng = random.Random(0xC0FFEE)
+-
+-    # Warm up: first session creates the MCP session, which is dominated by
+-    # one-time handshake costs; skip its sample.
+-    async with streamablehttp_client(url, httpx_client_factory=_local_http_client) as (
+-        read,
+-        write,
+-        _,
+-    ):
+-        async with ClientSession(read, write) as sess:
+-            await sess.initialize()
+-            # Re-use a single session to avoid HTTP/MCP setup cost per call;
+-            # this mirrors how a LiveKit pipeline keeps an MCP client alive.
+-            warm_q = rng.choice(queries)
+-            await sess.call_tool(
+-                "eidolon_memory_recall_context",
+-                arguments={
+-                    "query": warm_q,
+-                    "context": context.model_dump(mode="json"),
+-                    "top_k": 5,
+-                    "voice": voice,
+-                    "include_kg": with_kg,
+-                },
+-            )
+-
+-            for i in range(count):
+-                q = rng.choice(queries)
+-                t0 = time.perf_counter()
+-                try:
+-                    res = await sess.call_tool(
+-                        "eidolon_memory_recall_context",
+-                        arguments={
+-                            "query": q,
+-                            "context": context.model_dump(mode="json"),
+-                            "top_k": 5,
+-                            "voice": voice,
+-                            "include_kg": with_kg,
+-                        },
+-                    )
+-                except Exception:
+-                    errors += 1
+-                    continue
+-                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+-                latencies_ms.append(elapsed_ms)
+-                if _extract_records(res):
+-                    hit_count += 1
+-
+-    stats = percentiles(latencies_ms)
++    if count < 1 or warmup < 0 or not queries or timeout_s <= 0:
++        raise ValueError("positive count/timeout and nonempty queries are required")
++    samples = []
++    startup_error = None
++    try:
++        async with streamablehttp_client(url, httpx_client_factory=_local_http_client) as (
++            read,
++            write,
++            _,
++        ):
++            async with ClientSession(read, write) as sess:
++                await asyncio.wait_for(sess.initialize(), timeout_s)
++                for i in range(warmup + count):
++                    query = queries[i % len(queries)]
++                    sample = {
++                        "query": query,
++                        "warmup": i < warmup,
++                        "error": None,
++                        "degraded": False,
++                        "degraded_reason": None,
++                        "records": [],
++                        "kg_triples": [],
++                        "trace": {},
++                    }
++                    started = time.perf_counter()
++                    try:
++                        result = await asyncio.wait_for(
++                            sess.call_tool(
++                                "eidolon_memory_recall_context",
++                                arguments={
++                                    "query": query,
++                                    "context": context.model_dump(mode="json"),
++                                    "top_k": 5,
++                                    "voice": voice,
++                                    "include_kg": with_kg,
++                                },
++                            ),
++                            timeout_s,
++                        )
++                        data = _decode_recall(result)
++                        sample.update(
++                            {
++                                key: data.get(key)
++                                for key in (
++                                    "records",
++                                    "kg_triples",
++                                    "trace",
++                                    "degraded",
++                                    "degraded_reason",
++                                )
++                            }
++                        )
++                    except Exception as exc:
++                        sample["error"] = f"{type(exc).__name__}: {exc}"
++                    sample["elapsed_ms"] = (time.perf_counter() - started) * 1000
++                    samples.append(sample)
++    except Exception as exc:
++        startup_error = f"{type(exc).__name__}: {exc}"
++    summary = _summarize([s for s in samples if not s["warmup"]])
++    warmup_summary = _summarize([s for s in samples if s["warmup"]])
++    budget = 60 if voice else 250 if with_kg else 200
++    healthy = (
++        startup_error is None
++        and summary["count"] == count
++        and all(s["error"] is None and not s["degraded"] for s in samples)
++    )
+     return {
+         "id": "R-01",
++        "url": url,
++        "context": context.model_dump(mode="json"),
++        "mode": ("voice" if voice else "chat") + ("+kg" if with_kg else ""),
+         "n": count,
+-        "errors": errors,
+-        "hit_rate_pct": (
+-            round(hit_count / max(1, len(latencies_ms)) * 100.0, 1)
+-            if latencies_ms
+-            else 0.0
+-        ),
+-        "latency_ms": stats,
+-        "sla_p95_ms": 300,
+-        "sla_p99_ms": 350,
+-        "sla": "PASS"
+-        if sla_pass(stats.get("p50", 9e9), stats.get("p95", 9e9), p50_max=200, p95_max=300)
+-        else "FAIL",
++        "startup_error": startup_error,
++        "summary": summary,
++        "warmup": warmup_summary,
++        "per_call": samples,
++        "sla_p95_ms": budget,
++        "sla": "PASS" if healthy and summary["latency_ms"]["p95"] <= budget else "FAIL",
+     }
+ 
+ 
+ def main() -> int:
+     parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--url", default="http://127.0.0.1:8030/mcp")
++    parser.add_argument("--count", type=int, default=160)
++    parser.add_argument("--warmup", type=int, default=8)
++    parser.add_argument("--timeout", type=float, default=10)
++    parser.add_argument("--memory-realm-id", required=True)
++    parser.add_argument("--owner-id", required=True)
++    parser.add_argument("--companion-id", required=True)
++    parser.add_argument("--device-id", default="benchmark")
++    parser.add_argument("--session-id", default="benchmark-session")
++    parser.add_argument("--query", action="append")
++    parser.add_argument("--voice", action="store_true")
++    parser.add_argument("--with-kg", action="store_true")
+     parser.add_argument(
+-        "--url",
+-        default="http://127.0.0.1:8030/mcp",
+-        help="agent_runner control-plane MCP URL (default localhost:8030)",
+-    )
+-    parser.add_argument("--count", type=int, default=50)
+-    parser.add_argument("--tenant-id", default="default")
+-    parser.add_argument("--owner-user-id", default="bench")
+-    parser.add_argument("--persona-id", default="mochi")
+-    parser.add_argument("--agent-id", default="agent-bench")
+-    parser.add_argument("--device-id", default="bench-device")
+-    parser.add_argument("--instance-id", default="bench-runtime")
+-    parser.add_argument("--session-id", default="bench-session")
+-    parser.add_argument(
+-        "--query",
+-        action="append",
+-        default=None,
+-        help="Override query corpus; pass multiple times. Defaults to a built-in 8-query mix.",
+-    )
+-    parser.add_argument(
+-        "--voice",
+-        action="store_true",
+-        help="Use the LiveKit hot path (shared query embedding across wings).",
+-    )
+-    parser.add_argument(
+-        "--with-kg",
+-        action="store_true",
+-        help="Pass include_kg=true to recall_context (KG plan §5.7 KG-V7 bench).",
+-    )
+-    parser.add_argument(
+-        "--out",
+-        default="",
+-        help="Optional JSON output path",
++        "--server-manifest",
++        type=Path,
++        help="Provenance supplied by the operator of the measured server.",
+     )
++    parser.add_argument("--out", type=Path, required=True)
+     args = parser.parse_args()
+-
+-    queries = args.query if args.query else _DEFAULT_QUERIES
+-    context = MemoryActorContext(
+-        tenant_id=args.tenant_id,
+-        owner_user_id=args.owner_user_id,
+-        persona_id=args.persona_id,
+-        agent_id=args.agent_id,
++    if args.count < 1 or args.warmup < 0 or args.timeout <= 0:
++        parser.error("count/timeout must be positive and warmup nonnegative")
++    server_manifest = json.loads(args.server_manifest.read_text()) if args.server_manifest else None
++    context = build_memory_actor_context(
++        memory_realm_id=args.memory_realm_id,
++        owner_id=args.owner_id,
++        companion_id=args.companion_id,
+         device_id=args.device_id,
+-        instance_id=args.instance_id,
+         session_id=args.session_id,
+     )
++    started_at = utc_stamp()
+     row = asyncio.run(
+         _run(
+-            args.url, count=args.count, queries=queries,
+-            voice=args.voice, with_kg=args.with_kg, context=context,
++            args.url,
++            count=args.count,
++            warmup=args.warmup,
++            timeout_s=args.timeout,
++            queries=args.query or _DEFAULT_QUERIES,
++            voice=args.voice,
++            with_kg=args.with_kg,
++            context=context,
+         )
+     )
+-    row["memory_space_id"] = context.memory_space_id
+-    row["mode"] = ("voice" if args.voice else "non-voice") + (
+-        "+kg" if args.with_kg else ""
+-    )
+-    print(json.dumps(row, indent=2, ensure_ascii=False))
+-
+-    if args.out:
+-        p = Path(args.out)
+-        p.parent.mkdir(parents=True, exist_ok=True)
+-        p.write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding="utf-8")
++    row["manifest"] = {
++        "started_at": started_at,
++        "command": shlex.join([sys.executable, *sys.argv]),
++        "client_code": code_provenance(_ROOT),
++        "client_machine": machine_facts(),
++        "server": server_manifest,
++    }
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(row, indent=2, ensure_ascii=False) + "\n")
++    print(json.dumps({k: row[k] for k in ("mode", "sla", "summary", "warmup")}, indent=2))
+     return 0 if row["sla"] == "PASS" else 1
+ 
+ 

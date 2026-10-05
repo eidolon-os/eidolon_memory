@@ -1,0 +1,146 @@
+[
+  {
+    "run": "1000-chat-repeated-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-chat-novel-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-chat-graph-repeated-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-chat-graph-novel-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-voice-repeated-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-voice-novel-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-chat-repeated-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-chat-novel-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-chat-graph-repeated-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-chat-graph-novel-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-voice-repeated-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "1000-voice-novel-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-chat-repeated-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-chat-novel-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-chat-graph-repeated-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-chat-graph-novel-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-voice-repeated-b1",
+    "exit_code": 1
+  },
+  {
+    "run": "5000-voice-novel-b1",
+    "exit_code": 1
+  },
+  {
+    "run": "5000-chat-repeated-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-chat-novel-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-chat-graph-repeated-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-chat-graph-novel-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-voice-repeated-b2",
+    "exit_code": 1
+  },
+  {
+    "run": "5000-voice-novel-b2",
+    "exit_code": 1
+  },
+  {
+    "run": "10000-chat-repeated-b1",
+    "exit_code": 1
+  },
+  {
+    "run": "10000-chat-novel-b1",
+    "exit_code": 1
+  },
+  {
+    "run": "10000-chat-graph-repeated-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "10000-chat-graph-novel-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "10000-voice-repeated-b1",
+    "exit_code": 1
+  },
+  {
+    "run": "10000-voice-novel-b1",
+    "exit_code": 1
+  },
+  {
+    "run": "10000-chat-repeated-b2",
+    "exit_code": 1
+  },
+  {
+    "run": "10000-chat-novel-b2",
+    "exit_code": 1
+  },
+  {
+    "run": "10000-chat-graph-repeated-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "10000-chat-graph-novel-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "10000-voice-repeated-b2",
+    "exit_code": 1
+  },
+  {
+    "run": "10000-voice-novel-b2",
+    "exit_code": 1
+  }
+]

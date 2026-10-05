@@ -47,8 +47,18 @@ Voice sits comfortably inside its budget. **Chat does not** — 445ms against a
    entire chat retrieval budget. **Fixed**: now `recall.kg_timeout_seconds_normal`,
    default 0.3s.
 
-The first two are not yet addressed, which is why chat is reported as failing its
-target rather than quietly omitted.
+**Current-code audit (2026-10-05):** the measurements and attribution above are
+historical, not a baseline for current HEAD. The default chat path now uses the
+adapter-owned shared embedding search, including indexed lexical candidates;
+the old 5000-row fallback has not been established on that path. Themes are still
+serial. A direct parallel-theme experiment was rejected after first-call storage
+initialization failures and higher uncached-query latency. Do not remove lexical
+retrieval or add theme concurrency on the strength of this historical diagnosis.
+
+The isolated small-corpus production-entrypoint probe and raw evidence are in
+[the audit report](results/recall-concurrency-20261005/REPORT.md). It is not a
+production-scale, MCP or write-path measurement, so the historical table stays
+unchanged and the complete latency gate remains unverified.
 
 ---
 
@@ -534,3 +544,23 @@ Stated so the gaps are visible rather than implied by absence:
 - **Public suites.** LongMemEval, LoCoMo, ConvoMem and MemBench are aligned on
   method but not yet run. The in-house 49-query set is what every figure here comes
   from.
+
+## 2026-10-05: synthetic scale through production MCP
+
+Current dirty checkout, MemPalace 3.10.0, real bge-small-zh HTTP provider on Mac:
+36 sequential-session runs, 5,760 measured calls plus 144 warmups. No errors,
+degradation or empty results. Per-run p95 ranges across two batches and repeated/new
+query strings:
+
+| Facts | chat (200ms) | chat+graph (250ms) | voice+graph (60ms) |
+|---|---:|---:|---:|
+| 1,000 | 37.6–42.6ms PASS | 41.2–45.6ms PASS | 40.7–45.9ms PASS |
+| 5,000 | 111.3–117.5ms PASS | 113.8–121.0ms PASS | 114.6–117.4ms FAIL |
+| 10,000 | 201.0–208.5ms FAIL | 204.4–210.4ms PASS | 205.0–209.7ms FAIL |
+
+High-match lexical queries materialize metadata before scope filtering in the
+current storage implementation; this is the next optimization target, with scope
+and exact-match recall semantics preserved. Synthetic repeated facts and local
+serial calls do not establish production quality, concurrency or device SLOs.
+This adds scale evidence; it does not replace the historical quality results above.
+See [report, limitations and reproducible evidence](results/recall-scale-mcp-20261005/REPORT.md).

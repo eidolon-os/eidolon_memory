@@ -1,0 +1,6 @@
+{
+  "uv.lock": "69012c4caf428a0b0908165b99de9cb90a59bdc32c7f820cdf80e4cb3ef56282",
+  "eidolon/memory/application/public_recall.py": "3620a8124bf7f5e5cb622d044757a28fb3f5ec22fd20e049f7ebe0e4cc87be3c",
+  "eidolon/memory/adapters/mempalace_fast_search.py": "36f716ede6737a69ef7b2ee6adebe502f0ed5262f385e334fec9aadbf55e2578",
+  "scripts/benchmark/bench_read_livekit.py": "59e26ef4bf98ef46ca0f427d81fe0905f7e1a39434c1eb9b905bd10124343933"
+}

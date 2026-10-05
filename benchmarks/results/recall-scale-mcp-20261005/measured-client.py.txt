@@ -198,7 +198,6 @@ def main() -> int:
         device_id=args.device_id,
         session_id=args.session_id,
     )
-    started_at = utc_stamp()
     row = asyncio.run(
         _run(
             args.url,
@@ -212,7 +211,7 @@ def main() -> int:
         )
     )
     row["manifest"] = {
-        "started_at": started_at,
+        "started_at": utc_stamp(),
         "command": shlex.join([sys.executable, *sys.argv]),
         "client_code": code_provenance(_ROOT),
         "client_machine": machine_facts(),

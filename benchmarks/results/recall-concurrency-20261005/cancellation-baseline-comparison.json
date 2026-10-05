@@ -1,0 +1,12 @@
+{
+  "baseline": {
+    "vector": "assertion failed: in-flight task survived caller cancellation",
+    "theme": "passed",
+    "graph": "passed"
+  },
+  "final": {
+    "vector": "passed",
+    "theme": "passed",
+    "graph": "passed"
+  }
+}

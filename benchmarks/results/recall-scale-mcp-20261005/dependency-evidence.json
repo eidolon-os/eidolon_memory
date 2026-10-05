@@ -1,0 +1,7 @@
+{
+  "mempalace": "3.10.0",
+  "source": "/Users/manson/ai/eidolon/eidolon_memory/.venv/lib/python3.13/site-packages/mempalace/backends/chroma.py",
+  "sha256": "e856b3b4ff280f4a16c24dc5d69d26a022ffe65c72451489607157561f9afe2f",
+  "entrypoint": "ChromaCollection._lexical_search_via_sqlite",
+  "notes": "where supplied disables FTS candidate LIMIT; metadata is loaded before Python where filtering and BM25 ranking."
+}

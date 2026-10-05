@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""Probe each stage of LiveKit-voice recall to localize first-call jitter.
+"""Measure the production recall entrypoint, in-process, using its own trace.
 
-In-process (avoids MCP HTTP framing noise) reproduces the same code path the
-agent_runner would run, but with timing breakpoints around:
-
-  * embedding (ONNX) ─ LRU cache hit / miss
-  * asyncio.Lock acquire
-  * mempalace fast-search (collection.query over each wing)
-  * result filter / rank
-
-The script runs N calls against a seeded palace and prints per-call breakdown
-for the first ``--cold-rounds`` calls plus aggregate percentiles for the rest.
+Uses the normal router/locks and configured embedder. This is a service-stage
+probe, not MCP end-to-end latency or a retrieval-quality benchmark. Trace stages
+can overlap; total latency is measured at the boundary, never summed.
 """
 
 from __future__ import annotations
@@ -18,9 +11,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import statistics
+import shlex
 import sys
-import time
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -29,18 +21,12 @@ if str(_ROOT) not in sys.path:
 
 from eidolon_memory_contracts import build_memory_actor_context  # noqa: E402
 
-from eidolon.memory.adapters.locked_backend import LockedBackend  # noqa: E402
-from eidolon.memory.adapters.mempalace_python_backend import (  # noqa: E402
-    MemPalacePythonBackend,
-)
-from eidolon.memory.adapters.mempalace_query_embedding import (  # noqa: E402
-    _embed_query_cached_normalized,
-    clear_embedding_cache,
-)
+from eidolon.memory.adapters.local_palace_router import LocalPalaceRouter  # noqa: E402
+from eidolon.memory.adapters.mempalace_query_embedding import clear_embedding_cache  # noqa: E402
+from eidolon.memory.application.public_recall import recall_with_kg_fusion  # noqa: E402
 from eidolon.memory.config.memory_settings import get_memory_settings  # noqa: E402
-from eidolon.memory.config.palace_directory import (  # noqa: E402
-    resolve_palace_for_memory_space,
-)
+from scripts.benchmark.manifest import build_manifest  # noqa: E402
+from scripts.benchmark.report import percentiles  # noqa: E402
 
 _QUERIES = [
     "用户最近的情绪状态",
@@ -54,205 +40,100 @@ _QUERIES = [
 ]
 
 
-def _percentiles(samples: list[float]) -> dict:
-    if not samples:
-        return {"count": 0, "p50": 0, "p95": 0, "p99": 0, "max": 0, "min": 0}
-    s = sorted(samples)
-    n = len(s)
-
-    def pct(p):
-        idx = min(n - 1, max(0, int(p * n) - 1))
-        return round(s[idx], 3)
-
+def _summarize(samples: list[dict]) -> dict:
+    stages = sorted({key for sample in samples for key in sample["trace"]})
     return {
-        "count": n,
-        "min": round(s[0], 3),
-        "p50": pct(0.50),
-        "p95": pct(0.95),
-        "p99": pct(0.99),
-        "max": round(s[-1], 3),
-        "mean": round(statistics.mean(s), 3),
+        "count": len(samples),
+        "degraded": sum(sample["degraded"] for sample in samples),
+        "stages_ms": {
+            key: percentiles([s["trace"][key] for s in samples if key in s["trace"]])
+            for key in stages
+        },
     }
 
 
-async def _timed_recall(
-    backend: LockedBackend,
-    settings,
-    *,
-    palace_path: str,
-    user_id: str,
-    query: str,
-) -> dict:
-    """Run a single voice recall, reporting per-stage timings (ms)."""
-    from eidolon.memory.adapters.mempalace_fast_search import search_memories_shared_embedding
-    from eidolon.memory.adapters.recall_ranking import rank_records_by_similarity
-    from eidolon.memory.application.public_recall import (
-        _resolve_wings,
-        recall_record_visible_for_context,
-    )
-
-    stages: dict[str, float] = {}
-
-    wings = _resolve_wings(settings, wing=None)
-    top_k = settings.recall.top_k
+async def _main(args):
+    settings = get_memory_settings()
     context = build_memory_actor_context(
-        memory_realm_id=user_id,
+        memory_realm_id=args.user_id,
         owner_id="benchmark",
         companion_id="benchmark",
         device_id="benchmark",
         session_id="benchmark-probe",
     )
-
-    # ── embed ──
-    t0 = time.perf_counter()
-    cache_info_before = _embed_query_cached_normalized.cache_info()
-    # We can call the cached function directly here; production calls embed
-    # via mempalace.embedding inside search_memories_shared_embedding, but
-    # measuring the cached path is the cheapest representative.
-    from eidolon.memory.adapters.mempalace_query_embedding import embed_query_vector
-
-    _vec = embed_query_vector(query)
-    del _vec
-    stages["embed_ms"] = (time.perf_counter() - t0) * 1000
-    cache_info_after = _embed_query_cached_normalized.cache_info()
-    stages["embed_cache_hit"] = cache_info_after.hits > cache_info_before.hits
-
-    # ── lock acquire ──
-    t1 = time.perf_counter()
-    async with backend.lock.reader():
-        stages["lock_acquire_ms"] = (time.perf_counter() - t1) * 1000
-        # ── vector query (in-thread, blocking) ──
-        t2 = time.perf_counter()
-        raw_hits = await asyncio.to_thread(
-            search_memories_shared_embedding,
-            query,
-            palace_path,
-            wings=wings,
-            room=None,
-            n_results=top_k,
-            skip_closets=settings.runtime.read.voice_skip_closets,
-            memory_space_id=context.memory_space_id,
+    router = LocalPalaceRouter(settings, allowed_spaces=[args.user_id])
+    try:
+        runtime = await router.resolve(args.user_id)
+        if args.with_kg and runtime.kg is None:
+            raise ValueError("--with-kg requires a configured graph backend")
+        manifest = build_manifest(
+            suite="probe-recall-stages",
+            repo_root=_ROOT,
+            settings=settings,
+            palace_path=runtime.palace_path,
+            command=shlex.join([sys.executable, *sys.argv]),
+            scale={"count": args.count, "warmup": args.warmup},
+            notes="In-process production recall; warmup separate; not an MCP or quality gate.",
         )
-        stages["vector_query_ms"] = (time.perf_counter() - t2) * 1000
-
-    # ── filter + rank ──
-    t3 = time.perf_counter()
-    records = raw_hits
-    records = [r for r in records if recall_record_visible_for_context(r, context)]
-    records = rank_records_by_similarity(records, top_k=top_k)
-    stages["filter_rank_ms"] = (time.perf_counter() - t3) * 1000
-
-    stages["hits"] = len(records)
-    stages["total_ms"] = sum(
-        stages[k] for k in ("embed_ms", "lock_acquire_ms", "vector_query_ms", "filter_rank_ms")
-    )
-    return stages
-
-
-async def _main(args):
-    settings = get_memory_settings()
-    palace_path = resolve_palace_for_memory_space(settings, args.user_id)
-    inner = MemPalacePythonBackend(
-        settings,
-        str(palace_path),
-        memory_space_id=args.user_id,
-    )
-    backend = LockedBackend(inner)
-
-    # Main-thread warm of chromadb so the threadpool inside
-    # mempalace_fast_search doesn't see an uninitialized RustBindingsAPI on
-    # its first hit. We DON'T reset the LRU embedding cache here yet.
-    print(f"[probe] palace={palace_path}")
-    print("[probe] warming chromadb client + ONNX embedder on main thread…")
-    await inner.search("warmup", wing="Wing_Profile", n_results=1)
-
-    if args.clear_cache:
-        clear_embedding_cache()
-        print("[probe] cleared embedding LRU cache (post-warm)")
-
-    print(f"[probe] count={args.count} cold_rounds={args.cold_rounds}")
-
-    all_stages: list[dict] = []
-    for i in range(args.count):
-        q = _QUERIES[i % len(_QUERIES)]
-        stages = await _timed_recall(
-            backend,
-            settings,
-            palace_path=str(palace_path),
-            user_id=args.user_id,
-            query=q,
-        )
-        stages["iter"] = i
-        stages["query"] = q
-        all_stages.append(stages)
-        if i < args.cold_rounds:
-            print(
-                f"  [{i:03d}] embed={stages['embed_ms']:6.2f}ms "
-                f"(cache_hit={stages['embed_cache_hit']}) "
-                f"lock={stages['lock_acquire_ms']:5.2f}ms "
-                f"vector={stages['vector_query_ms']:6.2f}ms "
-                f"filter={stages['filter_rank_ms']:5.2f}ms "
-                f"total={stages['total_ms']:6.2f}ms "
-                f"hits={stages['hits']}"
+        queries = args.query or _QUERIES
+        samples = []
+        for i in range(args.warmup + args.count):
+            # Cold-query mode includes embedding work on every request. It does
+            # not reload model weights or pretend to measure process cold start.
+            if args.clear_cache:
+                clear_embedding_cache()
+            query = queries[i % len(queries)]
+            result = await recall_with_kg_fusion(
+                runtime.backend,
+                settings,
+                query=query,
+                context=context,
+                top_k=settings.recall.top_k,
+                kg=runtime.kg if args.with_kg else None,
+                for_voice=not args.chat,
+                palace_path=str(runtime.palace_path),
             )
-
-    # Aggregate over WARM samples (skip cold rounds)
-    warm = all_stages[args.cold_rounds :]
-    aggregate = {
-        "n_total": len(all_stages),
-        "n_cold": args.cold_rounds,
-        "n_warm": len(warm),
-        "warm_breakdown_ms": {
-            "embed": _percentiles([s["embed_ms"] for s in warm]),
-            "lock_acquire": _percentiles([s["lock_acquire_ms"] for s in warm]),
-            "vector_query": _percentiles([s["vector_query_ms"] for s in warm]),
-            "filter_rank": _percentiles([s["filter_rank_ms"] for s in warm]),
-            "total": _percentiles([s["total_ms"] for s in warm]),
-        },
-        "cold_breakdown_ms": {
-            "embed": _percentiles([s["embed_ms"] for s in all_stages[: args.cold_rounds]]),
-            "lock_acquire": _percentiles(
-                [s["lock_acquire_ms"] for s in all_stages[: args.cold_rounds]]
-            ),
-            "vector_query": _percentiles(
-                [s["vector_query_ms"] for s in all_stages[: args.cold_rounds]]
-            ),
-            "filter_rank": _percentiles(
-                [s["filter_rank_ms"] for s in all_stages[: args.cold_rounds]]
-            ),
-            "total": _percentiles([s["total_ms"] for s in all_stages[: args.cold_rounds]]),
-        },
-    }
-    print("\n[probe] aggregate")
-    print(json.dumps(aggregate, indent=2, ensure_ascii=False))
-
-    if args.out:
-        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(
-            json.dumps(
-                {"per_call": all_stages, "aggregate": aggregate},
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+            samples.append({
+                "query": query,
+                "warmup": i < args.warmup,
+                "trace": result["trace"],
+                "degraded": result["degraded"],
+                "degraded_reason": result["degraded_reason"],
+                "vector_keys": [r.metadata.get("_storage_id", r.key) for r in result["vector"]],
+                "kg_ids": [r.id for r in result["kg"]],
+            })
+        output = {
+            "manifest": manifest,
+            "settings": {"voice": not args.chat, "with_kg": args.with_kg,
+                         "clear_cache_each_call": args.clear_cache},
+            "warmup": _summarize(samples[:args.warmup]),
+            "aggregate": _summarize(samples[args.warmup:]),
+            "per_call": samples,
+        }
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(output, indent=2, ensure_ascii=False) + "\n")
+        print(json.dumps(output["aggregate"], indent=2))
         print(f"[probe] wrote {args.out}")
+        return 1 if any(sample["degraded"] for sample in samples) else 0
+    finally:
+        await router.aclose()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--user-id", default="bench")
-    parser.add_argument("--count", type=int, default=50)
-    parser.add_argument("--cold-rounds", type=int, default=10)
-    parser.add_argument(
-        "--clear-cache",
-        action="store_true",
-        help="Clear the LRU embedding cache before the run.",
-    )
-    parser.add_argument("--out", default="")
+    parser.add_argument("--count", type=int, default=100)
+    parser.add_argument("--warmup", type=int, default=8)
+    parser.add_argument("--chat", action="store_true", help="Measure chat instead of voice.")
+    parser.add_argument("--with-kg", action="store_true")
+    parser.add_argument("--query", action="append", help="Repeat for a fixed query corpus.")
+    parser.add_argument("--clear-cache", action="store_true",
+                        help="Clear the query embedding cache before each call.")
+    parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    asyncio.run(_main(args))
-    return 0
+    if args.count < 1 or args.warmup < 0:
+        parser.error("count must be positive and warmup must be nonnegative")
+    return asyncio.run(_main(args))
 
 
 if __name__ == "__main__":

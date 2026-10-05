@@ -1,0 +1,197 @@
+{
+  "5000-chat-graph-novel-b1.json.gz": {
+    "original_bytes": 2465392,
+    "original_sha256": "b7f54b758816aa02511b5124f4aa7a1e3930356c2f7bb1e5bbae97fa7d0a5f44",
+    "compressed_bytes": 164618
+  },
+  "5000-voice-repeated-b1.json.gz": {
+    "original_bytes": 2582328,
+    "original_sha256": "b4cd6e1ee9ef1e8a9e5111e99ac5220479c82877eee8009f5d4c28cda930ce6f",
+    "compressed_bytes": 173108
+  },
+  "5000-chat-repeated-b2.json.gz": {
+    "original_bytes": 1800552,
+    "original_sha256": "cd6e26fdca1bbdfbe76cdd1a0e63fd87fa04ef477131d1c94dbc867b88f278ed",
+    "compressed_bytes": 114882
+  },
+  "1000-chat-repeated-b2.json.gz": {
+    "original_bytes": 1795521,
+    "original_sha256": "a2e280515b91b085172b77eb472b6f5deda44966e65e7312c35223743b7bf6d9",
+    "compressed_bytes": 110505
+  },
+  "5000-chat-graph-repeated-b1.json.gz": {
+    "original_bytes": 2588032,
+    "original_sha256": "5dc242fbff21c461a8dea9875cd3cb37156d0780382f12b9cb1932ceb18cdb72",
+    "compressed_bytes": 173752
+  },
+  "10000-voice-novel-b2.json.gz": {
+    "original_bytes": 2478170,
+    "original_sha256": "15de0071d26dfc4a360a8fb48a13415de9b3daf30a618b9834000e1f0d96f96f",
+    "compressed_bytes": 166029
+  },
+  "5000-chat-novel-b2.json.gz": {
+    "original_bytes": 1691897,
+    "original_sha256": "3f7d257f358bc5aadf4851e9ed5433ff519eaf78275102437bb6be6015c0d4aa",
+    "compressed_bytes": 106606
+  },
+  "10000-chat-graph-repeated-b2.json.gz": {
+    "original_bytes": 2587019,
+    "original_sha256": "aca16d8db7249d6f6c089d799c629687c9919729ade62f1872d15955dab384bb",
+    "compressed_bytes": 174656
+  },
+  "10000-chat-repeated-b1.json.gz": {
+    "original_bytes": 1799554,
+    "original_sha256": "b0d400ee0addca0af6bb96f207c9ea6fd5184a876b116f5c44a2273a89e1bfb6",
+    "compressed_bytes": 116433
+  },
+  "10000-voice-repeated-b1.json.gz": {
+    "original_bytes": 2581311,
+    "original_sha256": "b5b2297880d3440879f2586665db2907ce9e6b915a146d247d21dcd663ad328a",
+    "compressed_bytes": 174241
+  },
+  "1000-chat-graph-novel-b1.json.gz": {
+    "original_bytes": 2159160,
+    "original_sha256": "ece41e608dcf93bcc813512ff2a55132a6a0e74fbba3858cdd83dbcb1772fae8",
+    "compressed_bytes": 141159
+  },
+  "1000-chat-novel-b2.json.gz": {
+    "original_bytes": 1687044,
+    "original_sha256": "73912864568eb922a7712f4bc7b5d7148cd24682904be8dd6ded9d69874ab59d",
+    "compressed_bytes": 101918
+  },
+  "10000-chat-graph-novel-b1.json.gz": {
+    "original_bytes": 2502026,
+    "original_sha256": "9af6052fa4ff4a44e44485ff99027785fa691bd405f28e8368d794b889112d46",
+    "compressed_bytes": 165550
+  },
+  "5000-voice-novel-b2.json.gz": {
+    "original_bytes": 2464523,
+    "original_sha256": "411a823801f0c37804474150764d87c8df49cae69e04e543173b40dbf5dd7c3b",
+    "compressed_bytes": 165449
+  },
+  "1000-voice-repeated-b2.json.gz": {
+    "original_bytes": 2274624,
+    "original_sha256": "4976befc462466ffeb591f714a073dfe155b57955f4a0518d70bab9b56b9359f",
+    "compressed_bytes": 148481
+  },
+  "10000-chat-novel-b2.json.gz": {
+    "original_bytes": 1693260,
+    "original_sha256": "5f2abce2687e9ebcd1dd12aa88c4e94839f9c623f990c6d252c138db9a67b7bd",
+    "compressed_bytes": 106921
+  },
+  "1000-chat-graph-repeated-b2.json.gz": {
+    "original_bytes": 2280303,
+    "original_sha256": "23aa34d18c1089a0ec7a0946cf3daa8497ad0e0630767c90d6b903237d3d041f",
+    "compressed_bytes": 149259
+  },
+  "1000-voice-novel-b2.json.gz": {
+    "original_bytes": 2180178,
+    "original_sha256": "bd86ec5477dbb6ee7ac1d8110c912ea2effd75169cc6aba29962aafd5202792f",
+    "compressed_bytes": 141513
+  },
+  "1000-voice-repeated-b1.json.gz": {
+    "original_bytes": 2274617,
+    "original_sha256": "ed53a952970ecc97023efe27f4ff010074b2b0d61b0cfaf4c7ad9ad459456416",
+    "compressed_bytes": 148734
+  },
+  "1000-chat-graph-repeated-b1.json.gz": {
+    "original_bytes": 2280296,
+    "original_sha256": "05140d2e9e407e6ee72dcd4316c60d17f3c7a3849a1d7a95b2f2ef126addef45",
+    "compressed_bytes": 149511
+  },
+  "10000-chat-novel-b1.json.gz": {
+    "original_bytes": 1693540,
+    "original_sha256": "1a7446a847311558e05e8b3d1d1fc5ed4344615d111555eb53a02c484797f829",
+    "compressed_bytes": 107120
+  },
+  "1000-voice-novel-b1.json.gz": {
+    "original_bytes": 2166637,
+    "original_sha256": "8b6b638c80b7d3c566bf310a16e9c47f251efa1cd2a4db874cf907cfd629c350",
+    "compressed_bytes": 140738
+  },
+  "5000-voice-novel-b1.json.gz": {
+    "original_bytes": 2476986,
+    "original_sha256": "b9859afdb3ab9118115372cae662e4e2394b3bbc8e83b90143660efea2968ff7",
+    "compressed_bytes": 166017
+  },
+  "10000-chat-graph-novel-b2.json.gz": {
+    "original_bytes": 2489910,
+    "original_sha256": "f70ddc0980c0003bfd4c9004a15c525f58f1c0e5b8e2e698ff115c06733fc759",
+    "compressed_bytes": 164777
+  },
+  "1000-chat-graph-novel-b2.json.gz": {
+    "original_bytes": 2160175,
+    "original_sha256": "9ebd72ad92ca8dfb4597c8656557fd0025d96581483821371746f5430bcdaebb",
+    "compressed_bytes": 140461
+  },
+  "1000-chat-novel-b1.json.gz": {
+    "original_bytes": 1687261,
+    "original_sha256": "0fd5cacffa3a3acf6cc56cff35e0f9087863cb8092f3c970d2c850dfc46e3f25",
+    "compressed_bytes": 102322
+  },
+  "10000-voice-repeated-b2.json.gz": {
+    "original_bytes": 2581305,
+    "original_sha256": "333c528cc43a75b8cb842ab65c884a4cbf36f39c89ad37f2eff26320e6577888",
+    "compressed_bytes": 173985
+  },
+  "10000-chat-graph-repeated-b1.json.gz": {
+    "original_bytes": 2586995,
+    "original_sha256": "85a600ca1a49e3ee3a784a09176e73f9b3408b3667e2e9b8e40c10e816a96cda",
+    "compressed_bytes": 174873
+  },
+  "10000-chat-repeated-b2.json.gz": {
+    "original_bytes": 1799539,
+    "original_sha256": "3753f8a2ef8db29fbeaafeea001180c21d65077e4a6e30417cbc442860d0af36",
+    "compressed_bytes": 116299
+  },
+  "5000-chat-graph-repeated-b2.json.gz": {
+    "original_bytes": 2588038,
+    "original_sha256": "dcfd340beafeaccfd3ab3f836fc08481c800104abd7ceb42d7dd5c5618e10060",
+    "compressed_bytes": 174258
+  },
+  "10000-voice-novel-b1.json.gz": {
+    "original_bytes": 2489823,
+    "original_sha256": "be397edd008ca020a12293bc90ea9b0f9e808497f161891d8f6933b1e9decf92",
+    "compressed_bytes": 166615
+  },
+  "5000-chat-novel-b1.json.gz": {
+    "original_bytes": 1691964,
+    "original_sha256": "d0a0bed5a15658bbab4dd0b3f2e0882e486b2048def28b5f01c58a483d03df55",
+    "compressed_bytes": 106157
+  },
+  "5000-chat-graph-novel-b2.json.gz": {
+    "original_bytes": 2452691,
+    "original_sha256": "02cee40ccb78ab175416821a0439ae5034a3e3163244fc454f2ac0ce51d2c68b",
+    "compressed_bytes": 163688
+  },
+  "5000-voice-repeated-b2.json.gz": {
+    "original_bytes": 2582353,
+    "original_sha256": "ed3682c140673a629af7aab3d2803f7d0c88085d0f9c319a9aea3dbb65b63500",
+    "compressed_bytes": 173422
+  },
+  "5000-chat-repeated-b1.json.gz": {
+    "original_bytes": 1800556,
+    "original_sha256": "7306dc6785d3b6be64edb56d016c7cb7f38bd8d9218e6bc08fb24a17f34e9473",
+    "compressed_bytes": 114705
+  },
+  "1000-chat-repeated-b1.json.gz": {
+    "original_bytes": 1795560,
+    "original_sha256": "88e60bffdcdf9083d29c8896b453f9d093c18f5ed05d84a4db43cb6e74407540",
+    "compressed_bytes": 110247
+  },
+  "agent-1000.log.gz": {
+    "original_bytes": 1054160,
+    "original_sha256": "0b9967535f009b300777fb2dbc0df07a795bd79c1facb56bd38db16e12f63d09",
+    "compressed_bytes": 9195
+  },
+  "agent-10000.log.gz": {
+    "original_bytes": 1054160,
+    "original_sha256": "efb1ec41178a7e465844154804d732d08e03b440a3d69e8067e6fdce4ec30dcd",
+    "compressed_bytes": 9869
+  },
+  "agent-5000.log.gz": {
+    "original_bytes": 1054160,
+    "original_sha256": "203bc7fe9d6f78c31b310b0b6b19a70b0057827a3babf9dba2346cf543d9882f",
+    "compressed_bytes": 9698
+  }
+}

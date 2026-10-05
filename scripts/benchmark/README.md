@@ -8,7 +8,7 @@
 
 | 指标 | 工具 | SLA |
 |------|------|-----|
-| **LiveKit recall 端到端 P95** | `bench_read_livekit.py` | ≤ 200 ms |
+| **MCP recall P95（当前优化目标）** | `bench_read_livekit.py` | voice ≤60ms / chat ≤200ms / chat+KG ≤250ms |
 | **LiveKit recall 端到端 max** | `bench_read_livekit.py` | ≤ 300 ms (硬截止) |
 | **JetStream turn → recall 可见 P95** | `bench_write_jetstream.py` | ≤ 5 s(steward LLM 调用主导) |
 | **JetStream turn → recall 可见 max** | `bench_write_jetstream.py` | ≤ 15 s |
@@ -18,18 +18,29 @@
 
 ## 7 个 bench（各自独立）
 
-### R-01 `bench_read_livekit.py` — recall 端到端
+### R-01 `bench_read_livekit.py` — MCP recall 端到端
 
 ```bash
-.venv/bin/python scripts/benchmark/bench_read_livekit.py \
-    --port 18030 --user-id bench --count 100 --voice
+uv run --no-sync python scripts/benchmark/bench_read_livekit.py \
+    --url http://127.0.0.1:18030/mcp \
+    --memory-realm-id bench --owner-id benchmark --companion-id benchmark \
+    --count 160 --warmup 8 --voice --with-kg \
+    --server-manifest /path/to/server-manifest.json \
+    --out benchmarks/results/<run>/voice.json
 ```
 
-通过 MCP HTTP 调 `eidolon_memory_recall_context`,N 次采样,产出 P50/P95/P99/max。
-`--voice` 开 LiveKit hot-path 优化(共享 ONNX embedding + skip closets),
-`--with-kg` 启用 KG 融合。
+使用当前actor契约与Agent `/mcp` surface；旧tenant/persona/instance参数已失效，不再接受。
+复用一个MCP session，按固定查询顺序测量；`--query`可重复指定。调用方负责服务启停和隔离。
 
-输出:`<out>/R-01.json`。
+原始样本包含预热、失败时延、records、KG、server trace、降级原因。MCP `isError`、畸形响应、
+超时、降级、会话建立失败均不能PASS；任何预热失败同样失败。合法空结果单独计数，不能当作
+检索质量命中。总耗时与成功调用耗时分别统计，不丢失败样本来降低p95。
+
+门槛使用上表P95目标；旧脚本内部300ms门槛和未实际执行的p99字段已移除。20次以下或小数据
+即使显示PASS也不能当完整验收。服务器provenance由启动方提供，客户端版本不能冒充服务器版本。
+
+输出格式为 `manifest / summary / warmup / per_call / sla`，`--out`必填；输出含召回内容，
+仅对合成数据或获准归档的脱敏语料使用。长期结果写入可提交目录，真实个人数据不能直接入库。
 
 ### W-01 `bench_write_jetstream.py` — turn → recall 可见
 
@@ -55,15 +66,25 @@ MCP recall 反验"什么时候我能查到刚发的 turn"。
 绕开 NATS + steward,直接 `MemPalacePythonBackend.ingest_fragment` 灌 N 条。
 用来回归 `chromadb.synchronous` / WAL pragma 变更对持久层延迟的影响。
 
-### J `probe_recall_stages.py` — recall 抖动溯源
+### J `probe_recall_stages.py` — production recall 分段诊断
 
 ```bash
-.venv/bin/python scripts/benchmark/probe_recall_stages.py \
-    --palace ~/eidolon/memory/mempalaces/bench --count 50
+EIDOLON_MEMORY_SETTINGS_YAML=/path/to/isolated-settings.yaml \
+uv run --no-sync python scripts/benchmark/probe_recall_stages.py \
+    --user-id bench --chat --with-kg --count 160 --warmup 8 \
+    --out benchmarks/results/<run>/chat-graph.json
 ```
 
-把一次 recall 拆成 `ONNX embed → wing fan-out → filter → rank` 4 段,
-分别打点。用于诊断"首句 100ms+ 是哪一段在抖"。
+通过现有 LocalPalaceRouter 调用真实 `recall_with_kg_fusion`，保存其trace、原始结果ID、
+降级状态和manifest。省略`--chat`测voice，省略`--with-kg`关闭图谱。
+`--clear-cache`在每次调用前清query embedding缓存，测冷查询而非冷启动。
+
+使用隔离配置/Realm；router必须取得该空间的独占持有权。真实bge模型通过已有embedding
+HTTP服务配置，不能用测试向量宣称provider性能。预热原始样本单独保留，任何vector降级
+（包括预热）使进程退出非零。分段可重叠，不能相加得到总延迟。
+
+这不是MCP/Agent端到端或质量基准。旧版探针手工重建部分搜索，旧输出不与新版直接比较；
+`--cold-rounds`改为`--warmup`，输出结构以manifest/per_call/aggregate为准。
 
 ### S `eval_steward_prompt.py` — steward 召回质量
 

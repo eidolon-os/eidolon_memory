@@ -1,0 +1,30 @@
+{
+  "eidolon_memory": {
+    "commit": "7ff584581268206d9664e4b79c357ca7fc8bca6f",
+    "status": " M eidolon/memory/application/public_recall.py\n M scripts/benchmark/probe_recall_stages.py\n M tests/memory/test_public_recall.py\n?? benchmarks/results/recall-concurrency-20261005/\n"
+  },
+  "eidolon_agent": {
+    "commit": "5ffd406c0d3d6783028b3770d898fcb21c3df15d",
+    "status": ""
+  },
+  "eidolon_channel": {
+    "commit": "e7f5f6ad7f813255da041a225b94f71a2e68f716",
+    "status": ""
+  },
+  "eidolon_models": {
+    "commit": "93505bdec53ed6942fd1cbaa0c48b0794643e57d",
+    "status": ""
+  },
+  "eidolon_hub": {
+    "commit": "53a2d0d4eb6275e5b1b1fd2b8a551865e3c56bf1",
+    "status": ""
+  },
+  "eidolon_ops": {
+    "commit": "fbb0484e5448c1e072c16e8fa2bfa07018f43b9a",
+    "status": "?? docs/reports/home-bench-20261003/\n?? docs/reports/home-hil-20261002/\n"
+  },
+  "eidolon_sdk": {
+    "commit": "5445c8b7084d1a73d1be6a8b50bd9220bb4bdd17",
+    "status": ""
+  }
+}

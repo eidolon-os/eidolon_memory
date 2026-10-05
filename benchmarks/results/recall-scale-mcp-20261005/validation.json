@@ -1,0 +1,12 @@
+{
+  "tests": {
+    "command": ".venv/bin/pytest tests/memory/test_read_benchmark.py tests/memory/test_scope_policy.py contracts/tests -q",
+    "passed": 85,
+    "exit_code": 0
+  },
+  "ruff": "passed",
+  "git_diff_check": "passed",
+  "measured_calls": 5760,
+  "warmup_calls": 144,
+  "raw_roundtrip_verified": true
+}

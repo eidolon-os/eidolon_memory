@@ -1,0 +1,137 @@
+{
+  "recall": {
+    "top_k": 5,
+    "livekit_timeout_seconds": 0.3,
+    "filter_taboo_statuses": [
+      "taboo",
+      "archived"
+    ],
+    "kg_in_recall": true,
+    "kg_timeout_seconds": 0.05,
+    "kg_timeout_seconds_normal": 0.3,
+    "include_sensitive_kg": false,
+    "kg_max_entities": 3,
+    "kg_max_triples_per_entity": 8,
+    "rerank_enabled": true,
+    "rerank_rrf_k": 60,
+    "theme_top_k": 3,
+    "theme_min_similarity": 0.55
+  },
+  "steward": {
+    "mode": "noop",
+    "prompt_template_path": "",
+    "max_fragments_per_turn": 6,
+    "min_importance_to_write": 3
+  },
+  "llm": {
+    "model": "",
+    "base_url": "",
+    "api_key": "",
+    "api_key_env": "EIDOLON_MEMORY_LLM_API_KEY",
+    "timeout_seconds": 90.0,
+    "temperature": 0.0
+  },
+  "runtime": {
+    "palaces_root": "/private/tmp/eidolon-mcp-scale-20261005/palaces",
+    "process_tmp_root": "",
+    "log_dir": "",
+    "run_dir": "/private/tmp/eidolon-mcp-scale-20261005/run",
+    "read": {
+      "max_wing_parallel": 0,
+      "omp_num_threads": 0,
+      "shared_query_embedding": true,
+      "normal_shared_query_embedding": true,
+      "voice_skip_closets": true
+    }
+  },
+  "chromadb": {
+    "synchronous": "FULL"
+  },
+  "embedding": {
+    "provider": "http",
+    "model": "bge-small-zh",
+    "device": "",
+    "model_dir": "",
+    "threads": 0,
+    "http": {
+      "base_url": "http://127.0.0.1:18783/v1",
+      "model": "bge-small-zh",
+      "api_key_env": "",
+      "dimension": 512,
+      "collection_name": "",
+      "query_prefix": "",
+      "document_prefix": "",
+      "timeout_seconds": 30.0,
+      "batch_size": 32,
+      "max_retries": 2
+    }
+  },
+  "mempalace": {
+    "backend": "chroma",
+    "offline_embedding": false
+  },
+  "worker": {
+    "sync_every_n_turns": 5
+  },
+  "command_status": {
+    "retention_days": 30,
+    "max_records": 100000,
+    "prune_every_writes": 100
+  },
+  "kg": {
+    "backend": "sqlite",
+    "min_confidence_to_write": 0.6
+  },
+  "ledgers": {
+    "backend": "palace"
+  },
+  "registry": {
+    "source": "system-data",
+    "system_data_url": "http://127.0.0.1:8084",
+    "system_data_token_env": "EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_TOKEN",
+    "request_timeout_seconds": 5.0,
+    "static_path": ""
+  },
+  "supervisor": {
+    "eager_init": true,
+    "restart_backoff_seconds": [
+      1,
+      2,
+      4,
+      8,
+      30
+    ],
+    "max_failures_per_minute": 5,
+    "admin_http_host": "127.0.0.1",
+    "admin_http_port": 8019,
+    "roster_refresh_seconds": 60
+  },
+  "nats": {
+    "url": "nats://127.0.0.1:18822",
+    "stream": "MEMORY_TURNS",
+    "conversation_turn_subject_base": "eidolon.memory.turn",
+    "durable_prefix": "eidolon-memory-agent",
+    "stream_max_age_seconds": 1209600,
+    "stream_max_msgs": 5000,
+    "stream_max_bytes": 536870912,
+    "worker_max_deliveries": 3,
+    "dlq_log_path": "memory_dlq.jsonl"
+  },
+  "mcp_http": {
+    "host": "127.0.0.1",
+    "port": 18830,
+    "path": "/mcp",
+    "ops_path": "/ops/mcp",
+    "stateless_http": true,
+    "json_response": true,
+    "bearer_token": "",
+    "bearer_token_env": "EIDOLON_MEMORY_MCP_TOKEN",
+    "api_service_token": "",
+    "api_service_token_env": "EIDOLON_MEMORY_API_TOKEN"
+  },
+  "discovery_http": {
+    "host": "127.0.0.1",
+    "port": 8020,
+    "path": "/api/discovery/agent-routing"
+  }
+}

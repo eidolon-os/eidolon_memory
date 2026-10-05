@@ -164,87 +164,73 @@ async def recall_with_kg_fusion(
 
         kg_task = asyncio.create_task(_kg_seed_path())
 
-    tasks = [vector_task]
-    if kg_task is not None:
-        tasks.append(kg_task)
+    vector_degraded = False
+    # Carried out with the result, not only logged. A caller that can only see
+    # *that* recall degraded has to grep logs to learn whether the store was
+    # unreachable, slow, or answered correctly with nothing — and those call for
+    # different responses.
+    degraded_reason: str | None = None
     try:
-        vector_degraded = False
-        # Carried out with the result, not only logged. A caller that can only see
-        # *that* recall degraded has to grep logs to learn whether the store was
-        # unreachable, slow, or answered correctly with nothing — and those call for
-        # different responses.
-        degraded_reason: str | None = None
-        try:
-            vector_records = await vector_task
-        except BaseException as exc:
-            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
-                raise
-            log.warning(
-                "vector_recall_degraded",
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
-            vector_records = []
-            vector_degraded = True
-            degraded_reason = f"{type(exc).__name__}: {exc}"
-        kg_records = await kg_task if kg_task is not None else []
-
-        # The graph's second seed: one hop out from what was actually recalled.
-        #
-        # Here, after ranking, because the seed should be the memories this turn is
-        # about — not the raw hit list, and not the phrase, which for "她住哪儿" names
-        # nobody at all. Serialised behind the vector leg by necessity: it cannot
-        # start until there are results to seed from. That is the cost; what it buys
-        # is a seed that needs no matching, so it is a handful of indexed seeks.
-        expand_started = time.perf_counter()
-        kg_records = _merge_triples(
-            kg_records,
-            await _expand_with_timeout(
-                kg,
-                settings,
-                records=vector_records,
-                audiences=interaction_readable_audiences(context),
-                include_sensitive=include_sensitive_kg,
-                for_voice=for_voice,
-                kind=recall_kind,
-            ),
-            # A statement from a turn already showing as a drawer is not new
-            # information — the drawer text says it, in the person's own words. Drop
-            # it and let the budget go to the hop.
-            already_shown={
-                str((record.metadata or {}).get("source_turn_id") or "")
-                for record in vector_records
-            },
-            limit=settings.recall.kg_max_entities * settings.recall.kg_max_triples_per_entity,
+        vector_records = await vector_task
+    except BaseException as exc:
+        if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+            raise
+        log.warning(
+            "vector_recall_degraded",
+            error=str(exc),
+            error_type=type(exc).__name__,
         )
-        diagnostics["kg_expand_ms"] = _elapsed_ms(expand_started)
+        vector_records = []
+        vector_degraded = True
+        degraded_reason = f"{type(exc).__name__}: {exc}"
+    kg_records = await kg_task if kg_task is not None else []
 
-        # Phase 4 — Wing_Theme drawers always surface (when present). They
-        # encode cross-time "what's been on your mind" overviews that don't
-        # compete on cosine ranking with concrete fragments; they're meant
-        # to live in their own [主题] section, not displace vector hits.
-        # We fetch them with a dedicated search and merge ADDITIVELY (no
-        # truncation of vector_records). Dedup on key avoids double-counting
-        # if a theme happened to win a vector top-K slot too.
-        theme_started = time.perf_counter()
-        theme_records = await _fetch_themes(backend, query, context, settings)
-        if theme_records:
-            existing_keys = {r.key for r in vector_records}
-            # Themes go first in the merged list so the renderer's split-by-
-            # `_is_theme_record` puts the [主题] section in front naturally.
-            merged: list[MemoryWireRecord] = [
-                r for r in theme_records if r.key not in existing_keys
-            ]
-            merged.extend(vector_records)
-            vector_records = merged
-        diagnostics["theme_ms"] = _elapsed_ms(theme_started)
-    finally:
-        # A cancelled caller must not leave an independent graph/vector read
-        # running. LockedBackend still owns actual worker lifetimes and locks.
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+    # The graph's second seed: one hop out from what was actually recalled.
+    #
+    # Here, after ranking, because the seed should be the memories this turn is
+    # about — not the raw hit list, and not the phrase, which for "她住哪儿" names
+    # nobody at all. Serialised behind the vector leg by necessity: it cannot
+    # start until there are results to seed from. That is the cost; what it buys
+    # is a seed that needs no matching, so it is a handful of indexed seeks.
+    expand_started = time.perf_counter()
+    kg_records = _merge_triples(
+        kg_records,
+        await _expand_with_timeout(
+            kg,
+            settings,
+            records=vector_records,
+            audiences=interaction_readable_audiences(context),
+            include_sensitive=include_sensitive_kg,
+            for_voice=for_voice,
+            kind=recall_kind,
+        ),
+        # A statement from a turn already showing as a drawer is not new
+        # information — the drawer text says it, in the person's own words. Drop
+        # it and let the budget go to the hop.
+        already_shown={
+            str((record.metadata or {}).get("source_turn_id") or "") for record in vector_records
+        },
+        limit=settings.recall.kg_max_entities * settings.recall.kg_max_triples_per_entity,
+    )
+    diagnostics["kg_expand_ms"] = _elapsed_ms(expand_started)
+
+    # Phase 4 — Wing_Theme drawers always surface (when present). They
+    # encode cross-time "what's been on your mind" overviews that don't
+    # compete on cosine ranking with concrete fragments; they're meant
+    # to live in their own [主题] section, not displace vector hits.
+    # We fetch them with a dedicated search and merge ADDITIVELY (no
+    # truncation of vector_records). Dedup on key avoids double-counting
+    # if a theme happened to win a vector top-K slot too.
+    theme_started = time.perf_counter()
+    theme_records = await _fetch_themes(backend, query, context, settings)
+    if theme_records:
+        existing_keys = {r.key for r in vector_records}
+        # Themes go first in the merged list so the renderer's split-by-
+        # `_is_theme_record` puts the [主题] section in front naturally.
+        merged: list[MemoryWireRecord] = [r for r in theme_records if r.key not in existing_keys]
+        merged.extend(vector_records)
+        vector_records = merged
+    diagnostics["theme_ms"] = _elapsed_ms(theme_started)
 
     _record_recall(
         kind=recall_kind,
