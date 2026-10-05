@@ -30,9 +30,11 @@ async def runtime(tmp_path, monkeypatch):
         await router.aclose()
 
 
+@pytest.mark.parametrize("forbidden_per_scope", [1, 275])
 async def test_lexical_candidate_outside_the_vector_window_reaches_public_recall(
     runtime,
     monkeypatch,
+    forbidden_per_scope,
 ):
     from eidolon_memory_contracts import MemoryActorContext
     from mempalace.palace import get_collection
@@ -55,20 +57,31 @@ async def test_lexical_candidate_outside_the_vector_window_reaches_public_recall
         "source_device_id": "",
         "target_device_id": "",
     }
+    # Put >500 same-term forbidden hits before the target in the larger case.
+    # A global lexical cap before audience/device filtering would lose it;
+    # vector search cannot rescue it because its embedding is deliberately last.
+    forbidden_ids = [
+        f"other-{scope}-{i}"
+        for scope in ("companion", "device")
+        for i in range(forbidden_per_scope)
+    ]
     col.upsert(
-        ids=[*[f"noise-{i}" for i in range(100)], "target", "other-companion", "other-device"],
+        ids=[*[f"noise-{i}" for i in range(100)], *forbidden_ids, "target"],
         documents=[
             *[f"ordinary noise {i}" for i in range(100)],
+            *["Z9X7LAN private detail" for _ in forbidden_ids],
             "project Z9X7LAN has a Friday deadline",
-            "Z9X7LAN private detail",
-            "Z9X7LAN laptop detail",
         ],
         metadatas=[
-            *[common for _ in range(101)],
-            {**common, "audience": "companion:bob"},
-            {**common, "visibility": "current_device", "source_device_id": "laptop"},
+            *[common for _ in range(100)],
+            *[{**common, "audience": "companion:bob"} for _ in range(forbidden_per_scope)],
+            *[
+                {**common, "visibility": "current_device", "source_device_id": "laptop"}
+                for _ in range(forbidden_per_scope)
+            ],
+            common,
         ],
-        embeddings=[*[vector for _ in range(100)], [-1.0] + [0.0] * 511, vector, vector],
+        embeddings=[*[vector for _ in range(100 + len(forbidden_ids))], [-1.0] + [0.0] * 511],
     )
     result = await recall_with_kg_fusion(
         runtime.backend,
@@ -86,7 +99,7 @@ async def test_lexical_candidate_outside_the_vector_window_reaches_public_recall
     assert len(rows) == 2
     ids = {r.metadata["_storage_id"] for r in rows}
     assert "target" in ids
-    assert not ids & {"other-companion", "other-device"}
+    assert not ids.intersection(forbidden_ids)
     target = next(r for r in rows if r.metadata["_storage_id"] == "target")
     assert target.metadata["similarity"] is None
     assert target.metadata["audience"] == "companion:alice"
