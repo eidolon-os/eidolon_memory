@@ -1,0 +1,144 @@
+theme_fetch_failed error="'/private/tmp/eidolon-recall-20261005b/palaces/b64_cmVjYWxsLXByb2Jl'"
+vector_recall_degraded error="voice shared embedding search failed: 'RustBindingsAPI' object has no attribute 'bindings'" error_type='MemoryBackendUnavailable'
+{
+  "count": 160,
+  "degraded": 0,
+  "stages_ms": {
+    "chroma_query_ms": {
+      "count": 160,
+      "min": 4.429,
+      "p50": 5.689,
+      "p95": 8.181,
+      "p99": 8.966,
+      "max": 9.176,
+      "mean": 5.99839375
+    },
+    "embedding_ms": {
+      "count": 160,
+      "min": 1.703,
+      "p50": 2.292,
+      "p95": 3.003,
+      "p99": 3.415,
+      "max": 3.824,
+      "mean": 2.360925
+    },
+    "hnsw_probe_ms": {
+      "count": 160,
+      "min": 1.99,
+      "p50": 2.53,
+      "p95": 2.86,
+      "p99": 3.033,
+      "max": 3.16,
+      "mean": 2.53720625
+    },
+    "kg_expand_ms": {
+      "count": 160,
+      "min": 0.108,
+      "p50": 0.21,
+      "p95": 0.728,
+      "p99": 0.81,
+      "max": 1.075,
+      "mean": 0.3889
+    },
+    "kg_seed_ms": {
+      "count": 160,
+      "min": 1.183,
+      "p50": 1.586,
+      "p95": 2.079,
+      "p99": 2.257,
+      "max": 2.582,
+      "mean": 1.6118999999999999
+    },
+    "lexical_query_ms": {
+      "count": 160,
+      "min": 0.263,
+      "p50": 0.429,
+      "p95": 0.848,
+      "p99": 0.875,
+      "max": 1.381,
+      "mean": 0.5024375
+    },
+    "recall_total_ms": {
+      "count": 160,
+      "min": 14.011,
+      "p50": 16.455,
+      "p95": 19.783,
+      "p99": 20.152,
+      "max": 26.893,
+      "mean": 16.759275
+    },
+    "rerank_policy_ms": {
+      "count": 160,
+      "min": 1.003,
+      "p50": 1.106,
+      "p95": 1.206,
+      "p99": 1.271,
+      "max": 1.415,
+      "mean": 1.11040625
+    },
+    "scope_resolution_ms": {
+      "count": 160,
+      "min": 0.005,
+      "p50": 0.007,
+      "p95": 0.01,
+      "p99": 0.011,
+      "max": 0.014,
+      "mean": 0.007325
+    },
+    "storage_open_ms": {
+      "count": 160,
+      "min": 1.305,
+      "p50": 2.295,
+      "p95": 4.175,
+      "p99": 4.832,
+      "max": 5.389,
+      "mean": 2.50375
+    },
+    "storage_rank_ms": {
+      "count": 160,
+      "min": 0.662,
+      "p50": 0.709,
+      "p95": 0.948,
+      "p99": 1.026,
+      "max": 2.607,
+      "mean": 0.74270625
+    },
+    "theme_ms": {
+      "count": 160,
+      "min": 8.415,
+      "p50": 10.503,
+      "p95": 14.334,
+      "p99": 14.941,
+      "max": 26.776,
+      "mean": 11.1026
+    },
+    "vector_pipeline_ms": {
+      "count": 160,
+      "min": 13.567,
+      "p50": 15.906,
+      "p95": 19.052,
+      "p99": 19.517,
+      "max": 19.994,
+      "mean": 16.21460625
+    },
+    "vector_storage_total_ms": {
+      "count": 160,
+      "min": 12.142,
+      "p50": 14.356,
+      "p95": 17.456,
+      "p99": 17.961,
+      "max": 18.397,
+      "mean": 14.67495
+    },
+    "vector_total_ms": {
+      "count": 160,
+      "min": 13.57,
+      "p50": 15.909,
+      "p95": 19.055,
+      "p99": 19.521,
+      "max": 19.997,
+      "mean": 16.21755625
+    }
+  }
+}
+[probe] wrote /Users/manson/ai/eidolon/eidolon_memory/benchmarks/results/recall-concurrency-20261005/after-voice-uncached.json

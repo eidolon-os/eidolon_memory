@@ -1,0 +1,144 @@
+theme_fetch_failed error="'RustBindingsAPI' object has no attribute 'bindings'"
+vector_recall_degraded error="normal shared embedding search failed: '/private/tmp/eidolon-recall-20261005b/palaces/b64_cmVjYWxsLXByb2Jl'" error_type='MemoryBackendUnavailable'
+{
+  "count": 160,
+  "degraded": 0,
+  "stages_ms": {
+    "chroma_query_ms": {
+      "count": 160,
+      "min": 4.231,
+      "p50": 5.644,
+      "p95": 8.314,
+      "p99": 8.717,
+      "max": 8.853,
+      "mean": 6.03956875
+    },
+    "closet_query_ms": {
+      "count": 160,
+      "min": 0.173,
+      "p50": 0.242,
+      "p95": 0.339,
+      "p99": 0.397,
+      "max": 0.462,
+      "mean": 0.24786875
+    },
+    "embedding_ms": {
+      "count": 160,
+      "min": 1.711,
+      "p50": 2.318,
+      "p95": 3.015,
+      "p99": 3.162,
+      "max": 3.214,
+      "mean": 2.3986375
+    },
+    "hnsw_probe_ms": {
+      "count": 160,
+      "min": 1.217,
+      "p50": 1.663,
+      "p95": 1.983,
+      "p99": 2.072,
+      "max": 2.284,
+      "mean": 1.666975
+    },
+    "kg_expand_ms": {
+      "count": 160,
+      "min": 0.004,
+      "p50": 0.005,
+      "p95": 0.007,
+      "p99": 0.008,
+      "max": 0.009,
+      "mean": 0.00501875
+    },
+    "lexical_query_ms": {
+      "count": 160,
+      "min": 0.291,
+      "p50": 0.427,
+      "p95": 0.861,
+      "p99": 0.921,
+      "max": 1.031,
+      "mean": 0.50098125
+    },
+    "recall_total_ms": {
+      "count": 160,
+      "min": 12.379,
+      "p50": 15.37,
+      "p95": 18.738,
+      "p99": 19.495,
+      "max": 20.112,
+      "mean": 15.794725
+    },
+    "rerank_policy_ms": {
+      "count": 160,
+      "min": 1.001,
+      "p50": 1.11,
+      "p95": 1.209,
+      "p99": 1.279,
+      "max": 1.297,
+      "mean": 1.11641875
+    },
+    "scope_resolution_ms": {
+      "count": 160,
+      "min": 0.005,
+      "p50": 0.006,
+      "p95": 0.008,
+      "p99": 0.01,
+      "max": 0.012,
+      "mean": 0.00650625
+    },
+    "storage_open_ms": {
+      "count": 160,
+      "min": 1.261,
+      "p50": 2.293,
+      "p95": 4.033,
+      "p99": 4.616,
+      "max": 4.724,
+      "mean": 2.5031875
+    },
+    "storage_rank_ms": {
+      "count": 160,
+      "min": 0.679,
+      "p50": 0.719,
+      "p95": 0.952,
+      "p99": 1.059,
+      "max": 2.595,
+      "mean": 0.750975
+    },
+    "theme_ms": {
+      "count": 160,
+      "min": 7.073,
+      "p50": 9.654,
+      "p95": 13.435,
+      "p99": 14.457,
+      "max": 15.105,
+      "mean": 10.1801875
+    },
+    "vector_pipeline_ms": {
+      "count": 160,
+      "min": 12.262,
+      "p50": 15.245,
+      "p95": 18.603,
+      "p99": 19.37,
+      "max": 19.972,
+      "mean": 15.66860625
+    },
+    "vector_storage_total_ms": {
+      "count": 160,
+      "min": 10.773,
+      "p50": 13.715,
+      "p95": 17.026,
+      "p99": 17.789,
+      "max": 18.325,
+      "mean": 14.139
+    },
+    "vector_total_ms": {
+      "count": 160,
+      "min": 12.265,
+      "p50": 15.248,
+      "p95": 18.606,
+      "p99": 19.374,
+      "max": 19.977,
+      "mean": 15.67170625
+    }
+  }
+}
+[probe] wrote /Users/manson/ai/eidolon/eidolon_memory/benchmarks/results/recall-concurrency-20261005/after-chat-uncached.json

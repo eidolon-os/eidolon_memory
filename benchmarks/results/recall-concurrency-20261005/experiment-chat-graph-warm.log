@@ -1,0 +1,153 @@
+theme_fetch_failed error="'/private/tmp/eidolon-recall-20261005b/palaces/b64_cmVjYWxsLXByb2Jl'"
+vector_recall_degraded error="normal shared embedding search failed: 'RustBindingsAPI' object has no attribute 'bindings'" error_type='MemoryBackendUnavailable'
+{
+  "count": 160,
+  "degraded": 0,
+  "stages_ms": {
+    "chroma_query_ms": {
+      "count": 160,
+      "min": 4.221,
+      "p50": 4.652,
+      "p95": 6.5,
+      "p99": 6.839,
+      "max": 20.503,
+      "mean": 5.07593125
+    },
+    "closet_query_ms": {
+      "count": 160,
+      "min": 0.16,
+      "p50": 0.197,
+      "p95": 0.255,
+      "p99": 0.286,
+      "max": 0.299,
+      "mean": 0.202175
+    },
+    "embedding_ms": {
+      "count": 160,
+      "min": 0.001,
+      "p50": 0.002,
+      "p95": 0.003,
+      "p99": 0.004,
+      "max": 0.014,
+      "mean": 0.00199375
+    },
+    "hnsw_probe_ms": {
+      "count": 160,
+      "min": 1.903,
+      "p50": 2.349,
+      "p95": 2.693,
+      "p99": 2.936,
+      "max": 3.742,
+      "mean": 2.36906875
+    },
+    "kg_expand_ms": {
+      "count": 160,
+      "min": 0.1,
+      "p50": 0.184,
+      "p95": 0.668,
+      "p99": 0.698,
+      "max": 0.833,
+      "mean": 0.361975
+    },
+    "kg_seed_ms": {
+      "count": 160,
+      "min": 0.925,
+      "p50": 1.313,
+      "p95": 1.502,
+      "p99": 1.692,
+      "max": 2.06,
+      "mean": 1.3161
+    },
+    "lexical_query_ms": {
+      "count": 160,
+      "min": 0.277,
+      "p50": 0.376,
+      "p95": 0.816,
+      "p99": 0.855,
+      "max": 0.961,
+      "mean": 0.4638625
+    },
+    "recall_total_ms": {
+      "count": 160,
+      "min": 10.976,
+      "p50": 12.67,
+      "p95": 14.477,
+      "p99": 24.255,
+      "max": 27.41,
+      "mean": 13.08459375
+    },
+    "rerank_policy_ms": {
+      "count": 160,
+      "min": 0.994,
+      "p50": 1.087,
+      "p95": 1.153,
+      "p99": 1.182,
+      "max": 1.206,
+      "mean": 1.0897875
+    },
+    "scope_resolution_ms": {
+      "count": 160,
+      "min": 0.005,
+      "p50": 0.007,
+      "p95": 0.008,
+      "p99": 0.009,
+      "max": 0.012,
+      "mean": 0.006825
+    },
+    "storage_open_ms": {
+      "count": 160,
+      "min": 0.951,
+      "p50": 1.935,
+      "p95": 3.385,
+      "p99": 10.038,
+      "max": 14.427,
+      "mean": 2.2678875
+    },
+    "storage_rank_ms": {
+      "count": 160,
+      "min": 0.643,
+      "p50": 0.702,
+      "p95": 0.742,
+      "p99": 0.766,
+      "max": 0.787,
+      "mean": 0.70226875
+    },
+    "theme_ms": {
+      "count": 160,
+      "min": 5.6,
+      "p50": 7.012,
+      "p95": 10.16,
+      "p99": 20.47,
+      "max": 22.152,
+      "mean": 7.83883125
+    },
+    "vector_pipeline_ms": {
+      "count": 160,
+      "min": 10.757,
+      "p50": 12.206,
+      "p95": 13.963,
+      "p99": 24.026,
+      "max": 27.144,
+      "mean": 12.61513125
+    },
+    "vector_storage_total_ms": {
+      "count": 160,
+      "min": 9.318,
+      "p50": 10.701,
+      "p95": 12.364,
+      "p99": 22.623,
+      "max": 25.603,
+      "mean": 11.12643125
+    },
+    "vector_total_ms": {
+      "count": 160,
+      "min": 10.76,
+      "p50": 12.21,
+      "p95": 13.967,
+      "p99": 24.029,
+      "max": 27.147,
+      "mean": 12.61805
+    }
+  }
+}
+[probe] wrote /Users/manson/ai/eidolon/eidolon_memory/benchmarks/results/recall-concurrency-20261005/experiment-chat-graph-warm.json

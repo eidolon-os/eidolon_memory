@@ -1,0 +1,72 @@
+........................................................................ [  5%]
+........................................................................ [ 10%]
+........................................................................ [ 16%]
+........................................................................ [ 21%]
+........................................................................ [ 27%]
+........................................................................ [ 32%]
+........................................................................ [ 38%]
+........................................................................ [ 43%]
+........................................................................ [ 48%]
+........................................................................ [ 54%]
+........................................................................ [ 59%]
+......F.F............................................................... [ 65%]
+........................................................F............... [ 70%]
+........................................................................ [ 76%]
+........................................................................ [ 81%]
+........................................................................ [ 86%]
+........................................................................ [ 92%]
+........................................................................ [ 97%]
+..............................                                           [100%]
+=================================== FAILURES ===================================
+____________________ test_runtime_is_exactly_mempalace_3100 ____________________
+
+    def test_runtime_is_exactly_mempalace_3100() -> None:
+>       assert version("mempalace") == "3.10.0"
+E       AssertionError: assert '3.9.0' == '3.10.0'
+E         
+E         - 3.10.0
+E         + 3.9.0
+
+tests/memory/test_mempalace_public_contract.py:12: AssertionError
+___________ test_unknown_collection_is_rejected_before_storage_open ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10e101e10>
+tmp_path = PosixPath('/private/var/folders/6w/cxhsqffx3cxc_skw70bdg4rh0000gn/T/pytest-of-manson/pytest-24/test_unknown_collection_is_rej0')
+
+    def test_unknown_collection_is_rejected_before_storage_open(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+>       from mempalace.palace import CollectionNameMismatchError, get_collection
+E       ImportError: cannot import name 'CollectionNameMismatchError' from 'mempalace.palace' (/Users/manson/ai/eidolon/eidolon_memory/.venv/lib/python3.13/site-packages/mempalace/palace.py)
+
+tests/memory/test_mempalace_public_contract.py:29: ImportError
+_________________ test_xdg_cannot_redirect_the_service_config __________________
+
+tmp_path = PosixPath('/private/var/folders/6w/cxhsqffx3cxc_skw70bdg4rh0000gn/T/pytest-of-manson/pytest-24/test_xdg_cannot_redirect_the_s0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10e2571c0>
+
+    def test_xdg_cannot_redirect_the_service_config(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mempalace.config import MempalaceConfig
+    
+        service_home = tmp_path / "service-home"
+        monkeypatch.setenv("EIDOLON_MEMORY_MEMPALACE_HOME", str(service_home))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "desktop-config"))
+        monkeypatch.setenv("MEMPALACE_CONFIG_DIR", str(tmp_path / "another-config"))
+        # Register environment restoration before the process helper changes HOME.
+        monkeypatch.setenv("HOME", str(tmp_path / "desktop-home"))
+    
+        child = palace_environment(dict(os.environ), tmp_path / "palace")
+        configure_shared_mempalace_home(tmp_path)
+    
+>       assert MempalaceConfig().config_dir == service_home / ".mempalace"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'MempalaceConfig' object has no attribute 'config_dir'
+
+tests/memory/test_palace_init.py:43: AttributeError
+=========================== short test summary info ============================
+FAILED tests/memory/test_mempalace_public_contract.py::test_runtime_is_exactly_mempalace_3100
+FAILED tests/memory/test_mempalace_public_contract.py::test_unknown_collection_is_rejected_before_storage_open
+FAILED tests/memory/test_palace_init.py::test_xdg_cannot_redirect_the_service_config
+3 failed, 1323 passed, 11 deselected in 383.35s (0:06:23)
