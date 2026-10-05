@@ -1,0 +1,28 @@
+{
+  "measured_commit": "e32c612106cf308fbe9f559ad3188df0c1bbdb61",
+  "machine": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "cpu_count": 12,
+    "processor": "arm",
+    "memory_gb": 36.0
+  },
+  "provider_host": "api.deepseek.com",
+  "corpus_authorized": true,
+  "model": "openai/deepseek-v4-flash",
+  "source_sha256": {
+    "scripts/benchmark/bench_memory_retrieve_quality.py": "3258aca0e98c08da398955d6c710b2526dc524960872d663c249f5e22e877efb",
+    "scripts/benchmark/mcp_response.py": "cdeb1d3eef47fd76f6a75dffcd07ddc0ed56a95e2b37fc57aa43c1ff4839125d",
+    "tests/memory/e2e/fixtures/companion_corpus.jsonl": "fe8bdfc3391150d1c32167e21e20f8fe9e24a5aeebeb72e2e0e64b79582f9417",
+    "tests/memory/e2e/fixtures/quality_queries.jsonl": "3dd5a923adb885836d74bddb7e43f5c8693cf3beace884a43277051d578a0e56",
+    "uv.lock": "69012c4caf428a0b0908165b99de9cb90a59bdc32c7f820cdf80e4cb3ef56282"
+  },
+  "notes": "Measurement began with committed benchmark code. Subsequent analysis artifacts are untracked until this archive commit. Single batch; no production data or Realm accessed.",
+  "archive_code": {
+    "git_sha": "e32c612106cf308fbe9f559ad3188df0c1bbdb61",
+    "dirty": true,
+    "python": "3.13.13",
+    "branch": "main",
+    "mempalace": "3.10.0"
+  },
+  "measured_python": "3.13.13"
+}
