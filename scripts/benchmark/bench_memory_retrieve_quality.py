@@ -8,9 +8,7 @@ Pipeline:
     1. Spawn a fresh ``eidolon-memory-agent`` subprocess against a clean
        palace, steward.mode=llm (project's LLM config inherited).
     2. Publish the full ``companion_corpus.jsonl`` (40 turns) via NATS.
-    3. Wait for the LLM steward to drain — kg_stats.triples_total >= 8
-       is a robust lower bound (the steward extracts triples from
-       relationship + event + work turns at ~30-50% rate).
+    3. Wait for the consumer backlog to drain and verify extraction output floors.
     4. Run every labeled query in ``quality_queries.jsonl`` exactly once.
        For each: measure end-to-end MCP round-trip time and score against
        independent evidence groups: KG entity, vector record, and working
@@ -74,6 +72,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from scripts.benchmark.mcp_response import decode_recall_response  # noqa: E402
 from scripts.benchmark.preflight import require_nats  # noqa: E402
 
 _FIXTURES = _REPO_ROOT / "tests" / "memory" / "e2e" / "fixtures"
@@ -336,6 +335,7 @@ def _spawn_agent(
     settings_path: Path,
     log_path: Path,
     steward_mode: str = "llm",
+    nats_url: str = "nats://127.0.0.1:4222",
 ) -> subprocess.Popen:
     # Resolved the way the settings module resolves it, so an override via
     # EIDOLON_MEMORY_SETTINGS_YAML reaches the child. Hardcoding
@@ -348,6 +348,7 @@ def _spawn_agent(
     project_settings = default_memory_settings_path()
     settings_doc: dict[str, Any] = {
         "steward": {"mode": steward_mode},
+        "nats": {"url": nats_url},
         "mcp_http": {"host": "127.0.0.1", "port": port},
         "runtime": {"palaces_root": str(palace_root)},
     }
@@ -500,6 +501,9 @@ class QueryResult:
     returned_evidence_count: int = 0
     expects_abstention: bool = False
     abstention_correct: bool | None = None
+    error: str | None = None
+    degraded: bool = False
+    degraded_reason: str | None = None
 
     @property
     def correct(self) -> bool:
@@ -510,6 +514,8 @@ class QueryResult:
         exact failure we care about: a useful vector hit alongside a wrong KG
         fact, or irrelevant evidence injected for an unknown question.
         """
+        if self.error or self.degraded:
+            return False
         if self.expects_abstention:
             return self.abstention_correct is True
         if self.negative_violation:
@@ -697,7 +703,12 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
         # for an explicitly unanswerable query.  Final-answer abstention belongs
         # to the Agent benchmark; this metric deliberately grades evidence
         # cleanliness before generation.
-        abstention_correct = returned_evidence_count == 0 and not violation
+        abstention_correct = (
+            returned_evidence_count == 0
+            and not violation
+            and not response.get("degraded", False)
+            and not response.get("error")
+        )
 
     return QueryResult(
         id=query["id"],
@@ -716,12 +727,17 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
         returned_evidence_count=returned_evidence_count,
         expects_abstention=expects_abstention,
         abstention_correct=abstention_correct,
+        error=response.get("error"),
+        degraded=bool(response.get("degraded", False)),
+        degraded_reason=response.get("degraded_reason"),
     )
 
 
 def _validate_queries(queries: list[dict[str, Any]]) -> None:
     """Reject labels that would make a quality case pass vacuously."""
 
+    if not queries:
+        raise ValueError("query battery must not be empty")
     seen: set[str] = set()
     for index, query in enumerate(queries, 1):
         label = str(query.get("id") or f"line {index}")
@@ -766,6 +782,8 @@ def _aggregate(results: list[QueryResult]) -> dict[str, Any]:
             {
                 "category": cat,
                 "n": n,
+                "errors": sum(x.error is not None for x in items),
+                "degraded": sum(x.degraded for x in items),
                 "correct": correct,
                 "correct_pct": round(correct / n * 100, 1),
                 "kg_hits": kg_hits,
@@ -792,6 +810,9 @@ def _aggregate(results: list[QueryResult]) -> dict[str, Any]:
     abstention_correct = sum(1 for r in results if r.expects_abstention and r.abstention_correct)
     overall = {
         "n": len(results),
+        "errors": sum(r.error is not None for r in results),
+        "degraded": sum(r.degraded for r in results),
+        "valid": bool(results) and all(r.error is None and not r.degraded for r in results),
         "correct": overall_correct,
         "correct_pct": round(overall_correct / len(results) * 100, 1) if results else 0,
         "evidence_recall": round(evidence_groups_hit / max(1, evidence_groups_total), 3),
@@ -859,6 +880,11 @@ def _render_markdown(
     )
     lines.append("")
 
+    lines.append(
+        f"- Query execution: errors **{o['errors']}**, degraded **{o['degraded']}**, "
+        f"valid quality run: **{o['valid']}**"
+    )
+    lines.append("")
     lines.append("## Per-category breakdown")
     lines.append("")
     lines.append(
@@ -906,7 +932,8 @@ def _render_markdown(
         for r in misses:
             kg_obj_str = ", ".join(r.raw_kg_objects[:4]) if r.raw_kg_objects else "—"
             lines.append(
-                f'- `{r.id}` ({r.category}): "{r.query}" — kg objects returned: {kg_obj_str}'
+                f'- `{r.id}` ({r.category}): "{r.query}" — kg objects returned: {kg_obj_str}; '
+                f"error={r.error!r}; degraded={r.degraded}; reason={r.degraded_reason!r}"
             )
         lines.append("")
 
@@ -937,6 +964,8 @@ def _render_ab_comparison(
         f"(consolidator ran {consolidator_seconds:.1f}s)"
     )
     bo, to = baseline["overall"], themed["overall"]
+    if not bo["valid"] or not to["valid"]:
+        lines.append("- INVALID A/B: query errors or degradation; no quality gain can be inferred.")
     lines.append(
         f"- Overall correct: baseline **{bo['correct_pct']}%** → "
         f"themed **{to['correct_pct']}%** "
@@ -1125,11 +1154,7 @@ async def _run_battery(
     results: list[QueryResult] = []
     raw: list[dict] = []
     for q in queries:
-        try:
-            r, response = await _run_query(session, q, context=context)
-        except Exception as exc:  # noqa: BLE001 - bench resilience
-            print(f"  [err] {q['id']}: {exc}")
-            continue
+        r, response = await _run_query(session, q, context=context)
         results.append(r)
         raw.append({"id": q["id"], "response": response})
         marker = "✓" if r.correct else ("⚠" if r.negative_violation else "·")
@@ -1147,19 +1172,19 @@ async def _run_query(
     context: dict[str, Any],
 ) -> tuple[QueryResult, dict[str, Any]]:
     t0 = time.perf_counter()
-    result = await session.call_tool(
-        "eidolon_memory_recall_context",
-        {
-            "query": query["query"],
-            "context": context,
-            "top_k": 5,
-            "voice": False,
-        },
-    )
+    try:
+        result = await asyncio.wait_for(
+            session.call_tool(
+                "eidolon_memory_recall_context",
+                {"query": query["query"], "context": context, "top_k": 5, "voice": False},
+            ),
+            timeout=10.0,
+        )
+        response = decode_recall_response(result)
+    except Exception as exc:
+        # Keep failed attempts in the denominator and preserve their latency.
+        response = {"error": f"{type(exc).__name__}: {exc}"}
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    response = _unwrap(result) or {}
-    if not isinstance(response, dict):
-        response = {}
     qr = _score_query(query, response, elapsed_ms)
     return qr, response
 
@@ -1218,6 +1243,7 @@ async def amain(args: argparse.Namespace) -> int:
         settings_path=settings_path,
         log_path=log_path,
         steward_mode=args.steward_mode,
+        nats_url=args.nats_url,
     )
     print(f"[setup] agent pid={proc.pid}, log={log_path}")
 
@@ -1295,6 +1321,7 @@ async def amain(args: argparse.Namespace) -> int:
                 context=actor_context,
                 label="baseline" if args.with_consolidator else "all",
             )
+            baseline_raw_responses = raw_responses
             agg = _aggregate(baseline_results)
             results = baseline_results  # default reporting target
 
@@ -1376,6 +1403,10 @@ async def amain(args: argparse.Namespace) -> int:
                     "aggregate": agg,
                     "baseline_aggregate": _aggregate(baseline_results),
                     "per_query": [r.__dict__ for r in results],
+                    "raw_responses": raw_responses,
+                    "baseline_raw_responses": (
+                        baseline_raw_responses if args.with_consolidator else None
+                    ),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -1416,7 +1447,8 @@ async def amain(args: argparse.Namespace) -> int:
         print(f"  report: {out_dir / 'summary.md'}")
         print(f"  raw:    {out_dir / 'raw_results.json'}")
         print("")
-        return 0
+        valid = all(r.error is None and not r.degraded for r in [*baseline_results, *results])
+        return 0 if valid else 2
     finally:
         if proc.poll() is None:
             proc.terminate()

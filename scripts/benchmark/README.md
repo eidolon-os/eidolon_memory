@@ -105,7 +105,7 @@ Steward prompt、模型或抽取契约改了都要跑这个；它只评估候选
 ### Q `bench_memory_retrieve_quality.py` — 真实证据检索质量
 
 该脚本走隔离 Realm 的真实 `NATS → steward LLM → MemPalace/KG → MCP` 链路。
-一个正例只有在全部标注证据组（KG、vector、working memory）分别命中时才算
+一个正例只有在全部标注证据组（KG、vector）分别命中时才算
 fully correct；不能再用某一通道的偶然命中掩盖另一通道的遗漏。拒答案例要求
 Memory 检索边界不返回无依据证据，Agent 最终是否诚实拒答由 Agent live replay
 单独评估。
@@ -114,7 +114,7 @@ Memory 检索边界不返回无依据证据，Agent 最终是否诚实拒答由 
 .venv/bin/python scripts/benchmark/bench_memory_retrieve_quality.py
 ```
 
-报告同时保留端到端 MCP latency，避免通过无限扩大 top-k/context 换取表面准确率。
+报告同时保留端到端 MCP latency 和完整响应（A/B 两批分别保存）。MCP 错误、超时、非法响应和降级均保留在题数分母中，不算正确拒答；存在这些失败时，报告 `valid=false` 并以退出码 2 结束。低质量分数本身仍是诊断结果，不设任意通过阈值。`--nats-url` 同时传给发布端和测试 Agent，以便使用独立 broker。避免通过无限扩大 top-k/context 换取表面准确率。
 只验证真实管线契约时可用 `--steward-mode test-verbatim --min-triples 0
 --min-fragments 5`；质量报告必须保留默认 `llm`，两种结果不得混为同一基线。
 

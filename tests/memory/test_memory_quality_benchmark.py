@@ -365,7 +365,11 @@ async def test_query_passes_actor_context_to_current_mcp_contract() -> None:
 
         async def call_tool(self, name, args):
             self.args = (name, args)
-            return SimpleNamespace(content=[SimpleNamespace(text=json.dumps({"records": []}))])
+            return SimpleNamespace(
+                isError=False,
+                structuredContent={"records": [], "kg_triples": [], "degraded": False, "trace": {}},
+                content=[],
+            )
 
     session = _Session()
     context = {
@@ -416,11 +420,13 @@ def test_spawn_uses_current_memory_space_cli(
         settings_path=tmp_path / "settings.yaml",
         log_path=tmp_path / "agent.log",
         steward_mode="test-verbatim",
+        nats_url="nats://127.0.0.1:19221",
     )
 
     assert captured["argv"][1:3] == ["--memory-space-id", "r:quality:bench"]
     settings = quality_bench.yaml.safe_load((tmp_path / "settings.yaml").read_text())
     assert settings["steward"]["mode"] == "test-verbatim"
+    assert settings["nats"]["url"] == "nats://127.0.0.1:19221"
 
 
 def test_readiness_probe_ignores_proxy_environment(
@@ -436,3 +442,63 @@ def test_readiness_probe_ignores_proxy_environment(
 
     assert _wait_mcp_ready(19200, timeout_s=0.1) is True
     assert captured["trust_env"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["transport", "tool", "malformed", "schema", "degraded"])
+async def test_quality_battery_keeps_failed_queries_and_never_counts_them_as_abstention(failure):
+    from mcp.types import CallToolResult, TextContent
+
+    class Session:
+        calls = 0
+
+        async def call_tool(self, name, arguments):
+            self.calls += 1
+            payload = {"records": [], "kg_triples": [], "degraded": False, "trace": {}}
+            if self.calls == 1:
+                if failure == "transport":
+                    raise TimeoutError("memory timed out")
+                if failure == "tool":
+                    return CallToolResult(isError=True, content=[])
+                if failure == "malformed":
+                    return CallToolResult(content=[TextContent(type="text", text="not JSON")])
+                if failure == "schema":
+                    payload = {}
+                if failure == "degraded":
+                    payload.update(degraded=True, degraded_reason="backend unavailable")
+            return CallToolResult(content=[], structuredContent=payload)
+
+    queries = [
+        {"id": f"q-{i}", "category": "abstention", "query": "unknown", "expect_abstention": True}
+        for i in range(2)
+    ]
+    results, raw = await quality_bench._run_battery(Session(), queries, context={}, label="test")
+    overall = _aggregate(results)["overall"]
+    assert len(results) == len(raw) == overall["n"] == 2
+    assert not results[0].correct and results[0].abstention_correct is False
+    assert results[0].elapsed_ms >= 0
+    assert results[1].correct
+    assert overall["correct"] == overall["abstention_correct"] == 1
+    assert overall["valid"] is False
+    if failure == "degraded":
+        assert overall["degraded"] == 1 and overall["errors"] == 0
+        assert raw[0]["response"]["degraded_reason"] == "backend unavailable"
+    else:
+        assert overall["errors"] == 1 and overall["degraded"] == 0
+        assert raw[0]["response"]["error"]
+
+
+def test_matching_evidence_in_degraded_response_cannot_pass_quality():
+    result = _score_query(
+        _answerable_query(),
+        {
+            "records": [{"value": "marker-vector"}],
+            "kg_triples": [{"subject": "subject:alpha", "object": "x"}],
+            "degraded": True,
+            "degraded_reason": "incomplete read",
+        },
+        1,
+    )
+    assert result.kg_hit and result.vector_hit
+    assert result.degraded and not result.correct
+    assert not _aggregate([result])["overall"]["valid"]

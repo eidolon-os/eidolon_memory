@@ -26,6 +26,7 @@ from mcp import ClientSession  # noqa: E402
 from mcp.client.streamable_http import streamablehttp_client  # noqa: E402
 
 from scripts.benchmark.manifest import code_provenance, machine_facts, utc_stamp  # noqa: E402
+from scripts.benchmark.mcp_response import decode_recall_response as _decode_recall  # noqa: E402
 from scripts.benchmark.report import percentiles  # noqa: E402
 
 _DEFAULT_QUERIES = [
@@ -42,25 +43,6 @@ _DEFAULT_QUERIES = [
 
 def _local_http_client(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
     return httpx.AsyncClient(headers=headers, timeout=timeout, auth=auth, trust_env=False)
-
-
-def _decode_recall(result) -> dict:
-    if result.isError:
-        raise ValueError(f"MCP tool error: {result.content}")
-    data = result.structuredContent
-    if data is None:
-        texts = [block.text for block in result.content if block.type == "text"]
-        if len(texts) != 1:
-            raise ValueError("expected one JSON recall response")
-        data = json.loads(texts[0])
-    if not isinstance(data, dict):
-        raise ValueError("recall response must be an object")
-    for field in ("records", "kg_triples"):
-        if not isinstance(data.get(field), list):
-            raise ValueError(f"recall response missing {field} list")
-    if not isinstance(data.get("degraded"), bool) or not isinstance(data.get("trace"), dict):
-        raise ValueError("recall response missing degraded/trace")
-    return data
 
 
 def _summarize(samples: list[dict]) -> dict:
