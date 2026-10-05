@@ -1,0 +1,534 @@
+{
+  "source_sha256": "7c656f3d473be186aecf1dc6998c7ca7d8bfe5334df8a513e9da49e0bb60e226",
+  "labels_sha256": {
+    "before": "3dd5a923adb885836d74bddb7e43f5c8693cf3beace884a43277051d578a0e56",
+    "after": "202293aca05515948c535c3d24db4a1e05b50b104e6ca8d0dec47b513791b102"
+  },
+  "aggregate": {
+    "before": {
+      "per_category": [
+        {
+          "category": "abstention",
+          "n": 5,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 0,
+          "evidence_recall": 0.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 5,
+          "p50_ms": 16.0,
+          "p95_ms": 16.1,
+          "mean_ms": 16.0
+        },
+        {
+          "category": "canonical_entity",
+          "n": 7,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 28.6,
+          "kg_hits": 3,
+          "vec_hits": 5,
+          "evidence_recall": 0.571,
+          "omissions": 6,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 17.1,
+          "p95_ms": 22.8,
+          "mean_ms": 18.3
+        },
+        {
+          "category": "emotion",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 66.7,
+          "kg_hits": 0,
+          "vec_hits": 2,
+          "evidence_recall": 0.667,
+          "omissions": 1,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.9,
+          "p95_ms": 17.3,
+          "mean_ms": 16.9
+        },
+        {
+          "category": "event",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 66.7,
+          "kg_hits": 1,
+          "vec_hits": 2,
+          "evidence_recall": 0.6,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 17.0,
+          "p95_ms": 17.6,
+          "mean_ms": 17.1
+        },
+        {
+          "category": "future_plans",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 1,
+          "evidence_recall": 0.167,
+          "omissions": 5,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.6,
+          "p95_ms": 16.8,
+          "mean_ms": 16.4
+        },
+        {
+          "category": "kinship_alias",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 3,
+          "correct_pct": 37.5,
+          "kg_hits": 6,
+          "vec_hits": 5,
+          "evidence_recall": 0.688,
+          "omissions": 5,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.9,
+          "p95_ms": 17.1,
+          "mean_ms": 16.8
+        },
+        {
+          "category": "preference",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 3,
+          "correct_pct": 75.0,
+          "kg_hits": 0,
+          "vec_hits": 3,
+          "evidence_recall": 0.6,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.1,
+          "p95_ms": 16.4,
+          "mean_ms": 16.1
+        },
+        {
+          "category": "pronoun",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 33.3,
+          "kg_hits": 3,
+          "vec_hits": 1,
+          "evidence_recall": 0.667,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.6,
+          "p95_ms": 17.0,
+          "mean_ms": 16.5
+        },
+        {
+          "category": "time",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 25.0,
+          "kg_hits": 0,
+          "vec_hits": 1,
+          "evidence_recall": 0.25,
+          "omissions": 3,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.1,
+          "p95_ms": 16.6,
+          "mean_ms": 16.2
+        },
+        {
+          "category": "topic",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 25.0,
+          "kg_hits": 2,
+          "vec_hits": 3,
+          "evidence_recall": 0.357,
+          "omissions": 9,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.0,
+          "p95_ms": 16.8,
+          "mean_ms": 16.2
+        }
+      ],
+      "overall": {
+        "n": 48,
+        "errors": 0,
+        "degraded": 0,
+        "valid": true,
+        "correct": 16,
+        "correct_pct": 33.3,
+        "evidence_recall": 0.521,
+        "omissions": 35,
+        "abstention_correct": 0,
+        "abstention_total": 5,
+        "abstention_rate": 0.0,
+        "p50_ms": 16.5,
+        "p95_ms": 17.6,
+        "mean_ms": 16.7,
+        "max_ms": 22.8,
+        "min_ms": 15.6
+      }
+    },
+    "after": {
+      "per_category": [
+        {
+          "category": "abstention",
+          "n": 5,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 0,
+          "evidence_recall": 0.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 5,
+          "p50_ms": 16.0,
+          "p95_ms": 16.1,
+          "mean_ms": 16.0
+        },
+        {
+          "category": "canonical_entity",
+          "n": 7,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 14.3,
+          "kg_hits": 2,
+          "vec_hits": 4,
+          "evidence_recall": 0.5,
+          "omissions": 6,
+          "abstention_correct": 0,
+          "abstention_total": 1,
+          "p50_ms": 17.1,
+          "p95_ms": 22.8,
+          "mean_ms": 18.3
+        },
+        {
+          "category": "emotion",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 66.7,
+          "kg_hits": 0,
+          "vec_hits": 2,
+          "evidence_recall": 0.667,
+          "omissions": 1,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.9,
+          "p95_ms": 17.3,
+          "mean_ms": 16.9
+        },
+        {
+          "category": "event",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 66.7,
+          "kg_hits": 1,
+          "vec_hits": 2,
+          "evidence_recall": 1.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 1,
+          "p50_ms": 17.0,
+          "p95_ms": 17.6,
+          "mean_ms": 17.1
+        },
+        {
+          "category": "future_plans",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 1,
+          "evidence_recall": 0.25,
+          "omissions": 3,
+          "abstention_correct": 0,
+          "abstention_total": 1,
+          "p50_ms": 16.6,
+          "p95_ms": 16.8,
+          "mean_ms": 16.4
+        },
+        {
+          "category": "kinship_alias",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 25.0,
+          "kg_hits": 6,
+          "vec_hits": 4,
+          "evidence_recall": 0.625,
+          "omissions": 6,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.9,
+          "p95_ms": 17.1,
+          "mean_ms": 16.8
+        },
+        {
+          "category": "preference",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 3,
+          "correct_pct": 75.0,
+          "kg_hits": 0,
+          "vec_hits": 3,
+          "evidence_recall": 0.6,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.1,
+          "p95_ms": 16.4,
+          "mean_ms": 16.1
+        },
+        {
+          "category": "pronoun",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 33.3,
+          "kg_hits": 3,
+          "vec_hits": 1,
+          "evidence_recall": 0.667,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.6,
+          "p95_ms": 17.0,
+          "mean_ms": 16.5
+        },
+        {
+          "category": "time",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 25.0,
+          "kg_hits": 0,
+          "vec_hits": 1,
+          "evidence_recall": 0.333,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 1,
+          "p50_ms": 16.1,
+          "p95_ms": 16.6,
+          "mean_ms": 16.2
+        },
+        {
+          "category": "topic",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 25.0,
+          "kg_hits": 2,
+          "vec_hits": 3,
+          "evidence_recall": 0.357,
+          "omissions": 9,
+          "abstention_correct": 0,
+          "abstention_total": 0,
+          "p50_ms": 16.0,
+          "p95_ms": 16.8,
+          "mean_ms": 16.2
+        }
+      ],
+      "overall": {
+        "n": 48,
+        "errors": 0,
+        "degraded": 0,
+        "valid": true,
+        "correct": 14,
+        "correct_pct": 29.2,
+        "evidence_recall": 0.53,
+        "omissions": 31,
+        "abstention_correct": 0,
+        "abstention_total": 9,
+        "abstention_rate": 0.0,
+        "p50_ms": 16.5,
+        "p95_ms": 17.6,
+        "mean_ms": 16.7,
+        "max_ms": 22.8,
+        "min_ms": 15.6
+      }
+    }
+  },
+  "changed_labels": [
+    {
+      "id": "canonical-006",
+      "before": {
+        "id": "canonical-006",
+        "category": "canonical_entity",
+        "query": "北京出差的事",
+        "expected_entities": [
+          "place:北京",
+          "place"
+        ],
+        "expected_vector_contains": [
+          "北京"
+        ],
+        "negative": false
+      },
+      "after": {
+        "id": "canonical-006",
+        "category": "canonical_entity",
+        "query": "北京出差的事",
+        "expect_abstention": true,
+        "label_note": "c-007、c-029、c-030 提到北京，但全量 40 轮没有出差事实。"
+      },
+      "correct_before": true,
+      "correct_after": false
+    },
+    {
+      "id": "kinship-005",
+      "before": {
+        "id": "kinship-005",
+        "category": "kinship_alias",
+        "query": "我家狗多大",
+        "expected_entities": [
+          "pet:铁锤",
+          "pet"
+        ],
+        "expected_vector_contains": [
+          "铁锤",
+          "三岁"
+        ],
+        "negative": false
+      },
+      "after": {
+        "id": "kinship-005",
+        "category": "kinship_alias",
+        "query": "我家狗多大",
+        "expected_entities": [
+          "pet:铁锤",
+          "pet"
+        ],
+        "expected_vector_contains": [
+          "两岁",
+          "2岁"
+        ],
+        "negative": false,
+        "source_turn_ids": [
+          "c-007"
+        ],
+        "label_note": "c-007 铁锤刚满两岁；c-009 三岁的是猫小白。仅出现铁锤名字不足以回答年龄。"
+      },
+      "correct_before": true,
+      "correct_after": false
+    },
+    {
+      "id": "time-004",
+      "before": {
+        "id": "time-004",
+        "category": "time",
+        "query": "我答应了什么事情",
+        "expected_entities": [],
+        "expected_vector_contains": [
+          "陪",
+          "医院",
+          "攒钱"
+        ],
+        "negative": false
+      },
+      "after": {
+        "id": "time-004",
+        "category": "time",
+        "query": "我答应了什么事情",
+        "expect_abstention": true,
+        "label_note": "全量 40 轮没有明确承诺；c-025 的旅行愿望和攒钱不等于答应某事。"
+      },
+      "correct_before": false,
+      "correct_after": false
+    },
+    {
+      "id": "future-002",
+      "before": {
+        "id": "future-002",
+        "category": "future_plans",
+        "query": "我答应了妈妈什么",
+        "expected_entities": [
+          "mother:张丽",
+          "mother"
+        ],
+        "expected_vector_contains": [
+          "陪",
+          "医院"
+        ],
+        "negative": false
+      },
+      "after": {
+        "id": "future-002",
+        "category": "future_plans",
+        "query": "我答应了妈妈什么",
+        "expect_abstention": true,
+        "label_note": "c-001、c-002、c-023、c-024 提到母亲，但全量 40 轮没有向母亲作出的承诺；陪母亲去医院只存在于提示词示例。"
+      },
+      "correct_before": false,
+      "correct_after": false
+    },
+    {
+      "id": "event-003",
+      "before": {
+        "id": "event-003",
+        "category": "event",
+        "query": "我跟客户吵架了",
+        "expected_entities": [
+          "project:OP-3091",
+          "project"
+        ],
+        "expected_vector_contains": [
+          "甲方",
+          "推回",
+          "项目"
+        ],
+        "negative": false
+      },
+      "after": {
+        "id": "event-003",
+        "category": "event",
+        "query": "我跟客户吵架了",
+        "expect_abstention": true,
+        "label_note": "c-011 只有项目被甲方退回，没有与客户吵架；c-003 的争吵对象是妻子。"
+      },
+      "correct_before": false,
+      "correct_after": false
+    }
+  ]
+}

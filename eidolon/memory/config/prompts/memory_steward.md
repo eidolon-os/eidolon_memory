@@ -30,7 +30,7 @@
 | 写 fragment | 写 triple |
 |---|---|
 | 自然叙述、情绪、感受、当下心理 | 实体关系、状态、偏好的"事实" |
-| "她说和爸爸冷战很难受" | `(self, has_emotion, anxiety, valid_from=NOW)` |
+| "她说和爸爸冷战很难受" | `(self, has_emotion, 焦虑, valid_from=NOW)` |
 | 多句叙事、可读原文 | 单一关系，机器可索引 |
 | 召回用语义相似 | 召回用实体名 + as_of |
 
@@ -94,9 +94,9 @@
 - 工作项目：`project:<项目代号或简称>`
 - 组织：`org:<名称>`
 - 地点：`place:<地名>`
-- 抽象概念（非实体）：直接用字符串字面值（如 `coffee`、`insomnia`）
+- 抽象概念（非实体）：直接用字符串字面值（如 `咖啡`、`失眠`）
 
-**用户原话是什么语言，实体名和对象名就用什么语言。** 不要把「米氮平」写成
+**除上面固定的实体 ID（如 `self`、`mother`）和类型前缀（如 `person:`）外，用户原话是什么语言，实体名称和对象内容就用什么语言。** 不要把「米氮平」写成
 `mirtazapine`、把「合唱团」写成 `choir`——同一个东西被翻译一次就多出一个实体。
 
 绝对禁止：
@@ -117,21 +117,21 @@
 ## 改变心意 / 承诺兑现的处理流程（核心）
 
 用户表达**否定**：「我现在不喜欢咖啡了」
-→ `invalidations` 加 `{subject:"self", predicate:"likes", object:"coffee", ended:"<turn 时刻>"}`
+→ `invalidations` 加 `{subject:"self", predicate:"likes", object:"咖啡", ended:"<turn 时刻>"}`
 → 通常**不需要** 新 triple
 
 用户表达**新偏好**：「我现在喜欢茶」
-→ `triples` 加 `{subject:"self", predicate:"likes", object:"tea", valid_from:"<turn 时刻>"}`
+→ `triples` 加 `{subject:"self", predicate:"likes", object:"茶", valid_from:"<turn 时刻>"}`
 
 用户**承诺**：「这周末陪妈妈去医院」
-→ `triples` 加 `{subject:"self", predicate:"promised", object:"陪 mother 去医院", valid_from:"<turn 时刻>", valid_to:"<本周日 23:59>"}`
+→ `triples` 加 `{subject:"self", predicate:"promised", object:"陪妈妈去医院", valid_from:"<turn 时刻>", valid_to:"<本周日 23:59>"}`
 
 用户**兑现承诺**：「我已经陪妈妈去过医院了」
-→ `invalidations` 加 `{subject:"self", predicate:"promised", object:"陪 mother 去医院", ended:"<turn 时刻>", reason:"已兑现"}`
-→ 同时 `triples` 加 `{subject:"self", predicate:"attended", object:"陪 mother 去医院", valid_from:"<事件时刻>", valid_to:"<事件时刻>"}`
+→ `invalidations` 加 `{subject:"self", predicate:"promised", object:"陪妈妈去医院", ended:"<turn 时刻>", reason:"已兑现"}`
+→ 同时 `triples` 加 `{subject:"self", predicate:"attended", object:"陪妈妈去医院", valid_from:"<事件时刻>", valid_to:"<事件时刻>"}`
 
 用户**状态结束**：「我妈睡眠好转了」
-→ `invalidations` 加 `{subject:"mother", predicate:"has_state", object:"insomnia", ended:"<turn 时刻>"}`
+→ `invalidations` 加 `{subject:"mother", predicate:"has_state", object:"失眠", ended:"<turn 时刻>"}`
 
 ## 隐私优先规则
 
@@ -182,7 +182,7 @@
     {
       "subject": "self",
       "predicate": "likes",
-      "object": "music_at_night",
+      "object": "轻音乐",
       "evidence_quote": "我喜欢在晚上独处时听轻音乐放松",
       "valid_from": "2026-05-14T20:00:00Z",
       "valid_to": null,
@@ -193,7 +193,7 @@
     {
       "subject": "self",
       "predicate": "likes",
-      "object": "coffee",
+      "object": "咖啡",
       "evidence_quote": "我现在不喜欢咖啡了",
       "ended": "2026-05-14T20:00:00Z",
       "reason": "用户明确说现在不喜欢咖啡"
@@ -248,7 +248,7 @@
 示例：
 
 turn user_text：「我妈张丽这一周又失眠了」
-→ `triples`: `[{subject:"mother", predicate:"has_state", object:"insomnia", ...}]`
+→ `triples`: `[{subject:"mother", predicate:"has_state", object:"失眠", ...}]`
 → `mentions`: `[{entity_id:"mother", alias:"我妈", confidence:0.95},
      {entity_id:"mother", alias:"张丽", confidence:0.95}]`
   —— 两条都要：「我妈」让称谓能找到她，「张丽」让名字能找到她。
