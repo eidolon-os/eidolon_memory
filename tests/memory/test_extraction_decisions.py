@@ -314,3 +314,131 @@ def test_llm_extraction_version_changes_with_decision_policy() -> None:
     changed = settings.model_copy(deep=True)
     changed.llm.temperature = 0.2
     assert LiteLLMSteward(changed).extraction_version != stable
+
+
+async def test_running_policy_does_not_hot_reload_half_a_contract(tmp_path):
+    from unittest.mock import AsyncMock
+
+    settings = load_memory_settings()
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("initial contract")
+    settings.steward.prompt_template_path = str(prompt)
+    completion = AsyncMock(
+        return_value={
+            "choices": [{"message": {"content": '{"should_write": false, "claims": []}'}}]
+        }
+    )
+    service = LiteLLMSteward(settings, completion=completion)
+    initial = service.extraction_version
+    prompt.write_text("different contract")
+    settings.llm.temperature = 0.7
+    await service._call_llm(_turn())
+    assert completion.call_args.kwargs["messages"][0]["content"] == "initial contract"
+    assert service.extraction_version == initial
+    assert LiteLLMSteward(settings, completion=completion).extraction_version != initial
+
+
+def test_protocol_revision_is_part_of_decision_identity(monkeypatch):
+    from eidolon.memory.application.steward import llm
+
+    settings = load_memory_settings()
+    service = LiteLLMSteward(settings)
+    original = service.extraction_version
+    monkeypatch.setattr(llm, "EXTRACTION_PROTOCOL", "next-parser")
+    assert service.extraction_version == original
+    assert LiteLLMSteward(settings).extraction_version != original
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"should_write": True, "claims": []},
+        {"should_write": True, "facts": [{"content": "lost"}]},
+        {"should_write": False, "facts": [{"content": "lost"}]},
+        [],
+    ],
+)
+def test_unrecognized_or_empty_write_is_not_a_successful_decision(body):
+    from eidolon.memory.domain.errors import StewardOutputError
+
+    with pytest.raises(StewardOutputError):
+        LiteLLMSteward(load_memory_settings())._parse_decision(json.dumps(body))
+
+
+@pytest.mark.asyncio
+async def test_empty_write_retries_without_poisoning_decision_ledger(tmp_path):
+    from unittest.mock import AsyncMock
+
+    settings = load_memory_settings()
+    completion = AsyncMock(
+        return_value={"choices": [{"message": {"content": '{"should_write": true, "claims": []}'}}]}
+    )
+    steward = LiteLLMSteward(settings, completion=completion)
+    store = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    turn = _turn()
+    msg = _msg(turn, deliveries=1)
+    await process_turn_message(
+        msg,
+        steward=steward,
+        backend=LockedBackend(FakeMemoryBackend()),
+        settings=settings,
+        max_deliveries=3,
+        expected_memory_space_id=MEMORY_SPACE_ID,
+        decision_store=store,
+    )
+    msg.nak.assert_awaited_once()
+    msg.ack.assert_not_awaited()
+    assert await store.get(MEMORY_SPACE_ID, turn.turn_id, steward.extraction_version) is None
+
+
+@pytest.mark.asyncio
+async def test_new_policy_recovers_old_empty_decision_but_respects_deletion(tmp_path):
+    from eidolon.memory.application.turn_processor import _decide_once
+
+    turn = _turn()
+    store = ExtractionDecisionLedger(tmp_path / "decisions.sqlite3")
+    old = ExtractionDecisionRecord(
+        memory_space_id=MEMORY_SPACE_ID,
+        source_turn_id=turn.turn_id,
+        extractor_version="old-parser",
+        input_hash=extraction_input_hash(turn),
+        decision=StewardDecision(should_write=True),
+    )
+    await store.put_if_absent(old)
+    completion = AsyncMock(
+        return_value={
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "should_write": True,
+                                "claims": [
+                                    {
+                                        "wing": "Wing_Event",
+                                        "room": "preferences",
+                                        "content": turn.user_text,
+                                        "evidence_quote": turn.user_text,
+                                        "memory_type": "event",
+                                        "importance": 4,
+                                        "confidence": 0.95,
+                                    }
+                                ],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    service = LiteLLMSteward(load_memory_settings(), completion=completion)
+    _, intents = await _decide_once(service, turn, store)
+    assert len(intents) == 1
+    await _decide_once(service, turn, store)
+    completion.assert_awaited_once()
+    assert (await store.get(MEMORY_SPACE_ID, turn.turn_id, "old-parser")).intents == []
+    await store.redact_source_events(MEMORY_SPACE_ID, [turn.turn_id])
+    deleted_service = SimpleNamespace(extraction_version="another-policy", decide=AsyncMock())
+    _, intents = await _decide_once(deleted_service, turn, store)
+    assert intents == []
+    deleted_service.decide.assert_not_awaited()

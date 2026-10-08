@@ -144,7 +144,8 @@ async def test_ambiguous_or_unsafe_claim_format_is_rejected(body):
 @pytest.mark.asyncio
 async def test_model_cannot_enable_unified_writes_for_legacy_arrays():
     service, _ = steward({"should_write": False, "unified_claims": True})
-    assert not (await service.decide(turn())).unified_claims
+    with pytest.raises(StewardOutputError, match="unknown steward output fields"):
+        await service.decide(turn())
 
 
 @pytest.mark.asyncio

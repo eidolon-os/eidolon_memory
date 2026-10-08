@@ -23,6 +23,9 @@ from eidolon.memory.support.logging import get_logger
 
 log = get_logger(__name__)
 
+# Change when parsing/evidence semantics change, not only when wording changes.
+EXTRACTION_PROTOCOL = "atomic-claims-v2"
+
 
 class LiteLLMSteward:
     """Semantic extraction using a local or remote model behind an execution boundary."""
@@ -33,7 +36,16 @@ class LiteLLMSteward:
         *,
         completion: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
-        self._settings = settings
+        # A running parser and its prompt are one policy snapshot. Source edits
+        # must never hot-swap half of that contract in a long-lived worker.
+        self._settings = settings.model_copy(deep=True)
+        self._system_prompt = self._settings.render_steward_prompt()
+        self._extraction_version = self._policy_version()
+        log.info(
+            "steward_policy_loaded",
+            protocol=EXTRACTION_PROTOCOL,
+            extractor_version=self._extraction_version,
+        )
         self._executor = IsolatedLLMCompletion() if completion is None else None
         self._completion = completion if completion is not None else self._executor
 
@@ -44,9 +56,17 @@ class LiteLLMSteward:
     @property
     def extraction_version(self) -> str:
         """Identify the configured semantic extraction policy."""
+        return self._extraction_version
+
+    def _policy_version(self) -> str:
         policy = {
+            "protocol": EXTRACTION_PROTOCOL,
+            "claim_schema": ExtractedClaim.model_json_schema(),
+            "decision_schema": StewardDecision.model_json_schema(),
+            "kg_enabled": self._settings.kg.enabled,
+            "base_url": self._settings.llm.base_url,
             "model": self._settings.llm.model,
-            "prompt": self._settings.render_steward_prompt(),
+            "prompt": self._system_prompt,
             "temperature": self._settings.llm.temperature,
             "max_fragments": self._settings.steward.max_fragments_per_turn,
             "min_importance": self._settings.steward.min_importance_to_write,
@@ -108,7 +128,7 @@ class LiteLLMSteward:
 
     async def _call_llm(self, turn: ConversationTurnPayload) -> str:
         messages = [
-            {"role": "system", "content": self._settings.render_steward_prompt()},
+            {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": self._render_user_prompt(turn)},
         ]
         kwargs: dict[str, Any] = {
@@ -210,6 +230,27 @@ class LiteLLMSteward:
         except json.JSONDecodeError as exc:
             msg = f"invalid LLM steward output: {exc}"
             raise StewardOutputError(msg) from exc
+
+        if not isinstance(data, dict):
+            raise StewardOutputError("steward output must be an object")
+        allowed = {
+            "should_write",
+            "reason",
+            "claims",
+            "fragments",
+            "triples",
+            "invalidations",
+            "privacy_actions",
+            "mentions",
+        }
+        unknown = set(data) - allowed
+        if unknown:
+            raise StewardOutputError(f"unknown steward output fields: {sorted(unknown)}")
+        if data.get("should_write") and not any(
+            data.get(key)
+            for key in ("claims", "fragments", "triples", "invalidations", "privacy_actions")
+        ):
+            raise StewardOutputError("should_write=true without a durable action")
 
         space_id = ""
         if context is not None:
