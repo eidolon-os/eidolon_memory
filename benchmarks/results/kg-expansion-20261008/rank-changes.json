@@ -1,0 +1,17 @@
+[
+  {
+    "id": "topic-005",
+    "rrf": false,
+    "without_rrf": true
+  },
+  {
+    "id": "preference-003",
+    "rrf": false,
+    "without_rrf": true
+  },
+  {
+    "id": "emotion-001",
+    "rrf": true,
+    "without_rrf": false
+  }
+]

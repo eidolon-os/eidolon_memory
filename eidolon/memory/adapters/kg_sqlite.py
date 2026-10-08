@@ -1133,30 +1133,28 @@ class SqliteKnowledgeGraph:
         return [_to_record(row) for row in self._connection().execute(sql, params)]
 
     async def entities_for_source_turns(
-        self, turn_ids: Sequence[str], *, cap: int
+        self, turn_ids: Sequence[str], *, cap: int,
+        audiences: tuple[str, ...],
+        include_sensitive: bool = False,
     ) -> list[str]:
         wanted = list(dict.fromkeys(t.strip() for t in turn_ids if t and t.strip()))
-        if not wanted or cap <= 0:
+        if not wanted or cap <= 0 or not audiences:
             return []
         async with self._lock.reader():
-            return await asyncio.to_thread(self._entities_for_turns_sync, wanted, cap)
+            return await asyncio.to_thread(
+                self._entities_for_turns_sync, wanted, cap, audiences, include_sensitive
+            )
 
-    def _entities_for_turns_sync(self, turn_ids: list[str], cap: int) -> list[str]:
-        """The entities named by these turns' statements, busiest first.
+    def _entities_for_turns_sync(
+        self, turn_ids: list[str], cap: int, audiences: tuple[str, ...],
+        include_sensitive: bool,
+    ) -> list[str]:
+        """Rank source entities within the caller's audience and sensitivity scope.
 
-        Both ends of every statement, because a turn is about its objects as much
-        as its subjects — "妈妈住在杭州" is a turn about 妈妈 *and* about 杭州, and
-        which one the next question is about is not ours to guess.
-
-        Ordered by how many of these turns mention each entity. When several turns
-        come back from one recall they usually share a subject, and that shared one
-        is what the conversation is about; an arbitrary slice of a ``DISTINCT``
-        would drop it as readily as anything else.
-
-        ``idx_kg_statements_source`` covers the predicate, so this is a seek per
-        turn rather than a walk.
+        Historical events still identify entities; validity is enforced on the
+        facts returned by expansion, not on these provenance links. Filter
+        visibility before counting so hidden rows cannot spend the seed budget.
         """
-
         connection = self._connection()
         counted: dict[str, int] = {}
         for start in range(0, len(turn_ids), _LOOKUP_CHUNK):
@@ -1170,9 +1168,11 @@ class SqliteKnowledgeGraph:
                   ON e.space_id = s.space_id
                  AND e.entity_id IN (s.subject_id, s.object_id)
                 WHERE s.space_id = ? AND s.source_turn_id IN ({marks})
+                  AND {audience_filter(len(audiences))}
+                  {self._sensitive_clause(include_sensitive)}
                 GROUP BY e.name
                 """,
-                (self._space_id, *chunk),
+                (self._space_id, *chunk, *audiences),
             )
             for row in rows:
                 name = row["name"]

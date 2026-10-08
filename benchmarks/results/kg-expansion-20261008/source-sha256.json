@@ -1,0 +1,6 @@
+{
+  "eidolon/memory/adapters/kg_sqlite.py": "d08e342d6e7e4339d297cf901c1d9fba968eee6d9e342defc38be43380ae69c6",
+  "eidolon/memory/domain/kg_port.py": "0fab2af3833e1398122754e41c3f0d7ef58e29a2a2be832043dc0e100cc69702",
+  "eidolon/memory/application/kg_recall.py": "12ac02fa1471badd14c5fbaa169d685e6e11af913fee473046635f6557a8cb98",
+  "tests/memory/test_kg_sqlite.py": "98f0dab7a4cf37fc8764b729a2f4624b14209d20f6fbecd5bea6cf8df65ce3e4"
+}

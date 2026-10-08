@@ -1,0 +1,3902 @@
+{
+  "base_commit": "36cc2f5",
+  "source_sha256": "111281b081f88e9f5700df48e1edc96ee65ed8c914f26bd33d2ba0fd78144c47",
+  "labels_sha256": "202293aca05515948c535c3d24db4a1e05b50b104e6ca8d0dec47b513791b102",
+  "as_of": "2026-10-08T02:56:49Z",
+  "baseline_reproduced": 48,
+  "aggregate": {
+    "baseline": {
+      "per_category": [
+        {
+          "category": "abstention",
+          "n": 5,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 0,
+          "evidence_recall": 0.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 5
+        },
+        {
+          "category": "canonical_entity",
+          "n": 7,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 28.6,
+          "kg_hits": 2,
+          "vec_hits": 6,
+          "evidence_recall": 0.667,
+          "omissions": 4,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "emotion",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 3,
+          "correct_pct": 100.0,
+          "kg_hits": 0,
+          "vec_hits": 3,
+          "evidence_recall": 1.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "event",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 66.7,
+          "kg_hits": 1,
+          "vec_hits": 2,
+          "evidence_recall": 1.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "future_plans",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 0,
+          "evidence_recall": 0.0,
+          "omissions": 4,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "kinship_alias",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 5,
+          "correct_pct": 62.5,
+          "kg_hits": 6,
+          "vec_hits": 7,
+          "evidence_recall": 0.812,
+          "omissions": 3,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "preference",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 50.0,
+          "kg_hits": 0,
+          "vec_hits": 3,
+          "evidence_recall": 0.6,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "pronoun",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 3,
+          "correct_pct": 100.0,
+          "kg_hits": 3,
+          "vec_hits": 3,
+          "evidence_recall": 1.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "time",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 25.0,
+          "kg_hits": 0,
+          "vec_hits": 1,
+          "evidence_recall": 0.333,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "topic",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 25.0,
+          "kg_hits": 2,
+          "vec_hits": 4,
+          "evidence_recall": 0.429,
+          "omissions": 8,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        }
+      ],
+      "overall": {
+        "n": 48,
+        "errors": 0,
+        "degraded": 0,
+        "valid": true,
+        "correct": 20,
+        "correct_pct": 41.7,
+        "evidence_recall": 0.652,
+        "omissions": 23,
+        "abstention_correct": 0,
+        "abstention_total": 9,
+        "abstention_rate": 0.0
+      }
+    },
+    "scoped": {
+      "per_category": [
+        {
+          "category": "abstention",
+          "n": 5,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 0,
+          "evidence_recall": 0.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 5
+        },
+        {
+          "category": "canonical_entity",
+          "n": 7,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 28.6,
+          "kg_hits": 2,
+          "vec_hits": 6,
+          "evidence_recall": 0.667,
+          "omissions": 4,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "emotion",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 3,
+          "correct_pct": 100.0,
+          "kg_hits": 0,
+          "vec_hits": 3,
+          "evidence_recall": 1.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "event",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 66.7,
+          "kg_hits": 1,
+          "vec_hits": 2,
+          "evidence_recall": 1.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "future_plans",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 0,
+          "evidence_recall": 0.0,
+          "omissions": 4,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "kinship_alias",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 5,
+          "correct_pct": 62.5,
+          "kg_hits": 6,
+          "vec_hits": 7,
+          "evidence_recall": 0.812,
+          "omissions": 3,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "preference",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 50.0,
+          "kg_hits": 0,
+          "vec_hits": 3,
+          "evidence_recall": 0.6,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "pronoun",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 3,
+          "correct_pct": 100.0,
+          "kg_hits": 3,
+          "vec_hits": 3,
+          "evidence_recall": 1.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "time",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 25.0,
+          "kg_hits": 0,
+          "vec_hits": 1,
+          "evidence_recall": 0.333,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "topic",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 12.5,
+          "kg_hits": 1,
+          "vec_hits": 4,
+          "evidence_recall": 0.357,
+          "omissions": 9,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        }
+      ],
+      "overall": {
+        "n": 48,
+        "errors": 0,
+        "degraded": 0,
+        "valid": true,
+        "correct": 19,
+        "correct_pct": 39.6,
+        "evidence_recall": 0.636,
+        "omissions": 24,
+        "abstention_correct": 0,
+        "abstention_total": 9,
+        "abstention_rate": 0.0
+      }
+    },
+    "no_expansion": {
+      "per_category": [
+        {
+          "category": "abstention",
+          "n": 5,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 0,
+          "evidence_recall": 0.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 5
+        },
+        {
+          "category": "canonical_entity",
+          "n": 7,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 28.6,
+          "kg_hits": 2,
+          "vec_hits": 6,
+          "evidence_recall": 0.667,
+          "omissions": 4,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "emotion",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 3,
+          "correct_pct": 100.0,
+          "kg_hits": 0,
+          "vec_hits": 3,
+          "evidence_recall": 1.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "event",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 66.7,
+          "kg_hits": 1,
+          "vec_hits": 2,
+          "evidence_recall": 1.0,
+          "omissions": 0,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "future_plans",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 0,
+          "correct_pct": 0.0,
+          "kg_hits": 0,
+          "vec_hits": 0,
+          "evidence_recall": 0.0,
+          "omissions": 4,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "kinship_alias",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 3,
+          "correct_pct": 37.5,
+          "kg_hits": 4,
+          "vec_hits": 7,
+          "evidence_recall": 0.688,
+          "omissions": 5,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "preference",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 50.0,
+          "kg_hits": 0,
+          "vec_hits": 3,
+          "evidence_recall": 0.6,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "pronoun",
+          "n": 3,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 2,
+          "correct_pct": 66.7,
+          "kg_hits": 2,
+          "vec_hits": 3,
+          "evidence_recall": 0.833,
+          "omissions": 1,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        },
+        {
+          "category": "time",
+          "n": 4,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 25.0,
+          "kg_hits": 0,
+          "vec_hits": 1,
+          "evidence_recall": 0.333,
+          "omissions": 2,
+          "abstention_correct": 0,
+          "abstention_total": 1
+        },
+        {
+          "category": "topic",
+          "n": 8,
+          "errors": 0,
+          "degraded": 0,
+          "correct": 1,
+          "correct_pct": 12.5,
+          "kg_hits": 0,
+          "vec_hits": 4,
+          "evidence_recall": 0.286,
+          "omissions": 10,
+          "abstention_correct": 0,
+          "abstention_total": 0
+        }
+      ],
+      "overall": {
+        "n": 48,
+        "errors": 0,
+        "degraded": 0,
+        "valid": true,
+        "correct": 16,
+        "correct_pct": 33.3,
+        "evidence_recall": 0.576,
+        "omissions": 28,
+        "abstention_correct": 0,
+        "abstention_total": 9,
+        "abstention_rate": 0.0
+      }
+    }
+  },
+  "details": {
+    "baseline": [
+      {
+        "id": "canonical-001",
+        "phrase_entities": [
+          "mother"
+        ],
+        "primary_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "mother",
+          "凌晨三点醒"
+        ]
+      },
+      {
+        "id": "canonical-002",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "merged_ids": [
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_970af60276de46450b4e4e3e"
+        ],
+        "seeds": [
+          "self",
+          "wife",
+          "《沙丘 2》"
+        ]
+      },
+      {
+        "id": "canonical-003",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_14aa0ddb9922ade2f9e531f7"
+        ],
+        "seeds": [
+          "pet:铁锤",
+          "边境牧羊犬"
+        ]
+      },
+      {
+        "id": "canonical-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_36033ff2eae0d2b40d995362"
+        ],
+        "seeds": [
+          "Acquired 播客",
+          "self"
+        ]
+      },
+      {
+        "id": "canonical-005",
+        "phrase_entities": [
+          "person:李总"
+        ],
+        "primary_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "expanded_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "merged_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "seeds": [
+          "person:李总",
+          "老板"
+        ]
+      },
+      {
+        "id": "canonical-006",
+        "phrase_entities": [
+          "place:北京"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317"
+        ],
+        "expanded_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_48835499e5fe419199b90317"
+        ],
+        "seeds": [
+          "pet:铁锤",
+          "place:北京"
+        ]
+      },
+      {
+        "id": "canonical-007",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e"
+        ],
+        "seeds": [
+          "self",
+          "《沙丘 2》"
+        ]
+      },
+      {
+        "id": "kinship-001",
+        "phrase_entities": [
+          "mother"
+        ],
+        "primary_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "mother",
+          "失眠"
+        ]
+      },
+      {
+        "id": "kinship-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "mother",
+          "self",
+          "凌晨三点醒"
+        ]
+      },
+      {
+        "id": "kinship-003",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "seeds": [
+          "wife",
+          "self",
+          "拉伸"
+        ]
+      },
+      {
+        "id": "kinship-004",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "merged_ids": [
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_4c69e936663384b31fc2fefa"
+        ],
+        "seeds": [
+          "self",
+          "wife"
+        ]
+      },
+      {
+        "id": "kinship-005",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c70eaa7706d32bcbb7095da1"
+        ],
+        "seeds": [
+          "self",
+          "pet:小白",
+          "pet:铁锤"
+        ]
+      },
+      {
+        "id": "kinship-006",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "pet:小白",
+          "pet:铁锤"
+        ]
+      },
+      {
+        "id": "kinship-007",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "kinship-008",
+        "phrase_entities": [
+          "老板"
+        ],
+        "primary_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_a6968d41882de9b8abe8ce78",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_a6968d41882de9b8abe8ce78",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "person:李总",
+          "wife"
+        ]
+      },
+      {
+        "id": "pronoun-001",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "self",
+          "mother",
+          "凌晨三点醒"
+        ]
+      },
+      {
+        "id": "pronoun-002",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_e3824b996898673a765a3ee7"
+        ],
+        "seeds": [
+          "self",
+          "child",
+          "pet:铁锤"
+        ]
+      },
+      {
+        "id": "pronoun-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "seeds": [
+          "self",
+          "锻炼"
+        ]
+      },
+      {
+        "id": "time-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "self",
+          "mother",
+          "凌晨三点醒"
+        ]
+      },
+      {
+        "id": "time-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_970af60276de46450b4e4e3e"
+        ],
+        "seeds": [
+          "self",
+          "《沙丘 2》",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "time-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83"
+        ],
+        "seeds": [
+          "self",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "time-005",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "seeds": [
+          "self",
+          "家庭聚会",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "topic-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "凌晨三点醒",
+          "抑郁"
+        ]
+      },
+      {
+        "id": "topic-002",
+        "phrase_entities": [
+          "焦虑"
+        ],
+        "primary_ids": [
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "心慌",
+          "焦虑"
+        ]
+      },
+      {
+        "id": "topic-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "烦躁",
+          "焦虑"
+        ]
+      },
+      {
+        "id": "topic-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "seeds": [
+          "self",
+          "child",
+          "家庭聚会"
+        ]
+      },
+      {
+        "id": "topic-005",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "seeds": [
+          "self",
+          "家庭聚会"
+        ]
+      },
+      {
+        "id": "topic-006",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "带铁锤去医院打疫苗"
+        ]
+      },
+      {
+        "id": "topic-007",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "self",
+          "mother",
+          "失眠"
+        ]
+      },
+      {
+        "id": "topic-008",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "凌晨三点醒",
+          "心慌"
+        ]
+      },
+      {
+        "id": "preference-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_36033ff2eae0d2b40d995362"
+        ],
+        "seeds": [
+          "self",
+          "Acquired 播客",
+          "《沙丘 2》"
+        ]
+      },
+      {
+        "id": "preference-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_36033ff2eae0d2b40d995362"
+        ],
+        "seeds": [
+          "self",
+          "Acquired 播客",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "preference-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2"
+        ],
+        "merged_ids": [
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_3ec04994d5166adb6506f7f2"
+        ],
+        "seeds": [
+          "self",
+          "child",
+          "pet:小白"
+        ]
+      },
+      {
+        "id": "preference-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_36033ff2eae0d2b40d995362"
+        ],
+        "seeds": [
+          "self",
+          "Acquired 播客",
+          "《沙丘 2》"
+        ]
+      },
+      {
+        "id": "future-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83"
+        ],
+        "seeds": [
+          "self",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "future-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "child",
+          "mother",
+          "self"
+        ]
+      },
+      {
+        "id": "future-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7"
+        ],
+        "seeds": [
+          "self",
+          "pet:小白",
+          "pet:铁锤"
+        ]
+      },
+      {
+        "id": "negative-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_4c69e936663384b31fc2fefa"
+        ],
+        "seeds": [
+          "self",
+          "wife"
+        ]
+      },
+      {
+        "id": "negative-005",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2"
+        ],
+        "seeds": [
+          "child",
+          "self"
+        ]
+      },
+      {
+        "id": "event-001",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "seeds": [
+          "pet:铁锤",
+          "self",
+          "带铁锤去医院打疫苗"
+        ]
+      },
+      {
+        "id": "event-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "seeds": [
+          "self",
+          "pet:铁锤",
+          "带铁锤去医院打疫苗"
+        ]
+      },
+      {
+        "id": "event-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "seeds": [
+          "self",
+          "锻炼"
+        ]
+      },
+      {
+        "id": "emotion-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83"
+        ],
+        "seeds": [
+          "self",
+          "心慌",
+          "抑郁"
+        ]
+      },
+      {
+        "id": "emotion-002",
+        "phrase_entities": [
+          "焦虑"
+        ],
+        "primary_ids": [
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83"
+        ],
+        "seeds": [
+          "self",
+          "烦躁",
+          "焦虑"
+        ]
+      },
+      {
+        "id": "emotion-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "self",
+          "mother",
+          "凌晨三点醒"
+        ]
+      }
+    ],
+    "scoped": [
+      {
+        "id": "canonical-001",
+        "phrase_entities": [
+          "mother"
+        ],
+        "primary_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "expanded_ids": [
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "mother",
+          "self",
+          "失眠"
+        ]
+      },
+      {
+        "id": "canonical-002",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "merged_ids": [
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_970af60276de46450b4e4e3e"
+        ],
+        "seeds": [
+          "self",
+          "wife",
+          "《沙丘 2》"
+        ]
+      },
+      {
+        "id": "canonical-003",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_14aa0ddb9922ade2f9e531f7"
+        ],
+        "seeds": [
+          "pet:铁锤",
+          "边境牧羊犬"
+        ]
+      },
+      {
+        "id": "canonical-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_36033ff2eae0d2b40d995362"
+        ],
+        "seeds": [
+          "Acquired 播客",
+          "self"
+        ]
+      },
+      {
+        "id": "canonical-005",
+        "phrase_entities": [
+          "person:李总"
+        ],
+        "primary_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "expanded_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "merged_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "seeds": [
+          "person:李总",
+          "老板"
+        ]
+      },
+      {
+        "id": "canonical-006",
+        "phrase_entities": [
+          "place:北京"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317"
+        ],
+        "expanded_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_48835499e5fe419199b90317"
+        ],
+        "seeds": [
+          "pet:铁锤",
+          "place:北京"
+        ]
+      },
+      {
+        "id": "canonical-007",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e"
+        ],
+        "seeds": [
+          "self",
+          "《沙丘 2》"
+        ]
+      },
+      {
+        "id": "kinship-001",
+        "phrase_entities": [
+          "mother"
+        ],
+        "primary_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "expanded_ids": [
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "mother",
+          "self",
+          "失眠"
+        ]
+      },
+      {
+        "id": "kinship-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "mother",
+          "失眠"
+        ]
+      },
+      {
+        "id": "kinship-003",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "seeds": [
+          "wife",
+          "self",
+          "拉伸"
+        ]
+      },
+      {
+        "id": "kinship-004",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "merged_ids": [
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_4c69e936663384b31fc2fefa"
+        ],
+        "seeds": [
+          "self",
+          "wife"
+        ]
+      },
+      {
+        "id": "kinship-005",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c70eaa7706d32bcbb7095da1"
+        ],
+        "seeds": [
+          "self",
+          "pet:小白",
+          "pet:铁锤"
+        ]
+      },
+      {
+        "id": "kinship-006",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "pet:小白",
+          "pet:铁锤"
+        ]
+      },
+      {
+        "id": "kinship-007",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "kinship-008",
+        "phrase_entities": [
+          "老板"
+        ],
+        "primary_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_a6968d41882de9b8abe8ce78",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_a6968d41882de9b8abe8ce78",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "person:李总",
+          "wife"
+        ]
+      },
+      {
+        "id": "pronoun-001",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "mother",
+          "self",
+          "失眠"
+        ]
+      },
+      {
+        "id": "pronoun-002",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "seeds": [
+          "self",
+          "pet:铁锤",
+          "锻炼"
+        ]
+      },
+      {
+        "id": "pronoun-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "seeds": [
+          "self",
+          "锻炼"
+        ]
+      },
+      {
+        "id": "time-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "self",
+          "mother",
+          "失眠"
+        ]
+      },
+      {
+        "id": "time-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_970af60276de46450b4e4e3e"
+        ],
+        "seeds": [
+          "self",
+          "《沙丘 2》",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "time-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83"
+        ],
+        "seeds": [
+          "self",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "time-005",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "seeds": [
+          "self",
+          "家庭聚会",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "topic-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "烦躁",
+          "焦虑"
+        ]
+      },
+      {
+        "id": "topic-002",
+        "phrase_entities": [
+          "焦虑"
+        ],
+        "primary_ids": [
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "焦虑"
+        ]
+      },
+      {
+        "id": "topic-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "烦躁",
+          "焦虑"
+        ]
+      },
+      {
+        "id": "topic-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "seeds": [
+          "self",
+          "child",
+          "家庭聚会"
+        ]
+      },
+      {
+        "id": "topic-005",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_5a47d4eca41803a4dd8ed877"
+        ],
+        "seeds": [
+          "self",
+          "家庭聚会"
+        ]
+      },
+      {
+        "id": "topic-006",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "topic-007",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "self",
+          "mother",
+          "失眠"
+        ]
+      },
+      {
+        "id": "topic-008",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": [
+          "self",
+          "烦躁",
+          "焦虑"
+        ]
+      },
+      {
+        "id": "preference-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_36033ff2eae0d2b40d995362"
+        ],
+        "seeds": [
+          "self",
+          "Acquired 播客",
+          "《沙丘 2》"
+        ]
+      },
+      {
+        "id": "preference-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_36033ff2eae0d2b40d995362"
+        ],
+        "seeds": [
+          "self",
+          "Acquired 播客",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "preference-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2"
+        ],
+        "merged_ids": [
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_3ec04994d5166adb6506f7f2"
+        ],
+        "seeds": [
+          "self",
+          "child",
+          "pet:小白"
+        ]
+      },
+      {
+        "id": "preference-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_36033ff2eae0d2b40d995362"
+        ],
+        "seeds": [
+          "self",
+          "Acquired 播客",
+          "《沙丘 2》"
+        ]
+      },
+      {
+        "id": "future-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83"
+        ],
+        "seeds": [
+          "self",
+          "烦躁"
+        ]
+      },
+      {
+        "id": "future-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_53d3b8b889b4968fc6161512",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "child",
+          "mother",
+          "self"
+        ]
+      },
+      {
+        "id": "future-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7"
+        ],
+        "seeds": [
+          "self",
+          "pet:小白",
+          "pet:铁锤"
+        ]
+      },
+      {
+        "id": "negative-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_4c69e936663384b31fc2fefa"
+        ],
+        "seeds": [
+          "self",
+          "wife"
+        ]
+      },
+      {
+        "id": "negative-005",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_3ec04994d5166adb6506f7f2",
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_3ec04994d5166adb6506f7f2"
+        ],
+        "seeds": [
+          "child",
+          "self"
+        ]
+      },
+      {
+        "id": "event-001",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "seeds": [
+          "pet:铁锤",
+          "怕打针"
+        ]
+      },
+      {
+        "id": "event-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "seeds": [
+          "pet:铁锤",
+          "怕打针"
+        ]
+      },
+      {
+        "id": "event-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "seeds": [
+          "self",
+          "锻炼"
+        ]
+      },
+      {
+        "id": "emotion-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_ecb7e5aaeb0363daf2248d6e"
+        ],
+        "seeds": [
+          "self",
+          "烦躁",
+          "锻炼"
+        ]
+      },
+      {
+        "id": "emotion-002",
+        "phrase_entities": [
+          "焦虑"
+        ],
+        "primary_ids": [
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_f24916477389c4be9a6eaf83"
+        ],
+        "seeds": [
+          "self",
+          "烦躁",
+          "焦虑"
+        ]
+      },
+      {
+        "id": "emotion-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "merged_ids": [
+          "stmt_c70eaa7706d32bcbb7095da1",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_69e5b65be5d04172a6e4960d",
+          "stmt_970af60276de46450b4e4e3e",
+          "stmt_36033ff2eae0d2b40d995362",
+          "stmt_f24916477389c4be9a6eaf83",
+          "stmt_c4d627078e5329c3f72dc86a",
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": [
+          "self",
+          "mother",
+          "失眠"
+        ]
+      }
+    ],
+    "no_expansion": [
+      {
+        "id": "canonical-001",
+        "phrase_entities": [
+          "mother"
+        ],
+        "primary_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "canonical-002",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_4c69e936663384b31fc2fefa"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "canonical-003",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_14aa0ddb9922ade2f9e531f7"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "canonical-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "canonical-005",
+        "phrase_entities": [
+          "person:李总"
+        ],
+        "primary_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "canonical-006",
+        "phrase_entities": [
+          "place:北京"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "canonical-007",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "kinship-001",
+        "phrase_entities": [
+          "mother"
+        ],
+        "primary_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_53d3b8b889b4968fc6161512"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "kinship-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "kinship-003",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "kinship-004",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_6fe3b078ddce2d66723e3ee1",
+          "stmt_4c69e936663384b31fc2fefa"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "kinship-005",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_e3824b996898673a765a3ee7"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "kinship-006",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "kinship-007",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "kinship-008",
+        "phrase_entities": [
+          "老板"
+        ],
+        "primary_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_a6968d41882de9b8abe8ce78"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "pronoun-001",
+        "phrase_entities": [
+          "wife"
+        ],
+        "primary_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_4c69e936663384b31fc2fefa",
+          "stmt_6fe3b078ddce2d66723e3ee1"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "pronoun-002",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_c8a585beff30cb7357a88403",
+          "stmt_e3824b996898673a765a3ee7"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "pronoun-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "time-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "time-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "time-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "time-005",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "topic-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "topic-002",
+        "phrase_entities": [
+          "焦虑"
+        ],
+        "primary_ids": [
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "topic-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "topic-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "topic-005",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "topic-006",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "topic-007",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "topic-008",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "preference-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "preference-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "preference-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "preference-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "future-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "future-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "future-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-004",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "negative-005",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "event-001",
+        "phrase_entities": [
+          "pet:铁锤"
+        ],
+        "primary_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_48835499e5fe419199b90317",
+          "stmt_14aa0ddb9922ade2f9e531f7",
+          "stmt_e3824b996898673a765a3ee7",
+          "stmt_c8a585beff30cb7357a88403"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "event-002",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "event-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "emotion-001",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      },
+      {
+        "id": "emotion-002",
+        "phrase_entities": [
+          "焦虑"
+        ],
+        "primary_ids": [
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "expanded_ids": [],
+        "merged_ids": [
+          "stmt_c4d627078e5329c3f72dc86a"
+        ],
+        "seeds": []
+      },
+      {
+        "id": "emotion-003",
+        "phrase_entities": [],
+        "primary_ids": [],
+        "expanded_ids": [],
+        "merged_ids": [],
+        "seeds": []
+      }
+    ]
+  },
+  "correctness_changes": {
+    "baseline": [],
+    "scoped": [
+      {
+        "id": "topic-006",
+        "before": true,
+        "after": false
+      }
+    ],
+    "no_expansion": [
+      {
+        "id": "kinship-002",
+        "before": true,
+        "after": false
+      },
+      {
+        "id": "kinship-006",
+        "before": true,
+        "after": false
+      },
+      {
+        "id": "pronoun-003",
+        "before": true,
+        "after": false
+      },
+      {
+        "id": "topic-006",
+        "before": true,
+        "after": false
+      }
+    ]
+  },
+  "kg_row_counts": {
+    "baseline": 380,
+    "scoped": 351,
+    "no_expansion": 31
+  }
+}

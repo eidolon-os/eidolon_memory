@@ -1,0 +1,184 @@
+diff --git a/eidolon/memory/adapters/kg_sqlite.py b/eidolon/memory/adapters/kg_sqlite.py
+index 1366a17..7ac4d85 100644
+--- a/eidolon/memory/adapters/kg_sqlite.py
++++ b/eidolon/memory/adapters/kg_sqlite.py
+@@ -1133,30 +1133,28 @@ class SqliteKnowledgeGraph:
+         return [_to_record(row) for row in self._connection().execute(sql, params)]
+ 
+     async def entities_for_source_turns(
+-        self, turn_ids: Sequence[str], *, cap: int
++        self, turn_ids: Sequence[str], *, cap: int,
++        audiences: tuple[str, ...],
++        include_sensitive: bool = False,
+     ) -> list[str]:
+         wanted = list(dict.fromkeys(t.strip() for t in turn_ids if t and t.strip()))
+-        if not wanted or cap <= 0:
++        if not wanted or cap <= 0 or not audiences:
+             return []
+         async with self._lock.reader():
+-            return await asyncio.to_thread(self._entities_for_turns_sync, wanted, cap)
+-
+-    def _entities_for_turns_sync(self, turn_ids: list[str], cap: int) -> list[str]:
+-        """The entities named by these turns' statements, busiest first.
+-
+-        Both ends of every statement, because a turn is about its objects as much
+-        as its subjects — "妈妈住在杭州" is a turn about 妈妈 *and* about 杭州, and
+-        which one the next question is about is not ours to guess.
++            return await asyncio.to_thread(
++                self._entities_for_turns_sync, wanted, cap, audiences, include_sensitive
++            )
+ 
+-        Ordered by how many of these turns mention each entity. When several turns
+-        come back from one recall they usually share a subject, and that shared one
+-        is what the conversation is about; an arbitrary slice of a ``DISTINCT``
+-        would drop it as readily as anything else.
++    def _entities_for_turns_sync(
++        self, turn_ids: list[str], cap: int, audiences: tuple[str, ...],
++        include_sensitive: bool,
++    ) -> list[str]:
++        """Rank source entities within the caller's audience and sensitivity scope.
+ 
+-        ``idx_kg_statements_source`` covers the predicate, so this is a seek per
+-        turn rather than a walk.
++        Historical events still identify entities; validity is enforced on the
++        facts returned by expansion, not on these provenance links. Filter
++        visibility before counting so hidden rows cannot spend the seed budget.
+         """
+-
+         connection = self._connection()
+         counted: dict[str, int] = {}
+         for start in range(0, len(turn_ids), _LOOKUP_CHUNK):
+@@ -1170,9 +1168,11 @@ class SqliteKnowledgeGraph:
+                   ON e.space_id = s.space_id
+                  AND e.entity_id IN (s.subject_id, s.object_id)
+                 WHERE s.space_id = ? AND s.source_turn_id IN ({marks})
++                  AND {audience_filter(len(audiences))}
++                  {self._sensitive_clause(include_sensitive)}
+                 GROUP BY e.name
+                 """,
+-                (self._space_id, *chunk),
++                (self._space_id, *chunk, *audiences),
+             )
+             for row in rows:
+                 name = row["name"]
+diff --git a/eidolon/memory/application/kg_recall.py b/eidolon/memory/application/kg_recall.py
+index 0bfb5eb..9400005 100644
+--- a/eidolon/memory/application/kg_recall.py
++++ b/eidolon/memory/application/kg_recall.py
+@@ -81,9 +81,9 @@ async def expand_from_recalled(
+     silent — in exactly the turns where it has the most to add, since a phrase that
+     *does* name someone is one the vector store was going to answer anyway.
+ 
+-    Vector search has already decided which memories this turn is about. Those
+-    drawers carry ``source_turn_id``, the statements are indexed by it, and the
+-    join is exact — no matching step, so nothing to be wrong about.
++    Drawers carry ``source_turn_id`` for an exact provenance join. Their
++    relevance is still limited by retrieval quality; an exact join does not
++    establish that every neighboring fact supports the current question.
+ 
+     **One hop, and the hop is the point.** Zero hops would return the statements
+     those same turns produced, which the recalled drawer text mostly already says.
+@@ -99,13 +99,17 @@ async def expand_from_recalled(
+ 
+     if not source_turn_ids or max_entities <= 0:
+         return []
+-    entities = await kg.entities_for_source_turns(source_turn_ids, cap=max_entities)
++    moment = now_iso or _now_iso()
++    entities = await kg.entities_for_source_turns(
++        source_turn_ids, cap=max_entities, audiences=audiences,
++        include_sensitive=include_sensitive,
++    )
+     if not entities:
+         return []
+     return await kg.query_entity_combined(
+         entities,
+         audiences=audiences,
+-        as_of=now_iso,
++        as_of=moment,
+         include_sensitive=include_sensitive,
+         limit_per_entity=max_triples_per_entity,
+     )
+diff --git a/eidolon/memory/domain/kg_port.py b/eidolon/memory/domain/kg_port.py
+index f606b6a..577ba66 100644
+--- a/eidolon/memory/domain/kg_port.py
++++ b/eidolon/memory/domain/kg_port.py
+@@ -266,23 +266,15 @@ class KnowledgeGraphPort(Protocol):
+         ...
+ 
+     async def entities_for_source_turns(
+-        self, turn_ids: Sequence[str], *, cap: int
++        self, turn_ids: Sequence[str], *, cap: int,
++        audiences: tuple[str, ...],
++        include_sensitive: bool = False,
+     ) -> list[str]:
+-        """Which entities the given turns produced statements about.
+-
+-        The other way into the graph, and the one that works when the phrase
+-        names nobody. ``match_entities_for_query`` needs the person to say a name;
+-        "她住哪儿" and "我上次说的那个事" say none, and those are the turns where a
+-        graph has the most to add — so seeding only from the phrase meant the
+-        graph was quietest exactly when it was most useful.
+-
+-        Seeded from what vector search already decided is relevant, this needs no
+-        matching at all: the drawers carry ``source_turn_id``, the statements are
+-        indexed by it, and the join is exact. No fuzzy step, no false positives.
++        """Entities in readable source statements, ranked by source count.
+ 
+-        Returns display names, ordered most-connected first, so a caller taking
+-        the first few gets the entities the turns were actually about rather than
+-        an arbitrary slice.
++        Apply audience and sensitivity before the entity cap. Historical
++        events remain eligible provenance; expansion filters current facts. The
++        source join supplies provenance, not a guarantee of query relevance.
+         """
+         ...
+ 
+diff --git a/tests/memory/test_kg_sqlite.py b/tests/memory/test_kg_sqlite.py
+index 347cf41..ba90b8c 100644
+--- a/tests/memory/test_kg_sqlite.py
++++ b/tests/memory/test_kg_sqlite.py
+@@ -1146,3 +1146,44 @@ async def test_the_owner_timeline_reads_every_audience_and_a_tuple_still_filters
+     assert objects(await graph.timeline(audiences=None, limit=10)) == {"tea", "jazz", "chess"}
+     assert objects(await graph.timeline(audiences=BOTH_FOR_A, limit=10)) == {"tea", "jazz"}
+     assert await graph.timeline(audiences=(), limit=10) == []
++
++
++async def test_expansion_seeds_filter_before_budget(graph):
++    """Hidden source rows cannot spend the entity budget."""
++    for name, audience, predicate, start, end in [
++        ("aaa-other", COMPANION_B, "likes", "2020-01-01", None),
++        ("aaa-sensitive", COMPANION_A, "has_symptom", "2020-01-01", None),
++        ("visible", COMPANION_A, "likes", "2020-01-01", None),
++    ]:
++        await graph.add_triple(
++            subject=name, predicate=predicate, object=name, audience=audience,
++            valid_from=start, valid_to=end, source_turn_id="shared-source",
++        )
++    assert await graph.entities_for_source_turns(
++        ["shared-source"], cap=1, audiences=BOTH_FOR_A,
++    ) == ["visible"]
++    assert await graph.entities_for_source_turns(
++        ["shared-source"], cap=1, audiences=(),
++    ) == []
++    assert await graph.entities_for_source_turns(
++        ["shared-source"], cap=1, audiences=BOTH_FOR_A,
++        include_sensitive=True,
++    ) == ["aaa-sensitive"]
++
++
++async def test_historical_source_can_seed_current_facts(graph):
++    from eidolon.memory.application.kg_recall import expand_from_recalled
++
++    await graph.add_triple(
++        subject="mother", predicate="attended", object="concert", audience=COMPANION_A,
++        valid_from="2020-01-01", valid_to="2020-01-02", source_turn_id="past-event",
++    )
++    await graph.add_triple(
++        subject="mother", predicate="lives_in", object="杭州", audience=COMPANION_A,
++        valid_from="2025-01-01", source_turn_id="new-home",
++    )
++    found = await expand_from_recalled(
++        graph, audiences=BOTH_FOR_A, source_turn_ids=["past-event"],
++        now_iso="2026-10-08", max_entities=2, max_triples_per_entity=8,
++    )
++    assert [(r.predicate, r.object) for r in found] == [("lives_in", "杭州")]

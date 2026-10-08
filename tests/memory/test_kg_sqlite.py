@@ -1146,3 +1146,44 @@ async def test_the_owner_timeline_reads_every_audience_and_a_tuple_still_filters
     assert objects(await graph.timeline(audiences=None, limit=10)) == {"tea", "jazz", "chess"}
     assert objects(await graph.timeline(audiences=BOTH_FOR_A, limit=10)) == {"tea", "jazz"}
     assert await graph.timeline(audiences=(), limit=10) == []
+
+
+async def test_expansion_seeds_filter_before_budget(graph):
+    """Hidden source rows cannot spend the entity budget."""
+    for name, audience, predicate, start, end in [
+        ("aaa-other", COMPANION_B, "likes", "2020-01-01", None),
+        ("aaa-sensitive", COMPANION_A, "has_symptom", "2020-01-01", None),
+        ("visible", COMPANION_A, "likes", "2020-01-01", None),
+    ]:
+        await graph.add_triple(
+            subject=name, predicate=predicate, object=name, audience=audience,
+            valid_from=start, valid_to=end, source_turn_id="shared-source",
+        )
+    assert await graph.entities_for_source_turns(
+        ["shared-source"], cap=1, audiences=BOTH_FOR_A,
+    ) == ["visible"]
+    assert await graph.entities_for_source_turns(
+        ["shared-source"], cap=1, audiences=(),
+    ) == []
+    assert await graph.entities_for_source_turns(
+        ["shared-source"], cap=1, audiences=BOTH_FOR_A,
+        include_sensitive=True,
+    ) == ["aaa-sensitive"]
+
+
+async def test_historical_source_can_seed_current_facts(graph):
+    from eidolon.memory.application.kg_recall import expand_from_recalled
+
+    await graph.add_triple(
+        subject="mother", predicate="attended", object="concert", audience=COMPANION_A,
+        valid_from="2020-01-01", valid_to="2020-01-02", source_turn_id="past-event",
+    )
+    await graph.add_triple(
+        subject="mother", predicate="lives_in", object="杭州", audience=COMPANION_A,
+        valid_from="2025-01-01", source_turn_id="new-home",
+    )
+    found = await expand_from_recalled(
+        graph, audiences=BOTH_FOR_A, source_turn_ids=["past-event"],
+        now_iso="2026-10-08", max_entities=2, max_triples_per_entity=8,
+    )
+    assert [(r.predicate, r.object) for r in found] == [("lives_in", "杭州")]

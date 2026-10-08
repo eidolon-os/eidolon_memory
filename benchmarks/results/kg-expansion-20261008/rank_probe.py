@@ -1,0 +1,147 @@
+"""Reuse the isolated 40-turn Palace; compare existing RRF toggle, no cloud LLM."""
+
+import asyncio
+import gzip
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+import yaml  # noqa: E402
+from eidolon_memory_contracts import build_memory_actor_context  # noqa: E402
+
+from eidolon.memory.adapters.local_palace_router import LocalPalaceRouter  # noqa: E402
+from eidolon.memory.application import public_recall  # noqa: E402
+from eidolon.memory.application.recall_renderer import group_recall_context  # noqa: E402
+from eidolon.memory.config.memory_settings import MemorySettings  # noqa: E402
+from scripts.benchmark.bench_memory_retrieve_quality import _aggregate, _score_query  # noqa: E402
+
+OUT = Path(__file__).resolve().parent
+SOURCE = ROOT / "reports/memory_quality_20261008_025120"
+REALM = "quality-claims3-20261008"
+
+
+async def run(directory):
+    settings = MemorySettings.model_validate(
+        yaml.safe_load((SOURCE / "spawn_settings.yaml").read_text())
+    )
+    settings.runtime.palaces_root = str(directory / "palaces")
+    settings.embedding.http.base_url = "http://127.0.0.1:19284/v1"
+    shutil.copytree(SOURCE / "palaces", directory / "palaces")
+    os.environ["MEMPALACE_HOME"] = str(directory / "home")
+    os.environ["EIDOLON_MEMORY_RUN_DIR"] = str(directory / "run")
+    context = build_memory_actor_context(
+        memory_realm_id=REALM,
+        owner_id="quality_bench",
+        companion_id="quality_bench",
+        device_id="quality_bench",
+        session_id="quality_bench",
+    )
+    router = LocalPalaceRouter(settings, allowed_spaces=[REALM])
+    results = {}
+    candidates = []
+    original = public_recall.rerank_bm25_rrf
+
+    def capture(query, hits, **kwargs):
+        before = [r.model_dump(mode="json") for r in hits]
+        ranked = original(query, hits, **kwargs)
+        candidates.append(
+            {"query": query, "before": before, "after": [r.model_dump(mode="json") for r in ranked]}
+        )
+        return ranked
+
+    queries = [
+        json.loads(s)
+        for s in (OUT / "labels.jsonl").read_text().splitlines()
+    ]
+    try:
+        runtime = await router.resolve(REALM)
+        for enabled in [True, False]:
+            settings.recall.rerank_enabled = enabled
+            scores = []
+            rows = []
+            with patch.object(public_recall, "rerank_bm25_rrf", capture):
+                for q in queries:
+                    fused = await public_recall.recall_with_kg_fusion(
+                        runtime.backend,
+                        settings,
+                        query=q["query"],
+                        context=context,
+                        top_k=5,
+                        kg=runtime.kg,
+                        palace_path=runtime.palace_path,
+                    )
+                    response = {
+                        "records": [r.model_dump(mode="json") for r in fused["vector"]],
+                        "kg_triples": [r.model_dump(mode="json") for r in fused["kg"]],
+                        "context": group_recall_context(fused["vector"], kg_triples=fused["kg"]),
+                        "degraded": fused.get("degraded", False),
+                    }
+                    scores.append(_score_query(q, response, 0))
+                    rows.append({"id": q["id"], "response": response})
+            aggregate = _aggregate(scores)
+            for row in [aggregate["overall"], *aggregate["per_category"]]:
+                for key in list(row):
+                    if key.endswith("_ms"):
+                        del row[key]
+            results[str(enabled)] = {"aggregate": aggregate, "responses": rows}
+            print(enabled, aggregate["overall"], flush=True)
+    finally:
+        await router.aclose()
+    (OUT / "rank-results.json.gz").write_bytes(
+        gzip.compress(
+            json.dumps(
+                {"variants": results, "candidates": candidates}, ensure_ascii=False
+            ).encode(),
+            mtime=0,
+        )
+    )
+
+
+with tempfile.TemporaryDirectory(prefix="eidolon-rank-probe-") as tmp:
+    directory = Path(tmp)
+    with (OUT / "rank-embedder.log").open("w") as log:
+        child = subprocess.Popen(
+            [
+                str(ROOT / ".venv/bin/eidolon-memory-embedder"),
+                "--model",
+                "bge-small-zh",
+                "--model-dir",
+                "/Users/manson/.cache/huggingface/hub/models--Xenova--bge-small-zh-v1.5/snapshots/75c43b069aac4d136ba6bc1122f995fedcfd2781",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "19284",
+                "--threads",
+                "4",
+            ],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            for _ in range(100):
+                if child.poll() is not None:
+                    raise RuntimeError("embedder exited")
+                try:
+                    with socket.create_connection(("127.0.0.1", 19284), timeout=0.2):
+                        break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                raise RuntimeError("embedder not ready")
+            asyncio.run(run(directory))
+        finally:
+            child.terminate()
+            try:
+                child.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()

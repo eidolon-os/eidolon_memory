@@ -81,9 +81,9 @@ async def expand_from_recalled(
     silent — in exactly the turns where it has the most to add, since a phrase that
     *does* name someone is one the vector store was going to answer anyway.
 
-    Vector search has already decided which memories this turn is about. Those
-    drawers carry ``source_turn_id``, the statements are indexed by it, and the
-    join is exact — no matching step, so nothing to be wrong about.
+    Drawers carry ``source_turn_id`` for an exact provenance join. Their
+    relevance is still limited by retrieval quality; an exact join does not
+    establish that every neighboring fact supports the current question.
 
     **One hop, and the hop is the point.** Zero hops would return the statements
     those same turns produced, which the recalled drawer text mostly already says.
@@ -99,13 +99,17 @@ async def expand_from_recalled(
 
     if not source_turn_ids or max_entities <= 0:
         return []
-    entities = await kg.entities_for_source_turns(source_turn_ids, cap=max_entities)
+    moment = now_iso or _now_iso()
+    entities = await kg.entities_for_source_turns(
+        source_turn_ids, cap=max_entities, audiences=audiences,
+        include_sensitive=include_sensitive,
+    )
     if not entities:
         return []
     return await kg.query_entity_combined(
         entities,
         audiences=audiences,
-        as_of=now_iso,
+        as_of=moment,
         include_sensitive=include_sensitive,
         limit_per_entity=max_triples_per_entity,
     )
