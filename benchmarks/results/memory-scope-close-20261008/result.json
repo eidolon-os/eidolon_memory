@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "passed": 7,
+  "seconds": 68.24,
+  "real_llm": false,
+  "production_deployment": false,
+  "performance_slo_claim": false,
+  "source_unchanged": true,
+  "protocol_log_sha256": "7cbf9477a04b44359675ac4ca1e11ff35c70eb11f785bc845fc529d487de52c7"
+}

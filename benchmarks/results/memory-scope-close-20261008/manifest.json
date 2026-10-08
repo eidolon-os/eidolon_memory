@@ -1,0 +1,17 @@
+{
+  "revision": "02ebdf69f5d448178c1ce1576146a6b84269018d",
+  "production_diff_from_adcbf2d": "",
+  "tests": [
+    "tests/memory/e2e/test_privacy_lifecycle.py",
+    "tests/memory/e2e/test_scope_visibility.py",
+    "tests/memory/e2e/test_kg_admin_pipeline.py"
+  ],
+  "sha256": {
+    "tests/memory/e2e/test_privacy_lifecycle.py": "7d5a78b5256954677214019cf2bd3fcd197f5186e3052c4ed5a8916dc2a97500",
+    "tests/memory/e2e/test_scope_visibility.py": "4a7565119f157ee331cf269c562c1cd9a814645be7ab9e271a76154e0cda907a",
+    "tests/memory/e2e/test_kg_admin_pipeline.py": "e73f5c0ff53ecc6ea5523a89832c7a3e5f879556be245acc1d3615b15494bc4d",
+    "tests/memory/e2e/conftest.py": "1df45d7232085a8b3eba15306f55128bff5a2ddd506a9a9971be0f2e12d1673b"
+  },
+  "boundary": "isolated NATS + Memory subprocess + MCP + temporary Palace; noop steward/offline embedding; no real LLM or production deployment/SLO claim",
+  "command": "env -u EIDOLON_MEMORY_E2E_NATS_URL .venv/bin/pytest -q tests/memory/e2e/test_privacy_lifecycle.py tests/memory/e2e/test_scope_visibility.py tests/memory/e2e/test_kg_admin_pipeline.py --tb=short"
+}
