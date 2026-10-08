@@ -906,3 +906,26 @@ async def test_automatic_exact_invalidation_enters_dlq_at_delivery_limit(
     stats = await ledger.stats()
     assert stats.assertions_active == 1
     assert stats.invalidations_pending == 1
+
+
+@pytest.mark.asyncio
+async def test_natural_quote_reaches_history_and_keeps_one_fact_on_replay(tmp_path) -> None:
+    backend = LockedBackend(FakeMemoryBackend())
+    kg = _StatefulKG()
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    decision = StewardDecision(
+        should_write=True,
+        triples=[KgTripleAction(
+            subject="self", predicate="likes", object="乌龙茶",
+            evidence_quote="我喜欢乌龙茶", confidence=0.95,
+        )],
+    )
+    for _ in range(2):
+        await _apply_decision("turn-quote", decision, backend=backend, kg=kg, ledger=ledger)
+    history = await ledger.history(MEMORY_SPACE_ID, "self", "likes", object_value="乌龙茶")
+    assert len(history) == 1
+    assert len(history[0].evidence) == 1
+    assert history[0].evidence[0].evidence_quote == "我喜欢乌龙茶"
+    assert history[0].evidence[0].raw_claim == "self likes 乌龙茶"
+    assert kg.add_triple.await_count == 1
+    assert len(backend.inner.docs) == 1

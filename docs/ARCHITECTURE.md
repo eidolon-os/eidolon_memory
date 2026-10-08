@@ -124,6 +124,12 @@ backend 的名字。两条在写出来时都抓到了真实违规。
 可补偿投影。其余 ledger 记录抽取、命令、同步和承诺状态。不存在“自然 turn 的 Chroma 事实”
 与“显式 fact 的 ledger 事实”两套互相竞争的真相。
 
+`canonical_evidence.evidence_quote` 保存写入意图携带的证据原文，历史接口同时返回原有
+`raw_claim` 和该字段；不通过更改 intent/assertion ID 保存原文。旧库原位添加空字符串列，
+历史缺失原文保持为空，不从归一化三元组反造原话，也不自动重新抽取。新写入和重新激活
+都保存证据，已有非空证据在重放时不可改变；硬遗忘随同一 evidence 行删除原文。
+这不是原文召回层，召回正文和检索索引没有因此扩大。
+
 6 个 ledger，共 **13 张表**（2026-09-02 从 `ledger_sql.py` 与 `extraction_decisions.py` 的 `CREATE TABLE` 实测）：
 
 | ledger | 表 | 存什么 | 丢了会怎样 |

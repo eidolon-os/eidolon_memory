@@ -34,9 +34,11 @@ class LedgerSchemaOutdated(RuntimeError):
     ``no such column`` — from inside a constructor, which takes the whole space
     down rather than one request.
 
-    The message names the file so an operator can act on it. There is no automatic
-    migration: this project does not carry historical data forward, and silently
-    rewriting a ledger that still holds rows would decide on their behalf.
+    The message names the file so an operator can act on it. Incompatible
+    identity schemas are not migrated automatically: silently reinterpreting
+    existing rows would decide on their behalf. The canonical ledger's optional
+    evidence_quote column is a compatible addition; it leaves old evidence and
+    all identities unchanged and does not recover missing historical quotes.
     """
 
 
@@ -653,6 +655,7 @@ CREATE TABLE IF NOT EXISTS canonical_evidence (
     tool_call_id TEXT,
     authority TEXT NOT NULL,
     raw_claim TEXT NOT NULL,
+    evidence_quote TEXT NOT NULL DEFAULT '',
     confidence REAL NOT NULL,
     occurred_at TEXT,
     recorded_at TEXT NOT NULL

@@ -156,6 +156,7 @@ async def test_reactivation_stays_inactive_until_new_projections_are_visible(
         update={
             "operation_hint": "update",
             "raw_claim": "我又开始喜欢乌龙茶了",
+            "attributes": {"audience": "owner", "evidence_quote": "我又开始喜欢乌龙茶了"},
             "occurred_at": "2026-07-01T00:00:00Z",
         }
     )
@@ -197,6 +198,12 @@ async def test_reactivation_stays_inactive_until_new_projections_are_visible(
         "intent:1",
         "intent:reactivate",
     ]
+    assert history[0].evidence[-1].evidence_quote == "我又开始喜欢乌龙茶了"
+    changed_quote = reactivation.model_copy(update={"attributes": {
+        "audience": "owner", "evidence_quote": "不同的证据",
+    }})
+    with pytest.raises(CanonicalEvidenceConflict):
+        await ledger.register_reactivation(changed_quote, targets={"drawer", "kg"})
     stats = await ledger.stats()
     assert stats.reactivations_total == 1
     assert stats.reactivations_pending == 0
@@ -435,3 +442,62 @@ async def test_invalidation_intent_conflict_is_rejected_while_pending(
     stats = await ledger.stats()
     assert stats.assertions_active == 2
     assert stats.invalidations_pending == 1
+
+
+@pytest.mark.asyncio
+async def test_quote_is_provenance_not_fact_identity_and_replay_is_immutable(tmp_path) -> None:
+    ledger = CanonicalFactLedger(tmp_path / "canonical.sqlite3")
+    intent = _intent("intent:quote").model_copy(
+        update={
+            "attributes": {
+                "audience": "owner",
+                "evidence_quote": "我喜欢乌龙茶，早上喝一杯",
+            }
+        }
+    )
+    first = await ledger.register(intent, targets={"drawer", "kg"})
+    replay = await ledger.register(intent, targets={"drawer", "kg"})
+    assert replay.assertion_id == first.assertion_id
+    assert not replay.evidence_created
+    history = await ledger.history(MEMORY_SPACE_ID, "self", "likes", object_value="乌龙茶")
+    assert len(history[0].evidence) == 1
+    assert history[0].evidence[0].raw_claim == intent.raw_claim
+    assert history[0].evidence[0].evidence_quote == "我喜欢乌龙茶，早上喝一杯"
+    changed = intent.model_copy(
+        update={
+            "attributes": {
+                "audience": "owner",
+                "evidence_quote": "我喜欢乌龙茶，晚上喝一杯",
+            }
+        }
+    )
+    with pytest.raises(CanonicalEvidenceConflict):
+        await ledger.register(changed, targets={"drawer", "kg"})
+
+
+@pytest.mark.asyncio
+async def test_existing_evidence_schema_upgrades_without_rewriting_or_reactivating(
+    tmp_path,
+) -> None:
+    path = tmp_path / "canonical.sqlite3"
+    ledger = CanonicalFactLedger(path)
+    intent = _intent("intent:legacy").model_copy(
+        update={"attributes": {"audience": "owner", "evidence_quote": "我喜欢乌龙茶"}}
+    )
+    registration = await ledger.register(intent, targets={"drawer", "kg"})
+    await ledger.register_invalidation(_invalidation())
+    await ledger.mark_invalidated(MEMORY_SPACE_ID, "intent:invalidate-1")
+    # Recreate the previous on-disk shape, with a real historical assertion.
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE canonical_evidence DROP COLUMN evidence_quote")
+    reopened = CanonicalFactLedger(path)
+    replay = await reopened.register(intent, targets={"drawer", "kg"})
+    assert replay.assertion_id == registration.assertion_id
+    assert replay.state == "invalidated"
+    assert not replay.evidence_created
+    history = await reopened.history(MEMORY_SPACE_ID, "self", "likes", object_value="乌龙茶")
+    assert len(history[0].evidence) == 1
+    assert history[0].evidence[0].evidence_quote == ""
+    assert history[0].evidence[0].raw_claim == intent.raw_claim
+    # Opening the same upgraded file again is idempotent.
+    CanonicalFactLedger(path)

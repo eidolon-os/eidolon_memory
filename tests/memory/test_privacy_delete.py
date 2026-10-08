@@ -376,7 +376,7 @@ async def test_hard_forget_is_ledger_first_and_blocks_replay(graph, tmp_path) ->
         predicate="likes",
         object="绿茶",
         confidence=0.99,
-        attributes={"audience": "owner"},
+        attributes={"audience": "owner", "evidence_quote": "每天早餐后我都喝绿茶"},
     )
     registration = await ledger.register(intent, targets={"drawer", "kg"})
     drawer_id = "drawer_tea"
@@ -435,6 +435,7 @@ async def test_hard_forget_is_ledger_first_and_blocks_replay(graph, tmp_path) ->
     assert forgotten.subject.startswith("[forgotten:fact:")
     assert forgotten.predicate == forgotten.object == "[forgotten]"
     assert await ledger.evidence_count(registration.assertion_id) == 0
+    assert "每天早餐后我都喝绿茶".encode() not in ledger.path.read_bytes()
     redacted = await decisions.get(SPACE, intent.source_event_id, "test:v1")
     assert redacted is not None and redacted.redacted is True
     assert intent.raw_claim.encode() not in decisions.path.read_bytes()

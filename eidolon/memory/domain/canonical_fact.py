@@ -103,6 +103,7 @@ class CanonicalFactEvidenceRecord(BaseEidolonModel):
     source_event_id: str
     authority: str
     raw_claim: str
+    evidence_quote: str = ""
     confidence: float
     occurred_at: str | None = None
     recorded_at: str

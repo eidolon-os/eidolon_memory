@@ -78,6 +78,16 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
             )
             for statement in canonical_schema():
                 conn.execute(statement)
+            # Add provenance without changing existing intent/assertion identity.
+            # Historical rows remain explicitly quote-less; never invent a quote
+            # from the normalized claim or re-extract private source events.
+            conn.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(canonical_evidence)")}
+            if "evidence_quote" not in columns:
+                conn.execute(
+                    "ALTER TABLE canonical_evidence "
+                    "ADD COLUMN evidence_quote TEXT NOT NULL DEFAULT ''"
+                )
 
     async def register(
         self,
@@ -429,6 +439,11 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     or (existing_evidence["tool_call_id"] or None) != intent.tool_call_id
                     or str(existing_evidence["authority"]) != intent.authority
                     or str(existing_evidence["raw_claim"]) != intent.raw_claim
+                    or (
+                        bool(existing_evidence["evidence_quote"])
+                        and str(existing_evidence["evidence_quote"])
+                        != str(intent.attributes.get("evidence_quote") or "")
+                    )
                     or float(existing_evidence["confidence"]) != intent.confidence
                     or (existing_evidence["occurred_at"] or None) != intent.occurred_at
                 ):
@@ -458,9 +473,9 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     """
                     INSERT INTO canonical_evidence (
                         intent_id, memory_space_id, assertion_id, source_event_id,
-                        tool_call_id, authority, raw_claim, confidence,
+                        tool_call_id, authority, raw_claim, evidence_quote, confidence,
                         occurred_at, recorded_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         intent.intent_id,
@@ -470,6 +485,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                         intent.tool_call_id,
                         intent.authority,
                         intent.raw_claim,
+                        str(intent.attributes.get("evidence_quote") or ""),
                         intent.confidence,
                         intent.occurred_at,
                         now,
@@ -879,6 +895,17 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                 (intent.intent_id,),
             ).fetchone()
             if existing is not None:
+                evidence = conn.execute(
+                    "SELECT evidence_quote FROM canonical_evidence WHERE intent_id = ?",
+                    (intent.intent_id,),
+                ).fetchone()
+                if evidence is not None and evidence["evidence_quote"] and (
+                    str(evidence["evidence_quote"])
+                    != str(intent.attributes.get("evidence_quote") or "")
+                ):
+                    raise CanonicalEvidenceConflict(
+                        "intent id reused with different canonical evidence"
+                    )
                 if (
                     str(existing["memory_space_id"]) != intent.memory_space_id
                     or str(existing["assertion_id"]) != assertion_id
@@ -976,9 +1003,9 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                 """
                 INSERT INTO canonical_evidence (
                     intent_id, memory_space_id, assertion_id, source_event_id,
-                    tool_call_id, authority, raw_claim, confidence,
+                    tool_call_id, authority, raw_claim, evidence_quote, confidence,
                     occurred_at, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     intent.intent_id,
@@ -988,6 +1015,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                     intent.tool_call_id,
                     intent.authority,
                     intent.raw_claim,
+                    str(intent.attributes.get("evidence_quote") or ""),
                     intent.confidence,
                     intent.occurred_at,
                     now,
@@ -1312,6 +1340,7 @@ class CanonicalFactLedger(SerialisedSqliteWrites):
                                 source_event_id=str(row["source_event_id"]),
                                 authority=str(row["authority"]),
                                 raw_claim=str(row["raw_claim"]),
+                                evidence_quote=str(row["evidence_quote"]),
                                 confidence=float(row["confidence"]),
                                 occurred_at=row["occurred_at"] or None,
                                 recorded_at=str(row["recorded_at"]),
