@@ -109,10 +109,19 @@ async def recall_with_kg_fusion(
 
     async def _vector_path() -> list[MemoryWireRecord]:
         vector_started = time.perf_counter()
+        search_query = query
+        if kg is not None and settings.recall.kg_in_recall:
+            alias_started = time.perf_counter()
+            search_query = await _query_with_known_alias(
+                kg, query=query, audiences=interaction_readable_audiences(context),
+                timeout_s=settings.recall.kg_timeout_seconds,
+                include_sensitive=include_sensitive_kg,
+            )
+            diagnostics["alias_resolution_ms"] = _elapsed_ms(alias_started)
         result = await search_all_wings_mcp_style(
             backend,
             settings,
-            query=query,
+            query=search_query,
             context=context,
             top_k=top_k,
             wing=None,
@@ -441,6 +450,36 @@ async def _expand_with_timeout(
     except Exception as exc:  # noqa: BLE001 - the graph is never allowed to break recall
         log.warning("kg_expand_failed", error=str(exc), error_type=type(exc).__name__)
         return []
+
+
+async def _query_with_known_alias(
+    kg, *, query: str, audiences: tuple[str, ...], timeout_s: float,
+    include_sensitive: bool,
+) -> str:
+    """Carry one unambiguous, visible stored alias into the existing search.
+
+    The steward's existing rubric assigns 0.85+ to explicit names/categories,
+    and 0.70 to weak pronouns. No inferred synonyms or new search branch.
+    Failures/timeouts retain the user's original query; cancellation propagates.
+    """
+    try:
+        async with asyncio.timeout(timeout_s):
+            names = await kg.match_entities_for_query(
+                query, audiences=audiences, cap=2,
+                aliases_only=True, min_alias_confidence=0.85,
+            )
+            if len(names) != 1 or names[0] in query:
+                return query
+            visible = await kg.query_entity_combined(
+                names, audiences=audiences, include_sensitive=include_sensitive,
+                limit_per_entity=1,
+            )
+            if visible:
+                return f"{query} {names[0]}"
+    except Exception:
+        # Alias enrichment is optional; graph failure must not suppress vectors.
+        pass
+    return query
 
 
 async def _kg_path_with_timeout(

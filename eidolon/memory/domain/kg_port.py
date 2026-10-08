@@ -284,12 +284,16 @@ class KnowledgeGraphPort(Protocol):
         *,
         cap: int,
         audiences: tuple[str, ...] = (OWNER_AUDIENCE,),
+        aliases_only: bool = False,
+        min_alias_confidence: float = 0.0,
     ) -> list[str]:
         """Guess which entities a piece of natural language is about.
 
         Bridges free text to canonical entity names, via stored aliases and
         prefix handling. Best-effort by nature — callers treat an empty result as
-        "no graph contribution", never as an error.
+        "no graph contribution", never as an error. ``aliases_only`` selects
+        stored references without canonical-name matching; ``min_alias_confidence``
+        uses the steward's existing confidence rubric to exclude weak references.
         """
         ...
 

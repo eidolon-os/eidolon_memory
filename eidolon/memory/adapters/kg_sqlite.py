@@ -1187,16 +1187,19 @@ class SqliteKnowledgeGraph:
         *,
         cap: int,
         audiences: tuple[str, ...] = (OWNER_AUDIENCE,),
+        aliases_only: bool = False,
+        min_alias_confidence: float = 0.0,
     ) -> list[str]:
         if cap <= 0 or not audiences:
             return []
         async with self._lock.reader():
             return await asyncio.to_thread(
-                self._match_entities_sync, query, audiences, cap
+                self._match_entities_sync, query, audiences, cap, aliases_only, min_alias_confidence
             )
 
     def _match_entities_sync(
-        self, query: str, audiences: tuple[str, ...], cap: int
+        self, query: str, audiences: tuple[str, ...], cap: int,
+        aliases_only: bool = False, min_alias_confidence: float = 0.0,
     ) -> list[str]:
         """Find entities a phrase might be about.
 
@@ -1260,7 +1263,7 @@ class SqliteKnowledgeGraph:
         #
         # Longest first within each strategy, so ``mother:张丽`` beats a bare
         # ``mother`` when both could fire.
-        for sql in (
+        for sql in (() if aliases_only else (
             "SELECT DISTINCT name FROM kg_entities "
             "WHERE space_id = ? AND name <> '' AND name IN ({marks}) "
             "ORDER BY length(name) DESC LIMIT ?",
@@ -1268,7 +1271,7 @@ class SqliteKnowledgeGraph:
             "WHERE space_id = ? AND instr(name, ':') > 0 "
             "  AND substr(name, instr(name, ':') + 1) IN ({marks}) "
             "ORDER BY length(name) DESC LIMIT ?",
-        ):
+        )):
             for name in self._lookup_names(sql, pieces, cap):
                 if name and name not in seen:
                     seen.add(name)
@@ -1284,10 +1287,12 @@ class SqliteKnowledgeGraph:
             "JOIN kg_entities e ON e.space_id = m.space_id AND e.entity_id = m.entity_id "
             "WHERE m.space_id = ? AND m.alias <> '' AND m.alias IN ({marks}) "
             f"AND m.audience IN ({', '.join('?' for _ in audiences)}) "
-            "ORDER BY length(m.alias) DESC LIMIT ?"
+            "AND m.confidence >= ? "
+            + ("GROUP BY e.name ORDER BY max(length(m.alias)) DESC LIMIT ?"
+               if aliases_only else "ORDER BY length(m.alias) DESC LIMIT ?")
         )
         for name in self._lookup_names(
-            alias_sql, lowered, cap, trailing_params=list(audiences)
+            alias_sql, lowered, cap, trailing_params=[*audiences, min_alias_confidence]
         ):
             if not name or name in seen:
                 continue
@@ -1302,7 +1307,7 @@ class SqliteKnowledgeGraph:
         sql: str,
         pieces: list[str],
         cap: int,
-        trailing_params: list[str] | None = None,
+        trailing_params: list[Any] | None = None,
     ) -> list[str]:
         """Run one lookup over ``pieces``, chunked, longest name first.
 

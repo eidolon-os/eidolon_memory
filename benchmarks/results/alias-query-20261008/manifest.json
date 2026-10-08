@@ -1,0 +1,16 @@
+{
+  "kind": "isolated synthetic alias enrichment comparison",
+  "source": "reports/memory_quality_20261008_025120",
+  "variants": {
+    "True": "alias enrichment enabled",
+    "False": "same implementation with alias helper returning original query"
+  },
+  "source_sha256": {
+    "eidolon/memory/adapters/kg_sqlite.py": "4a2edea95976a25ff597ce447161afc3bd5e6dabe0c67c69bcd9f0ab68469fcc",
+    "eidolon/memory/application/public_recall.py": "49cfb1b6292bff16f58a819fa51e169d391d3c95cb0e580c031103b6b91ce2f1",
+    "eidolon/memory/domain/kg_port.py": "f841f792648898bde24ae8ca7c8ddcba4cbb352b7d40873129e8e2256a0b3a70",
+    "tests/memory/e2e/fixtures/quality_queries.jsonl": "fa4bc3b7ec19198aa61666874689c6a2868c93abcc1491efdb683d0d917aa1ba"
+  },
+  "raw_probe_sha256": "dbafa048158024cc41d4d02c1ff88232dd3fd15c44ee77b6befdc7b2a5e0cc53",
+  "responses_sha256": "68e2677b802f11c5765477891faea5b6e5381eb719cc9e4d9e2c7f9f4b92e22e"
+}

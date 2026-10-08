@@ -477,11 +477,15 @@ async def test_a_caller_hint_adds_to_the_phrase_rather_than_replacing_it(
 
     assert [row.id for row in result["kg"]] == ["t1"]
     kg.match_entities_for_query.assert_awaited(), "the phrase must still be read"
-    seeds = kg.query_entity_combined.await_args_list[0].args[0]
+    seed_call = next(
+        call for call in kg.query_entity_combined.await_args_list
+        if call.kwargs.get("limit_per_entity") == settings.recall.kg_max_triples_per_entity
+    )
+    seeds = seed_call.args[0]
     assert seeds == ["self", "from-the-phrase"], (
         "the hint leads, but it does not evict what the phrase found"
     )
-    assert kg.query_entity_combined.await_args_list[0].kwargs == {
+    assert seed_call.kwargs == {
         # Both layers: the owner's own facts, plus what this companion was told.
         "audiences": ("owner", "companion:default"),
         "as_of": None,
@@ -721,7 +725,6 @@ async def test_the_graph_answers_a_question_that_names_nobody(fusion_setup) -> N
 
     from eidolon.memory.application.public_recall import recall_with_kg_fusion
     from eidolon.memory.domain.kg import KgTripleRecord
-
     from eidolon.memory.domain.wire import MemoryWireRecord
 
     backend, _, settings = fusion_setup
