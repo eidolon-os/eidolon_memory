@@ -699,10 +699,10 @@ def _score_query(query: dict, response: dict, elapsed_ms: float) -> QueryResult:
     returned_evidence_count = len(kg) + len(records)
     abstention_correct = None
     if expects_abstention:
-        # At the retrieval boundary every returned row is unsupported evidence
-        # for an explicitly unanswerable query.  Final-answer abstention belongs
-        # to the Agent benchmark; this metric deliberately grades evidence
-        # cleanliness before generation.
+        # Strict empty-retrieval diagnostic, not final-answer abstention.
+        # Related background may be useful without establishing the question's
+        # premise. Keep the historical scoring contract, but do not interpret
+        # a nonempty result as proof that the Agent fabricated an answer.
         abstention_correct = (
             returned_evidence_count == 0
             and not violation
@@ -870,7 +870,7 @@ def _render_markdown(
     )
     lines.append(
         f"- Evidence-group recall: **{o['evidence_recall']:.1%}**, "
-        f"omissions: **{o['omissions']}**, clean abstention: "
+        f"omissions: **{o['omissions']}**, empty retrieval on no-answer labels: "
         f"**{o['abstention_correct']}/{o['abstention_total']}**"
     )
     lines.append(
@@ -885,11 +885,18 @@ def _render_markdown(
         f"valid quality run: **{o['valid']}**"
     )
     lines.append("")
+    lines.append(
+        "Empty retrieval is a strict retrieval diagnostic, not an Agent answer-quality "
+        "score. Related background can be returned without supporting the question's "
+        "premise; final answers require separate groundedness evaluation. Historical "
+        "JSON field names (abstention_*) and scoring are unchanged."
+    )
+    lines.append("")
     lines.append("## Per-category breakdown")
     lines.append("")
     lines.append(
         "| Category | n | correct | rate | evidence recall | omissions | "
-        "abstain | p50 ms | p95 ms |"
+        "empty retrieval | p50 ms | p95 ms |"
     )
     lines.append(
         "|----------|--:|--------:|-----:|----------------:|----------:|--------:|-------:|-------:|"
@@ -907,7 +914,7 @@ def _render_markdown(
     lines.append("## Per-query detail")
     lines.append("")
     lines.append(
-        "| id | category | query | ms | evidence | omitted | returned | abstain | matched |"
+        "| id | category | query | ms | evidence | omitted | returned | empty retrieval | matched |"
     )
     lines.append(
         "|----|----------|-------|---:|---------:|--------:|---------:|:-------:|---------|"
