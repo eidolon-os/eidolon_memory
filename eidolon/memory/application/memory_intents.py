@@ -101,6 +101,11 @@ def memory_intents_from_decision(
 
     for index, triple in enumerate(decision.triples):
         payload = triple.model_dump(mode="json")
+        if not triple.statement:
+            # Preserve intent identity for historical extraction decisions.
+            payload.pop("statement", None)
+        if triple.statement_privacy == "normal":
+            payload.pop("statement_privacy", None)
         intents.append(
             MemoryIntent(
                 intent_id=_intent_id(memory_space_id, source_event_id, "triple", index, payload),
@@ -108,7 +113,8 @@ def memory_intents_from_decision(
                 source_event_id=source_event_id,
                 authority="extracted_user",
                 intent_type=_triple_intent_type(triple.predicate),
-                raw_claim=f"{triple.subject} {triple.predicate} {triple.object}",
+                raw_claim=triple.statement
+                or f"{triple.subject} {triple.predicate} {triple.object}",
                 operation_hint="add",
                 subject=triple.subject,
                 predicate=triple.predicate,

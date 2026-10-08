@@ -265,13 +265,11 @@ def _drawer_for_triple(
         source_turn_id=turn.turn_id,
         wing="Wing_Profile",
         room=f"fact_{triple.predicate}_{_projection_room_token(projection_id)}",
-        # The same sentence the read path renders, from the same table. This
-        # used to be a bare f-string, so the text that got embedded read
-        # "self owns pet:铁锤" while the query it had to match read
-        # "我家狗多大" — 18 of 38 drawers in a benchmark palace were
-        # unreachable by the Chinese embedder that way.
-        content=fact_sentence(triple.subject, triple.predicate, triple.object),
+        # A unified claim supplies its own user-supported statement. Legacy
+        # decisions retain the shared predicate renderer and their old identity.
+        content=triple.statement or fact_sentence(triple.subject, triple.predicate, triple.object),
         evidence_quote=triple.evidence_quote,
+        privacy=triple.statement_privacy,
         memory_type=(
             "preference" if triple.predicate in {"likes", "dislikes", "prefers"} else "fact"
         ),
@@ -509,6 +507,13 @@ async def process_turn_message(
     # ── fragments + privacy (failure here NAKs — chroma is source of truth) ─
     fragments_written = 0
     try:
+        if (
+            decision.unified_claims
+            and decision.triples
+            and kg is None
+            and not decision.privacy_actions
+        ):
+            raise RuntimeError("unified structured claims require the KG projection port")
         # Privacy actions first; they may purge before we attempt new writes.
         if decision.privacy_actions:
             with stages.stage("privacy"):
@@ -532,10 +537,12 @@ async def process_turn_message(
                 produced_by="privacy:tombstone",
             )
         # Structured assertions project their own canonical drawer beside the
-        # KG row below. Only fragment-only decisions are handled here; otherwise
-        # writing the model's prose as another source creates two independently
-        # correctable versions of the same fact.
-        if decision.should_write and (not decision.triples or kg is None):
+        # KG row below. New unified claims have already separated text-only
+        # propositions from structured ones; each has one assertion. Legacy
+        # mixed arrays retain their historical behavior to avoid duplicate facts.
+        if decision.should_write and (
+            decision.unified_claims or not decision.triples or kg is None
+        ):
             with stages.stage("fragments"):
                 if canonical_facts is None:
                     raise RuntimeError("natural long-term memory requires its fact ledger")

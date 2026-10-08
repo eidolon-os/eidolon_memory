@@ -1,0 +1,591 @@
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index a5a5a64..2bd3a85 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -130,6 +130,21 @@ backend 的名字。两条在写出来时都抓到了真实违规。
+ 都保存证据，已有非空证据在重放时不可改变；硬遗忘随同一 evidence 行删除原文。
+ 这不是原文召回层，召回正文和检索索引没有因此扩大。
+ 
++2026-10-08：新的 steward 输出使用 `claims`。每条包含完整中文表述和证据，可选 `fact`
++承载同一命题的结构化关系。解析边界将其转成已有的 fragment 或 triple intent：结构化 claim
++的文字进入同一个 canonical drawer，不再因同轮有三元组而丢掉独立事件。未增加事实库，
++纠正、硬删除、重放仍经过同一账本。旧决定与 intent ID 保持兼容，不回填旧正文。
++
++图谱关闭时 claim 保存为文字 assertion；图谱开启时，设备/会话等受限 claim 必须是纯文字，
++敏感 claim 的 fact 必须使用敏感谓词，否则重试，不能扩大读取范围。`unified_claims` 是解析器
++设置并持久化的内部格式标记，不信任模型自己声明该标记。协议要求每个命题只出现一次，
++但不把 JSON 校验当作语义原子性的证明；抽取质量仍需实验验收。
++
++完整 40 轮实验与已知退化见 `benchmarks/results/unified-claims-20261008/REPORT.md`。
++同一结构化事实的新证据仍遵循既有去重规则，不自动合并/重写已经完成的正文投影；
++跨轮新细节、代词解引用和无依据的图扩展尚不能据此宣布解决。
++
++
+ 6 个 ledger，共 **13 张表**（2026-09-02 从 `ledger_sql.py` 与 `extraction_decisions.py` 的 `CREATE TABLE` 实测）：
+ 
+ | ledger | 表 | 存什么 | 丢了会怎样 |
+diff --git a/eidolon/memory/application/memory_intents.py b/eidolon/memory/application/memory_intents.py
+index 43fb414..fa51b68 100644
+--- a/eidolon/memory/application/memory_intents.py
++++ b/eidolon/memory/application/memory_intents.py
+@@ -101,6 +101,11 @@ def memory_intents_from_decision(
+ 
+     for index, triple in enumerate(decision.triples):
+         payload = triple.model_dump(mode="json")
++        if not triple.statement:
++            # Preserve intent identity for historical extraction decisions.
++            payload.pop("statement", None)
++        if triple.statement_privacy == "normal":
++            payload.pop("statement_privacy", None)
+         intents.append(
+             MemoryIntent(
+                 intent_id=_intent_id(memory_space_id, source_event_id, "triple", index, payload),
+@@ -108,7 +113,8 @@ def memory_intents_from_decision(
+                 source_event_id=source_event_id,
+                 authority="extracted_user",
+                 intent_type=_triple_intent_type(triple.predicate),
+-                raw_claim=f"{triple.subject} {triple.predicate} {triple.object}",
++                raw_claim=triple.statement
++                or f"{triple.subject} {triple.predicate} {triple.object}",
+                 operation_hint="add",
+                 subject=triple.subject,
+                 predicate=triple.predicate,
+diff --git a/eidolon/memory/application/steward/llm.py b/eidolon/memory/application/steward/llm.py
+index 13338fb..1955a1b 100644
+--- a/eidolon/memory/application/steward/llm.py
++++ b/eidolon/memory/application/steward/llm.py
+@@ -15,7 +15,8 @@ from eidolon.memory.application.steward.common import finalize_fragments
+ from eidolon.memory.config.memory_settings import MemorySettings
+ from eidolon.memory.domain.errors import StewardOutputError
+ from eidolon.memory.domain.fragments import is_usable_extension
+-from eidolon.memory.domain.steward import StewardDecision
++from eidolon.memory.domain.predicates import predicate_definition
++from eidolon.memory.domain.steward import ExtractedClaim, StewardDecision
+ from eidolon.memory.infrastructure.llm_process import IsolatedLLMCompletion
+ from eidolon.memory.support import metrics
+ from eidolon.memory.support.logging import get_logger
+@@ -145,10 +146,10 @@ class LiteLLMSteward:
+             # this list — the system prompt demanded it and this one did not,
+             # which is the same contradiction as the identity fields, pointing
+             # the other way.
+-            "每个 fragments[] 必须包含 evidence_quote, scope, visibility, "
++            "每个 claims[] 必须包含 evidence_quote, scope, visibility, "
+             "target_device_id, wing, room, content, memory_type, importance, "
+             "confidence, metadata, extensions。\n"
+-            "fragments/triples/invalidations/privacy_actions 每一项的 "
++            "claims/invalidations/privacy_actions 每一项的 "
+             "evidence_quote 都必须逐字取自本轮 [USER]，缺失或非原文会让整轮作废。\n"
+             "不要输出身份字段：memory_space_id、memory_realm_id、owner_id、"
+             "companion_id、source_device_id、source_instance_id、source_turn_id、"
+@@ -218,8 +219,12 @@ class LiteLLMSteward:
+                 or ""
+             ).strip()
+         turn_id = str(source_turn_id or "").strip()
++        if isinstance(data, dict):
++            for field in ("claims", "fragments", "triples"):
++                if field in data and not isinstance(data[field], list):
++                    raise StewardOutputError(f"{field} must be an array")
+         if isinstance(data, dict) and (space_id or turn_id):
+-            for fragment in data.get("fragments") or []:
++            for fragment in (data.get("fragments") or []) + (data.get("claims") or []):
+                 if not isinstance(fragment, dict):
+                     continue
+                 if space_id:
+@@ -231,8 +236,53 @@ class LiteLLMSteward:
+             log.warning("steward_extension_dropped", field=dropped)
+ 
+         try:
++            if isinstance(data, dict):
++                data["unified_claims"] = False  # Never accept a model-supplied bypass.
++                if "claims" not in data:
++                    for triple in data.get("triples") or []:
++                        if isinstance(triple, dict):
++                            triple.pop("statement", None)
++                            triple.pop("statement_privacy", None)
++                if "claims" in data:
++                    if data.get("fragments") or data.get("triples"):
++                        raise ValueError("claims cannot be mixed with legacy fragments/triples")
++                    claims = [ExtractedClaim.model_validate(item) for item in data.pop("claims")]
++                    data["fragments"] = []
++                    data["triples"] = []
++                    for claim in claims:
++                        if claim.fact is None or not self._settings.kg.enabled:
++                            # With the graph disabled, retain the same claim as
++                            # a text assertion through the existing ledger path.
++                            data["fragments"].append(claim.model_dump(exclude={"fact"}))
++                        else:
++                            if (
++                                claim.scope != "persona"
++                                or claim.visibility != "all_devices"
++                                or claim.target_device_id
++                            ):
++                                raise ValueError(
++                                    "restricted-scope claim must not have a graph fact"
++                                )
++                            if (
++                                claim.privacy == "sensitive"
++                                and not predicate_definition(claim.fact.predicate).sensitive
++                            ):
++                                raise ValueError(
++                                    "sensitive claim requires a sensitive predicate or no fact"
++                                )
++                            fact = claim.fact.model_copy(
++                                update={
++                                    "statement": claim.content,
++                                    "statement_privacy": claim.privacy,
++                                    "valid_from": claim.fact.valid_from or claim.occurred_at,
++                                    "evidence_quote": claim.evidence_quote,
++                                    "confidence": min(claim.confidence, claim.fact.confidence),
++                                }
++                            )
++                            data["triples"].append(fact.model_dump())
++                    data["unified_claims"] = True
+             return StewardDecision.model_validate(data)
+-        except ValidationError as exc:
++        except (ValidationError, ValueError, TypeError) as exc:
+             msg = f"invalid LLM steward output: {exc}"
+             raise StewardOutputError(msg) from exc
+ 
+@@ -262,19 +312,20 @@ def _drop_unusable_extensions(data: Any) -> list[str]:
+     if not isinstance(data, dict):
+         return dropped
+ 
+-    for index, fragment in enumerate(data.get("fragments") or []):
+-        if not isinstance(fragment, dict) or "extensions" not in fragment:
+-            continue
+-        extensions = fragment["extensions"]
+-        if not isinstance(extensions, dict):
+-            fragment.pop("extensions")
+-            dropped.append(f"fragments[{index}].extensions")
+-            continue
+-        for namespace in list(extensions):
+-            payload = extensions[namespace]
+-            if not is_usable_extension(namespace, payload):
+-                extensions.pop(namespace)
+-                dropped.append(f"fragments[{index}].extensions.{namespace}")
++    for field in ("fragments", "claims"):
++        for index, fragment in enumerate(data.get(field) or []):
++            if not isinstance(fragment, dict) or "extensions" not in fragment:
++                continue
++            extensions = fragment["extensions"]
++            if not isinstance(extensions, dict):
++                fragment.pop("extensions")
++                dropped.append(f"{field}[{index}].extensions")
++                continue
++            for namespace in list(extensions):
++                payload = extensions[namespace]
++                if not is_usable_extension(namespace, payload):
++                    extensions.pop(namespace)
++                    dropped.append(f"{field}[{index}].extensions.{namespace}")
+     return dropped
+ 
+ 
+diff --git a/eidolon/memory/application/turn_processor.py b/eidolon/memory/application/turn_processor.py
+index 12e223e..9563ce6 100644
+--- a/eidolon/memory/application/turn_processor.py
++++ b/eidolon/memory/application/turn_processor.py
+@@ -265,13 +265,11 @@ def _drawer_for_triple(
+         source_turn_id=turn.turn_id,
+         wing="Wing_Profile",
+         room=f"fact_{triple.predicate}_{_projection_room_token(projection_id)}",
+-        # The same sentence the read path renders, from the same table. This
+-        # used to be a bare f-string, so the text that got embedded read
+-        # "self owns pet:铁锤" while the query it had to match read
+-        # "我家狗多大" — 18 of 38 drawers in a benchmark palace were
+-        # unreachable by the Chinese embedder that way.
+-        content=fact_sentence(triple.subject, triple.predicate, triple.object),
++        # A unified claim supplies its own user-supported statement. Legacy
++        # decisions retain the shared predicate renderer and their old identity.
++        content=triple.statement or fact_sentence(triple.subject, triple.predicate, triple.object),
+         evidence_quote=triple.evidence_quote,
++        privacy=triple.statement_privacy,
+         memory_type=(
+             "preference" if triple.predicate in {"likes", "dislikes", "prefers"} else "fact"
+         ),
+@@ -509,6 +507,13 @@ async def process_turn_message(
+     # ── fragments + privacy (failure here NAKs — chroma is source of truth) ─
+     fragments_written = 0
+     try:
++        if (
++            decision.unified_claims
++            and decision.triples
++            and kg is None
++            and not decision.privacy_actions
++        ):
++            raise RuntimeError("unified structured claims require the KG projection port")
+         # Privacy actions first; they may purge before we attempt new writes.
+         if decision.privacy_actions:
+             with stages.stage("privacy"):
+@@ -532,10 +537,12 @@ async def process_turn_message(
+                 produced_by="privacy:tombstone",
+             )
+         # Structured assertions project their own canonical drawer beside the
+-        # KG row below. Only fragment-only decisions are handled here; otherwise
+-        # writing the model's prose as another source creates two independently
+-        # correctable versions of the same fact.
+-        if decision.should_write and (not decision.triples or kg is None):
++        # KG row below. New unified claims have already separated text-only
++        # propositions from structured ones; each has one assertion. Legacy
++        # mixed arrays retain their historical behavior to avoid duplicate facts.
++        if decision.should_write and (
++            decision.unified_claims or not decision.triples or kg is None
++        ):
+             with stages.stage("fragments"):
+                 if canonical_facts is None:
+                     raise RuntimeError("natural long-term memory requires its fact ledger")
+diff --git a/eidolon/memory/config/prompts/memory_steward.md b/eidolon/memory/config/prompts/memory_steward.md
+index 72b0a84..a52005b 100644
+--- a/eidolon/memory/config/prompts/memory_steward.md
++++ b/eidolon/memory/config/prompts/memory_steward.md
+@@ -1,50 +1,31 @@
+-# 记忆管家系统提示（v2 — 含知识图谱）
++# 记忆管家：每条命题一个写入单元
+ 
+-你是一个运行在本地的智能陪伴体的长期记忆管家。任务：从一个已经提交的用户 Turn 中判断要不要写入长期记忆，并以严格 JSON 输出。**只输出 JSON，不要 markdown 包装，不要解释。**
++你从已提交的用户 Turn 抽取长期记忆，只输出严格 JSON，不要 Markdown 或解释。
+ 
+-## 输出结构总览
++## 输出与生命周期
+ 
+-每条对话同时驱动两层记忆：
+-
+-- `fragments` —— 自然语言"记忆片段"，进向量库，未来语义相似度召回
+-- `triples` —— 结构化"当前事实/状态"，进知识图谱，按实体名 + 时点查询
+-- `invalidations` —— "改变心意、兑现承诺、状态结束"：标记旧 triple 失效
+-- `privacy_actions` —— 用户明示隐私意图
+-
+-判断顺序：
+-1. 隐私优先 — 若用户语义上明确要求不存储、删除既有记忆或停止召回某个话题，输出 privacy_actions，**fragments / triples / invalidations 全部留空**。判断意图，不依赖特定措辞。
+-2. 寒暄无价值 — `should_write=false`，四个数组均空。
+-3. 有可写内容 — 决定 fragment 与 triple 各自写什么。
++- `claims`：用户明确陈述的可保存命题。每条只有一个 `content` 和一段 `evidence_quote`，可选 `fact` 表达该**同一命题**的 subject / predicate / object。
++- `fact` 是同一命题的结构化表示，不是另写一份记忆。没有精确对应谓词时 `fact=null`，保留文字即可。
++- 同一命题只出现一次：不要把 fact 的事实在另一个纯文字 claim 中再存一遍。描述同一状态的名字、持续时间等细节留在该 claim 的 content 中。
++- 不同命题分别写 claim。不要把整轮摘要当作一条 claim，也不要把没有体现在 fact 中的另一件事混入带 fact 的 claim。
++- 例如“今天家庭聚会，张丽炖了红烧肉”：分别保存聚会事件和张丽炖红烧肉这件事；若聚会使用 attended，做菜那条可用 fact=null。不要另存两件事合并的摘要。
++- 例如“我妈张丽失眠一周了”：只写一条完整中文命题，fact 为 mother / has_state / 失眠；张丽还通过 mentions 绑定 mother。不要另写“妈妈失眠”的副本。
++- `invalidations`：终止旧的精确三元组。`privacy_actions`：隐私动作。`mentions`：实体别名。
++- 不输出顶层 `fragments` 或 `triples`。`should_write` 表示有值得保存的 claims。
+ 
+ ## 证据边界（最高优先级）
+ 
+-- 只有 `[USER]` 中用户明确陈述的命题可以成为新记忆。输入不提供 Assistant 回复，不能补写对话中不存在的上下文。
+-- `fragments / triples / invalidations / privacy_actions` 中的每一项都必须包含 `evidence_quote`，它必须是 `[USER]` 中逐字、连续出现的最短充分证据。缺失或对不上原文会使整个 Turn 重试。
+-- 可以压缩用户原话，但不得新增原文没有的人物、地点、因果、性格、诊断、身份、偏好或长期状态。
+-- 用户使用“可能、也许、听说、猜、如果”等不确定表达时，必须保留不确定性，不得改写成确定事实或 triple。
+-- “去过/要去某地”不等于“住在某地”，“在某地工作”不等于“家在某地”；禁止跨谓词推断。
+-- 无法仅凭用户原文支持时不写；不要通过降低 confidence 来容纳猜测。
+-
+-## fragments vs triples 的区分（关键）
+-
+-| 写 fragment | 写 triple |
+-|---|---|
+-| 自然叙述、情绪、感受、当下心理 | 实体关系、状态、偏好的"事实" |
+-| "她说和爸爸冷战很难受" | `(self, has_emotion, 焦虑, valid_from=NOW)` |
+-| 多句叙事、可读原文 | 单一关系，机器可索引 |
+-| 召回用语义相似 | 召回用实体名 + as_of |
+-
+-经验法则：
+-- 涉及具体人物/项目的**关系或长期状态** → triple（可同时写 fragment 留原文）
+-- 用户的**情绪/感受/想法** → 通常只写 fragment
+-- **改变心意 / 承诺兑现** → 一个 invalidation +（可选）一个新 triple
+-- **承诺**（"答应妈妈周末回家"）→ 一个带 `valid_to` 的 promised triple
++- 只有 [USER] 中用户明确说出的命题可以写入，不能补写助手的话或不存在的上下文。
++- 每个 claim、invalidation、privacy_action 的 evidence_quote 必须逐字、连续取自 [USER]，取最短充分证据。不能拼接，不得省略造成语义改变。
++- content 可以压缩原话，但不能新增人物、地点、因果、诊断、性格、身份或长期状态。
++- 不确定表达必须保留不确定性，不能转成确定 fact。“想去某地”不是“住在某地”；愿望不是承诺。
++- 隐私请求优先：有 privacy_actions 时 claims / invalidations 留空。寒暄无价值时 should_write=false，所有数组为空。
+ 
+ ## 允许的 Wings
+ 
+ {{ wings_block }}
+ 
+-## Room 命名规范（fragments 用）
++## Room 命名规范（claims 用）
+ 
+ - `profile_core`：用户核心画像
+ - `person_<name_or_alias>`：重要人物
+@@ -55,7 +36,7 @@
+ - `preference_<category>`：偏好
+ - `privacy_<topic>`：禁记或封存主题
+ 
+-## 重要性评分（fragments 用）
++## 重要性评分（claims 用）
+ 
+ - 5：身份、亲密关系、重大事件、强烈情绪、明确长期偏好
+ - 4：工作或项目关键进展、稳定习惯、持续压力源、重要生活变化
+@@ -73,7 +54,7 @@
+ 健康（敏感，谨慎使用）：`has_health_condition, takes_medication, has_symptom`
+ 事件（一次性时刻，valid_from = valid_to）：`attended, experienced, achieved`
+ 
+-不要发明新谓词。无法精确归类的关系，要么折成已有谓词，要么改写 fragment。
++不要发明新谓词。无法精确归类的关系，要么折成已有谓词，要么写纯文字 claim（fact=null）。
+ 
+ ## 实体规范化（canonical 名约定）
+ 
+@@ -102,10 +83,10 @@
+ 绝对禁止：
+ - 用代词作 subject 或 object（"她/他/它"）
+ - 把猜测或助手的说法当成用户事实；不受用户原文支持的内容一律不写
+-- 把"我打算"或"我想"作为 add_triple（这是计划，写 fragment 即可；除非用户明确"决定了"）
++- 把"我打算"或"我想"作为 add_triple（这是计划，写纯文字 claim（fact=null）即可；除非用户明确"决定了"）
+ - **把一个句子、从句或事件描述当成 subject 或 object。** subject 和 object 是**东西**，
+   不是**发生的事**。`送铁锤到妈妈那`、`每天早上过一遍进度`、`入住祇园附近的旅馆`
+-  都不是东西——这类内容写 fragment，不写 triple。
++  都不是东西——这类内容写纯文字 claim（fact=null）。
+ 
+   **唯一的例外是承诺**：`promised` 与 `attended` 的 object 允许是一句话（见下一节），
+   因为一个承诺的内容就是那句话，而两个对同一个人的不同承诺必须是两条不同的记录。
+@@ -114,28 +95,18 @@
+   除非它被限定成可区分的那一个（`project:星槎` 可以，`项目` 不行）。
+ - **把形容词或描述性短语当实体**：`很累`、`新发色`、`不一样的感觉`。
+ 
+-## 改变心意 / 承诺兑现的处理流程（核心）
+-
+-用户表达**否定**：「我现在不喜欢咖啡了」
+-→ `invalidations` 加 `{subject:"self", predicate:"likes", object:"咖啡", ended:"<turn 时刻>"}`
+-→ 通常**不需要** 新 triple
+-
+-用户表达**新偏好**：「我现在喜欢茶」
+-→ `triples` 加 `{subject:"self", predicate:"likes", object:"茶", valid_from:"<turn 时刻>"}`
+ 
+-用户**承诺**：「这周末陪妈妈去医院」
+-→ `triples` 加 `{subject:"self", predicate:"promised", object:"陪妈妈去医院", valid_from:"<turn 时刻>", valid_to:"<本周日 23:59>"}`
++## 更新
+ 
+-用户**兑现承诺**：「我已经陪妈妈去过医院了」
+-→ `invalidations` 加 `{subject:"self", predicate:"promised", object:"陪妈妈去医院", ended:"<turn 时刻>", reason:"已兑现"}`
+-→ 同时 `triples` 加 `{subject:"self", predicate:"attended", object:"陪妈妈去医院", valid_from:"<事件时刻>", valid_to:"<事件时刻>"}`
+-
+-用户**状态结束**：「我妈睡眠好转了」
+-→ `invalidations` 加 `{subject:"mother", predicate:"has_state", object:"失眠", ended:"<turn 时刻>"}`
++“我现在不喜欢咖啡了”：invalidations 写 self / likes / 咖啡，evidence_quote 取原话。
++“我现在喜欢茶”：一条 claim，content 描述新偏好，fact 为 self / likes / 茶。
++“我答应这周末陪妈妈去医院”：一条 claim，fact 为 self / promised / 陪妈妈去医院，valid_to 为承诺截止时间。
++“我已经陪妈妈去过医院了”：invalidate 原承诺，可另写 attended 事件 claim。
++“我妈睡眠好转了”：invalidate mother / has_state / 失眠，不伪造其他诊断。
+ 
+ ## 隐私优先规则
+ 
+-- 用户要求当前内容不进入长期记忆 → 生成 `do_not_store`，**fragments / triples / invalidations 全部留空**
++- 用户要求当前内容不进入长期记忆 → 生成 `do_not_store`，**claims / invalidations 全部留空**
+ - 用户要求物理移除已经保存的内容 → 生成 `delete_request`
+ - 用户要求停止主动召回或提及某个话题、但未要求物理删除 → 生成 `archive_topic`
+ - 必须依据整句语义区分三类动作，不得把固定词表当作分类器。
+@@ -151,92 +122,61 @@
+ `valid_from / valid_to / ended` 全部用 ISO-8601 UTC，格式 `YYYY-MM-DDTHH:MM:SSZ`（**不要**带微秒，**不要**带 `+00:00`）。
+ 若没指定 → 留空，worker 会用 turn.timestamp 填充。
+ 
+-## 输出格式
++
++## 动作字段（不得省略必填字段）
++
++- privacy_actions 每项必填 `action`、`target`、`reason`、`evidence_quote`；reason 用简短文字说明用户的隐私意图，即使 should_write=false 也必须提供。
++  示例：用户说“不要记住这次争吵”，输出 `{ "action": "do_not_store", "target": "这次争吵", "reason": "用户要求不保存", "evidence_quote": "不要记住这次争吵" }`。
++- invalidations 每项必填 subject、predicate、object、evidence_quote；可填 ended 和 reason。subject/predicate/object 必须精确指向旧事实，不能把整句否定作为 object。
++- mentions 每项必填 entity_id、alias，可填 confidence；entity_id 必须在本轮 claim 的 fact 中出现。
++- claims 每项必填 wing、room、content、evidence_quote、memory_type、importance、confidence；可填 privacy（默认 normal）、occurred_at 和 fact（默认 null）。
++- fact 每项必填 subject、predicate、object；可填 confidence、valid_from、valid_to。证据、文字、敏感性取自所属 claim，不要再声明另一份。
++
++## JSON 示例
++
++以下展示字段形状，不代表当前用户的事实：
+ 
+ ```json
+ {
+   "should_write": true,
+-  "reason": "30 字内说明",
+-  "fragments": [
++  "reason": "用户明确陈述偏好",
++  "claims": [
+     {
+-      "memory_id": "",
+-      "memory_space_id": "r:owner:realm",
+-      "source_device_id": "string",
+-      "source_instance_id": "string",
+       "wing": "Wing_Profile",
+-      "room": "profile_core",
+-      "content": "用户喜欢在晚上独处时听轻音乐放松。",
+-      "evidence_quote": "我喜欢在晚上独处时听轻音乐放松",
++      "room": "preference_music",
++      "content": "用户喜欢晚上听轻音乐放松。",
++      "evidence_quote": "我喜欢晚上听轻音乐放松",
+       "memory_type": "preference",
+       "importance": 4,
+       "confidence": 0.9,
+-      "occurred_at": "2026-05-14T20:00:00+08:00",
+-      "source_turn_id": "string",
+-      "session_id": "string",
+-      "tags": ["音乐", "放松"],
+       "privacy": "normal",
+-      "metadata": {}
++      "fact": {
++        "subject": "self",
++        "predicate": "likes",
++        "object": "轻音乐",
++        "confidence": 0.9
++      }
+     }
+   ],
+-  "triples": [
+-    {
+-      "subject": "self",
+-      "predicate": "likes",
+-      "object": "轻音乐",
+-      "evidence_quote": "我喜欢在晚上独处时听轻音乐放松",
+-      "valid_from": "2026-05-14T20:00:00Z",
+-      "valid_to": null,
+-      "confidence": 0.9
+-    }
+-  ],
+-  "invalidations": [
+-    {
+-      "subject": "self",
+-      "predicate": "likes",
+-      "object": "咖啡",
+-      "evidence_quote": "我现在不喜欢咖啡了",
+-      "ended": "2026-05-14T20:00:00Z",
+-      "reason": "用户明确说现在不喜欢咖啡"
+-    }
+-  ],
+-  "privacy_actions": [
+-    {
+-      "action": "archive_topic",
+-      "target": "前任相关话题",
+-      "reason": "用户明确表示不要再提。",
+-      "evidence_quote": "以后别再提前任相关话题"
+-    }
+-  ],
+-  "mentions": [
+-    {
+-      "entity_id": "mother",
+-      "alias": "我妈",
+-      "confidence": 0.95
+-    }
+-  ]
++  "invalidations": [],
++  "privacy_actions": [],
++  "mentions": []
+ }
+ ```
+ 
+-字段要求：
+-
+-- `memory_type` 只能是 `profile`, `relationship`, `emotion`, `event`, `work`, `life`, `health`, `preference`, `privacy`, `interaction`, `goal`, `commitment`
+-- 新抽取的 fragment 的 `privacy` 只使用 `normal` 或 `sensitive`。描述中出现“私人、私密、
+-  只属于某个 Companion/Council”时仍写 `normal`；服务端会根据 turn context 设置 audience，
+-  不要用 `private` 表示 Companion/Council 可见性。`private` 与 `do_not_recall` 是已有记录的
+-  管理/生命周期状态，不由新 fragment 产生；“别记、忘掉、不要再提”必须走上面的
+-  `privacy_actions`。
+-- `importance` 是 1 到 5 的整数
+-- `confidence` 是 0 到 1 的数字
+-- `predicate` 必须取自上方白名单
+-- 每个持久化动作的 `evidence_quote` 必须逐字来自本轮 `[USER]`
+-- 不要捏造关系；不确定就不输出
+-- `memory_space_id/source_device_id/source_instance_id/source_turn_id/session_id` 会由 worker 使用 turn context 覆盖；不要自行构造 `owner_id/companion_id/memory_realm_id`
++- memory_type 取 profile / relationship / emotion / event / work / life / health / preference / privacy / interaction / goal / commitment。
++- importance 为 1–5 整数，confidence 在 0–1 之间。
++- privacy 只取 normal / sensitive。sensitive claim 如有 fact，只能使用上面健康类敏感谓词；其他敏感叙述保持 fact=null，避免从非敏感图谱通道泄露。
++- memory_space_id、source_turn_id、audience、设备和 Companion 等身份由服务端确定，不要输出或猜测。
++- 设备、会话或其他受限范围的 claim 使用 fact=null；图谱 fact 只支持 scope=persona、visibility=all_devices，不能承载设备/会话限制。
++- fact 不需重复 content 或 evidence_quote，它们来自所属 claim；每条 claim 的 fact 最多一个。
++- claims、invalidations、privacy_actions、mentions 均为数组，无内容时使用 []。
+ 
+ ## mentions（可选 — 自然语言别名 ↔ canonical entity）
+ 
+-如果 user_text 里用了**称谓 / 类别 / 代词**指代某个 entity（**且该 entity 已在本 turn 的 `triples` 里作为 subject 或 object 出现**），额外输出 `mentions` 数组：
++如果 user_text 里用了**称谓 / 类别 / 代词**指代某个 entity（**且该 entity 已在本 turn 的 `claims[].fact` 里作为 subject 或 object 出现**），额外输出 `mentions` 数组：
+ 
+-- `entity_id` —— 必须与本 turn 的某条 triple 的 `subject` 或 `object` **完全一致**（不在 triples 里的 entity_id 会被 worker 拒绝)
++- `entity_id` —— 必须与本 turn 的某条 fact 的 `subject` 或 `object` **完全一致**（不在 claims[].fact 里的 entity_id 会被 worker 拒绝)
+ - `alias` —— 用户**verbatim**用的词，**不要规范化、不要翻译、不要补全**
+ - `confidence` 取值规则：
+   - **0.95** — 明确亲属/伴侣称谓（"我妈"、"我老婆"、"我儿子"），
+@@ -248,13 +188,13 @@
+ 示例：
+ 
+ turn user_text：「我妈张丽这一周又失眠了」
+-→ `triples`: `[{subject:"mother", predicate:"has_state", object:"失眠", ...}]`
++→ fact: `[{subject:"mother", predicate:"has_state", object:"失眠", ...}]`
+ → `mentions`: `[{entity_id:"mother", alias:"我妈", confidence:0.95},
+      {entity_id:"mother", alias:"张丽", confidence:0.95}]`
+   —— 两条都要：「我妈」让称谓能找到她，「张丽」让名字能找到她。
+ 
+ turn user_text：「我家狗铁锤是边境牧羊犬」
+-→ `triples`: `[{subject:"pet:铁锤", predicate:"holds_role", object:"边境牧羊犬", ...}]`
++→ fact: `[{subject:"pet:铁锤", predicate:"holds_role", object:"边境牧羊犬", ...}]`
+ → `mentions`: `[{entity_id:"pet:铁锤", alias:"我家狗", confidence:0.85}]`
+ 
+ turn user_text：「她说想换工作」(上下文里"她"= mother,且本 turn 有 triple 涉及 mother)
+@@ -262,11 +202,5 @@ turn user_text：「她说想换工作」(上下文里"她"= mother,且本 turn
+ 
+ **不要输出的情况**：
+ - 用户用的就是 canonical 名字 ("张丽 又失眠了" — "张丽" 等于 entity_id 的 tail,无需 alias)
+-- entity_id 不在本 turn 的 triples 里（worker 会拒绝并记 warning）
++- entity_id 不在本 turn 的 claims[].fact 里（worker 会拒绝并记 warning）
+ - alias 是空字符串
+-
+-## 没有值得写入的内容
+-
+-- `should_write=false`
+-- `fragments / triples / invalidations / privacy_actions / mentions` 全部空数组
+-- `reason` 说明原因
+diff --git a/eidolon/memory/domain/kg.py b/eidolon/memory/domain/kg.py
+index 9ddde73..b589d8e 100644
+--- a/eidolon/memory/domain/kg.py
++++ b/eidolon/memory/domain/kg.py
+@@ -8,6 +8,8 @@ project's defence against KG predicate sprawl from LLM hallucination.
+ 
+ from __future__ import annotations
+ 
++from typing import Literal
++
+ from eidolon_memory_contracts import KgPredicate as _KgPredicate
+ from pydantic import Field
+ 
+@@ -33,6 +35,8 @@ class KgTripleAction(BaseEidolonModel):
+     predicate: _KgPredicate
+     object: str = Field(min_length=1, max_length=256)
+     evidence_quote: str = ""
++    statement: str = ""
++    statement_privacy: Literal["normal", "sensitive"] = "normal"
+     valid_from: str | None = None
+     valid_to: str | None = None
+     confidence: float = Field(ge=0.0, le=1.0, default=0.9)
+diff --git a/eidolon/memory/domain/steward.py b/eidolon/memory/domain/steward.py
+index c6c5c49..4a3eeb3 100644
+--- a/eidolon/memory/domain/steward.py
++++ b/eidolon/memory/domain/steward.py
+@@ -45,6 +45,12 @@ class EntityMention(BaseEidolonModel):
+     confidence: float = Field(ge=0.0, le=1.0, default=0.85)
+ 
+ 
++class ExtractedClaim(MemoryFragment):
++    """One user-supported proposition, optionally with a structured projection."""
++
++    fact: KgTripleAction | None = None
++
++
+ class StewardDecision(BaseEidolonModel):
+     """The steward's write decision for one conversation turn.
+ 
+@@ -99,6 +105,9 @@ class StewardDecision(BaseEidolonModel):
+     #: existed, and test fixtures that do not care. Readers must treat it as
+     #: unknown rather than as a value.
+     produced_by: str = ""
++    # Set by the parser only when each write came from one atomic claim.
++    # Stored with the extraction decision; absent on historical decisions.
++    unified_claims: bool = False
+     fragments: list[MemoryFragment] = Field(default_factory=list)
+     triples: list[KgTripleAction] = Field(default_factory=list)
+     invalidations: list[KgInvalidationAction] = Field(default_factory=list)
+diff --git a/tests/memory/test_prompt.py b/tests/memory/test_prompt.py
+index f4fbb24..1a85ff8 100644
+--- a/tests/memory/test_prompt.py
++++ b/tests/memory/test_prompt.py
+@@ -13,4 +13,4 @@ def test_prompt_contains_wings_schema_and_privacy(monkeypatch: pytest.MonkeyPatc
+     assert "Wing_Profile" in text
+     assert '"privacy_actions"' in text
+     assert "不要记住" in text
+-    assert "只输出 JSON" in text
++    assert '"claims"' in text

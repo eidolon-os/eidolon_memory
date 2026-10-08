@@ -13,4 +13,4 @@ def test_prompt_contains_wings_schema_and_privacy(monkeypatch: pytest.MonkeyPatc
     assert "Wing_Profile" in text
     assert '"privacy_actions"' in text
     assert "不要记住" in text
-    assert "只输出 JSON" in text
+    assert '"claims"' in text

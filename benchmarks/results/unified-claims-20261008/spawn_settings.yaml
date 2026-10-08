@@ -1,0 +1,55 @@
+embedding:
+  device: ''
+  http:
+    api_key_env: ''
+    base_url: http://127.0.0.1:19283/v1
+    batch_size: 32
+    collection_name: bge_small_zh_v15
+    dimension: 512
+    document_prefix: ''
+    max_retries: 2
+    model: bge-small-zh
+    query_prefix: ''
+    timeout_seconds: 30.0
+  model: bge-small-zh
+  model_dir: ''
+  provider: http
+  threads: 0
+kg:
+  backend: sqlite
+  min_confidence_to_write: 0.6
+llm:
+  api_key: ''
+  api_key_env: EIDOLON_MEMORY_LLM_API_KEY
+  base_url: https://api.deepseek.com/v1
+  model: openai/deepseek-v4-flash
+  temperature: 0.0
+  timeout_seconds: 90.0
+mcp_http:
+  host: 127.0.0.1
+  port: 19230
+mempalace:
+  backend: chroma
+  offline_embedding: false
+nats:
+  url: nats://127.0.0.1:19221
+recall:
+  filter_taboo_statuses:
+  - taboo
+  - archived
+  include_sensitive_kg: false
+  kg_in_recall: true
+  kg_max_entities: 3
+  kg_max_triples_per_entity: 8
+  kg_timeout_seconds: 0.05
+  kg_timeout_seconds_normal: 0.3
+  livekit_timeout_seconds: 0.3
+  rerank_enabled: true
+  rerank_rrf_k: 60
+  theme_min_similarity: 0.55
+  theme_top_k: 3
+  top_k: 5
+runtime:
+  palaces_root: /Users/manson/ai/eidolon/eidolon_memory/reports/memory_quality_20261008_025120/palaces
+steward:
+  mode: llm

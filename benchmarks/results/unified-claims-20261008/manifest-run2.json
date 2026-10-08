@@ -1,0 +1,16 @@
+{
+  "base_commit": "5cb9e6214a5c36360bdf92466580858225456c3a",
+  "dirty": true,
+  "python": "3.13.13",
+  "machine": "arm64",
+  "measured_sha256": {
+    "eidolon/memory/domain/kg.py": "9bea87b3346bdd5b00e8a60c2fcc2268034f787cd044074c29adfe04deac0ea2",
+    "eidolon/memory/domain/steward.py": "1ef4cb8c94c4ae0059ca249b36ab8b597f318f2319cb75bd4ab820e48ef3e08a",
+    "eidolon/memory/application/steward/llm.py": "3245348108bf0ac91bbe173731fe784118b41ad1fa497c6f99c95ba815e9f53c",
+    "eidolon/memory/application/memory_intents.py": "927dc700ddeb12489f92c018868f8d4a501f48042d62e5d342ef39a345682540",
+    "eidolon/memory/application/turn_processor.py": "7c0c099edd1906d4001c989377202b5e026ec12bfb08f67aff8b4a9bf6048749",
+    "eidolon/memory/config/prompts/memory_steward.md": "a420b9a837dd0c2dd74f50c9fceb531c40dd19b7639ad69782e373e9950b7b55",
+    "tests/memory/e2e/fixtures/companion_corpus.jsonl": "fe8bdfc3391150d1c32167e21e20f8fe9e24a5aeebeb72e2e0e64b79582f9417",
+    "tests/memory/e2e/fixtures/quality_queries.jsonl": "202293aca05515948c535c3d24db4a1e05b50b104e6ca8d0dec47b513791b102"
+  }
+}

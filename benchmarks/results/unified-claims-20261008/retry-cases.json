@@ -1,0 +1,227 @@
+[
+  {
+    "turn_id": "c-017",
+    "decision": {
+      "should_write": true,
+      "reason": "用户明确陈述了当天的精神科就诊与医生开具舍曲林的用药事实，属于可长期保存的健康信息。",
+      "produced_by": "llm:0a2e8844d251c339",
+      "unified_claims": true,
+      "fragments": [
+        {
+          "memory_id": "77ce65cc70ceb2e29fb7e7c30653e9d25b105e33cb6187656c619f91d41cc765",
+          "memory_space_id": "claims-retry-check",
+          "memory_realm_id": "claims-retry-check",
+          "owner_id": "quality_bench",
+          "companion_id": "quality_bench",
+          "audience": "companion:quality_bench",
+          "scope": "persona",
+          "visibility": "all_devices",
+          "source_device_id": "quality_bench",
+          "target_device_id": null,
+          "source_instance_id": "quality_bench",
+          "source_turn_id": "c-017",
+          "session_id": "quality_bench",
+          "wing": "Wing_Health",
+          "room": "health_psychiatry",
+          "content": "用户今天去看了精神科。",
+          "evidence_quote": "今天去看了精神科",
+          "memory_type": "health",
+          "importance": 4,
+          "confidence": 0.95,
+          "occurred_at": "2026-10-08T10:00:00Z",
+          "tags": [],
+          "privacy": "sensitive",
+          "metadata": {
+            "memory_id": "77ce65cc70ceb2e29fb7e7c30653e9d25b105e33cb6187656c619f91d41cc765",
+            "memory_space_id": "claims-retry-check",
+            "memory_realm_id": "claims-retry-check",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": "",
+            "source_instance_id": "quality_bench",
+            "source_companion_id": "quality_bench",
+            "source_turn_id": "c-017",
+            "session_id": "quality_bench",
+            "schema_version": "2",
+            "steward": "llm",
+            "importance": 4,
+            "confidence": 0.95,
+            "memory_type": "health",
+            "privacy": "sensitive",
+            "extensions": {}
+          },
+          "extensions": {}
+        }
+      ],
+      "triples": [
+        {
+          "subject": "self",
+          "predicate": "takes_medication",
+          "object": "舍曲林",
+          "evidence_quote": "医生开了舍曲林",
+          "statement": "医生为用户开了舍曲林。",
+          "statement_privacy": "sensitive",
+          "valid_from": null,
+          "valid_to": null,
+          "confidence": 0.8
+        }
+      ],
+      "invalidations": [],
+      "privacy_actions": [],
+      "mentions": []
+    },
+    "elapsed_ms": 19110.7
+  },
+  {
+    "turn_id": "c-019",
+    "decision": {
+      "should_write": true,
+      "reason": "用户陈述了周末不用想工作以及与铁锤去公园的事件，值得保存。",
+      "produced_by": "llm:0a2e8844d251c339",
+      "unified_claims": true,
+      "fragments": [
+        {
+          "memory_id": "cd641e9416a70aea9770f994c7940f84100a56ba40b69ba28e1b8aada6dfba01",
+          "memory_space_id": "claims-retry-check",
+          "memory_realm_id": "claims-retry-check",
+          "owner_id": "quality_bench",
+          "companion_id": "quality_bench",
+          "audience": "companion:quality_bench",
+          "scope": "persona",
+          "visibility": "all_devices",
+          "source_device_id": "quality_bench",
+          "target_device_id": null,
+          "source_instance_id": "quality_bench",
+          "source_turn_id": "c-019",
+          "session_id": "quality_bench",
+          "wing": "Wing_Emotion",
+          "room": "emotion_work_life_balance_2026_10",
+          "content": "用户周末终于不用想工作。",
+          "evidence_quote": "周末终于不用想工作",
+          "memory_type": "emotion",
+          "importance": 3,
+          "confidence": 0.9,
+          "occurred_at": null,
+          "tags": [],
+          "privacy": "normal",
+          "metadata": {
+            "memory_id": "cd641e9416a70aea9770f994c7940f84100a56ba40b69ba28e1b8aada6dfba01",
+            "memory_space_id": "claims-retry-check",
+            "memory_realm_id": "claims-retry-check",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": "",
+            "source_instance_id": "quality_bench",
+            "source_companion_id": "quality_bench",
+            "source_turn_id": "c-019",
+            "session_id": "quality_bench",
+            "schema_version": "2",
+            "steward": "llm",
+            "importance": 3,
+            "confidence": 0.9,
+            "memory_type": "emotion",
+            "privacy": "normal",
+            "extensions": {}
+          },
+          "extensions": {}
+        }
+      ],
+      "triples": [
+        {
+          "subject": "self",
+          "predicate": "attended",
+          "object": "公园",
+          "evidence_quote": "跟铁锤去公园了",
+          "statement": "用户和铁锤去了公园。",
+          "statement_privacy": "normal",
+          "valid_from": null,
+          "valid_to": null,
+          "confidence": 0.9
+        }
+      ],
+      "invalidations": [],
+      "privacy_actions": [],
+      "mentions": []
+    },
+    "elapsed_ms": 37122.9
+  },
+  {
+    "turn_id": "c-031",
+    "decision": {
+      "should_write": false,
+      "reason": "用户明确要求不要记录父亲去世这件事（隐私请求优先，不抽取任何 claims）",
+      "produced_by": "llm:0a2e8844d251c339",
+      "unified_claims": true,
+      "fragments": [],
+      "triples": [],
+      "invalidations": [],
+      "privacy_actions": [
+        {
+          "action": "do_not_store",
+          "target": "我爸去世",
+          "reason": "用户要求不保存父亲去世一事，不愿再被提及",
+          "evidence_quote": "别记我爸去世的事"
+        }
+      ],
+      "mentions": []
+    },
+    "elapsed_ms": 2462.7
+  },
+  {
+    "turn_id": "c-032",
+    "decision": {
+      "should_write": false,
+      "reason": "用户要求不要再提与前任相关的事，属于停止主动召回/提及的隐私边界请求，无其他可保存命题。",
+      "produced_by": "llm:0a2e8844d251c339",
+      "unified_claims": true,
+      "fragments": [],
+      "triples": [],
+      "invalidations": [],
+      "privacy_actions": [
+        {
+          "action": "archive_topic",
+          "target": "前任",
+          "reason": "用户要求不再提及与前任相关的事，属于停止主动召回但不要求物理删除",
+          "evidence_quote": "我跟前任的事也不要再提"
+        }
+      ],
+      "mentions": []
+    },
+    "elapsed_ms": 2456.7
+  },
+  {
+    "turn_id": "c-033",
+    "decision": {
+      "should_write": true,
+      "reason": "用户自述 2024 年有过一段抑郁经历，属于值得保存的健康史命题。",
+      "produced_by": "llm:0a2e8844d251c339",
+      "unified_claims": true,
+      "fragments": [],
+      "triples": [
+        {
+          "subject": "self",
+          "predicate": "has_health_condition",
+          "object": "抑郁",
+          "evidence_quote": "我抑郁过一段时间，2024 年那阵",
+          "statement": "用户曾在 2024 年那阵抑郁过一段时间。",
+          "statement_privacy": "sensitive",
+          "valid_from": null,
+          "valid_to": null,
+          "confidence": 0.9
+        }
+      ],
+      "invalidations": [],
+      "privacy_actions": [],
+      "mentions": []
+    },
+    "elapsed_ms": 3470.9
+  }
+]

@@ -8,6 +8,8 @@ project's defence against KG predicate sprawl from LLM hallucination.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from eidolon_memory_contracts import KgPredicate as _KgPredicate
 from pydantic import Field
 
@@ -33,6 +35,8 @@ class KgTripleAction(BaseEidolonModel):
     predicate: _KgPredicate
     object: str = Field(min_length=1, max_length=256)
     evidence_quote: str = ""
+    statement: str = ""
+    statement_privacy: Literal["normal", "sensitive"] = "normal"
     valid_from: str | None = None
     valid_to: str | None = None
     confidence: float = Field(ge=0.0, le=1.0, default=0.9)

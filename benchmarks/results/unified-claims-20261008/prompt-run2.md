@@ -168,7 +168,6 @@
 - importance 为 1–5 整数，confidence 在 0–1 之间。
 - privacy 只取 normal / sensitive。sensitive claim 如有 fact，只能使用上面健康类敏感谓词；其他敏感叙述保持 fact=null，避免从非敏感图谱通道泄露。
 - memory_space_id、source_turn_id、audience、设备和 Companion 等身份由服务端确定，不要输出或猜测。
-- 设备、会话或其他受限范围的 claim 使用 fact=null；图谱 fact 只支持 scope=persona、visibility=all_devices，不能承载设备/会话限制。
 - fact 不需重复 content 或 evidence_quote，它们来自所属 claim；每条 claim 的 fact 最多一个。
 - claims、invalidations、privacy_actions、mentions 均为数组，无内容时使用 []。
 
@@ -204,3 +203,4 @@ turn user_text：「她说想换工作」(上下文里"她"= mother,且本 turn 
 - 用户用的就是 canonical 名字 ("张丽 又失眠了" — "张丽" 等于 entity_id 的 tail,无需 alias)
 - entity_id 不在本 turn 的 claims[].fact 里（worker 会拒绝并记 warning）
 - alias 是空字符串
+

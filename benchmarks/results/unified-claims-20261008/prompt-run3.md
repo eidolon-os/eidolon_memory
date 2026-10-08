@@ -204,3 +204,4 @@ turn user_text：「她说想换工作」(上下文里"她"= mother,且本 turn 
 - 用户用的就是 canonical 名字 ("张丽 又失眠了" — "张丽" 等于 entity_id 的 tail,无需 alias)
 - entity_id 不在本 turn 的 claims[].fact 里（worker 会拒绝并记 warning）
 - alias 是空字符串
+

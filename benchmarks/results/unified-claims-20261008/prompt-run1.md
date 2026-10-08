@@ -25,7 +25,7 @@
 
 {{ wings_block }}
 
-## Room 命名规范（claims 用）
+## Room 命名规范（fragments 用）
 
 - `profile_core`：用户核心画像
 - `person_<name_or_alias>`：重要人物
@@ -36,7 +36,7 @@
 - `preference_<category>`：偏好
 - `privacy_<topic>`：禁记或封存主题
 
-## 重要性评分（claims 用）
+## 重要性评分（fragments 用）
 
 - 5：身份、亲密关系、重大事件、强烈情绪、明确长期偏好
 - 4：工作或项目关键进展、稳定习惯、持续压力源、重要生活变化
@@ -54,7 +54,7 @@
 健康（敏感，谨慎使用）：`has_health_condition, takes_medication, has_symptom`
 事件（一次性时刻，valid_from = valid_to）：`attended, experienced, achieved`
 
-不要发明新谓词。无法精确归类的关系，要么折成已有谓词，要么写纯文字 claim（fact=null）。
+不要发明新谓词。无法精确归类的关系，要么折成已有谓词，要么改写 fragment。
 
 ## 实体规范化（canonical 名约定）
 
@@ -83,10 +83,10 @@
 绝对禁止：
 - 用代词作 subject 或 object（"她/他/它"）
 - 把猜测或助手的说法当成用户事实；不受用户原文支持的内容一律不写
-- 把"我打算"或"我想"作为 add_triple（这是计划，写纯文字 claim（fact=null）即可；除非用户明确"决定了"）
+- 把"我打算"或"我想"作为 add_triple（这是计划，写 fragment 即可；除非用户明确"决定了"）
 - **把一个句子、从句或事件描述当成 subject 或 object。** subject 和 object 是**东西**，
   不是**发生的事**。`送铁锤到妈妈那`、`每天早上过一遍进度`、`入住祇园附近的旅馆`
-  都不是东西——这类内容写纯文字 claim（fact=null）。
+  都不是东西——这类内容写 fragment，不写 triple。
 
   **唯一的例外是承诺**：`promised` 与 `attended` 的 object 允许是一句话（见下一节），
   因为一个承诺的内容就是那句话，而两个对同一个人的不同承诺必须是两条不同的记录。
@@ -122,15 +122,6 @@
 `valid_from / valid_to / ended` 全部用 ISO-8601 UTC，格式 `YYYY-MM-DDTHH:MM:SSZ`（**不要**带微秒，**不要**带 `+00:00`）。
 若没指定 → 留空，worker 会用 turn.timestamp 填充。
 
-
-## 动作字段（不得省略必填字段）
-
-- privacy_actions 每项必填 `action`、`target`、`reason`、`evidence_quote`；reason 用简短文字说明用户的隐私意图，即使 should_write=false 也必须提供。
-  示例：用户说“不要记住这次争吵”，输出 `{ "action": "do_not_store", "target": "这次争吵", "reason": "用户要求不保存", "evidence_quote": "不要记住这次争吵" }`。
-- invalidations 每项必填 subject、predicate、object、evidence_quote；可填 ended 和 reason。subject/predicate/object 必须精确指向旧事实，不能把整句否定作为 object。
-- mentions 每项必填 entity_id、alias，可填 confidence；entity_id 必须在本轮 claim 的 fact 中出现。
-- claims 每项必填 wing、room、content、evidence_quote、memory_type、importance、confidence；可填 privacy（默认 normal）、occurred_at 和 fact（默认 null）。
-- fact 每项必填 subject、predicate、object；可填 confidence、valid_from、valid_to。证据、文字、敏感性取自所属 claim，不要再声明另一份。
 
 ## JSON 示例
 
@@ -168,7 +159,6 @@
 - importance 为 1–5 整数，confidence 在 0–1 之间。
 - privacy 只取 normal / sensitive。sensitive claim 如有 fact，只能使用上面健康类敏感谓词；其他敏感叙述保持 fact=null，避免从非敏感图谱通道泄露。
 - memory_space_id、source_turn_id、audience、设备和 Companion 等身份由服务端确定，不要输出或猜测。
-- 设备、会话或其他受限范围的 claim 使用 fact=null；图谱 fact 只支持 scope=persona、visibility=all_devices，不能承载设备/会话限制。
 - fact 不需重复 content 或 evidence_quote，它们来自所属 claim；每条 claim 的 fact 最多一个。
 - claims、invalidations、privacy_actions、mentions 均为数组，无内容时使用 []。
 
@@ -176,7 +166,7 @@
 
 如果 user_text 里用了**称谓 / 类别 / 代词**指代某个 entity（**且该 entity 已在本 turn 的 `claims[].fact` 里作为 subject 或 object 出现**），额外输出 `mentions` 数组：
 
-- `entity_id` —— 必须与本 turn 的某条 fact 的 `subject` 或 `object` **完全一致**（不在 claims[].fact 里的 entity_id 会被 worker 拒绝)
+- `entity_id` —— 必须与本 turn 的某条 triple 的 `subject` 或 `object` **完全一致**（不在 claims[].fact 里的 entity_id 会被 worker 拒绝)
 - `alias` —— 用户**verbatim**用的词，**不要规范化、不要翻译、不要补全**
 - `confidence` 取值规则：
   - **0.95** — 明确亲属/伴侣称谓（"我妈"、"我老婆"、"我儿子"），
@@ -202,5 +192,6 @@ turn user_text：「她说想换工作」(上下文里"她"= mother,且本 turn 
 
 **不要输出的情况**：
 - 用户用的就是 canonical 名字 ("张丽 又失眠了" — "张丽" 等于 entity_id 的 tail,无需 alias)
-- entity_id 不在本 turn 的 claims[].fact 里（worker 会拒绝并记 warning）
+- entity_id 不在本 turn 的 triples 里（worker 会拒绝并记 warning）
 - alias 是空字符串
+

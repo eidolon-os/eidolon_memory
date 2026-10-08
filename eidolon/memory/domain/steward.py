@@ -45,6 +45,12 @@ class EntityMention(BaseEidolonModel):
     confidence: float = Field(ge=0.0, le=1.0, default=0.85)
 
 
+class ExtractedClaim(MemoryFragment):
+    """One user-supported proposition, optionally with a structured projection."""
+
+    fact: KgTripleAction | None = None
+
+
 class StewardDecision(BaseEidolonModel):
     """The steward's write decision for one conversation turn.
 
@@ -99,6 +105,9 @@ class StewardDecision(BaseEidolonModel):
     #: existed, and test fixtures that do not care. Readers must treat it as
     #: unknown rather than as a value.
     produced_by: str = ""
+    # Set by the parser only when each write came from one atomic claim.
+    # Stored with the extraction decision; absent on historical decisions.
+    unified_claims: bool = False
     fragments: list[MemoryFragment] = Field(default_factory=list)
     triples: list[KgTripleAction] = Field(default_factory=list)
     invalidations: list[KgInvalidationAction] = Field(default_factory=list)

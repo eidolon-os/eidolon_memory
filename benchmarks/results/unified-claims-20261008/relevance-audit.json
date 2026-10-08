@@ -1,0 +1,211 @@
+{
+  "negative": [
+    {
+      "id": "canonical-006",
+      "max_similarity": 0.558,
+      "kg_count": 4
+    },
+    {
+      "id": "time-004",
+      "max_similarity": 0.437,
+      "kg_count": 8
+    },
+    {
+      "id": "future-002",
+      "max_similarity": 0.547,
+      "kg_count": 10
+    },
+    {
+      "id": "negative-001",
+      "max_similarity": 0.456,
+      "kg_count": 11
+    },
+    {
+      "id": "negative-002",
+      "max_similarity": 0.438,
+      "kg_count": 0
+    },
+    {
+      "id": "negative-003",
+      "max_similarity": 0.431,
+      "kg_count": 0
+    },
+    {
+      "id": "negative-004",
+      "max_similarity": 0.432,
+      "kg_count": 9
+    },
+    {
+      "id": "negative-005",
+      "max_similarity": 0.551,
+      "kg_count": 9
+    },
+    {
+      "id": "event-003",
+      "max_similarity": 0.631,
+      "kg_count": 9
+    }
+  ],
+  "positive_vector_labels": [
+    {
+      "id": "canonical-001",
+      "best_label_match_similarity": 0.537
+    },
+    {
+      "id": "canonical-002",
+      "best_label_match_similarity": 0.652
+    },
+    {
+      "id": "canonical-003",
+      "best_label_match_similarity": 0.655
+    },
+    {
+      "id": "canonical-004",
+      "best_label_match_similarity": 0.714
+    },
+    {
+      "id": "canonical-005",
+      "best_label_match_similarity": 0.677
+    },
+    {
+      "id": "canonical-007",
+      "best_label_match_similarity": 0.494
+    },
+    {
+      "id": "kinship-001",
+      "best_label_match_similarity": 0.495
+    },
+    {
+      "id": "kinship-002",
+      "best_label_match_similarity": 0.584
+    },
+    {
+      "id": "kinship-003",
+      "best_label_match_similarity": 0.597
+    },
+    {
+      "id": "kinship-004",
+      "best_label_match_similarity": 0.531
+    },
+    {
+      "id": "kinship-005",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "kinship-006",
+      "best_label_match_similarity": 0.502
+    },
+    {
+      "id": "kinship-007",
+      "best_label_match_similarity": 0.524
+    },
+    {
+      "id": "kinship-008",
+      "best_label_match_similarity": 0.62
+    },
+    {
+      "id": "pronoun-001",
+      "best_label_match_similarity": 0.592
+    },
+    {
+      "id": "pronoun-002",
+      "best_label_match_similarity": 0.419
+    },
+    {
+      "id": "pronoun-003",
+      "best_label_match_similarity": 0.743
+    },
+    {
+      "id": "time-001",
+      "best_label_match_similarity": 0.555
+    },
+    {
+      "id": "time-002",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "time-005",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "topic-001",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "topic-002",
+      "best_label_match_similarity": 0.674
+    },
+    {
+      "id": "topic-003",
+      "best_label_match_similarity": 0.457
+    },
+    {
+      "id": "topic-004",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "topic-005",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "topic-006",
+      "best_label_match_similarity": 0.461
+    },
+    {
+      "id": "topic-007",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "topic-008",
+      "best_label_match_similarity": 0.618
+    },
+    {
+      "id": "preference-001",
+      "best_label_match_similarity": 0.496
+    },
+    {
+      "id": "preference-002",
+      "best_label_match_similarity": 0.554
+    },
+    {
+      "id": "preference-003",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "preference-004",
+      "best_label_match_similarity": 0.415
+    },
+    {
+      "id": "future-001",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "future-003",
+      "best_label_match_similarity": null
+    },
+    {
+      "id": "event-001",
+      "best_label_match_similarity": 0.746
+    },
+    {
+      "id": "event-002",
+      "best_label_match_similarity": 0.478
+    },
+    {
+      "id": "emotion-001",
+      "best_label_match_similarity": 0.394
+    },
+    {
+      "id": "emotion-002",
+      "best_label_match_similarity": 0.655
+    },
+    {
+      "id": "emotion-003",
+      "best_label_match_similarity": 0.641
+    }
+  ],
+  "negative_max": 0.631,
+  "positive_min_of_best_matches": 0.394,
+  "one_threshold_separates_these_returned_records": false,
+  "limitations": "Frozen top-k, substring labels, no new candidates, no KG filtering; not calibrated held-out evaluation."
+}

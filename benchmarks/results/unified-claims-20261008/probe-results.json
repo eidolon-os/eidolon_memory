@@ -1,0 +1,1038 @@
+{
+  "model": "openai/deepseek-v4-flash",
+  "temperature": 0.0,
+  "prompt_sha256": {
+    "before": "7c7e07248d67ab580ff9785734a5083993bc5545fdc3f8145954dc532b943066",
+    "after": "a4b415278344b8fdb3d33e389ea9fdb89fa5c8561041cbd45e71ab740ac9da8d"
+  },
+  "results": [
+    {
+      "variant": "before",
+      "repeat": 0,
+      "turn_id": "c-001",
+      "user_text": "我妈张丽最近又失眠了，已经一周了",
+      "decision": {
+        "should_write": true,
+        "reason": "妈妈张丽持续一周失眠，写入关系与健康状态",
+        "produced_by": "llm:7622fbd0924c5452",
+        "unified_claims": false,
+        "fragments": [
+          {
+            "memory_id": "e71b23db80d6cbca279de905616b0b5b9f256078c7601de12ae629251c7edad1",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-001",
+            "session_id": "quality_bench",
+            "wing": "Wing_Health",
+            "room": "person_mother",
+            "content": "用户的妈妈张丽最近又失眠了，已经持续一周。",
+            "evidence_quote": "我妈张丽最近又失眠了，已经一周了",
+            "memory_type": "health",
+            "importance": 4,
+            "confidence": 0.92,
+            "occurred_at": "2026-10-05T14:58:00Z",
+            "tags": [
+              "妈妈",
+              "失眠",
+              "睡眠"
+            ],
+            "privacy": "normal",
+            "metadata": {
+              "memory_id": "e71b23db80d6cbca279de905616b0b5b9f256078c7601de12ae629251c7edad1",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-001",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 4,
+              "confidence": 0.92,
+              "memory_type": "health",
+              "privacy": "normal",
+              "extensions": {}
+            },
+            "extensions": {}
+          }
+        ],
+        "triples": [
+          {
+            "subject": "mother",
+            "predicate": "has_state",
+            "object": "失眠",
+            "evidence_quote": "我妈张丽最近又失眠了，已经一周了",
+            "statement": "",
+            "statement_privacy": "normal",
+            "valid_from": null,
+            "valid_to": null,
+            "confidence": 0.9
+          }
+        ],
+        "invalidations": [],
+        "privacy_actions": [],
+        "mentions": [
+          {
+            "entity_id": "mother",
+            "alias": "我妈",
+            "confidence": 0.95
+          },
+          {
+            "entity_id": "mother",
+            "alias": "张丽",
+            "confidence": 0.95
+          }
+        ]
+      },
+      "projected_sentences": [
+        "mother 处于状态 失眠"
+      ]
+    },
+    {
+      "variant": "before",
+      "repeat": 0,
+      "turn_id": "c-021",
+      "user_text": "开始喝乌龙茶不喝咖啡了，咖啡因让我心慌",
+      "decision": {
+        "should_write": true,
+        "reason": "用户告知饮品习惯改变与咖啡因不适，写入偏好与健康片段及三元组",
+        "produced_by": "llm:7622fbd0924c5452",
+        "unified_claims": false,
+        "fragments": [
+          {
+            "memory_id": "c6bf632ff4721341349f4f4404792b87b28ab60e1c83b01a9b65889ed7ad07ee",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-021",
+            "session_id": "quality_bench",
+            "wing": "Wing_Life",
+            "room": "preference_beverage",
+            "content": "用户开始喝乌龙茶，不再喝咖啡了。",
+            "evidence_quote": "开始喝乌龙茶不喝咖啡了",
+            "memory_type": "preference",
+            "importance": 4,
+            "confidence": 0.95,
+            "occurred_at": "2026-10-05T14:58:00Z",
+            "tags": [
+              "饮品",
+              "乌龙茶",
+              "咖啡"
+            ],
+            "privacy": "normal",
+            "metadata": {
+              "memory_id": "c6bf632ff4721341349f4f4404792b87b28ab60e1c83b01a9b65889ed7ad07ee",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-021",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 4,
+              "confidence": 0.95,
+              "memory_type": "preference",
+              "privacy": "normal",
+              "extensions": {}
+            },
+            "extensions": {}
+          },
+          {
+            "memory_id": "e9d2117c30528cfd723d9f28c932dad1fdea5d868215f667b1c9c1bece7f39b3",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-021",
+            "session_id": "quality_bench",
+            "wing": "Wing_Health",
+            "room": "health_general",
+            "content": "用户提到咖啡因会让自己心慌，因此停止喝咖啡。",
+            "evidence_quote": "咖啡因让我心慌",
+            "memory_type": "health",
+            "importance": 4,
+            "confidence": 0.9,
+            "occurred_at": "2026-10-05T14:58:00Z",
+            "tags": [
+              "咖啡因",
+              "心慌"
+            ],
+            "privacy": "sensitive",
+            "metadata": {
+              "memory_id": "e9d2117c30528cfd723d9f28c932dad1fdea5d868215f667b1c9c1bece7f39b3",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-021",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 4,
+              "confidence": 0.9,
+              "memory_type": "health",
+              "privacy": "sensitive",
+              "extensions": {}
+            },
+            "extensions": {}
+          }
+        ],
+        "triples": [
+          {
+            "subject": "self",
+            "predicate": "likes",
+            "object": "乌龙茶",
+            "evidence_quote": "开始喝乌龙茶不喝咖啡了",
+            "statement": "",
+            "statement_privacy": "normal",
+            "valid_from": "2026-10-05T14:58:00Z",
+            "valid_to": null,
+            "confidence": 0.9
+          }
+        ],
+        "invalidations": [
+          {
+            "subject": "self",
+            "predicate": "likes",
+            "object": "咖啡",
+            "evidence_quote": "开始喝乌龙茶不喝咖啡了",
+            "ended": "2026-10-05T14:58:00Z",
+            "reason": "用户明确表示不再喝咖啡，改喝乌龙茶"
+          }
+        ],
+        "privacy_actions": [],
+        "mentions": []
+      },
+      "projected_sentences": [
+        "用户 喜欢 乌龙茶"
+      ]
+    },
+    {
+      "variant": "before",
+      "repeat": 0,
+      "turn_id": "c-023",
+      "user_text": "今天家庭聚会，张丽炖了红烧肉",
+      "decision": {
+        "should_write": true,
+        "reason": "记录今日家庭聚会与张丽炖红烧肉的生活片段",
+        "produced_by": "llm:7622fbd0924c5452",
+        "unified_claims": false,
+        "fragments": [
+          {
+            "memory_id": "e326defd258c142624de54989ee81bfc58cf7abdbfa0d56e21421e0ad313e911",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-023",
+            "session_id": "quality_bench",
+            "wing": "Wing_Event",
+            "room": "event_family_gathering",
+            "content": "用户今天参加家庭聚会，张丽炖了红烧肉。",
+            "evidence_quote": "今天家庭聚会，张丽炖了红烧肉",
+            "memory_type": "event",
+            "importance": 3,
+            "confidence": 0.85,
+            "occurred_at": "2026-10-05T14:58:00Z",
+            "tags": [
+              "家庭聚会",
+              "红烧肉",
+              "张丽"
+            ],
+            "privacy": "normal",
+            "metadata": {
+              "memory_id": "e326defd258c142624de54989ee81bfc58cf7abdbfa0d56e21421e0ad313e911",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-023",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 3,
+              "confidence": 0.85,
+              "memory_type": "event",
+              "privacy": "normal",
+              "extensions": {}
+            },
+            "extensions": {}
+          }
+        ],
+        "triples": [
+          {
+            "subject": "self",
+            "predicate": "attended",
+            "object": "家庭聚会",
+            "evidence_quote": "今天家庭聚会",
+            "statement": "",
+            "statement_privacy": "normal",
+            "valid_from": "2026-10-05T14:58:00Z",
+            "valid_to": "2026-10-05T14:58:00Z",
+            "confidence": 0.7
+          }
+        ],
+        "invalidations": [],
+        "privacy_actions": [],
+        "mentions": []
+      },
+      "projected_sentences": [
+        "用户 参加了 家庭聚会"
+      ]
+    },
+    {
+      "variant": "after",
+      "repeat": 0,
+      "turn_id": "c-001",
+      "user_text": "我妈张丽最近又失眠了，已经一周了",
+      "decision": {
+        "should_write": true,
+        "reason": "用户明确陈述母亲张丽近期失眠已持续一周的持续状态",
+        "produced_by": "llm:c95ca256f184beff",
+        "unified_claims": true,
+        "fragments": [],
+        "triples": [
+          {
+            "subject": "mother",
+            "predicate": "has_state",
+            "object": "失眠",
+            "evidence_quote": "我妈张丽最近又失眠了，已经一周了",
+            "statement": "用户母亲张丽最近又失眠了，已经持续一周。",
+            "statement_privacy": "normal",
+            "valid_from": null,
+            "valid_to": null,
+            "confidence": 0.9
+          }
+        ],
+        "invalidations": [],
+        "privacy_actions": [],
+        "mentions": [
+          {
+            "entity_id": "mother",
+            "alias": "我妈",
+            "confidence": 0.95
+          },
+          {
+            "entity_id": "mother",
+            "alias": "张丽",
+            "confidence": 0.95
+          }
+        ]
+      },
+      "projected_sentences": [
+        "mother 处于状态 失眠"
+      ]
+    },
+    {
+      "variant": "after",
+      "repeat": 0,
+      "turn_id": "c-021",
+      "user_text": "开始喝乌龙茶不喝咖啡了，咖啡因让我心慌",
+      "decision": {
+        "should_write": true,
+        "reason": "用户明确陈述饮品习惯的改变，并说明咖啡因导致心慌的生理反应",
+        "produced_by": "llm:c95ca256f184beff",
+        "unified_claims": true,
+        "fragments": [],
+        "triples": [
+          {
+            "subject": "self",
+            "predicate": "does",
+            "object": "乌龙茶",
+            "evidence_quote": "开始喝乌龙茶不喝咖啡了",
+            "statement": "用户开始喝乌龙茶，不再喝咖啡。",
+            "statement_privacy": "normal",
+            "valid_from": null,
+            "valid_to": null,
+            "confidence": 0.9
+          },
+          {
+            "subject": "self",
+            "predicate": "has_symptom",
+            "object": "心慌",
+            "evidence_quote": "咖啡因让我心慌",
+            "statement": "用户表示咖啡因会让自己心慌。",
+            "statement_privacy": "sensitive",
+            "valid_from": null,
+            "valid_to": null,
+            "confidence": 0.85
+          }
+        ],
+        "invalidations": [
+          {
+            "subject": "self",
+            "predicate": "does",
+            "object": "咖啡",
+            "evidence_quote": "不喝咖啡了",
+            "ended": null,
+            "reason": ""
+          }
+        ],
+        "privacy_actions": [],
+        "mentions": []
+      },
+      "projected_sentences": [
+        "用户 做 乌龙茶",
+        "用户 有症状 心慌"
+      ]
+    },
+    {
+      "variant": "after",
+      "repeat": 0,
+      "turn_id": "c-023",
+      "user_text": "今天家庭聚会，张丽炖了红烧肉",
+      "decision": {
+        "should_write": true,
+        "reason": "用户明确陈述了今日家庭聚会与张丽炖红烧肉两件事，均可作为情景记忆保存",
+        "produced_by": "llm:c95ca256f184beff",
+        "unified_claims": true,
+        "fragments": [
+          {
+            "memory_id": "6d83a55b6f762aa8faea44e33b90be1b080e3bdccada0b21b2191852027dc8b8",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-023",
+            "session_id": "quality_bench",
+            "wing": "Wing_Event",
+            "room": "event_family_gathering",
+            "content": "在今天（2026-10-05）的家庭聚会上，张丽炖了红烧肉。",
+            "evidence_quote": "张丽炖了红烧肉",
+            "memory_type": "event",
+            "importance": 3,
+            "confidence": 0.9,
+            "occurred_at": null,
+            "tags": [],
+            "privacy": "normal",
+            "metadata": {
+              "memory_id": "6d83a55b6f762aa8faea44e33b90be1b080e3bdccada0b21b2191852027dc8b8",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-023",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 3,
+              "confidence": 0.9,
+              "memory_type": "event",
+              "privacy": "normal",
+              "extensions": {}
+            },
+            "extensions": {}
+          }
+        ],
+        "triples": [
+          {
+            "subject": "self",
+            "predicate": "attended",
+            "object": "家庭聚会",
+            "evidence_quote": "今天家庭聚会",
+            "statement": "今天（2026-10-05）用户参加了家庭聚会。",
+            "statement_privacy": "normal",
+            "valid_from": null,
+            "valid_to": null,
+            "confidence": 0.8
+          }
+        ],
+        "invalidations": [],
+        "privacy_actions": [],
+        "mentions": []
+      },
+      "projected_sentences": [
+        "用户 参加了 家庭聚会"
+      ]
+    },
+    {
+      "variant": "after",
+      "repeat": 1,
+      "turn_id": "c-001",
+      "user_text": "我妈张丽最近又失眠了，已经一周了",
+      "decision": {
+        "should_write": true,
+        "reason": "用户明确陈述其母亲张丽再次失眠且已持续一周，属于健康状态的可保存命题。",
+        "produced_by": "llm:c95ca256f184beff",
+        "unified_claims": true,
+        "fragments": [],
+        "triples": [
+          {
+            "subject": "mother",
+            "predicate": "has_state",
+            "object": "失眠",
+            "evidence_quote": "我妈张丽最近又失眠了，已经一周了",
+            "statement": "用户的妈妈张丽最近又失眠了，已经持续一周。",
+            "statement_privacy": "normal",
+            "valid_from": null,
+            "valid_to": null,
+            "confidence": 0.9
+          }
+        ],
+        "invalidations": [],
+        "privacy_actions": [],
+        "mentions": [
+          {
+            "entity_id": "mother",
+            "alias": "我妈",
+            "confidence": 0.95
+          },
+          {
+            "entity_id": "mother",
+            "alias": "张丽",
+            "confidence": 0.95
+          }
+        ]
+      },
+      "projected_sentences": [
+        "mother 处于状态 失眠"
+      ]
+    },
+    {
+      "variant": "after",
+      "repeat": 1,
+      "turn_id": "c-021",
+      "user_text": "开始喝乌龙茶不喝咖啡了，咖啡因让我心慌",
+      "decision": {
+        "should_write": true,
+        "reason": "用户明确陈述饮品偏好变化，并说明咖啡因导致的身体反应，属于可长期保存的偏好与健康信号",
+        "produced_by": "llm:c95ca256f184beff",
+        "unified_claims": true,
+        "fragments": [],
+        "triples": [
+          {
+            "subject": "self",
+            "predicate": "likes",
+            "object": "乌龙茶",
+            "evidence_quote": "开始喝乌龙茶",
+            "statement": "用户开始喝乌龙茶。",
+            "statement_privacy": "normal",
+            "valid_from": null,
+            "valid_to": null,
+            "confidence": 0.9
+          },
+          {
+            "subject": "self",
+            "predicate": "has_symptom",
+            "object": "心慌",
+            "evidence_quote": "咖啡因让我心慌",
+            "statement": "咖啡因会让用户心慌。",
+            "statement_privacy": "sensitive",
+            "valid_from": null,
+            "valid_to": null,
+            "confidence": 0.9
+          }
+        ],
+        "invalidations": [
+          {
+            "subject": "self",
+            "predicate": "likes",
+            "object": "咖啡",
+            "evidence_quote": "不喝咖啡了",
+            "ended": null,
+            "reason": ""
+          }
+        ],
+        "privacy_actions": [],
+        "mentions": []
+      },
+      "projected_sentences": [
+        "用户 喜欢 乌龙茶",
+        "用户 有症状 心慌"
+      ]
+    },
+    {
+      "variant": "after",
+      "repeat": 1,
+      "turn_id": "c-023",
+      "user_text": "今天家庭聚会，张丽炖了红烧肉",
+      "decision": {
+        "should_write": true,
+        "reason": "用户明确陈述了今天发生的家庭聚会以及张丽炖红烧肉两件事，均为可保存的一次性事件记忆。",
+        "produced_by": "llm:c95ca256f184beff",
+        "unified_claims": true,
+        "fragments": [
+          {
+            "memory_id": "372db6859200448a0a149acf4122d9cdfc57b67a18f1c8129608783e18968a03",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-023",
+            "session_id": "quality_bench",
+            "wing": "Wing_Event",
+            "room": "event_family_gathering",
+            "content": "张丽今天炖了红烧肉。",
+            "evidence_quote": "张丽炖了红烧肉",
+            "memory_type": "event",
+            "importance": 3,
+            "confidence": 0.9,
+            "occurred_at": null,
+            "tags": [],
+            "privacy": "normal",
+            "metadata": {
+              "memory_id": "372db6859200448a0a149acf4122d9cdfc57b67a18f1c8129608783e18968a03",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-023",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 3,
+              "confidence": 0.9,
+              "memory_type": "event",
+              "privacy": "normal",
+              "extensions": {}
+            },
+            "extensions": {}
+          }
+        ],
+        "triples": [
+          {
+            "subject": "self",
+            "predicate": "attended",
+            "object": "家庭聚会",
+            "evidence_quote": "今天家庭聚会",
+            "statement": "用户今天参加了家庭聚会。",
+            "statement_privacy": "normal",
+            "valid_from": "2026-10-05T14:58:00Z",
+            "valid_to": "2026-10-05T14:58:00Z",
+            "confidence": 0.9
+          }
+        ],
+        "invalidations": [],
+        "privacy_actions": [],
+        "mentions": []
+      },
+      "projected_sentences": [
+        "用户 参加了 家庭聚会"
+      ]
+    },
+    {
+      "variant": "before",
+      "repeat": 1,
+      "turn_id": "c-001",
+      "user_text": "我妈张丽最近又失眠了，已经一周了",
+      "decision": {
+        "should_write": true,
+        "reason": "用户陈述母亲长期失眠状态，值得记入健康与关系记忆",
+        "produced_by": "llm:7622fbd0924c5452",
+        "unified_claims": false,
+        "fragments": [
+          {
+            "memory_id": "41e845f872024fed6a7372b8752171deb4827b76450b5d69a1203474404a2063",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-001",
+            "session_id": "quality_bench",
+            "wing": "Wing_Health",
+            "room": "person_张丽",
+            "content": "用户提到妈妈张丽最近又失眠了，已经持续一周。",
+            "evidence_quote": "我妈张丽最近又失眠了，已经一周了",
+            "memory_type": "health",
+            "importance": 4,
+            "confidence": 0.9,
+            "occurred_at": "",
+            "tags": [
+              "失眠",
+              "妈妈",
+              "睡眠"
+            ],
+            "privacy": "normal",
+            "metadata": {
+              "memory_id": "41e845f872024fed6a7372b8752171deb4827b76450b5d69a1203474404a2063",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-001",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 4,
+              "confidence": 0.9,
+              "memory_type": "health",
+              "privacy": "normal",
+              "extensions": {}
+            },
+            "extensions": {}
+          }
+        ],
+        "triples": [
+          {
+            "subject": "mother",
+            "predicate": "has_state",
+            "object": "失眠",
+            "evidence_quote": "我妈张丽最近又失眠了，已经一周了",
+            "statement": "",
+            "statement_privacy": "normal",
+            "valid_from": null,
+            "valid_to": null,
+            "confidence": 0.9
+          }
+        ],
+        "invalidations": [],
+        "privacy_actions": [],
+        "mentions": [
+          {
+            "entity_id": "mother",
+            "alias": "我妈",
+            "confidence": 0.95
+          },
+          {
+            "entity_id": "mother",
+            "alias": "张丽",
+            "confidence": 0.95
+          }
+        ]
+      },
+      "projected_sentences": [
+        "mother 处于状态 失眠"
+      ]
+    },
+    {
+      "variant": "before",
+      "repeat": 1,
+      "turn_id": "c-021",
+      "user_text": "开始喝乌龙茶不喝咖啡了，咖啡因让我心慌",
+      "decision": {
+        "should_write": true,
+        "reason": "用户改喝乌龙茶戒咖啡，并提到咖啡因致心慌",
+        "produced_by": "llm:7622fbd0924c5452",
+        "unified_claims": false,
+        "fragments": [
+          {
+            "memory_id": "c6bf632ff4721341349f4f4404792b87b28ab60e1c83b01a9b65889ed7ad07ee",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-021",
+            "session_id": "quality_bench",
+            "wing": "Wing_Life",
+            "room": "preference_beverage",
+            "content": "用户开始喝乌龙茶，不再喝咖啡了。",
+            "evidence_quote": "开始喝乌龙茶不喝咖啡了",
+            "memory_type": "preference",
+            "importance": 4,
+            "confidence": 0.9,
+            "occurred_at": "2026-10-05T14:58:00Z",
+            "tags": [
+              "乌龙茶",
+              "咖啡",
+              "饮食偏好"
+            ],
+            "privacy": "normal",
+            "metadata": {
+              "memory_id": "c6bf632ff4721341349f4f4404792b87b28ab60e1c83b01a9b65889ed7ad07ee",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-021",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 4,
+              "confidence": 0.9,
+              "memory_type": "preference",
+              "privacy": "normal",
+              "extensions": {}
+            },
+            "extensions": {}
+          },
+          {
+            "memory_id": "8429e22d3468f906f12604354a8767999d92994cdc24cd99b47825ee4ac5f92c",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-021",
+            "session_id": "quality_bench",
+            "wing": "Wing_Health",
+            "room": "health_symptom",
+            "content": "用户表示咖啡因会让自己心慌，因此不再喝咖啡。",
+            "evidence_quote": "咖啡因让我心慌",
+            "memory_type": "health",
+            "importance": 4,
+            "confidence": 0.85,
+            "occurred_at": "2026-10-05T14:58:00Z",
+            "tags": [
+              "咖啡因",
+              "心慌"
+            ],
+            "privacy": "sensitive",
+            "metadata": {
+              "memory_id": "8429e22d3468f906f12604354a8767999d92994cdc24cd99b47825ee4ac5f92c",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-021",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 4,
+              "confidence": 0.85,
+              "memory_type": "health",
+              "privacy": "sensitive",
+              "extensions": {}
+            },
+            "extensions": {}
+          }
+        ],
+        "triples": [
+          {
+            "subject": "self",
+            "predicate": "does",
+            "object": "喝乌龙茶",
+            "evidence_quote": "开始喝乌龙茶不喝咖啡了",
+            "statement": "",
+            "statement_privacy": "normal",
+            "valid_from": "2026-10-05T14:58:00Z",
+            "valid_to": null,
+            "confidence": 0.9
+          },
+          {
+            "subject": "self",
+            "predicate": "has_symptom",
+            "object": "心慌",
+            "evidence_quote": "咖啡因让我心慌",
+            "statement": "",
+            "statement_privacy": "normal",
+            "valid_from": "2026-10-05T14:58:00Z",
+            "valid_to": null,
+            "confidence": 0.85
+          }
+        ],
+        "invalidations": [
+          {
+            "subject": "self",
+            "predicate": "does",
+            "object": "喝咖啡",
+            "evidence_quote": "不喝咖啡了",
+            "ended": "2026-10-05T14:58:00Z",
+            "reason": "用户改喝乌龙茶，不再喝咖啡"
+          }
+        ],
+        "privacy_actions": [],
+        "mentions": []
+      },
+      "projected_sentences": [
+        "用户 做 喝乌龙茶",
+        "用户 有症状 心慌"
+      ]
+    },
+    {
+      "variant": "before",
+      "repeat": 1,
+      "turn_id": "c-023",
+      "user_text": "今天家庭聚会，张丽炖了红烧肉",
+      "decision": {
+        "should_write": true,
+        "reason": "记录今天家庭聚会及张丽炖红烧肉的一次性事件",
+        "produced_by": "llm:7622fbd0924c5452",
+        "unified_claims": false,
+        "fragments": [
+          {
+            "memory_id": "e326defd258c142624de54989ee81bfc58cf7abdbfa0d56e21421e0ad313e911",
+            "memory_space_id": "quality-language-probe",
+            "memory_realm_id": "quality-language-probe",
+            "owner_id": "quality_bench",
+            "companion_id": "quality_bench",
+            "audience": "companion:quality_bench",
+            "scope": "persona",
+            "visibility": "all_devices",
+            "source_device_id": "quality_bench",
+            "target_device_id": null,
+            "source_instance_id": "quality_bench",
+            "source_turn_id": "c-023",
+            "session_id": "quality_bench",
+            "wing": "Wing_Event",
+            "room": "event_family_gathering",
+            "content": "用户今天参加家庭聚会，张丽炖了红烧肉。",
+            "evidence_quote": "今天家庭聚会，张丽炖了红烧肉",
+            "memory_type": "event",
+            "importance": 3,
+            "confidence": 0.85,
+            "occurred_at": "2026-10-05T14:58:00Z",
+            "tags": [
+              "家庭聚会",
+              "张丽",
+              "红烧肉"
+            ],
+            "privacy": "normal",
+            "metadata": {
+              "memory_id": "e326defd258c142624de54989ee81bfc58cf7abdbfa0d56e21421e0ad313e911",
+              "memory_space_id": "quality-language-probe",
+              "memory_realm_id": "quality-language-probe",
+              "owner_id": "quality_bench",
+              "companion_id": "quality_bench",
+              "audience": "companion:quality_bench",
+              "scope": "persona",
+              "visibility": "all_devices",
+              "source_device_id": "quality_bench",
+              "target_device_id": "",
+              "source_instance_id": "quality_bench",
+              "source_companion_id": "quality_bench",
+              "source_turn_id": "c-023",
+              "session_id": "quality_bench",
+              "schema_version": "2",
+              "steward": "llm",
+              "importance": 3,
+              "confidence": 0.85,
+              "memory_type": "event",
+              "privacy": "normal",
+              "extensions": {}
+            },
+            "extensions": {}
+          }
+        ],
+        "triples": [
+          {
+            "subject": "self",
+            "predicate": "attended",
+            "object": "家庭聚会",
+            "evidence_quote": "今天家庭聚会",
+            "statement": "",
+            "statement_privacy": "normal",
+            "valid_from": "2026-10-05T14:58:00Z",
+            "valid_to": "2026-10-05T14:58:00Z",
+            "confidence": 0.8
+          }
+        ],
+        "invalidations": [],
+        "privacy_actions": [],
+        "mentions": []
+      },
+      "projected_sentences": [
+        "用户 参加了 家庭聚会"
+      ]
+    }
+  ]
+}

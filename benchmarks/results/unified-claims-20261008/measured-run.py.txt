@@ -1,0 +1,48 @@
+import asyncio
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import time
+
+root=Path('/Users/manson/ai/eidolon/eidolon_memory')
+sys.path.insert(0,str(root))
+from eidolon.memory.config.memory_settings import get_memory_settings,reset_memory_settings_cache
+from scripts.benchmark import bench_memory_retrieve_quality as bench
+
+run=Path('/private/tmp/eidolon-quality-20261008-claims3')
+run.mkdir(exist_ok=False)
+s=get_memory_settings().model_dump(mode='json')
+s['embedding']['http']['base_url']='http://127.0.0.1:19283/v1'
+s['nats']['url']='nats://127.0.0.1:19221'
+s['runtime']['run_dir']=str(run/'run')
+s['runtime']['palaces_root']=str(run/'palaces')
+settings=run/'settings.json';settings.write_text(json.dumps(s))
+os.environ.update(EIDOLON_MEMORY_SETTINGS_YAML=str(settings),EIDOLON_MEMORY_RUN_DIR=str(run/'run'),MEMPALACE_HOME=str(run/'home'),NO_PROXY='127.0.0.1,localhost',HF_HUB_OFFLINE='1')
+reset_memory_settings_cache()
+children=[]
+def spawn(cmd,name):
+ with (run/name).open('w') as log:
+  p=subprocess.Popen(cmd,cwd=root,stdout=log,stderr=subprocess.STDOUT)
+ children.append(p)
+ return p
+try:
+ nats=spawn(['nats-server','-a','127.0.0.1','-p','19221','-js','-sd',str(run/'nats')],'nats.log')
+ embed=spawn([str(root/'.venv/bin/eidolon-memory-embedder'),'--model','bge-small-zh','--model-dir','/Users/manson/.cache/huggingface/hub/models--Xenova--bge-small-zh-v1.5/snapshots/75c43b069aac4d136ba6bc1122f995fedcfd2781','--host','127.0.0.1','--port','19283','--threads','4'],'embedder.log')
+ for port,p in [(19221,nats),(19283,embed)]:
+  for _ in range(100):
+   if p.poll() is not None: raise RuntimeError(f'service exited on port {port}')
+   try:
+    with socket.create_connection(('127.0.0.1',port),timeout=.2): break
+   except OSError: time.sleep(.1)
+  else: raise RuntimeError(f'port not ready {port}')
+ sys.argv=['bench_memory_retrieve_quality.py','--user-id','quality-claims3-20261008','--port','19230','--nats-url','nats://127.0.0.1:19221','--ingest-timeout','1800']
+ raise SystemExit(bench.main())
+finally:
+ for p in reversed(children):
+  if p.poll() is None:
+   p.terminate()
+   try:p.wait(timeout=15)
+   except subprocess.TimeoutExpired:p.kill();p.wait()

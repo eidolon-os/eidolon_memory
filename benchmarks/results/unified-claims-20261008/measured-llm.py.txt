@@ -250,9 +250,7 @@ class LiteLLMSteward:
                     data["fragments"] = []
                     data["triples"] = []
                     for claim in claims:
-                        if claim.fact is None or not self._settings.kg.enabled:
-                            # With the graph disabled, retain the same claim as
-                            # a text assertion through the existing ledger path.
+                        if claim.fact is None:
                             data["fragments"].append(claim.model_dump(exclude={"fact"}))
                         else:
                             if (

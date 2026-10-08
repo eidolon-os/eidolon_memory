@@ -1,0 +1,10 @@
+{
+  "eidolon/memory/domain/kg.py": "9bea87b3346bdd5b00e8a60c2fcc2268034f787cd044074c29adfe04deac0ea2",
+  "eidolon/memory/domain/steward.py": "1ef4cb8c94c4ae0059ca249b36ab8b597f318f2319cb75bd4ab820e48ef3e08a",
+  "eidolon/memory/application/steward/llm.py": "160a9dac9d4b0faf50019544ee55ad4b49715ab51aae3915c8804fb823203ce3",
+  "eidolon/memory/application/memory_intents.py": "927dc700ddeb12489f92c018868f8d4a501f48042d62e5d342ef39a345682540",
+  "eidolon/memory/application/turn_processor.py": "7c0c099edd1906d4001c989377202b5e026ec12bfb08f67aff8b4a9bf6048749",
+  "eidolon/memory/config/prompts/memory_steward.md": "858cc918240bc0d3b1c3a83f633ea8e08d5cbc5cc3e6b4410204e3f6afa017a3",
+  "tests/memory/e2e/fixtures/companion_corpus.jsonl": "fe8bdfc3391150d1c32167e21e20f8fe9e24a5aeebeb72e2e0e64b79582f9417",
+  "tests/memory/e2e/fixtures/quality_queries.jsonl": "202293aca05515948c535c3d24db4a1e05b50b104e6ca8d0dec47b513791b102"
+}
