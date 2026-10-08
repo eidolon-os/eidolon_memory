@@ -1,0 +1,35 @@
+diff --git a/mempalace/backends/chroma.py b/mempalace/backends/chroma.py
+index 40afddd..e5d0c89 100644
+--- a/mempalace/backends/chroma.py
++++ b/mempalace/backends/chroma.py
+@@ -2782,16 +2782,23 @@ class ChromaCollection(BaseCollection):
+         finally:
+             conn.close()
+ 
++        # Resolve column positions once, as sqlite_list_id_metadata does.
++        # A scoped FTS query can return many metadata rows; constructing a
++        # values dict and scanning Row.keys() for each cell dominates decoding.
++        value_positions = [
++            value_columns.index(col) + 2 if col in value_columns else None
++            for col in ("string_value", "int_value", "float_value", "bool_value")
++        ]
++        s_at, i_at, f_at, b_at = value_positions
+         drawers: dict[int, dict] = {}
+         for row in meta_rows:
+-            emb_id = int(row["id"])
+-            key = row["key"]
+-            values = {col: row[col] if col in row.keys() else None for col in value_columns}
++            emb_id = int(row[0])
++            key = row[1]
+             value = _metadata_cell_value(
+-                values.get("string_value"),
+-                values.get("int_value"),
+-                values.get("float_value"),
+-                values.get("bool_value"),
++                row[s_at] if s_at is not None else None,
++                row[i_at] if i_at is not None else None,
++                row[f_at] if f_at is not None else None,
++                row[b_at] if b_at is not None else None,
+             )
+             drawer = drawers.setdefault(emb_id, {"metadata": {}, "document": ""})
+             if key == "chroma:document":
