@@ -16,7 +16,7 @@ LLM 输出从互不关联的 fragments/triples 改为 claims：一个命题包�
 - 抽取等待 325.8 秒。c-017 首次输出的敏感 claim 使用了非敏感谓词，被拒绝并重试成功；无 DLQ ack。
 - 48 次查询无错误、无降级。小语料 MCP p50 20.2ms、p95 22.4ms，不能替代规模/真机门禁；机器同时有测试进程，不作性能因果结论。
 
-`compare.py` 用相同的当前标签重评两份冻结响应，未修改题目或重新召回：
+`compare.py` 默认使用已冻结的原标签重评两份冻结响应，未修改题目或重新召回：
 
 | 指标 | 10-05 冻结基线 | 本轮 |
 |---|---:|---:|
@@ -55,3 +55,17 @@ manifest.json 记录完整模型实验实际加载的代码/语料 SHA-256，pro
 完整默认回归 **1279 通过、4 跳过、11 排除**，另外 contracts/tests **73 通过**；随后 KG 关闭兼容与端口缺失测试补齐后，最终相关测试 **40 通过**。日志分别为 full-regression.txt、final-targeted-tests.txt。集成测试覆盖同一 claim 的写入、重投、精确纠正和硬删除后不复活，以及历史 intent identity 保持不变。
 
 原始响应、抽取决定、投影快照、分组失败、账本计数/时序和前两轮失败日志均归档。本报告中“保留决定”不包含隐私 tombstone 对应的已删除内容；模型探针只使用明确授权的合成测试语料。凭据不入库。
+
+## 2026-10-08 收敛复核
+
+修正 5 道已查实的标签：妻子 canonical 名称、李总人物类型，以及开放计划题遗漏半马/产品/搬家并强制要求 KG 的问题。逐题语料依据保存在 fixture 的 label_note/source_turn_ids。没有修改生产检索或删除失败题；未来计划题仍只验证任一支持证据，不验证答案完整性。
+
+同一新标签下，10-05 冻结响应为 **18/48**，统一 claims 冻结响应为 **25/48**；缺失证据组分别 25、16，拒答仍均 **0/9**。标签修正本身不是系统提升。时间锚点、指代上下文和敏感通道仍需核对，这 48 题不能作为最终产品准确率。
+
+`label-correction.json` 保存修正前后计数与响应哈希，`comparison-corrected.json` 保存新标签下的双基线结果。重算命令（仓库根目录）：
+
+```sh
+.venv/bin/python benchmarks/results/unified-claims-20261008/compare.py --labels tests/memory/e2e/fixtures/quality_queries.jsonl --output benchmarks/results/unified-claims-20261008/comparison-corrected.json
+```
+
+标注修正后运行既有质量脚本、统一 claims、SQLite KG 的相关回归：119 项通过。停止继续进行 RRF 开关、top-k/阈值扫描和词法微基准；保留现有生产默认值。后续只针对有明确语料依据的漏召回和无关证据问题修复，并用独立用例检验；删除、权限、兼容性回归是必要门禁。当前并未通过 Memory 整体验收。

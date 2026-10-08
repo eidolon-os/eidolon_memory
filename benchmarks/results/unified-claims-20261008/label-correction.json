@@ -1,0 +1,96 @@
+{
+  "kind": "frozen_response_label_correction_only",
+  "changed_ids": [
+    "canonical-002",
+    "canonical-005",
+    "kinship-008",
+    "future-001",
+    "future-003"
+  ],
+  "labels_sha256": "fa4bc3b7ec19198aa61666874689c6a2868c93abcc1491efdb683d0d917aa1ba",
+  "runs": {
+    "quality-current-20261005": {
+      "before": {
+        "correct": 14,
+        "n": 48,
+        "omissions": 31,
+        "abstention_correct": 0,
+        "abstention_total": 9
+      },
+      "after": {
+        "correct": 18,
+        "n": 48,
+        "omissions": 25,
+        "abstention_correct": 0,
+        "abstention_total": 9
+      },
+      "changed_outcomes": [
+        {
+          "id": "canonical-005",
+          "before": false,
+          "after": true
+        },
+        {
+          "id": "kinship-008",
+          "before": false,
+          "after": true
+        },
+        {
+          "id": "future-001",
+          "before": false,
+          "after": true
+        },
+        {
+          "id": "future-003",
+          "before": false,
+          "after": true
+        }
+      ],
+      "response_sha256": "7c656f3d473be186aecf1dc6998c7ca7d8bfe5334df8a513e9da49e0bb60e226"
+    },
+    "unified-claims-20261008": {
+      "before": {
+        "correct": 20,
+        "n": 48,
+        "omissions": 23,
+        "abstention_correct": 0,
+        "abstention_total": 9
+      },
+      "after": {
+        "correct": 25,
+        "n": 48,
+        "omissions": 16,
+        "abstention_correct": 0,
+        "abstention_total": 9
+      },
+      "changed_outcomes": [
+        {
+          "id": "canonical-002",
+          "before": false,
+          "after": true
+        },
+        {
+          "id": "canonical-005",
+          "before": false,
+          "after": true
+        },
+        {
+          "id": "kinship-008",
+          "before": false,
+          "after": true
+        },
+        {
+          "id": "future-001",
+          "before": false,
+          "after": true
+        },
+        {
+          "id": "future-003",
+          "before": false,
+          "after": true
+        }
+      ],
+      "response_sha256": "111281b081f88e9f5700df48e1edc96ee65ed8c914f26bd33d2ba0fd78144c47"
+    }
+  }
+}
