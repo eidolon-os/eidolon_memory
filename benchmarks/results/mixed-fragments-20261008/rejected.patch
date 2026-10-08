@@ -1,0 +1,147 @@
+diff --git a/eidolon/memory/application/steward/llm.py b/eidolon/memory/application/steward/llm.py
+index 13338fb..fd1265f 100644
+--- a/eidolon/memory/application/steward/llm.py
++++ b/eidolon/memory/application/steward/llm.py
+@@ -95,11 +95,27 @@ class LiteLLMSteward:
+                 dropped_by_importance=len(capped) - len(kept),
+                 min_importance=self._settings.steward.min_importance_to_write,
+             )
+-        decision.fragments = finalize_fragments(
+-            kept,
+-            steward="llm",
+-            context=turn.context,
+-            source_turn_id=turn.turn_id,
++        # Preserve semantic declarations when cap/importance filtering moves
++        # fragment positions. Update both fields together to retain valid indexes.
++        kept_indexes = [
++            i
++            for i, fragment in enumerate(capped)
++            if fragment.importance >= self._settings.steward.min_importance_to_write
++        ]
++        decision = decision.model_copy(
++            update={
++                "fragments": finalize_fragments(
++                    kept,
++                    steward="llm",
++                    context=turn.context,
++                    source_turn_id=turn.turn_id,
++                ),
++                "independent_fragment_indexes": [
++                    new
++                    for new, old in enumerate(kept_indexes)
++                    if old in decision.independent_fragment_indexes
++                ],
++            }
+         )
+         if decision.fragments:
+             decision.should_write = True
+diff --git a/eidolon/memory/application/turn_processor.py b/eidolon/memory/application/turn_processor.py
+index 12e223e..ed9f273 100644
+--- a/eidolon/memory/application/turn_processor.py
++++ b/eidolon/memory/application/turn_processor.py
+@@ -532,10 +532,10 @@ async def process_turn_message(
+                 produced_by="privacy:tombstone",
+             )
+         # Structured assertions project their own canonical drawer beside the
+-        # KG row below. Only fragment-only decisions are handled here; otherwise
+-        # writing the model's prose as another source creates two independently
+-        # correctable versions of the same fact.
+-        if decision.should_write and (not decision.triples or kg is None):
++        # KG row below. In mixed decisions only explicitly independent claims
++        # may also become text assertions; a prose restatement would create two
++        # independently correctable versions of the same fact.
++        if decision.should_write:
+             with stages.stage("fragments"):
+                 if canonical_facts is None:
+                     raise RuntimeError("natural long-term memory requires its fact ledger")
+@@ -546,6 +546,12 @@ async def process_turn_message(
+                 }
+                 pending: list[tuple[MemoryFragment, Any]] = []
+                 for index, fragment in enumerate(decision.fragments):
++                    if (
++                        decision.triples
++                        and kg is not None
++                        and index not in decision.independent_fragment_indexes
++                    ):
++                        continue
+                     intent = fragment_intents[index]
+                     registration = await canonical_facts.register(intent, targets={"drawer"})
+                     if registration.state != "active":
+diff --git a/eidolon/memory/config/prompts/memory_steward.md b/eidolon/memory/config/prompts/memory_steward.md
+index 72b0a84..6e1e257 100644
+--- a/eidolon/memory/config/prompts/memory_steward.md
++++ b/eidolon/memory/config/prompts/memory_steward.md
+@@ -35,11 +35,20 @@
+ | 召回用语义相似 | 召回用实体名 + as_of |
+ 
+ 经验法则：
+-- 涉及具体人物/项目的**关系或长期状态** → triple（可同时写 fragment 留原文）
++- 涉及具体人物/项目的**关系或长期状态** → triple；不要另写同一事实的重复 fragment
+ - 用户的**情绪/感受/想法** → 通常只写 fragment
+ - **改变心意 / 承诺兑现** → 一个 invalidation +（可选）一个新 triple
+ - **承诺**（"答应妈妈周末回家"）→ 一个带 `valid_to` 的 promised triple
+ 
++### 同轮混合内容的归属
++
++- `independent_fragment_indexes` 是 fragments 数组的零基索引列表，标记其中只包含 triples **未表达的独立命题**的片段。
++- 同轮有 triples 时，只有此列表中的片段会额外写入。不要把完整摘要或同一事实的另一种说法标为独立，否则以后纠正 triple 时旧片段仍会留下。
++- 一个片段同时包含已表达事实和独立信息时，先拆掉重复部分，只保留独立信息及其逐字证据，再标记索引。不要把多个事实拼成一个片段。
++- 例如用户说“今天家庭聚会，张丽炖了红烧肉”：若 triple 表达参加家庭聚会，独立 fragment 可写“张丽炖了红烧肉”，evidence_quote 同样取“张丽炖了红烧肉”；不要把整个聚会摘要标为独立。
++- 例如用户说“我妈张丽失眠了”：mother / has_state / 失眠 已表达该事实，名字通过 mentions 保留，不再另写独立片段。
++- 若所有信息都已由 triples 表达，列表为空；没有 triples 时仍按原规则保存 fragments。不能确定独立性时，不标记。
++
+ ## 允许的 Wings
+ 
+ {{ wings_block }}
+@@ -178,6 +187,7 @@
+       "metadata": {}
+     }
+   ],
++  "independent_fragment_indexes": [],
+   "triples": [
+     {
+       "subject": "self",
+diff --git a/eidolon/memory/domain/steward.py b/eidolon/memory/domain/steward.py
+index c6c5c49..4190376 100644
+--- a/eidolon/memory/domain/steward.py
++++ b/eidolon/memory/domain/steward.py
+@@ -2,9 +2,9 @@
+ 
+ from __future__ import annotations
+ 
+-from typing import Literal
++from typing import Annotated, Literal
+ 
+-from pydantic import Field
++from pydantic import Field, model_validator
+ 
+ from eidolon.memory.domain.fragments import MemoryFragment
+ from eidolon.memory.domain.kg import KgInvalidationAction, KgTripleAction
+@@ -100,11 +100,27 @@ class StewardDecision(BaseEidolonModel):
+     #: unknown rather than as a value.
+     produced_by: str = ""
+     fragments: list[MemoryFragment] = Field(default_factory=list)
++    independent_fragment_indexes: list[Annotated[int, Field(strict=True, ge=0)]] = Field(
++        default_factory=list
++    )
++    """Fragments asserting only information absent from this decision's triples.
++
++    The semantic extractor owns this distinction. Missing declarations on old
++    decisions preserve the historical mixed-turn behavior; never infer it from
++    text overlap. Indexes refer to fragments before importance/cap filtering.
++    """
+     triples: list[KgTripleAction] = Field(default_factory=list)
+     invalidations: list[KgInvalidationAction] = Field(default_factory=list)
+     privacy_actions: list[PrivacyAction] = Field(default_factory=list)
+     mentions: list[EntityMention] = Field(default_factory=list)
+ 
++    @model_validator(mode="after")
++    def validate_independent_fragments(self) -> StewardDecision:
++        indexes = self.independent_fragment_indexes
++        if len(indexes) != len(set(indexes)) or any(i >= len(self.fragments) for i in indexes):
++            raise ValueError("independent fragment indexes must be unique and in range")
++        return self
++
+     def stamped_by(self, producer: str) -> StewardDecision:
+         """Record ``producer`` as the extractor, unless one is already recorded.
+ 
