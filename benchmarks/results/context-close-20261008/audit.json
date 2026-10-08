@@ -1,0 +1,38 @@
+{
+  "coarse_topic_quality": [
+    {
+      "run": "5000-chat-graph-repeated-b1.json",
+      "coarse_topic_hits": 24,
+      "count": 24
+    },
+    {
+      "run": "5000-chat-graph-repeated-b2.json",
+      "coarse_topic_hits": 24,
+      "count": 24
+    },
+    {
+      "run": "5000-chat-repeated-b1.json",
+      "coarse_topic_hits": 24,
+      "count": 24
+    },
+    {
+      "run": "5000-chat-repeated-b2.json",
+      "coarse_topic_hits": 24,
+      "count": 24
+    },
+    {
+      "run": "5000-voice-repeated-b1.json",
+      "coarse_topic_hits": 24,
+      "count": 24
+    },
+    {
+      "run": "5000-voice-repeated-b2.json",
+      "coarse_topic_hits": 24,
+      "count": 24
+    }
+  ],
+  "write_worker_version_verified_from_wrapped_log": true,
+  "write_harness_exit": 1,
+  "write_harness_failure": "Exact substring assertion did not account for Rich line wrapping; original report/log retained.",
+  "production_candidate_accepted": false
+}

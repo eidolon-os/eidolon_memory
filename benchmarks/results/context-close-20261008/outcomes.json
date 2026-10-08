@@ -1,0 +1,26 @@
+[
+  {
+    "run": "5000-chat-repeated-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-chat-graph-repeated-b1",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-voice-repeated-b1",
+    "exit_code": 1
+  },
+  {
+    "run": "5000-chat-repeated-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-chat-graph-repeated-b2",
+    "exit_code": 0
+  },
+  {
+    "run": "5000-voice-repeated-b2",
+    "exit_code": 1
+  }
+]

@@ -1,0 +1,183 @@
+"""Bounded synthetic NATS -> real steward -> authenticated browse/graph probe."""
+import asyncio
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import httpx
+import nats
+import yaml
+
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+from eidolon_memory_contracts import (  # noqa: E402
+    ConversationContextTurn, ConversationTurnPayload, build_memory_actor_context,
+    conversation_turn_subject, envelope_memory_payload,
+)
+from eidolon.memory.application.steward.llm import EXTRACTION_PROTOCOL, LiteLLMSteward  # noqa: E402
+from eidolon.memory.config.memory_settings import get_memory_settings  # noqa: E402
+from scripts.benchmark.manifest import build_manifest  # noqa: E402
+
+OUT = Path(__file__).resolve().parent
+
+
+def port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+async def main():
+    settings = get_memory_settings()
+    policy = LiteLLMSteward(settings)
+    version = policy.extraction_version
+    await policy.aclose()
+    result = {"protocol": EXTRACTION_PROTOCOL, "extractor_version": version,
+              "raw_conversation_read_ms": None,
+              "raw_conversation_read_note": "Agent storage/API latency not measured by this probe",
+              "samples": []}
+    with tempfile.TemporaryDirectory(prefix="memory-context-write-") as tmp:
+        root = Path(tmp)
+        np, ap, ep = port(), port(), port()
+        realm, companion = "context-write-test", "context-write-companion"
+        cfg = settings.model_dump(mode="json")
+        cfg["nats"]["url"] = f"nats://127.0.0.1:{np}"
+        cfg["embedding"]["http"]["base_url"] = f"http://127.0.0.1:{ep}/v1"
+        cfg["steward"]["mode"] = "llm"
+        cfg["mcp_http"].update(host="127.0.0.1", port=ap,
+                               api_service_token_env="CONTEXT_WRITE_TEST_TOKEN")
+        cfg["runtime"].update(palaces_root=str(root / "palaces"),
+                                run_dir=str(root / "run"), log_dir=str(root / "logs"))
+        cp = root / "settings.yaml"
+        cp.write_text(yaml.safe_dump(cfg, allow_unicode=True))
+        env = dict(os.environ, EIDOLON_MEMORY_SETTINGS_YAML=str(cp),
+                   EIDOLON_MEMORY_DOTENV_MODE="environment",
+                   EIDOLON_MEMORY_RUN_DIR=str(root / "run"),
+                   EIDOLON_MEMORY_LOG_DIR=str(root / "logs"),
+                   EIDOLON_MEMORY_PALACES_ROOT=str(root / "palaces"),
+                   EIDOLON_MEMORY_PROCESS_TMP_ROOT=str(root / "tmp"),
+                   CONTEXT_WRITE_TEST_TOKEN="isolated-context-test", HF_HUB_OFFLINE="1")
+        children, handles = [], []
+        nc = None
+        def spawn(command, name):
+            handle = (OUT / name).open("w")
+            handles.append(handle)
+            proc = subprocess.Popen(command, cwd=ROOT, env=env, stdout=handle,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+            children.append(proc)
+            return proc
+        try:
+            spawn(["nats-server", "-js", "-a", "127.0.0.1", "-p", str(np),
+                   "-sd", str(root / "nats")], "write-nats.log")
+            spawn([str(ROOT / ".venv/bin/eidolon-memory-embedder"), "--model", "bge-small-zh",
+                   "--model-dir", "/Users/manson/.cache/huggingface/hub/models--Xenova--bge-small-zh-v1.5/snapshots/75c43b069aac4d136ba6bc1122f995fedcfd2781",
+                   "--host", "127.0.0.1", "--port", str(ep), "--threads", "4"], "write-embedder.log")
+            for value in (np, ep):
+                for _ in range(100):
+                    try:
+                        with socket.create_connection(("127.0.0.1", value), timeout=.1):
+                            break
+                    except OSError:
+                        await asyncio.sleep(.1)
+                else:
+                    raise TimeoutError("isolated provider startup")
+            worker = spawn([sys.executable, "-m", "eidolon.memory.entrypoints.agent_runner",
+                            "--memory-space-id", realm, "--owner-id", "context-write-owner",
+                            "--port", str(ap)], "write-worker.log")
+            base = f"http://127.0.0.1:{ap}/api/memory/v1"
+            async with httpx.AsyncClient(trust_env=False, timeout=10,
+                    headers={"Authorization": "Bearer isolated-context-test"}) as client:
+                for _ in range(180):
+                    if worker.poll() is not None:
+                        raise RuntimeError("isolated worker exited")
+                    try:
+                        r = await client.get(base + "/browse", params={"companion_id": companion})
+                        if r.status_code == 200:
+                            break
+                    except httpx.TransportError:
+                        pass
+                    await asyncio.sleep(.2)
+                else:
+                    raise TimeoutError("worker startup")
+                assert r.json()["entry_count"] == 0
+                nc = await nats.connect(f"nats://127.0.0.1:{np}")
+                js = nc.jetstream()
+                actor = build_memory_actor_context(owner_id="context-write-owner",
+                    companion_id=companion, memory_realm_id=realm,
+                    device_id="context-write-device", session_id="context-write-session")
+                previous, payloads = [], []
+                for index, (text, marker) in enumerate([
+                    ("铁锤是我家的小狗，它喜欢鸡肉。", "鸡肉"),
+                    ("它还喜欢牛肉。", "牛肉"), ("它是边牧。", "边牧"),
+                ]):
+                    stamp = datetime.now(UTC)
+                    turn = ConversationTurnPayload(turn_id=f"context-write-{index}", context=actor,
+                        user_text=text, assistant_text="", timestamp=stamp.isoformat(),
+                        metadata={"conversation_id": "context-write-conversation"},
+                        context_turns=previous[:])
+                    body = envelope_memory_payload(turn).model_dump_json().encode()
+                    payloads.append(body)
+                    begin = time.monotonic()
+                    await js.publish(conversation_turn_subject(realm), body)
+                    ack_ms = (time.monotonic() - begin) * 1000
+                    for _ in range(600):
+                        r = await client.get(base + "/browse", params={"companion_id": companion})
+                        r.raise_for_status()
+                        browse = r.json()
+                        if marker in json.dumps(browse, ensure_ascii=False):
+                            break
+                        await asyncio.sleep(.2)
+                    else:
+                        raise TimeoutError(f"semantic projection {index}")
+                    visible_ms = (time.monotonic() - begin) * 1000
+                    g = await client.get(base + "/graph", params={"companion_id": companion})
+                    g.raise_for_status()
+                    result["samples"].append({"turn_id": turn.turn_id, "publish_ack_ms": ack_ms,
+                        "projection_visible_upper_bound_ms": visible_ms,
+                        "browse": browse, "graph": g.json()})
+                    previous.append(ConversationContextTurn(turn_id=turn.turn_id, context=actor,
+                        user_text=text, timestamp=stamp,
+                        conversation_id="context-write-conversation"))
+                before_count = browse["entry_count"]
+                for body in payloads:
+                    await js.publish(conversation_turn_subject(realm), body)
+                for _ in range(100):
+                    if (OUT / "write-worker.log").read_text().count("turn_processor_decision_reused") >= 3:
+                        break
+                    await asyncio.sleep(.2)
+                else:
+                    raise TimeoutError("replay decision reuse")
+                after = await client.get(base + "/browse", params={"companion_id": companion})
+                assert after.json()["entry_count"] == before_count
+                wrong = await client.get(base + "/browse", params={"companion_id": "other"})
+                assert wrong.json()["entry_count"] == 0
+                assert version in (OUT / "write-worker.log").read_text()
+                result.update(replay_idempotent=True, companion_isolated=True, status="passed")
+                result["manifest"] = build_manifest(suite="context-write", repo_root=ROOT,
+                    settings=settings, command=f"{sys.executable} {__file__}",
+                    notes="3 synthetic samples; isolated source worker; no raw-history latency or SLO claim")
+        finally:
+            if nc:
+                await nc.close()
+            for proc in reversed(children):
+                if proc.poll() is None:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    try:
+                        proc.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                        proc.wait()
+            for handle in handles:
+                handle.close()
+            (OUT / "write.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,0 +1,374 @@
+{
+  "protocol": "atomic-claims-v3-context",
+  "extractor_version": "llm:b6c43e6da3d696b7",
+  "raw_conversation_read_ms": null,
+  "raw_conversation_read_note": "Agent storage/API latency not measured by this probe",
+  "samples": [
+    {
+      "turn_id": "context-write-0",
+      "publish_ack_ms": 0.5121659996802919,
+      "projection_visible_upper_bound_ms": 8057.369540998479,
+      "browse": {
+        "contract_version": "1",
+        "operation": "memory.browse",
+        "memory_space_id": "context-write-test",
+        "audience_scope": "companion:context-write-companion",
+        "wings": [
+          {
+            "wing_id": "Wing_Profile",
+            "is_configured": true,
+            "display_name": "个人画像与价值观",
+            "description": "静态/核心的身份认同与客观背景：籍贯、原生家庭阶层、MBTI、核心价值观、宗教信仰、政治与社会观点、对婚姻/生育等议题的立场。不包含「每天喝美式」这类动态日常偏好（归 Wing_Life）。",
+            "sort_order": 1,
+            "room_count": 2,
+            "drawer_count": 2,
+            "rooms": [
+              {
+                "room_id": "fact_likes_1ac8ff3a33032a0e",
+                "drawer_count": 1,
+                "drawers_preview": [
+                  {
+                    "key": "drawer_Wing_Profile_fact_likes_1ac8ff3a33032a0e_dfee38b30babcb69e0de4fae",
+                    "preview": "铁锤喜欢鸡肉。"
+                  }
+                ],
+                "preview_truncated": false
+              },
+              {
+                "room_id": "fact_owns_bb8a5783f5bc98d5",
+                "drawer_count": 1,
+                "drawers_preview": [
+                  {
+                    "key": "drawer_Wing_Profile_fact_owns_bb8a5783f5bc98d5_06b0cd45e03407b4de728e69",
+                    "preview": "铁锤是用户家养的小狗。"
+                  }
+                ],
+                "preview_truncated": false
+              }
+            ]
+          }
+        ],
+        "entry_count": 2,
+        "withheld_count": 0,
+        "truncated": false
+      },
+      "graph": {
+        "contract_version": "1",
+        "operation": "memory.graph",
+        "memory_space_id": "context-write-test",
+        "nodes": [
+          {
+            "node_id": "pet:铁锤",
+            "label": "pet:铁锤",
+            "degree": 2
+          },
+          {
+            "node_id": "self",
+            "label": "self",
+            "degree": 1
+          },
+          {
+            "node_id": "鸡肉",
+            "label": "鸡肉",
+            "degree": 1
+          }
+        ],
+        "edges": [
+          {
+            "edge_id": "stmt_bf59954bf5030ddf37c20127",
+            "subject": "pet:铁锤",
+            "predicate": "likes",
+            "object": "鸡肉",
+            "confidence": 0.9,
+            "recorded_at": "2026-10-08T08:55:25.401131Z",
+            "valid_from": "2026-10-08T08:55:17.362596Z",
+            "valid_to": null
+          },
+          {
+            "edge_id": "stmt_bf3fd1b5d82ad50c1588226e",
+            "subject": "self",
+            "predicate": "owns",
+            "object": "pet:铁锤",
+            "confidence": 0.95,
+            "recorded_at": "2026-10-08T08:55:25.393129Z",
+            "valid_from": "2026-10-08T08:55:17.362596Z",
+            "valid_to": null
+          }
+        ],
+        "truncated": false,
+        "next_cursor": null,
+        "history": false
+      }
+    },
+    {
+      "turn_id": "context-write-1",
+      "publish_ack_ms": 0.34958300238940865,
+      "projection_visible_upper_bound_ms": 3245.8404999997583,
+      "browse": {
+        "contract_version": "1",
+        "operation": "memory.browse",
+        "memory_space_id": "context-write-test",
+        "audience_scope": "companion:context-write-companion",
+        "wings": [
+          {
+            "wing_id": "Wing_Profile",
+            "is_configured": true,
+            "display_name": "个人画像与价值观",
+            "description": "静态/核心的身份认同与客观背景：籍贯、原生家庭阶层、MBTI、核心价值观、宗教信仰、政治与社会观点、对婚姻/生育等议题的立场。不包含「每天喝美式」这类动态日常偏好（归 Wing_Life）。",
+            "sort_order": 1,
+            "room_count": 3,
+            "drawer_count": 3,
+            "rooms": [
+              {
+                "room_id": "fact_likes_1ac8ff3a33032a0e",
+                "drawer_count": 1,
+                "drawers_preview": [
+                  {
+                    "key": "drawer_Wing_Profile_fact_likes_1ac8ff3a33032a0e_dfee38b30babcb69e0de4fae",
+                    "preview": "铁锤喜欢鸡肉。"
+                  }
+                ],
+                "preview_truncated": false
+              },
+              {
+                "room_id": "fact_likes_a53b5d9cdb2f160e",
+                "drawer_count": 1,
+                "drawers_preview": [
+                  {
+                    "key": "drawer_Wing_Profile_fact_likes_a53b5d9cdb2f160e_7c49deb9cb7735306b684955",
+                    "preview": "用户家的小狗铁锤除了鸡肉，还喜欢牛肉。"
+                  }
+                ],
+                "preview_truncated": false
+              },
+              {
+                "room_id": "fact_owns_bb8a5783f5bc98d5",
+                "drawer_count": 1,
+                "drawers_preview": [
+                  {
+                    "key": "drawer_Wing_Profile_fact_owns_bb8a5783f5bc98d5_06b0cd45e03407b4de728e69",
+                    "preview": "铁锤是用户家养的小狗。"
+                  }
+                ],
+                "preview_truncated": false
+              }
+            ]
+          }
+        ],
+        "entry_count": 3,
+        "withheld_count": 0,
+        "truncated": false
+      },
+      "graph": {
+        "contract_version": "1",
+        "operation": "memory.graph",
+        "memory_space_id": "context-write-test",
+        "nodes": [
+          {
+            "node_id": "pet:铁锤",
+            "label": "pet:铁锤",
+            "degree": 3
+          },
+          {
+            "node_id": "self",
+            "label": "self",
+            "degree": 1
+          },
+          {
+            "node_id": "牛肉",
+            "label": "牛肉",
+            "degree": 1
+          },
+          {
+            "node_id": "鸡肉",
+            "label": "鸡肉",
+            "degree": 1
+          }
+        ],
+        "edges": [
+          {
+            "edge_id": "stmt_b2c0d34b0bf9b50a04bd539f",
+            "subject": "pet:铁锤",
+            "predicate": "likes",
+            "object": "牛肉",
+            "confidence": 0.9,
+            "recorded_at": "2026-10-08T08:55:28.611664Z",
+            "valid_from": "2026-10-08T08:55:25.421075Z",
+            "valid_to": null
+          },
+          {
+            "edge_id": "stmt_bf59954bf5030ddf37c20127",
+            "subject": "pet:铁锤",
+            "predicate": "likes",
+            "object": "鸡肉",
+            "confidence": 0.9,
+            "recorded_at": "2026-10-08T08:55:25.401131Z",
+            "valid_from": "2026-10-08T08:55:17.362596Z",
+            "valid_to": null
+          },
+          {
+            "edge_id": "stmt_bf3fd1b5d82ad50c1588226e",
+            "subject": "self",
+            "predicate": "owns",
+            "object": "pet:铁锤",
+            "confidence": 0.95,
+            "recorded_at": "2026-10-08T08:55:25.393129Z",
+            "valid_from": "2026-10-08T08:55:17.362596Z",
+            "valid_to": null
+          }
+        ],
+        "truncated": false,
+        "next_cursor": null,
+        "history": false
+      }
+    },
+    {
+      "turn_id": "context-write-2",
+      "publish_ack_ms": 0.7080840005073696,
+      "projection_visible_upper_bound_ms": 4770.206208999298,
+      "browse": {
+        "contract_version": "1",
+        "operation": "memory.browse",
+        "memory_space_id": "context-write-test",
+        "audience_scope": "companion:context-write-companion",
+        "wings": [
+          {
+            "wing_id": "Wing_Profile",
+            "is_configured": true,
+            "display_name": "个人画像与价值观",
+            "description": "静态/核心的身份认同与客观背景：籍贯、原生家庭阶层、MBTI、核心价值观、宗教信仰、政治与社会观点、对婚姻/生育等议题的立场。不包含「每天喝美式」这类动态日常偏好（归 Wing_Life）。",
+            "sort_order": 1,
+            "room_count": 4,
+            "drawer_count": 4,
+            "rooms": [
+              {
+                "room_id": "fact_holds_role_7e6bda4156b2a22f",
+                "drawer_count": 1,
+                "drawers_preview": [
+                  {
+                    "key": "drawer_Wing_Profile_fact_holds_role_7e6bda4156b2a22f_dc87147919dc6a2cf82c1b78",
+                    "preview": "用户家的狗铁锤是边牧。"
+                  }
+                ],
+                "preview_truncated": false
+              },
+              {
+                "room_id": "fact_likes_1ac8ff3a33032a0e",
+                "drawer_count": 1,
+                "drawers_preview": [
+                  {
+                    "key": "drawer_Wing_Profile_fact_likes_1ac8ff3a33032a0e_dfee38b30babcb69e0de4fae",
+                    "preview": "铁锤喜欢鸡肉。"
+                  }
+                ],
+                "preview_truncated": false
+              },
+              {
+                "room_id": "fact_likes_a53b5d9cdb2f160e",
+                "drawer_count": 1,
+                "drawers_preview": [
+                  {
+                    "key": "drawer_Wing_Profile_fact_likes_a53b5d9cdb2f160e_7c49deb9cb7735306b684955",
+                    "preview": "用户家的小狗铁锤除了鸡肉，还喜欢牛肉。"
+                  }
+                ],
+                "preview_truncated": false
+              },
+              {
+                "room_id": "fact_owns_bb8a5783f5bc98d5",
+                "drawer_count": 1,
+                "drawers_preview": [
+                  {
+                    "key": "drawer_Wing_Profile_fact_owns_bb8a5783f5bc98d5_06b0cd45e03407b4de728e69",
+                    "preview": "铁锤是用户家养的小狗。"
+                  }
+                ],
+                "preview_truncated": false
+              }
+            ]
+          }
+        ],
+        "entry_count": 4,
+        "withheld_count": 0,
+        "truncated": false
+      },
+      "graph": {
+        "contract_version": "1",
+        "operation": "memory.graph",
+        "memory_space_id": "context-write-test",
+        "nodes": [
+          {
+            "node_id": "pet:铁锤",
+            "label": "pet:铁锤",
+            "degree": 4
+          },
+          {
+            "node_id": "self",
+            "label": "self",
+            "degree": 1
+          },
+          {
+            "node_id": "牛肉",
+            "label": "牛肉",
+            "degree": 1
+          },
+          {
+            "node_id": "边牧",
+            "label": "边牧",
+            "degree": 1
+          },
+          {
+            "node_id": "鸡肉",
+            "label": "鸡肉",
+            "degree": 1
+          }
+        ],
+        "edges": [
+          {
+            "edge_id": "stmt_a8892b4e648e54d5dc63210a",
+            "subject": "pet:铁锤",
+            "predicate": "holds_role",
+            "object": "边牧",
+            "confidence": 0.95,
+            "recorded_at": "2026-10-08T08:55:33.241896Z",
+            "valid_from": "2026-10-08T08:55:28.668672Z",
+            "valid_to": null
+          },
+          {
+            "edge_id": "stmt_b2c0d34b0bf9b50a04bd539f",
+            "subject": "pet:铁锤",
+            "predicate": "likes",
+            "object": "牛肉",
+            "confidence": 0.9,
+            "recorded_at": "2026-10-08T08:55:28.611664Z",
+            "valid_from": "2026-10-08T08:55:25.421075Z",
+            "valid_to": null
+          },
+          {
+            "edge_id": "stmt_bf59954bf5030ddf37c20127",
+            "subject": "pet:铁锤",
+            "predicate": "likes",
+            "object": "鸡肉",
+            "confidence": 0.9,
+            "recorded_at": "2026-10-08T08:55:25.401131Z",
+            "valid_from": "2026-10-08T08:55:17.362596Z",
+            "valid_to": null
+          },
+          {
+            "edge_id": "stmt_bf3fd1b5d82ad50c1588226e",
+            "subject": "self",
+            "predicate": "owns",
+            "object": "pet:铁锤",
+            "confidence": 0.95,
+            "recorded_at": "2026-10-08T08:55:25.393129Z",
+            "valid_from": "2026-10-08T08:55:17.362596Z",
+            "valid_to": null
+          }
+        ],
+        "truncated": false,
+        "next_cursor": null,
+        "history": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "memory_base": "adcbf2da5a7d0403e0f26d9787fc9fea2bd3ed22",
+  "agent_base": "a131ec7c39cb61de3ee9d9d064a981f35a36fc3e",
+  "memory_targeted_tests": {
+    "passed": 137,
+    "seconds": 6.28
+  },
+  "agent_history_tests": {
+    "passed": 8,
+    "seconds": 0.06
+  },
+  "production_diff_after_restoration": false,
+  "shared_services_changed": false,
+  "opi5max_changed": false
+}

@@ -1,0 +1,56 @@
+{
+  "memory": {
+    "base_commit": "adcbf2da5a7d0403e0f26d9787fc9fea2bd3ed22",
+    "files": {
+      "contracts/eidolon_memory_contracts/__init__.py": "70d9c14cd771476ffd5f5ee6d6fbf1e792b49e2482fa048b3d09cdaa306d1bc2",
+      "contracts/eidolon_memory_contracts/payloads.py": "3b4412f0d68cb45d91ef78a69767e0ffd108c5826c858902c46f5115ea3bbd13",
+      "contracts/tests/test_contracts.py": "1979c312f3602a6eec056ed16ef51527aecaae2397f9fcd4252e618714d79d61",
+      "eidolon/memory/application/forget.py": "6d6cececdcd6660ecf10adb371b2756611fd3879364bd5fe1a963845e1b23253",
+      "eidolon/memory/application/steward/llm.py": "df8fafc3c494d4e8fcdad774f9f88da0479c10c43730efbb1ff0c84ff080119c",
+      "eidolon/memory/application/turn_processor.py": "297fbcb4ecd7beef83a682c0a69504f6403f91ceb341d949a3c599c707beb420",
+      "eidolon/memory/config/prompts/memory_steward.md": "18476bcceebfc23f67f4eecb6e2ed4232471836eb4aac4c532c653aee33eb701",
+      "eidolon/memory/domain/extraction_decision.py": "e464bf35db0197c9b19a9e61ed8aa14732a030af610f9dc91d2075fd1ef4c9a7",
+      "eidolon/memory/domain/ports.py": "5a7e4cfe302d7caab281965e417946ba77d08318d0805584c9e293bb28c4127e",
+      "eidolon/memory/domain/steward.py": "55143bb272c66bd5ffd67489660e8be573d787ffa9632676382618805291ccd7",
+      "eidolon/memory/infrastructure/canonical_facts.py": "608e4f66b4bc9520eac40af9a63d022041b0a60623d553b5b3af09f98f1de0c2",
+      "eidolon/memory/infrastructure/extraction_decisions.py": "c3a8af9c85759886b40c9f9c2df88cd8a81b39b733c9904016be93b7803dfaf7",
+      "scripts/benchmark/eval_steward_prompt.py": "8cf793ddbac1333afbd27014a14637b53b0596f8db5519787ac8bd66d33a001f",
+      "tests/memory/test_steward_eval_scoring.py": "5c938b75cef24b8fb376b8190a703de39648c3d76e2d03528aa47e0a4f7b2f9e",
+      "tests/memory/test_conversation_context.py": "995f00c438d90606944369c93d91f965744673f8b2fc75c69bdc2212b4b20581"
+    },
+    "tracked_changed": [
+      "contracts/eidolon_memory_contracts/__init__.py",
+      "contracts/eidolon_memory_contracts/payloads.py",
+      "contracts/tests/test_contracts.py",
+      "eidolon/memory/application/forget.py",
+      "eidolon/memory/application/steward/llm.py",
+      "eidolon/memory/application/turn_processor.py",
+      "eidolon/memory/config/prompts/memory_steward.md",
+      "eidolon/memory/domain/extraction_decision.py",
+      "eidolon/memory/domain/ports.py",
+      "eidolon/memory/domain/steward.py",
+      "eidolon/memory/infrastructure/canonical_facts.py",
+      "eidolon/memory/infrastructure/extraction_decisions.py",
+      "scripts/benchmark/eval_steward_prompt.py",
+      "tests/memory/test_steward_eval_scoring.py"
+    ],
+    "new_files": [
+      "tests/memory/test_conversation_context.py"
+    ]
+  },
+  "agent": {
+    "base_commit": "a131ec7c39cb61de3ee9d9d064a981f35a36fc3e",
+    "files": {
+      "eidolon_agent/app/runtime/bootstrap.py": "128eeb63c008458d2f29258b67eb99dee9046e292eb77a94150edecb9b4649e0",
+      "eidolon_agent/domain/history/fanout.py": "1b11e37977a7683c7d031eec93cda24f673f4f8f2f8076869aaee21455b4b44b",
+      "eidolon_agent/domain/history/tests/functional/test_memory_context.py": "c2ca151ef811d748ed212b7e64eca18d4b68548fc6e80c7f90a8e2609024c4a5"
+    },
+    "tracked_changed": [
+      "eidolon_agent/app/runtime/bootstrap.py",
+      "eidolon_agent/domain/history/fanout.py"
+    ],
+    "new_files": [
+      "eidolon_agent/domain/history/tests/functional/test_memory_context.py"
+    ]
+  }
+}

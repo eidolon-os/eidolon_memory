@@ -1,0 +1,37 @@
+{
+  "suite": "isolated-mcp-scale",
+  "started_at": "20261008T085004Z",
+  "code": {
+    "git_sha": "adcbf2da5a7d0403e0f26d9787fc9fea2bd3ed22",
+    "dirty": true,
+    "python": "3.13.13",
+    "branch": "main",
+    "mempalace": "3.10.0"
+  },
+  "machine": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "cpu_count": 12,
+    "processor": "arm",
+    "memory_gb": 36.0
+  },
+  "storage": {
+    "vector_backend": "chroma",
+    "kg_backend": "sqlite",
+    "embedder": "openai-compat",
+    "embedder_source": "palace"
+  },
+  "command": "/Users/manson/ai/eidolon/eidolon_memory/.venv/bin/python /Users/manson/ai/eidolon/eidolon_memory/benchmarks/results/context-close-20261008/run_scale.py",
+  "scale": {
+    "facts": 5000,
+    "themes": 8,
+    "graph": {
+      "entities": 208,
+      "triples_total": 200,
+      "triples_active": 200,
+      "triples_invalidated": 0,
+      "mentions": 0
+    }
+  },
+  "notes": "Synthetic fixed Chinese categories, real HTTP bge-small-zh; no steward writes.",
+  "source_sha256": "876d413c443aaebe390e0faebf6a5926c46db0f2ab49f1be036bbb3f54a4e6fd"
+}
