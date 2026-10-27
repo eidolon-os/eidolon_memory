@@ -4,7 +4,7 @@
 
 完整链路、契约、测试和限制的唯一说明在 [OS 用户与声纹辅助识别重构](../../docs/跨系统/OS用户与声纹辅助识别重构.md) 的“对话识别实施与 Memory 对接”。识别工作区位于 `../.eidolon/worktrees/conversation-person-20261027/`，各仓分支 `codex/conversation-person`。
 
-本侧已完成但尚未部署的 v7 改动，经三方合并进入该独立集成分支，并在 Mac 联合部署；未修改本会话主工作区代码。SDK `2f12aae`、Data `3cfe41f`、Channel `4af8137`、Agent `922892f`；Mac Memory 继续使用 `470eecb`。当前“无 Person 不读写长期记忆、按 session 隔离历史、个人凭据绑定 person_revision”已经运行，不能继续按旧 v6 状态判断。验证来源摘要及实际服务证据位于 `../.eidolon/person-recognition-validation-20261027/`。
+本侧已完成但尚未部署的 v7 改动，经三方合并进入该独立集成分支，并在 Mac 联合部署；未修改本会话主工作区代码。SDK `2f12aae`、Data `3cfe41f`、Channel `e8ae4ca`、Agent `922892f`；Mac Memory 继续使用 `470eecb`。当前“无 Person 不读写长期记忆、按 session 隔离历史、个人凭据绑定 person_revision”已经运行，不能继续按旧 v6 状态判断。验证来源摘要及实际服务证据位于 `../.eidolon/person-recognition-validation-20261027/`。
 
 识别侧输出复用 SDK `SpeakerIdentityObservation`。完整范围、Owner/session、Channel turn/跨服务 trace、Person revision、模型和策略版本都有绑定；Agent 入站验证专用短期签名后放到 `TurnContext.speaker_observation`。授权 `TurnContext.person_id/person_revision/identity_epoch` 不变。当前模型策略仅 controlled_trial，不能自动开启私人记忆；Mobile 无手动 Person 选择器。
 
