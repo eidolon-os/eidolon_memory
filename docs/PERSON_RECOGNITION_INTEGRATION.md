@@ -13,3 +13,11 @@
 已实测有效“无音频”观察接受、伪造观察忽略、普通回复均成功，授权 Person 为空且长期 Memory outbox 为零。这不是自动私人记忆端到端验收。
 
 Mac 当前等待上限为 400 ms；已录入样本三次本机回放匹配，327–348 ms。Channel 在完整最终 ASR 证据到达时提前开始，与 EOT 收尾重叠；这不构成持出样本声学验收。详细证据见上游唯一链路说明。
+
+## 短句与反馈修复交接（2026-10-28）
+
+Mac 已升级 SDK `9dc18a5`、Channel `94e6b28`、Agent `344418c`；Data / Memory 保持原版本，app-ready 通过。`SpeakerIdentityObservation` 新增可选 `audio_quality`，不改变 person_id / revision / session / 签名绑定，也不改变授权 `TurnContext.person_id`。Models v2 允许有效语音至少 600 ms 的会话探针，录入仍至少 1500 ms；短于 1500 ms 且匹配不足的结果为 uncertain/short_speech_inconclusive，不能当作 unknown 或沿用上一轮 Person。
+
+Agent 的解释与 Mobile 状态已区分质量不足、短探针不确定、完整 no_match、服务失败。Agent 使用真实 memory_enabled 约束记忆承诺：false 时只能在当前对话使用自报姓名，不能承诺下次记得。已按第 26 节同步去掉试验标签对 UI 和回答的影响，标签仅作诊断。当前运行基线尚未合入该节的自动记忆编排；后续按识别状态及 Data 授权办理，不再增加 validated-only 门槛。公开对话连续保留，私人检索按轮隔离；本轮不新增平行身份缓存。联合合并须同时携带 SDK 的 audio_quality 字段，避免旧版严格契约拒绝新观察。
+
+真实 422 的具体错误码及音频质量指标现可追踪，旧会话已经丢弃的错误细节不能恢复。部署验证记录在 `../.eidolon/person-short-speech-validation-20261028/`，完整设计仍以上游唯一链路说明为准。
