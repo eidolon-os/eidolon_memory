@@ -28,3 +28,13 @@
 Data 全部 component/integration 277 passed；补充归档照片删除失败重试 5 passed。Admin 公共管理及跨进程 E2E 111 passed。Memory 清理/维护/真实 JetStream 隔离 26 passed。SDK 身份与 Realm 合同 18 passed。Mobile 归档详情、历史身份不可恢复、取消确认、失败重试、成功移除及既有页面 36 passed。Flutter analyze 无 error，仍有 info 级样式提示。
 
 自动化故障测试使用临时目录和服务。现有 Host 发布及合成用户的真实永久删除结果在部署完成后追加。
+
+## 现有 Host 验收结果
+
+2026-10-28 发布 Data `9a8f1b9`、Memory `6f8638f`、Admin `b208123`；数据库 `0017_person_lifecycle`。SDK 运行版本 `44dd77c` 仅包含本轮 Person 合同，不发布主分支其他会话的设备改动。Host app_ready。
+
+通过现有 Admin 管理接口创建专用临时用户，向其独立 Realm 的真实 NATS 命令通道写入偏好，再通过导出接口确认可见。首次测试输入的 wing 与结构化 likes 谓词冲突，被校验正确拒绝；修正为 Wing_Life 后完成验收，没有绕过一致性校验。
+
+归档返回人物资料和真实归档时间；永久删除与重复请求均成功。随后验证 Person 与 Realm 数据库记录消失、Palace 和 ledger 目录消失、归档列表不再包含该用户、个人记忆管理返回 404，原有 6 个 Realm 集合不变。保留的 4 个历史记录均已标记 identity_state=missing，不能直接恢复。未永久删除任何现有真实用户。
+
+Mobile 已构建新 APK，列表与记忆详情页对身份缺失记录使用同一可区分名称。设备暂未被 ADB 检测到，尚未安装；不能把构建和 Widget 测试当作本次手机人工验收。
