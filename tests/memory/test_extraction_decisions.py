@@ -571,3 +571,90 @@ def test_provisional_source_requires_bound_identity(field):
 
 def test_retained_source_is_not_an_llm_output_field():
     assert "source_turn" not in StewardDecision.model_json_schema()["properties"]
+
+
+async def _retain(ledger, turn):
+    from eidolon.memory.application.turn_processor import _decide_once
+
+    await _decide_once(steward=SimpleNamespace(decide=AsyncMock()), turn=turn, store=ledger)
+
+
+async def test_provisional_reads_are_indexed_bounded_and_redaction_aware(tmp_path):
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db")
+    turn = _provisional_turn()
+    for i in range(8):
+        await _retain(ledger, turn.model_copy(update={"turn_id": f"source-{i}"}))
+    results = await ledger.list_provisional_sources(turn.context)
+    assert [r.turn_id for r in results] == [f"source-{i}" for i in range(7, 2, -1)]
+    assert all(r.metadata["person_attribution"] == "provisional" for r in results)
+    await ledger.redact_source_events(MEMORY_SPACE_ID, ["source-7"])
+    assert (await ledger.list_provisional_sources(turn.context, limit=1))[0].turn_id == "source-6"
+    size = len(results[0].model_dump_json().encode("utf-8"))
+    assert len(await ledger.list_provisional_sources(turn.context, max_bytes=size)) == 1
+    assert await ledger.list_provisional_sources(turn.context, max_bytes=1) == []
+    with ledger._connect() as conn:
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN " + ledger._provisional_query(),
+            (
+                MEMORY_SPACE_ID,
+                "alice",
+                "candidate",
+                "session",
+                "default",
+                None,
+                5,
+            ),
+        ).fetchall()
+    detail = " ".join(row["detail"] for row in plan)
+    assert "SEARCH extraction_decisions USING INDEX ix_provisional_session_sources" in detail
+    assert "TEMP B-TREE" not in detail
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("owner_id", "other-owner"),
+        ("person_id", "other-person"),
+        ("session_id", "other-session"),
+        ("companion_id", "other-companion"),
+        ("council_id", "other-council"),
+        ("owner_id", None),
+        ("companion_id", None),
+    ],
+)
+async def test_provisional_reads_do_not_cross_actor_scope(tmp_path, field, value):
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db")
+    turn = _provisional_turn()
+    await _retain(ledger, turn)
+    context = MemoryActorContext.model_validate({**turn.context.model_dump(), field: value})
+    assert await ledger.list_provisional_sources(context) == []
+
+
+async def test_provisional_reads_preserve_same_person_across_epochs_but_not_realms(tmp_path):
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db")
+    turn = _provisional_turn()
+    await _retain(ledger, turn)
+    context = turn.context.model_copy(update={"identity_epoch": 2})
+    assert await ledger.list_provisional_sources(context) == [turn]
+    other = context.model_copy(update={"memory_space_id": "other", "memory_realm_id": "other"})
+    assert await ledger.list_provisional_sources(other) == []
+    unknown = context.model_copy(update={"person_id": None, "identity_epoch": None})
+    assert await ledger.list_provisional_sources(unknown) == []
+
+
+@pytest.mark.parametrize("kwargs", [{"limit": 0}, {"limit": 6}, {"max_bytes": 32769}])
+async def test_provisional_read_budget_cannot_be_expanded(tmp_path, kwargs):
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db")
+    with pytest.raises(ValueError):
+        await ledger.list_provisional_sources(_provisional_turn().context, **kwargs)
+
+
+def test_provisional_payload_has_utf8_byte_limit_without_changing_legacy():
+    from pydantic import ValidationError
+
+    data = _provisional_turn().model_dump()
+    data["user_text"] = "字" * 23000
+    with pytest.raises(ValidationError, match="64 KiB"):
+        ConversationTurnPayload.model_validate(data)
+    data["metadata"] = {}
+    assert ConversationTurnPayload.model_validate(data).user_text == data["user_text"]

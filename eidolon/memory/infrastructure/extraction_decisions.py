@@ -7,7 +7,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from eidolon_memory_contracts import MemoryIntent
+from eidolon_memory_contracts import ConversationTurnPayload, MemoryActorContext, MemoryIntent
 
 from eidolon.memory.domain.extraction_decision import (
     PROVISIONAL_SOURCE_VERSION,
@@ -74,6 +74,91 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                 )
                 """
             )
+
+            # Partial expression index reuses the existing durable JSON source. No
+            # parallel history store or full-ledger scan is needed for session reads.
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS ix_provisional_session_sources
+                ON extraction_decisions (
+                    memory_space_id,
+                    json_extract(decision_json, '$.source_turn.context.owner_id'),
+                    json_extract(decision_json, '$.source_turn.context.person_id'),
+                    json_extract(decision_json, '$.source_turn.context.session_id'),
+                    json_extract(decision_json, '$.source_turn.context.companion_id'),
+                    json_extract(decision_json, '$.source_turn.context.council_id'),
+                    created_at DESC, source_turn_id DESC
+                ) WHERE extractor_version = 'provisional-source-v1'
+            """)
+
+    async def list_provisional_sources(
+        self,
+        context: MemoryActorContext,
+        *,
+        limit: int = 5,
+        max_bytes: int = 32768,
+    ) -> list[ConversationTurnPayload]:
+        """Bounded raw sources for an already-authorized, freshly verified actor.
+
+        This repository method supplies isolation, not authorization. It does not
+        enable a Realm, verify recognition, or turn sources into confirmed facts.
+        """
+        if not 1 <= limit <= 5 or not 1 <= max_bytes <= 32768:
+            raise ValueError("provisional read exceeds source budget")
+        # Revalidate copies too; callers may have constructed them without validation.
+        context = MemoryActorContext.model_validate(context.model_dump())
+        if not (
+            context.owner_id
+            and context.person_id
+            and context.session_id
+            and (context.companion_id or context.council_id)
+        ):
+            return []
+        return await self._read(self._list_provisional_sources_sync, context, limit, max_bytes)
+
+    @staticmethod
+    def _provisional_query() -> str:
+        # Keep expressions identical to the index, including null-safe audience equality.
+        return """
+            SELECT decision_json FROM extraction_decisions
+            WHERE extractor_version = 'provisional-source-v1' AND memory_space_id = ?
+              AND json_extract(decision_json, '$.source_turn.context.owner_id') = ?
+              AND json_extract(decision_json, '$.source_turn.context.person_id') = ?
+              AND json_extract(decision_json, '$.source_turn.context.session_id') = ?
+              AND json_extract(decision_json, '$.source_turn.context.companion_id') IS ?
+              AND json_extract(decision_json, '$.source_turn.context.council_id') IS ?
+            ORDER BY created_at DESC, source_turn_id DESC LIMIT ?
+        """
+
+    def _list_provisional_sources_sync(
+        self,
+        context: MemoryActorContext,
+        limit: int,
+        max_bytes: int,
+    ) -> list[ConversationTurnPayload]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                self._provisional_query(),
+                (
+                    context.memory_space_id,
+                    context.owner_id,
+                    context.person_id,
+                    context.session_id,
+                    context.companion_id,
+                    context.council_id,
+                    limit,
+                ),
+            ).fetchall()
+        sources = []
+        remaining = max_bytes
+        for row in rows:
+            source = StewardDecision.model_validate_json(row["decision_json"]).source_turn
+            if source is None or source.metadata.get("person_attribution") != "provisional":
+                continue
+            size = len(source.model_dump_json().encode("utf-8"))
+            if size <= remaining:
+                sources.append(source)
+                remaining -= size
+        return sources
 
     async def get(
         self,

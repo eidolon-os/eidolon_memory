@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from eidolon_memory_contracts import MemoryIntent
+    from eidolon_memory_contracts import ConversationTurnPayload, MemoryActorContext, MemoryIntent
 
     from eidolon.memory.domain.canonical_fact import (
         CanonicalFactHistoryRecord,
@@ -270,6 +270,16 @@ class RoomGraphBackend(Protocol):
 @runtime_checkable
 class ExtractionDecisionStore(Protocol):
     """Durable source for validated steward output, separate from projections."""
+
+    async def list_provisional_sources(
+        self,
+        context: MemoryActorContext,
+        *,
+        limit: int = 5,
+        max_bytes: int = 32768,
+    ) -> list[ConversationTurnPayload]:
+        """Return scoped sources; the caller must independently authorize the read."""
+        ...
 
     async def get(
         self,

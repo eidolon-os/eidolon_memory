@@ -97,6 +97,8 @@ class ConversationTurnPayload(EidolonWireModel):
             self.context.owner_id and self.context.person_id and self.context.session_id
         ):
             raise ValueError("provisional source requires Owner, Person and session")
+        if attribution == "provisional" and len(self.model_dump_json().encode("utf-8")) > 65536:
+            raise ValueError("provisional source exceeds 64 KiB")
         return self
 
 
