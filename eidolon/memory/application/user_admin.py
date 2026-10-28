@@ -32,24 +32,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from eidolon.memory.config.memory_settings import get_memory_settings, resolve_run_dir
 from eidolon.memory.config.palace_directory import LEDGERS_DIR_SUFFIX
 from eidolon.memory.config.registry import load_users_config
-from eidolon.memory.infrastructure.palace_inventory import palace_embedder
-from eidolon.memory.config.memory_settings import get_memory_settings, resolve_run_dir
+from eidolon.memory.config.users import (
+    ConsolidatorUserConfig,
+    UserEntry,
+)
 from eidolon.memory.infrastructure.history_reset import (
     HistoryResetSafetyError,
     acquire_realm_reset_locks,
 )
+from eidolon.memory.infrastructure.palace_inventory import palace_embedder
 from eidolon.memory.infrastructure.realm_snapshot import (
     RestoreError,
     SnapshotError,
     read_realm_snapshot,
     restore_realm_snapshot,
     write_realm_snapshot,
-)
-from eidolon.memory.config.users import (
-    ConsolidatorUserConfig,
-    UserEntry,
 )
 from eidolon.memory.support.logging import get_logger
 
@@ -224,6 +224,9 @@ def user_to_view(
             "memory_realm_id": user.id,
             "memory_space_id": user.id,
             "owner_id": user.owner_id,
+            "scope": user.scope,
+            "person_id": user.person_id,
+            "management_enabled": user.management_enabled,
             "display_name": user.id,  # memory has no display name field today
             "enabled": user.enabled,
             "palace_path": str(palace_path),
@@ -580,8 +583,7 @@ class UserAdmin:
                 raise RestoreNotPossible(str(exc)) from exc
             if snapshot.memory_space_id != user_id:
                 raise RestoreNotPossible(
-                    f"snapshot is of realm {snapshot.memory_space_id!r}, "
-                    f"not {user_id!r}"
+                    f"snapshot is of realm {snapshot.memory_space_id!r}, not {user_id!r}"
                 )
 
             palace_path = self._sup.palace_path_for(entry)
@@ -622,7 +624,7 @@ class UserAdmin:
 
             running = await self._await_worker_return(
                 user_id,
-                expected=entry.enabled,
+                expected=entry.enabled or entry.management_enabled,
                 timeout_s=worker_return_timeout_s,
             )
             log.info(
@@ -641,9 +643,7 @@ class UserAdmin:
                 "roster_enabled": entry.enabled,
             }
 
-    async def _await_worker_return(
-        self, user_id: str, *, expected: bool, timeout_s: float
-    ) -> bool:
+    async def _await_worker_return(self, user_id: str, *, expected: bool, timeout_s: float) -> bool:
         """Whether the runner is back, waited for only when it should be.
 
         A disabled realm has no runner to wait for, and waiting anyway would
@@ -660,6 +660,41 @@ class UserAdmin:
                 log.error("user_admin_worker_did_not_return", user_id=user_id)
                 return False
             await asyncio.sleep(0.1)
+
+    async def erase_person_memory(self, user_id: str, *, owner_id: str, person_id: str) -> dict:
+        from eidolon.memory.infrastructure.history_reset import (
+            clear_palace_contents,
+            clear_repair_archives,
+        )
+        from eidolon.memory.infrastructure.realm_erasure import purge_realm_messages
+
+        async with self._lock:
+            entry = load_users_config().find(user_id)
+            if (
+                entry is None
+                or entry.scope != "person"
+                or entry.owner_id != owner_id
+                or entry.person_id != person_id
+            ):
+                raise UserNotFound("personal realm not found for owner")
+            if entry.enabled or entry.management_enabled or not entry.erasure_pending:
+                raise UserStillRegistered("Data must hold a pending erasure intent")
+            settings = get_memory_settings()
+            palace = self._sup.palace_path_for(entry)
+            async with self._sup.realm_paused(entry):
+                with acquire_realm_reset_locks(
+                    resolve_run_dir(settings), [user_id], palace_by_realm={user_id: palace}
+                ):
+                    await purge_realm_messages(
+                        settings.nats.url,
+                        settings.nats.stream,
+                        settings.nats.durable_prefix,
+                        [user_id],
+                    )
+                    if palace.exists():
+                        await asyncio.to_thread(clear_palace_contents, palace)
+                        await asyncio.to_thread(clear_repair_archives, palace.parent, [palace])
+            return {"memory_realm_id": user_id, "erased": True}
 
     async def cleanup_orphaned_user(
         self,

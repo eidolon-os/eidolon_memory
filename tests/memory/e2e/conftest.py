@@ -291,6 +291,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         palace_root_override: Path | None = None,
         extra_settings: dict[str, Any] | None = None,
         keep_palace: bool = False,
+        management_only: bool = False,
     ) -> _AgentHandle:
         memory_space_id = _e2e_memory_space_id(user_id)
         # Not a parameter. Where an agent listens is a fact about running two
@@ -425,14 +426,43 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
 
         with log_path.open("ab") as log_fp:
             proc = subprocess.Popen(
-                [str(agent_cli), "--memory-space-id", memory_space_id, "--port", str(port)],
+                [
+                    str(agent_cli),
+                    "--memory-space-id",
+                    memory_space_id,
+                    "--port",
+                    str(port),
+                    *(["--management-only"] if management_only else []),
+                ],
                 stdout=log_fp,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 env=env,
                 start_new_session=True,
             )
-        if not _wait_mcp_ready(port):
+        if management_only:
+            ready = False
+            for _ in range(450):
+                try:
+                    response = httpx.get(
+                        f"http://127.0.0.1:{port}/api/memory/v1/status",
+                        headers={
+                            "Authorization": "Bearer " + env.get("EIDOLON_MEMORY_API_TOKEN", "")
+                        },
+                        trust_env=False,
+                        timeout=1,
+                    )
+                    if response.status_code == 200:
+                        ready = True
+                        break
+                except httpx.TransportError:
+                    pass
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.1)
+        else:
+            ready = _wait_mcp_ready(port)
+        if not ready:
             # Ask before killing: a process that exited has told us something,
             # and a process still running has told us something else. Reporting
             # only "did not bind" with an empty log leaves those two — a child

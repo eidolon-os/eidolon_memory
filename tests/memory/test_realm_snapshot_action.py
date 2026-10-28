@@ -158,9 +158,7 @@ async def test_the_manifest_records_the_embedder_the_palace_was_built_with(
 
 
 @pytest.mark.asyncio
-async def test_a_palace_with_no_recorded_identity_is_refused(
-    tmp_path, monkeypatch
-) -> None:
+async def test_a_palace_with_no_recorded_identity_is_refused(tmp_path, monkeypatch) -> None:
     """And nothing is written.
 
     A directory that looks like a backup but cannot be restored is worse than
@@ -176,9 +174,7 @@ async def test_a_palace_with_no_recorded_identity_is_refused(
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_realm_is_not_snapshotted_into_existence(
-    tmp_path, monkeypatch
-) -> None:
+async def test_an_unknown_realm_is_not_snapshotted_into_existence(tmp_path, monkeypatch) -> None:
     palace = _palace(tmp_path / "palaces")
     admin, _sup = _admin(monkeypatch, palace, registered=False)
 
@@ -187,9 +183,7 @@ async def test_an_unknown_realm_is_not_snapshotted_into_existence(
 
 
 @pytest.mark.asyncio
-async def test_an_existing_destination_is_refused_rather_than_merged(
-    tmp_path, monkeypatch
-) -> None:
+async def test_an_existing_destination_is_refused_rather_than_merged(tmp_path, monkeypatch) -> None:
     """Overwriting would leave a directory that is half of each copy."""
     palace = _palace(tmp_path / "palaces")
     admin, _sup = _admin(monkeypatch, palace)
@@ -216,3 +210,26 @@ async def test_the_copy_is_readable_as_sqlite_rather_than_a_byte_copy(
     copied = Path(result["destination"]) / "palace/chroma.sqlite3"
     with sqlite3.connect(copied) as db:
         assert db.execute("SELECT count(*) FROM t").fetchone()[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_paused_person_is_backed_up_without_enabling_runtime(tmp_path, monkeypatch):
+    from eidolon.memory.application import user_admin as module
+    from eidolon.memory.config.users import UserEntry, UsersConfig
+
+    palace = _palace(tmp_path / "palaces")
+    admin, sup = _admin(monkeypatch, palace)
+    entry = UserEntry(
+        id=REALM,
+        owner_id="o",
+        person_id="p",
+        scope="person",
+        port=12345,
+        enabled=False,
+        management_enabled=True,
+    )
+    monkeypatch.setattr(module, "load_users_config", lambda: UsersConfig(users=[entry]))
+    result = await admin.snapshot_realm(REALM, destination=tmp_path / "paused-backup")
+    assert result["manifest"]["entries"]
+    assert sup.reconciles == 0 and sup.stops == []
+    assert entry.enabled is False

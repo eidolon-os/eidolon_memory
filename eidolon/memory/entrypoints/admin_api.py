@@ -31,6 +31,7 @@ Routes:
 All admin endpoints are namespaced under ``/api/admin`` and bound to
 ``settings.supervisor_http.host:port`` (config addition in this phase).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -167,6 +168,24 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
             ),
         )
 
+    @app.post("/api/admin/realms/{memory_realm_id}/erase-person")
+    async def erase_person(memory_realm_id: str, request: Request, owner_id: str, person_id: str):
+        import hmac
+
+        from eidolon.memory.config.memory_settings import get_memory_settings
+
+        token = get_memory_settings().mcp_http.resolve_api_service_token()
+        if not token or not hmac.compare_digest(
+            request.headers.get("authorization", ""), "Bearer " + token
+        ):
+            raise HTTPException(403, "management credential required")
+        try:
+            return await user_admin.erase_person_memory(
+                memory_realm_id, owner_id=owner_id, person_id=person_id
+            )
+        except UserAdminError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+
     @app.post("/api/admin/reconcile")
     async def reconcile() -> dict:
         try:
@@ -207,9 +226,7 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
         whether the realm's runner came back.
         """
         try:
-            return await user_admin.restore_realm(
-                memory_realm_id, source=Path(body.source)
-            )
+            return await user_admin.restore_realm(memory_realm_id, source=Path(body.source))
         except UserAdminError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
@@ -242,11 +259,7 @@ def build_admin_api(user_admin: UserAdmin) -> FastAPI:
 
     @app.get("/api/admin/realms/{memory_realm_id}/memory/rebuild-index")
     async def list_realm_rebuild_memory_index_jobs(memory_realm_id: str) -> dict:
-        return {
-            "jobs": user_admin.list_rebuild_index_jobs(
-                memory_realm_id=memory_realm_id
-            )
-        }
+        return {"jobs": user_admin.list_rebuild_index_jobs(memory_realm_id=memory_realm_id)}
 
     @app.get("/api/admin/health")
     async def health() -> dict:

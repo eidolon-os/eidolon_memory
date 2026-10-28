@@ -200,6 +200,7 @@ async def _nats_subscriber_loop(
     stop: asyncio.Event,
     ready: asyncio.Event | None = None,
     steward: Any,
+    management_only: bool = False,
 ) -> None:
     """In-process JetStream pull-subscriber for both turn + command subjects."""
     import nats
@@ -404,16 +405,25 @@ async def _nats_subscriber_loop(
             )
             js = nc.jetstream()
             await ensure_memory_stream(js, settings)
-            psub_turn = await js.pull_subscribe(
-                turn_subject, durable=durable_turn, stream=settings.nats.stream
+            psub_turn = (
+                None
+                if management_only
+                else await js.pull_subscribe(
+                    turn_subject, durable=durable_turn, stream=settings.nats.stream
+                )
             )
             psub_cmd = await js.pull_subscribe(
                 cmd_subject, durable=durable_cmd, stream=settings.nats.stream
             )
-            psub_sync = await js.pull_subscribe(
-                sync_subject, durable=durable_sync, stream=settings.nats.stream
+            psub_sync = (
+                None
+                if management_only
+                else await js.pull_subscribe(
+                    sync_subject, durable=durable_sync, stream=settings.nats.stream
+                )
             )
-            await nc.subscribe(query_subject, cb=_handle_list_drawers_query)
+            if not management_only:
+                await nc.subscribe(query_subject, cb=_handle_list_drawers_query)
             await nc.flush()
             if ready is not None and not ready.is_set():
                 ready.set()
@@ -457,6 +467,7 @@ async def _nats_subscriber_loop(
             def _cmd_handler(m):
                 return process_command_message(
                     m,
+                    management_only=management_only,
                     backend=backend,
                     kg=kg,
                     expected_memory_space_id=memory_space_id,
@@ -483,12 +494,17 @@ async def _nats_subscriber_loop(
                 )
 
             workers = [
-                asyncio.create_task(_drain_forever(psub_turn, _turn_handler)),
                 asyncio.create_task(_drain_forever(psub_cmd, _cmd_handler)),
-                asyncio.create_task(_drain_forever(psub_sync, _sync_handler)),
                 asyncio.create_task(_checkpoint_forever()),
                 asyncio.create_task(_publish_forever()),
             ]
+            if not management_only:
+                workers.extend(
+                    [
+                        asyncio.create_task(_drain_forever(psub_turn, _turn_handler)),
+                        asyncio.create_task(_drain_forever(psub_sync, _sync_handler)),
+                    ]
+                )
             try:
                 # Return as soon as ANY worker dies — a NATS/ack error surfaces
                 # here and re-raises into the outer reconnect loop, which rebinds
@@ -549,6 +565,7 @@ def _compose_starlette_lifespan(
     commitments: CommitmentLedger,
     sync: Any,
     palace_path: str,
+    management_only: bool = False,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
     # Beside the palace, not inside it: MemPalace's repair renames its own
@@ -604,6 +621,7 @@ def _compose_starlette_lifespan(
                     stop=stop_event,
                     ready=nats_ready_event,
                     steward=steward,
+                    management_only=management_only,
                 ),
                 name=f"nats-sub-{memory_space_id}",
             )
@@ -639,6 +657,23 @@ def _compose_starlette_lifespan(
     return _lifespan
 
 
+class ManagementOnlyApp:
+    """Paused spaces retain governance without exposing runtime MCP tools."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not scope.get("path", "").startswith("/api/memory/v1/"):
+            from starlette.responses import JSONResponse
+
+            await JSONResponse({"detail": "personal memory is paused"}, status_code=403)(
+                scope, receive, send
+            )
+            return
+        await self.app(scope, receive, send)
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="eidolon-memory-agent",
@@ -668,6 +703,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # scope — it is what the read path's audience filter compares against.
     # Which Companion is asking is per-request, not per-process: one space
     # serves every Companion this Owner has.
+    parser.add_argument("--management-only", action="store_true")
     parser.add_argument("--owner-id", default="", help="Owner this space belongs to")
     return parser.parse_args(argv)
 
@@ -894,7 +930,10 @@ def _run_service(
         commitments=commitments,
         sync=sync,
         palace_path=str(palace_path),
+        management_only=args.management_only,
     )
+    if args.management_only:
+        starlette_app = ManagementOnlyApp(starlette_app)
 
     config = uvicorn.Config(
         starlette_app,
@@ -904,6 +943,7 @@ def _run_service(
         access_log=False,
     )
     server = uvicorn.Server(config)
+
     async def serve() -> None:
         try:
             await server.serve()

@@ -23,9 +23,9 @@ import signal
 import subprocess
 import time
 from collections import deque
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -90,6 +90,8 @@ def _agent_cli_argv(user: UserEntry, palace_path: Path) -> list[str]:
     argv = [_AGENT_CLI, "--memory-space-id", user.id, "--port", str(user.port)]
     if user.owner_id:
         argv += ["--owner-id", user.owner_id]
+    if not user.enabled:
+        argv += ["--management-only"]
     return argv
 
 
@@ -298,6 +300,7 @@ class Supervisor:
         self._consolidators: dict[str, _Child] = {}  # Phase 4: per-user theme worker
         self._init_failures: dict[str, _InitFailure] = {}
         self._reload_event = asyncio.Event()
+        self._maintenance_realms: set[str] = set()
         self._stop_event = asyncio.Event()
         #: When the roster was last read, for the periodic convergence pass.
         #: Stamped by every reconcile, whoever asked for it, so an explicit
@@ -354,13 +357,16 @@ class Supervisor:
         """
 
         user_id = user.id
-        await asyncio.to_thread(self._terminate_consolidator, user_id)
-        child = self._children.pop(user_id, None)
-        if child is not None:
-            await asyncio.to_thread(child.terminate, grace_seconds=30.0)
+        self._maintenance_realms.add(user_id)
         try:
+            await asyncio.to_thread(self._terminate_consolidator, user_id)
+            child = self._children.get(user_id)
+            if child is not None:
+                await asyncio.to_thread(child.terminate, grace_seconds=30.0)
+                self._children.pop(user_id, None)
             yield
         finally:
+            self._maintenance_realms.discard(user_id)
             await self._reconcile()
 
     async def rebuild_memory_index(self, user: UserEntry, *, log_path: Path) -> dict:
@@ -411,9 +417,7 @@ class Supervisor:
                     stdout=fh,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
-                    env=palace_environment(
-                        mempalace_backend_env(self._settings), palace_path
-                    ),
+                    env=palace_environment(mempalace_backend_env(self._settings), palace_path),
                 )
                 repair_returncode = await proc.wait()
                 returncode = repair_returncode
@@ -442,9 +446,7 @@ class Supervisor:
                         stdout=fh,
                         stderr=subprocess.STDOUT,
                         stdin=subprocess.DEVNULL,
-                        env=palace_environment(
-                            mempalace_backend_env(self._settings), palace_path
-                        ),
+                        env=palace_environment(mempalace_backend_env(self._settings), palace_path),
                     )
                     identity_returncode = await identity_proc.wait()
                     embedder_identity_recorded = identity_returncode == 0
@@ -452,7 +454,8 @@ class Supervisor:
                         returncode = identity_returncode
                 fh.write(
                     (
-                        f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] exit: {returncode}\n"
+                        f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
+                        f"exit: {returncode}\n"
                     ).encode()
                 )
 
@@ -628,7 +631,7 @@ class Supervisor:
     async def start(self) -> None:
         self._last_roster_read_at = time.monotonic()
         users = self._read_users()
-        enabled = users.enabled_users()
+        enabled = users.serving_users()
         log.info(
             "supervisor_start",
             enabled=len(enabled),
@@ -658,13 +661,15 @@ class Supervisor:
             # Phase 4 — opt-in per-user consolidator. Spawn it alongside the
             # agent_runner; it's a separate process so an LLM blip or
             # consolidator crash leaves the chat path untouched.
-            if user.consolidator_enabled():
+            if user.enabled and user.consolidator_enabled():
                 self._spawn_consolidator(user)
 
     def _spawn_consolidator(self, user: UserEntry) -> None:
         """Create + start the consolidator child for ``user``. No-op if one
         is already alive — call ``terminate`` first if you need to restart.
         """
+        if user.id in self._maintenance_realms:
+            return
         existing = self._consolidators.get(user.id)
         if existing is not None and existing.is_alive():
             return
@@ -738,6 +743,8 @@ class Supervisor:
         # differs.
         for tracked in (self._children, self._consolidators):
             for child in list(tracked.values()):
+                if child.user.id in self._maintenance_realms:
+                    continue
                 if child.degraded:
                     continue
                 if child.is_alive():
@@ -816,13 +823,15 @@ class Supervisor:
                 elapsed_ms=_elapsed_ms(reconcile_started),
             )
             return
-        wanted = {u.id: u for u in users.enabled_users()}
+        wanted = {u.id: u for u in users.serving_users() if u.id not in self._maintenance_realms}
         for user_id in list(self._init_failures):
             if user_id not in wanted:
                 self._init_failures.pop(user_id, None)
 
         # 1) Stop agent children not in wanted set, or whose port changed.
         for user_id, child in list(self._children.items()):
+            if user_id in self._maintenance_realms:
+                continue
             if user_id not in wanted:
                 log.info("supervisor_reload_remove", user_id=user_id)
                 child.terminate()
@@ -830,7 +839,7 @@ class Supervisor:
                 self._terminate_consolidator(user_id)
                 continue
             new_def = wanted[user_id]
-            if new_def.port != child.user.port:
+            if new_def.port != child.user.port or new_def.enabled != child.user.enabled:
                 log.info(
                     "supervisor_reload_port_change",
                     user_id=user_id,
@@ -901,9 +910,12 @@ class Supervisor:
             if user_id in wanted and child.is_alive() and not child.degraded
         }
         for user_id, c_child in list(self._consolidators.items()):
+            if user_id in self._maintenance_realms:
+                continue
             wanted_def = wanted.get(user_id)
             if (
                 wanted_def is None
+                or not wanted_def.enabled
                 or not wanted_def.consolidator_enabled()
                 or user_id not in ready_user_ids
             ):
@@ -917,7 +929,7 @@ class Supervisor:
                 )
                 self._terminate_consolidator(user_id)
         for user_id, user_def in wanted.items():
-            if not user_def.consolidator_enabled():
+            if not user_def.enabled or not user_def.consolidator_enabled():
                 continue
             if user_id not in ready_user_ids:
                 continue
@@ -936,6 +948,8 @@ class Supervisor:
         )
 
     def _ensure_agent_child(self, user_def: UserEntry) -> None:
+        if user_def.id in self._maintenance_realms:
+            return
         existing = self._children.get(user_def.id)
         if existing is not None and existing.is_alive() and not existing.degraded:
             existing.user = user_def

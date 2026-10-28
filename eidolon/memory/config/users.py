@@ -1,8 +1,8 @@
 """The roster of memory spaces this deployment serves.
 
 Holds the shapes (:class:`UserEntry`, :class:`UsersConfig`) plus the Eidolon OS
-source for them: the System Data authority's versioned Memory runtime roster.
-The service consumes one bounded projection of active Owner, Companion and
+source for them: the System Data authority's complete Memory realm catalog.
+Runtime and management authorization are separate flags; backup retains all
 Realm facts and never opens System Data storage itself.
 
 Deployments outside the OS get their roster from
@@ -13,12 +13,11 @@ source; this module stays a leaf so both sources can depend on it.
 
 from __future__ import annotations
 
-from typing import Literal
-
 import json
 import os
 import urllib.error
 import urllib.request
+from typing import Literal
 from urllib.parse import urljoin, urlparse
 
 from eidolon_memory_contracts import stable_memory_realm_port
@@ -59,6 +58,9 @@ class ConsolidatorUserConfig(BaseModel):
 class UserEntry(BaseModel):
     id: str
     scope: Literal["owner", "person"] = "owner"
+    person_id: str | None = None
+    management_enabled: bool = False
+    erasure_pending: bool = False
     owner_id: str | None = None
     port: int = Field(ge=1, le=65535)
     enabled: bool = True
@@ -88,7 +90,7 @@ class UsersConfig(BaseModel):
                 msg = f"memory realm registry: duplicate realm id {u.id!r}"
                 raise ValueError(msg)
             seen_ids.add(u.id)
-            if u.enabled:
+            if u.enabled or u.management_enabled:
                 if u.port in seen_ports:
                     msg = (
                         f"memory realm registry: port {u.port} collision between "
@@ -101,16 +103,19 @@ class UsersConfig(BaseModel):
     def enabled_users(self) -> list[UserEntry]:
         return [u for u in self.users if u.enabled]
 
+    def serving_users(self) -> list[UserEntry]:
+        return [u for u in self.users if u.enabled or u.management_enabled]
+
     def find(self, user_id: str) -> UserEntry | None:
         return next((u for u in self.users if u.id == user_id), None)
 
 
 def resolve_system_data_roster_url(settings: MemorySettings | None = None) -> str:
     cfg = settings or get_memory_settings()
-    override = os.environ.get("EIDOLON_DATA_MEMORY_RUNTIME_ROSTER_URL", "").strip()
+    override = os.environ.get("EIDOLON_DATA_MEMORY_REALM_CATALOG_URL", "").strip()
     base_url = override or urljoin(
         cfg.registry.system_data_url.rstrip("/") + "/",
-        "api/companion-authority/v1/memory-runtime-roster",
+        "api/companion-authority/v1/memory-realm-catalog",
     )
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -166,15 +171,25 @@ def _entry_from_memory_realm(
         raise RegistrySourceUnavailable("System Data Memory roster entry is incomplete")
     if realm.get("scope") not in ("owner", "person"):
         raise RegistrySourceUnavailable("System Data Memory roster scope is missing or invalid")
+    if any(type(realm.get(flag)) is not bool for flag in ("enabled", "management_enabled")):
+        raise RegistrySourceUnavailable("System Data Memory roster authorization flags are invalid")
+    person_id = realm.get("person_id")
+    if (
+        realm["scope"] == "person" and (not isinstance(person_id, str) or not person_id.strip())
+    ) or (realm["scope"] == "owner" and person_id is not None):
+        raise RegistrySourceUnavailable("System Data Memory roster person ownership is invalid")
     config = realm.get("engine_config") or {}
     if not isinstance(config, dict):
         raise RegistrySourceUnavailable("System Data Memory roster engine_config is invalid")
     return UserEntry(
         id=realm_id,
         scope=realm["scope"],
+        person_id=realm.get("person_id"),
+        management_enabled=realm.get("management_enabled", False),
+        erasure_pending=realm.get("erasure_pending", False),
         owner_id=owner_id,
         port=port,
-        enabled=True,
+        enabled=realm["enabled"],
         consolidator=_consolidator_from_engine_config(config.get("consolidator") or {}),
     )
 
@@ -211,7 +226,7 @@ def _load_memory_realms_from_system_data(
             f"System Data Memory roster unavailable at {url}: {exc}"
         ) from exc
     if payload.get("contract_version") != "1" or payload.get("operation") != (
-        "memory.runtime-roster"
+        "memory.realm-catalog"
     ):
         raise RegistrySourceUnavailable("System Data Memory roster contract identity is invalid")
     raw_realms = payload.get("realms")

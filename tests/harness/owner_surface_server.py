@@ -30,7 +30,7 @@ import uvicorn
 from eidolon_memory_contracts import OWNER_AUDIENCE, PrivacyMutationCommand, companion_audience
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
 from eidolon.memory.adapters.kg_sqlite import SqliteKnowledgeGraph
@@ -90,7 +90,7 @@ class _ApplyingPublisher:
         # and the client has to ask again — the usual case on a Host.
         await asyncio.sleep(1.5)
         for key in command.drawer_ids:
-            self._backend.docs.pop(f"{SPACE}::{key}", None)
+            self._backend.docs.pop(f"{command.memory_space_id}::{key}", None)
         await self._ledger.record_applied(command.request_id, kind=command.kind)
 
 
@@ -132,20 +132,22 @@ async def _seed_graph(graph: SqliteKnowledgeGraph) -> None:
 
 
 def build(port: int, token: str, state: Path) -> Starlette:
+    space = SPACE
     backend = FakeMemoryBackend()
     asyncio.run(_seed(backend))
-    graph = SqliteKnowledgeGraph(state / "kg.sqlite3", space_id=SPACE, lock=SpaceLock())
+    graph = SqliteKnowledgeGraph(state / "kg.sqlite3", space_id=space, lock=SpaceLock())
     asyncio.run(_seed_graph(graph))
-    ledger = CommandStatusLedger(state / "cmd.sqlite3", space_id=SPACE)
+    ledger = CommandStatusLedger(state / "cmd.sqlite3", space_id=space)
 
     async def discovery(_request: Any) -> JSONResponse:
         return JSONResponse(
             {
                 "memory_realms": [
                     {
-                        "memory_realm_id": SPACE,
-                        "memory_space_id": SPACE,
+                        "memory_realm_id": space,
+                        "memory_space_id": space,
                         "owner_id": OWNER,
+                        "scope": "owner",
                         "recollections_url": f"http://127.0.0.1:{port}/api/memory/v1/recollections",
                         "enabled": True,
                         "agent_reachable": True,
@@ -160,7 +162,7 @@ def build(port: int, token: str, state: Path) -> Starlette:
             *owner_memory_routes(
                 service=_Service(backend, graph),  # type: ignore[arg-type]
                 settings=load_memory_settings(),
-                memory_space_id=SPACE,
+                memory_space_id=space,
                 owner_id=OWNER,
                 service_token=token,
                 command_publisher=_ApplyingPublisher(backend, ledger),
@@ -172,11 +174,45 @@ def build(port: int, token: str, state: Path) -> Starlette:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--multi-person", action="store_true")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--token", required=True)
     parser.add_argument("--state", type=Path, required=True)
     args = parser.parse_args()
-    app = build(args.port, args.token, args.state)
+    if args.multi_person:
+        global SPACE
+        entries, mounts = [], []
+        for name, scope, person, owner in [
+            ("default", "owner", None, OWNER),
+            ("a", "person", "person-a", OWNER),
+            ("b", "person", "person-b", OWNER),
+            ("foreign", "person", "foreign-person", "other-owner"),
+        ]:
+            SPACE = "r_" + name
+            state = args.state / name
+            state.mkdir(parents=True)
+            mounts.append(Mount("/" + name, app=build(args.port, args.token, state)))
+            entries.append(
+                {
+                    "memory_space_id": SPACE,
+                    "memory_realm_id": SPACE,
+                    "owner_id": owner,
+                    "scope": scope,
+                    "person_id": person,
+                    "enabled": name != "a",
+                    "management_enabled": True,
+                    "agent_reachable": name != "a",
+                    "management_reachable": True,
+                    "recollections_url": f"http://127.0.0.1:{args.port}/{name}/api/memory/v1/recollections",
+                }
+            )
+
+        async def discovery(_):
+            return JSONResponse({"memory_realms": entries})
+
+        app = Starlette(routes=[Route("/api/discovery/agent-routing", discovery), *mounts])
+    else:
+        app = build(args.port, args.token, args.state)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 
 

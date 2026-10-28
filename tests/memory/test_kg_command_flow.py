@@ -108,7 +108,10 @@ async def test_command_add_triple_flow(kg_setup, tmp_path: Path) -> None:
     assert status.resource_id
 
 
-async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -> None:
+@pytest.mark.parametrize("management_only", [False, True])
+async def test_confirmed_privacy_command_deletes_exact_drawers(
+    tmp_path: Path, management_only: bool
+) -> None:
     from eidolon_memory_contracts import MemoryIntent
 
     from eidolon.memory.adapters.fake_backend import FakeMemoryBackend
@@ -163,6 +166,7 @@ async def test_confirmed_privacy_command_deletes_exact_drawers(tmp_path: Path) -
 
     await process_command_message(
         msg,
+        management_only=management_only,
         backend=backend,
         kg=None,
         settings=get_memory_settings(),

@@ -51,7 +51,7 @@ async def probe_mcp_http(url: str, *, timeout_seconds: float = 1.5) -> bool:
 
 def discovery_memory_realms(settings: MemorySettings) -> list[UserEntry]:
     """Return memory realms exposed to agents, with a dev fallback."""
-    enabled = load_users_config(settings).enabled_users()
+    enabled = load_users_config(settings).serving_users()
     if enabled:
         return enabled
     return [
@@ -76,7 +76,9 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
     realms = discovery_memory_realms(settings)
     reachability = await asyncio.gather(
         *[
-            probe_mcp_http(settings.mcp_http.base_url(port=realm.port))
+            probe_management_http(settings, realm)
+            if not realm.enabled
+            else probe_mcp_http(settings.mcp_http.base_url(port=realm.port))
             for realm in realms
         ]
     )
@@ -86,12 +88,8 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
         "nats": {
             "url": settings.nats.url,
             "stream": settings.nats.stream,
-            "turn_subject_template": (
-                f"{MEMORY_CONVERSATION_TURN_BASE}.{{memory_space_token}}"
-            ),
-            "cmd_subject_template": (
-                f"{MEMORY_COMMAND_BASE}.{{memory_space_token}}"
-            ),
+            "turn_subject_template": (f"{MEMORY_CONVERSATION_TURN_BASE}.{{memory_space_token}}"),
+            "cmd_subject_template": (f"{MEMORY_COMMAND_BASE}.{{memory_space_token}}"),
         },
         "memory_realms": [
             {
@@ -99,6 +97,8 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
                 "memory_realm_id": validate_memory_space_id(realm.id),
                 "owner_id": realm.owner_id,
                 "scope": realm.scope,
+                "person_id": realm.person_id,
+                "management_enabled": realm.management_enabled or realm.enabled,
                 "enabled": realm.enabled,
                 "mcp_http_url": settings.mcp_http.base_url(port=realm.port),
                 "ops_mcp_http_url": settings.mcp_http.ops_base_url(port=realm.port),
@@ -108,8 +108,24 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
                 # keep guessing correctly right up until either path moved.
                 "recollections_url": recollections_url(settings, port=realm.port),
                 "mcp_auth": {"type": "none"},
-                "agent_reachable": reachable,
+                "agent_reachable": reachable and realm.enabled,
+                "management_reachable": reachable,
             }
             for realm, reachable in zip(realms, reachability, strict=True)
         ],
     }
+
+
+async def probe_management_http(settings, realm):
+    url = recollections_url(settings, port=realm.port).rsplit("/", 1)[0] + "/status"
+    try:
+        async with httpx.AsyncClient(trust_env=False, timeout=1.5) as client:
+            response = await client.get(
+                url,
+                headers={
+                    "Authorization": "Bearer " + settings.mcp_http.resolve_api_service_token()
+                },
+            )
+            return response.status_code == 200
+    except httpx.HTTPError:
+        return False

@@ -47,7 +47,7 @@ def _urlopen_payload(
     def fake_urlopen(request, timeout=0):  # noqa: ANN001
         del timeout
         assert request.full_url == (
-            "http://127.0.0.1:8084/api/companion-authority/v1/memory-runtime-roster"
+            "http://127.0.0.1:8084/api/companion-authority/v1/memory-realm-catalog"
         )
         assert request.get_header("Authorization") == f"Bearer {expected_token}"
         return _Response(json.dumps(payload).encode("utf-8"))
@@ -61,15 +61,21 @@ def test_load_memory_realms_from_system_data(monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch,
         {
             "contract_version": "1",
-            "operation": "memory.runtime-roster",
+            "operation": "memory.realm-catalog",
             "realms": [
                 {
                     "realm_id": "r:benchmark:default",
                     "owner_id": "benchmark",
                     "engine": "mempalace",
                     "scope": "owner",
+                    "enabled": True,
+                    "management_enabled": True,
                     "engine_config": {
-                        "consolidator": {"enabled": True, "interval_hours": 8},
+                        "consolidator": {
+                            "enabled": True,
+                            "management_enabled": True,
+                            "interval_hours": 8,
+                        },
                     },
                 }
             ],
@@ -96,23 +102,27 @@ def test_load_memory_realms_from_system_data(monkeypatch: pytest.MonkeyPatch) ->
 def test_load_memory_realms_assigns_stable_ports(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = {
         "contract_version": "1",
-        "operation": "memory.runtime-roster",
+        "operation": "memory.realm-catalog",
         "realms": [
-                {
-                    "realm_id": "r:benchmark:one",
-                    "owner_id": "benchmark",
-                    "engine": "mempalace",
-                    "scope": "owner",
-                    "engine_config": {},
-                },
-                {
-                    "realm_id": "r:benchmark:two",
-                    "owner_id": "benchmark",
-                    "engine": "mempalace",
-                    "scope": "owner",
-                    "engine_config": {},
-                },
-            ],
+            {
+                "realm_id": "r:benchmark:one",
+                "owner_id": "benchmark",
+                "engine": "mempalace",
+                "scope": "owner",
+                "enabled": True,
+                "management_enabled": True,
+                "engine_config": {},
+            },
+            {
+                "realm_id": "r:benchmark:two",
+                "owner_id": "benchmark",
+                "engine": "mempalace",
+                "scope": "owner",
+                "enabled": True,
+                "management_enabled": True,
+                "engine_config": {},
+            },
+        ],
     }
     _urlopen_payload(monkeypatch, payload)
 
@@ -121,9 +131,7 @@ def test_load_memory_realms_assigns_stable_ports(monkeypatch: pytest.MonkeyPatch
     assert [(u.id, u.port) for u in first.users] == [(u.id, u.port) for u in second.users]
     assert len({u.port for u in first.users}) == 2
     assert all(
-        DEFAULT_MEMORY_MCP_BASE_PORT
-        <= u.port
-        < DEFAULT_MEMORY_MCP_BASE_PORT + MEMORY_MCP_PORT_SPAN
+        DEFAULT_MEMORY_MCP_BASE_PORT <= u.port < DEFAULT_MEMORY_MCP_BASE_PORT + MEMORY_MCP_PORT_SPAN
         for u in first.users
     )
 
@@ -135,17 +143,19 @@ def test_load_memory_realms_ignores_runtime_route_in_engine_config(
         monkeypatch,
         {
             "contract_version": "1",
-            "operation": "memory.runtime-roster",
+            "operation": "memory.realm-catalog",
             "realms": [
                 {
                     "realm_id": "r:benchmark:default",
                     "owner_id": "benchmark",
                     "engine": "mempalace",
                     "scope": "owner",
+                    "enabled": True,
+                    "management_enabled": True,
                     "engine_config": {
                         "mcp_http_url": "http://127.0.0.1:8041/mcp",
                         "palace_path": "/tmp/legacy-palace",
-                    }
+                    },
                 }
             ],
         },
@@ -172,12 +182,12 @@ def test_system_data_registry_requires_its_service_credential(
     "payload",
     [
         {},
-        {"contract_version": "2", "operation": "memory.runtime-roster", "realms": []},
+        {"contract_version": "2", "operation": "memory.realm-catalog", "realms": []},
         {"contract_version": "1", "operation": "wrong", "realms": []},
-        {"contract_version": "1", "operation": "memory.runtime-roster", "realms": {}},
+        {"contract_version": "1", "operation": "memory.realm-catalog", "realms": {}},
         {
             "contract_version": "1",
-            "operation": "memory.runtime-roster",
+            "operation": "memory.realm-catalog",
             "realms": [{"realm_id": "incomplete"}],
         },
     ],
@@ -242,6 +252,7 @@ def test_user_consolidator_enabled_with_overrides() -> None:
                     "port": 8030,
                     "consolidator": {
                         "enabled": True,
+                        "management_enabled": True,
                         "interval_hours": 12,
                         "window_days": 14,
                         "min_drawers": 5,
@@ -263,26 +274,44 @@ def test_user_consolidator_rejects_invalid_values() -> None:
     import pydantic
 
     for bad in (
-        {"enabled": True, "interval_hours": 0},
-        {"enabled": True, "interval_hours": -1},
-        {"enabled": True, "window_days": 0},
-        {"enabled": True, "min_drawers": 0},
-        {"enabled": True, "min_confidence": 1.5},
-        {"enabled": True, "min_confidence": -0.1},
+        {"enabled": True, "management_enabled": True, "interval_hours": 0},
+        {"enabled": True, "management_enabled": True, "interval_hours": -1},
+        {"enabled": True, "management_enabled": True, "window_days": 0},
+        {"enabled": True, "management_enabled": True, "min_drawers": 0},
+        {"enabled": True, "management_enabled": True, "min_confidence": 1.5},
+        {"enabled": True, "management_enabled": True, "min_confidence": -0.1},
     ):
         with pytest.raises(pydantic.ValidationError):
             UsersConfig.model_validate(
                 {"users": [{"id": "alice", "port": 8030, "consolidator": bad}]}
             )
 
-@pytest.mark.parametrize('scope', ['person', None, 'unknown'])
+
+@pytest.mark.parametrize("scope", ["person", None, "unknown"])
 def test_registry_preserves_or_rejects_explicit_scope(monkeypatch, scope):
     from eidolon.memory.config.users import RegistrySourceUnavailable
-    _urlopen_payload(monkeypatch, {'contract_version':'1', 'operation':'memory.runtime-roster',
-        'realms':[{'realm_id':'r_private', 'owner_id':'owner', 'engine':'mempalace',
-                   'engine_config':{}, 'scope':scope}]})
-    if scope == 'person':
-        assert load_users_config(_settings()).users[0].scope == 'person'
+
+    _urlopen_payload(
+        monkeypatch,
+        {
+            "contract_version": "1",
+            "operation": "memory.realm-catalog",
+            "realms": [
+                {
+                    "realm_id": "r_private",
+                    "owner_id": "owner",
+                    "engine": "mempalace",
+                    "engine_config": {},
+                    "scope": scope,
+                    "person_id": "p",
+                    "enabled": True,
+                    "management_enabled": True,
+                }
+            ],
+        },
+    )
+    if scope == "person":
+        assert load_users_config(_settings()).users[0].scope == "person"
     else:
-        with pytest.raises(RegistrySourceUnavailable, match='scope'):
+        with pytest.raises(RegistrySourceUnavailable, match="scope"):
             load_users_config(_settings())

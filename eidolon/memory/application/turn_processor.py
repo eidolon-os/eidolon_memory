@@ -990,6 +990,7 @@ async def _write_mentions(
 async def process_command_message(
     msg: Any,
     *,
+    management_only: bool = False,
     backend: Any,
     kg: Any,
     settings: MemorySettings,
@@ -1020,6 +1021,19 @@ async def process_command_message(
                 f"invalid command payload: {exc}",
                 delivery_count(msg),
             )
+        await msg.ack()
+        return
+
+    if management_only and not (
+        isinstance(cmd, PrivacyMutationCommand) and cmd.issuer == "admin" and cmd.action == "delete"
+    ):
+        await _record_command_status(
+            command_status,
+            "failed",
+            cmd.request_id,
+            kind=cmd.kind,
+            error="memory is paused; only explicit management deletion is allowed",
+        )
         await msg.ack()
         return
 
