@@ -2,7 +2,7 @@
 
 日期：2026-10-28。最新产品规则与实现见第 26 节。已完成现有 Mac 联合发布、健康检查和手机覆盖安装，见 [部署记录](MAC_PERSON_MEMORY_DEPLOYMENT_20261028.md)；第 26 节末的未发布说明保留为发布前记录。第 13–25 节保留历史背景，其中“换人必须新建 conversation”“controlled_trial 不得启用记忆”等旧结论已被第 26 节取代。
 
-当前产品规则：Mobile 与 Device 不主动选 Person；另一个 session 负责声纹识别及 SpeakerIdentityObservation。本任务负责记忆授权、隔离与生命周期。观察结果不是授权凭据；未知、不确定或不可用时不得访问旧默认 Realm。旧默认数据保留，多模态暂不接入。
+当前产品规则（2026-10-28 更新）：新建 Person 默认开启独立个人记忆，列表直接提供状态和开关；已有暂停状态不自动恢复。见 [默认开启与验收](PERSON_MEMORY_ACCEPTANCE.md)。Mobile 与 Device 不主动选 Person；另一个 session 负责声纹识别及 SpeakerIdentityObservation。本任务负责记忆授权、隔离与生命周期。观察结果不是授权凭据；未知、不确定或不可用时不得访问旧默认 Realm。旧默认数据保留，多模态暂不接入。
 
 ## 1. 决策摘要
 
