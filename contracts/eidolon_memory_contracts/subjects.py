@@ -100,3 +100,8 @@ def all_memory_stream_patterns() -> list[str]:
         memory_command_stream_pattern(),
         memory_sync_stream_pattern(),
     ]
+
+
+def provisional_sources_subject(memory_space_id: str) -> str:
+    """Bounded provisional source RPC on the existing private Memory query namespace."""
+    return f"eidolon.memory.query.{memory_space_subject_token(memory_space_id)}.provisional_sources"

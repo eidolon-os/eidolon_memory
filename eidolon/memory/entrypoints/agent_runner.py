@@ -202,6 +202,7 @@ async def _nats_subscriber_loop(
     steward: Any,
     management_only: bool = False,
     provisional_ingest: bool = False,
+    provisional_recall: bool = False,
 ) -> None:
     """In-process JetStream pull-subscriber for both turn + command subjects."""
     import nats
@@ -391,6 +392,20 @@ async def _nats_subscriber_loop(
             }
         await msg.respond(json.dumps(response, ensure_ascii=False).encode("utf-8"))
 
+    async def _handle_provisional_query(msg):
+        from eidolon.memory.application.provisional_sources import query_provisional_sources
+
+        try:
+            if len(msg.data) > 4096:
+                raise ValueError("provisional request exceeds budget")
+            result = await query_provisional_sources(
+                json.loads(msg.data), memory_space_id=memory_space_id,
+                decision_store=decision_store)
+        except Exception:
+            # Do not echo source content or backend error details over the bus.
+            result = {"error": "provisional source query unavailable"}
+        await msg.respond(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+
     # Outer reconnect loop: a dropped / drained NATS connection re-subscribes
     # with exponential backoff instead of exiting. Durable consumers persist
     # server-side, so re-subscribe rebinds and resumes from the last ack.
@@ -425,6 +440,10 @@ async def _nats_subscriber_loop(
             )
             if not management_only:
                 await nc.subscribe(query_subject, cb=_handle_list_drawers_query)
+            if provisional_recall:
+                from eidolon_memory_contracts.subjects import provisional_sources_subject
+                await nc.subscribe(provisional_sources_subject(memory_space_id),
+                                   cb=_handle_provisional_query)
             await nc.flush()
             if ready is not None and not ready.is_set():
                 ready.set()
@@ -571,6 +590,7 @@ def _compose_starlette_lifespan(
     palace_path: str,
     management_only: bool = False,
     provisional_ingest: bool = False,
+    provisional_recall: bool = False,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
     # Beside the palace, not inside it: MemPalace's repair renames its own
@@ -628,6 +648,7 @@ def _compose_starlette_lifespan(
                     steward=steward,
                     management_only=management_only,
                     provisional_ingest=provisional_ingest,
+                    provisional_recall=provisional_recall,
                 ),
                 name=f"nats-sub-{memory_space_id}",
             )
@@ -711,6 +732,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # serves every Companion this Owner has.
     parser.add_argument("--management-only", action="store_true")
     parser.add_argument("--provisional-ingest", action="store_true")
+    parser.add_argument("--provisional-recall", action="store_true")
     parser.add_argument("--owner-id", default="", help="Owner this space belongs to")
     return parser.parse_args(argv)
 
@@ -939,6 +961,7 @@ def _run_service(
         palace_path=str(palace_path),
         management_only=args.management_only,
         provisional_ingest=args.provisional_ingest,
+        provisional_recall=args.provisional_recall,
     )
     if args.management_only:
         starlette_app = ManagementOnlyApp(starlette_app)

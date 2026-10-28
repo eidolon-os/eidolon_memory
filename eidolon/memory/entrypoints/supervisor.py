@@ -94,6 +94,8 @@ def _agent_cli_argv(user: UserEntry, palace_path: Path) -> list[str]:
         argv += ["--management-only"]
         if user.provisional_ingest_enabled:
             argv += ["--provisional-ingest"]
+    if user.provisional_recall_enabled:
+        argv += ["--provisional-recall"]
     return argv
 
 
@@ -845,6 +847,7 @@ class Supervisor:
                 new_def.port != child.user.port
                 or new_def.enabled != child.user.enabled
                 or new_def.provisional_ingest_enabled != child.user.provisional_ingest_enabled
+                or new_def.provisional_recall_enabled != child.user.provisional_recall_enabled
             ):
                 log.info(
                     "supervisor_reload_port_change",

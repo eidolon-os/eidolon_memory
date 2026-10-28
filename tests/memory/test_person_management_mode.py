@@ -230,8 +230,11 @@ def test_provisional_worker_uses_management_mode_and_no_broad_runtime(tmp_path):
         UserEntry(id="r_owner", owner_id="o", port=12346, provisional_ingest_enabled=True)
 
 
+@pytest.mark.parametrize("permission", ["provisional_ingest_enabled", "provisional_recall_enabled"])
 @pytest.mark.parametrize("enabled", [True, False])
-async def test_provisional_ingest_policy_change_reconciles_worker(tmp_path, monkeypatch, enabled):
+async def test_provisional_ingest_policy_change_reconciles_worker(
+    tmp_path, monkeypatch, enabled, permission
+):
     from unittest.mock import Mock
 
     from tests.memory.test_supervisor_roster_refresh import _supervisor
@@ -245,9 +248,9 @@ async def test_provisional_ingest_policy_change_reconciles_worker(tmp_path, monk
         port=12345,
         enabled=False,
         management_enabled=True,
-        provisional_ingest_enabled=not enabled,
+        **{permission: not enabled},
     )
-    new = old.model_copy(update={"provisional_ingest_enabled": enabled})
+    new = old.model_copy(update={permission: enabled})
     child = SimpleNamespace(user=old, terminate=Mock())
     sup._children[old.id] = child
     monkeypatch.setattr(sup, "_read_users", lambda: UsersConfig(users=[new]))
@@ -257,3 +260,19 @@ async def test_provisional_ingest_policy_change_reconciles_worker(tmp_path, monk
     await sup._reconcile()
     child.terminate.assert_called_once()
     spawn.assert_called_once_with(new)
+
+
+def test_provisional_read_permission_does_not_enable_ingest_or_normal_mcp(tmp_path):
+    entry = UserEntry(
+        id="r_candidate",
+        owner_id="o",
+        person_id="p",
+        scope="person",
+        port=12345,
+        enabled=False,
+        management_enabled=True,
+        provisional_recall_enabled=True,
+    )
+    args = _agent_cli_argv(entry, tmp_path)
+    assert "--management-only" in args and "--provisional-recall" in args
+    assert "--provisional-ingest" not in args

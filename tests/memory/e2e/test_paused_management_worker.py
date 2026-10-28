@@ -35,6 +35,10 @@ async def test_paused_worker_management_and_subscriptions(live_agent_runner):
         assert memory_consumer_name(prefix, realm, role="cmd") in names
         assert memory_consumer_name(prefix, realm, role="turn") not in names
         assert memory_consumer_name(prefix, realm, role="sync") not in names
+        from eidolon_memory_contracts.subjects import provisional_sources_subject
+
+        with pytest.raises(nats.errors.NoRespondersError):
+            await nc.request(provisional_sources_subject(realm), b"{}", timeout=1)
     finally:
         await nc.close()
 
@@ -54,6 +58,7 @@ async def test_provisional_worker_consumes_only_sources_without_runtime_mcp(live
         user_id=realm,
         management_only=True,
         provisional_ingest=True,
+        provisional_recall=True,
         env_overrides={"EIDOLON_MEMORY_API_TOKEN": "provisional-worker-test-credential"},
     )
     async with httpx.AsyncClient(
@@ -109,5 +114,30 @@ async def test_provisional_worker_consumes_only_sources_without_runtime_mcp(live
         }
         assert memory_consumer_name(prefix, realm, role="turn") in names
         assert memory_consumer_name(prefix, realm, role="sync") not in names
+        from eidolon_memory_contracts.subjects import provisional_sources_subject
+
+        ctx = dict(
+            memory_realm_id=realm,
+            owner_id="o",
+            person_id="p",
+            identity_epoch=2,
+            companion_id="c",
+            session_id="s",
+        )
+
+        async def query(context):
+            reply = await nc.request(
+                provisional_sources_subject(realm),
+                json.dumps({"context": context}).encode(),
+                timeout=1,
+            )
+            return json.loads(reply.data)
+
+        matching = await query(ctx)
+        assert matching["identity_binding"]["identity_epoch"] == 2
+        assert matching["sources"][0]["turn_id"] == "provisional"
+        assert (await query({**ctx, "session_id": "other"}))["sources"] == []
+        assert (await query({**ctx, "person_id": "other"}))["sources"] == []
+        assert "error" in await query({**ctx, "memory_realm_id": "other"})
     finally:
         await nc.close()

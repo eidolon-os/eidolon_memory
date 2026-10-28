@@ -61,6 +61,7 @@ class UserEntry(BaseModel):
     person_id: str | None = None
     management_enabled: bool = False
     provisional_ingest_enabled: bool = False
+    provisional_recall_enabled: bool = False
     erasure_pending: bool = False
     owner_id: str | None = None
     port: int = Field(ge=1, le=65535)
@@ -76,7 +77,7 @@ class UserEntry(BaseModel):
 
     @model_validator(mode="after")
     def _provisional_scope(self):
-        if self.provisional_ingest_enabled and not (
+        if (self.provisional_ingest_enabled or self.provisional_recall_enabled) and not (
             self.scope == "person"
             and self.person_id
             and self.owner_id
@@ -188,6 +189,8 @@ def _entry_from_memory_realm(
         raise RegistrySourceUnavailable("System Data Memory roster authorization flags are invalid")
     if type(realm.get("provisional_ingest_enabled", False)) is not bool:
         raise RegistrySourceUnavailable("invalid provisional ingest authorization")
+    if type(realm.get("provisional_recall_enabled", False)) is not bool:
+        raise RegistrySourceUnavailable("invalid provisional recall authorization")
     person_id = realm.get("person_id")
     if (
         realm["scope"] == "person" and (not isinstance(person_id, str) or not person_id.strip())
@@ -202,6 +205,7 @@ def _entry_from_memory_realm(
         person_id=realm.get("person_id"),
         management_enabled=realm.get("management_enabled", False),
         provisional_ingest_enabled=realm.get("provisional_ingest_enabled", False),
+        provisional_recall_enabled=realm.get("provisional_recall_enabled", False),
         erasure_pending=realm.get("erasure_pending", False),
         owner_id=owner_id,
         port=port,

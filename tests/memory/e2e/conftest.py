@@ -293,6 +293,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         keep_palace: bool = False,
         management_only: bool = False,
         provisional_ingest: bool = False,
+        provisional_recall: bool = False,
     ) -> _AgentHandle:
         memory_space_id = _e2e_memory_space_id(user_id)
         # Not a parameter. Where an agent listens is a fact about running two
@@ -435,6 +436,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                     str(port),
                     *(["--management-only"] if management_only else []),
                     *(["--provisional-ingest"] if provisional_ingest else []),
+                    *(["--provisional-recall"] if provisional_recall else []),
                 ],
                 stdout=log_fp,
                 stderr=subprocess.STDOUT,

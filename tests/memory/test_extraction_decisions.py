@@ -680,3 +680,29 @@ async def test_provisional_only_worker_quarantines_confirmed_and_retains_provisi
     assert len(await ledger.list_provisional_sources(_provisional_turn().context)) == 1
     assert not steward.decide.mock_calls and not backend.mock_calls
     dlq.add.assert_awaited_once()
+
+
+async def test_provisional_query_rejects_unbound_or_cross_realm_and_cannot_expand_budget(tmp_path):
+    from eidolon.memory.application.provisional_sources import query_provisional_sources
+
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db")
+    turn = _provisional_turn()
+    await _retain(ledger, turn)
+    context = turn.context.model_dump()
+    result = await query_provisional_sources(
+        {"context": context}, memory_space_id=MEMORY_SPACE_ID, decision_store=ledger
+    )
+    assert result["sources"][0]["turn_id"] == turn.turn_id
+    for request in (
+        {"context": context, "limit": 999},
+        {"context": {**context, "person_id": None, "identity_epoch": None}},
+        {"context": {**context, "owner_id": None}},
+    ):
+        with pytest.raises(ValueError):
+            await query_provisional_sources(
+                request, memory_space_id=MEMORY_SPACE_ID, decision_store=ledger
+            )
+    with pytest.raises(ValueError):
+        await query_provisional_sources(
+            {"context": context}, memory_space_id="other", decision_store=ledger
+        )
