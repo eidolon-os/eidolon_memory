@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
+import nats
 from eidolon_agent.app.interaction import AcceptReply, ReplyRequest
 from eidolon_agent.core.errors import NotFoundError
 from eidolon_agent.domain.agent.turn import TurnEngine
@@ -238,6 +239,43 @@ async def main():
                     assert (await compiler._memory_recall(second, timeout_s=0.2))[0]
                     latencies.append((time.perf_counter() - start) * 1000)
                 pool.session_for.assert_not_awaited()
+                # Fill the isolated broker at its existing count without evicting
+                # anything, then exercise the production outbox retry path.
+                control = await nats.connect(sys.argv[3])
+                js = control.jetstream()
+                stream = await js.stream_info(sys.argv[4])
+                assert stream.config.discard == "new"
+                original_limit = stream.config.max_msgs
+                stream.config.max_msgs = stream.state.messages
+                try:
+                    await js.update_stream(stream.config)
+                    pending_turn = await turn("capacity", "第二条来源")
+                    await engine._publish_memory_observation(pending_turn, datetime.now(UTC))
+                    dispatcher = MemoryTurnDispatcher(runtime, bus)
+                    assert await dispatcher.dispatch_once() == 0
+                    assert await runtime.memory_turn_outbox.pending_count() == 1
+                    pending = await runtime.memory_turn_outbox.pending_batch()
+                    assert pending == []  # Existing backoff prevents a busy retry loop.
+                    assert (
+                        await js.stream_info(sys.argv[4])
+                    ).state.messages == stream.state.messages
+                    retained = await compiler._memory_recall(second, timeout_s=0.2)
+                    assert "我暂时喜欢青色" in retained[0]
+                finally:
+                    stream.config.max_msgs = original_limit
+                    await js.update_stream(stream.config)
+                    await control.close()
+                async with asyncio.timeout(10):
+                    while await runtime.memory_turn_outbox.pending_count():
+                        await dispatcher.dispatch_once()
+                        await asyncio.sleep(0.05)
+                async with asyncio.timeout(10):
+                    while True:
+                        recovered = await compiler._memory_recall(second, timeout_s=0.2)
+                        if recovered and recovered[0] and "第二条来源" in recovered[0]:
+                            break
+                        await asyncio.sleep(0.05)
+                assert "我暂时喜欢青色" in recovered[0]
                 await store.persons.suspend_memory(OWNER, PERSON, 1)
                 try:
                     await authorizer.authorize(**args)
@@ -250,6 +288,7 @@ async def main():
                         {
                             "passed": True,
                             "read_count": 20,
+                            "capacity_recovery": True,
                             "warm_read_p95_ms": sorted(latencies)[18],
                             "warm_read_max_ms": max(latencies),
                         }

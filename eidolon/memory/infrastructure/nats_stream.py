@@ -6,6 +6,7 @@ from typing import Any
 
 from eidolon_memory_contracts import all_memory_stream_patterns
 from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
+from nats.js.errors import NotFoundError
 
 from eidolon.memory.config.memory_settings import MemorySettings
 
@@ -22,7 +23,9 @@ def stream_config_for_settings(settings: MemorySettings) -> StreamConfig:
         max_age=nats.stream_max_age_seconds,
         max_msgs=nats.stream_max_msgs,
         max_bytes=nats.stream_max_bytes,
-        discard=DiscardPolicy.OLD,
+        # Accepted sources must not be evicted to acknowledge newer traffic.
+        # A rejected publish stays in the producer's existing durable outbox.
+        discard=DiscardPolicy.NEW,
     )
 
 
@@ -30,9 +33,9 @@ async def ensure_memory_stream(js: Any, settings: MemorySettings) -> None:
     cfg = stream_config_for_settings(settings)
     try:
         await js.stream_info(settings.nats.stream)
-        try:
-            await js.update_stream(cfg)
-        except Exception:
-            pass
-    except Exception:
+    except NotFoundError:
         await js.add_stream(cfg)
+    else:
+        # Authorization, connectivity and update failures are not "missing".
+        # Fail startup/reconnect rather than claiming an unenforced policy.
+        await js.update_stream(cfg)
