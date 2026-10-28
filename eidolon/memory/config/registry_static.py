@@ -104,6 +104,7 @@ class StaticFileRegistry:
         return UserEntry(
             id=space_id,
             owner_id=str(item.get("owner_id") or space_id).strip(),
+            scope=item.get("scope", "owner"),
             companion_id=(str(item.get("companion_id") or "").strip() or None),
             port=resolved_port,
             enabled=bool(item.get("enabled", True)),

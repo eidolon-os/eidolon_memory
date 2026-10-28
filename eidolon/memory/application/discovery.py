@@ -98,6 +98,7 @@ async def build_agent_routing_discovery(settings: MemorySettings) -> dict[str, A
                 "memory_space_id": validate_memory_space_id(realm.id),
                 "memory_realm_id": validate_memory_space_id(realm.id),
                 "owner_id": realm.owner_id,
+                "scope": realm.scope,
                 "enabled": realm.enabled,
                 "mcp_http_url": settings.mcp_http.base_url(port=realm.port),
                 "ops_mcp_http_url": settings.mcp_http.ops_base_url(port=realm.port),

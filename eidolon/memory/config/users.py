@@ -13,6 +13,8 @@ source; this module stays a leaf so both sources can depend on it.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import json
 import os
 import urllib.error
@@ -56,6 +58,7 @@ class ConsolidatorUserConfig(BaseModel):
 
 class UserEntry(BaseModel):
     id: str
+    scope: Literal["owner", "person"] = "owner"
     owner_id: str | None = None
     port: int = Field(ge=1, le=65535)
     enabled: bool = True
@@ -161,11 +164,14 @@ def _entry_from_memory_realm(
     owner_id = str(realm.get("owner_id") or "").strip()
     if not realm_id or not owner_id:
         raise RegistrySourceUnavailable("System Data Memory roster entry is incomplete")
+    if realm.get("scope") not in ("owner", "person"):
+        raise RegistrySourceUnavailable("System Data Memory roster scope is missing or invalid")
     config = realm.get("engine_config") or {}
     if not isinstance(config, dict):
         raise RegistrySourceUnavailable("System Data Memory roster engine_config is invalid")
     return UserEntry(
         id=realm_id,
+        scope=realm["scope"],
         owner_id=owner_id,
         port=port,
         enabled=True,

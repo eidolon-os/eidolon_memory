@@ -76,6 +76,7 @@ async def test_discovery_returns_enabled_users_and_stable_contract(
             "memory_space_id": "r:benchmark:default",
             "memory_realm_id": "r:benchmark:default",
             "owner_id": "benchmark",
+            "scope": "owner",
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:8030/mcp",
             "ops_mcp_http_url": "http://127.0.0.1:8030/ops/mcp",
@@ -120,6 +121,7 @@ async def test_discovery_uses_default_user_when_registry_empty(
             "memory_space_id": "default",
             "memory_realm_id": "default",
             "owner_id": None,
+            "scope": "owner",
             "enabled": True,
             "mcp_http_url": "http://127.0.0.1:10030/mcp",
             "ops_mcp_http_url": "http://127.0.0.1:10030/ops/mcp",
@@ -191,3 +193,12 @@ async def test_discovery_http_500_does_not_leak_local_paths(
 
     assert res.status_code == 500
     assert res.json() == {"detail": "discovery unavailable"}
+
+async def test_discovery_preserves_person_scope(monkeypatch):
+    monkeypatch.setattr(discovery, 'load_users_config', lambda _: UsersConfig(users=[
+        UserEntry(id='r_person', owner_id='owner', scope='person', port=8030)]))
+    async def probe(*args, **kwargs):
+        return True
+    monkeypatch.setattr(discovery, 'probe_mcp_http', probe)
+    payload = await discovery.build_agent_routing_discovery(_settings())
+    assert payload['memory_realms'][0]['scope'] == 'person'

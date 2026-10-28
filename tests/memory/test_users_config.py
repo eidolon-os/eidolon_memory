@@ -67,6 +67,7 @@ def test_load_memory_realms_from_system_data(monkeypatch: pytest.MonkeyPatch) ->
                     "realm_id": "r:benchmark:default",
                     "owner_id": "benchmark",
                     "engine": "mempalace",
+                    "scope": "owner",
                     "engine_config": {
                         "consolidator": {"enabled": True, "interval_hours": 8},
                     },
@@ -101,12 +102,14 @@ def test_load_memory_realms_assigns_stable_ports(monkeypatch: pytest.MonkeyPatch
                     "realm_id": "r:benchmark:one",
                     "owner_id": "benchmark",
                     "engine": "mempalace",
+                    "scope": "owner",
                     "engine_config": {},
                 },
                 {
                     "realm_id": "r:benchmark:two",
                     "owner_id": "benchmark",
                     "engine": "mempalace",
+                    "scope": "owner",
                     "engine_config": {},
                 },
             ],
@@ -138,6 +141,7 @@ def test_load_memory_realms_ignores_runtime_route_in_engine_config(
                     "realm_id": "r:benchmark:default",
                     "owner_id": "benchmark",
                     "engine": "mempalace",
+                    "scope": "owner",
                     "engine_config": {
                         "mcp_http_url": "http://127.0.0.1:8041/mcp",
                         "palace_path": "/tmp/legacy-palace",
@@ -270,3 +274,15 @@ def test_user_consolidator_rejects_invalid_values() -> None:
             UsersConfig.model_validate(
                 {"users": [{"id": "alice", "port": 8030, "consolidator": bad}]}
             )
+
+@pytest.mark.parametrize('scope', ['person', None, 'unknown'])
+def test_registry_preserves_or_rejects_explicit_scope(monkeypatch, scope):
+    from eidolon.memory.config.users import RegistrySourceUnavailable
+    _urlopen_payload(monkeypatch, {'contract_version':'1', 'operation':'memory.runtime-roster',
+        'realms':[{'realm_id':'r_private', 'owner_id':'owner', 'engine':'mempalace',
+                   'engine_config':{}, 'scope':scope}]})
+    if scope == 'person':
+        assert load_users_config(_settings()).users[0].scope == 'person'
+    else:
+        with pytest.raises(RegistrySourceUnavailable, match='scope'):
+            load_users_config(_settings())
