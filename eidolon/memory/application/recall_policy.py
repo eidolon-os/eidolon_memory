@@ -113,6 +113,21 @@ class RecallPolicyRegistry:
             return False
         if str(meta.get("memory_space_id") or record.memory_space_id) != context.memory_space_id:
             return False
+        # Session scope is a visibility boundary, not a relevance boost. A
+        # missing source/request session must fail closed. Explicit Owner
+        # export remains able to preserve all their retained source records.
+        if not every_audience:
+            if meta.get("scope") == "session":
+                source_session = meta.get("session_id")
+                if (
+                    not isinstance(source_session, str)
+                    or not source_session
+                    or source_session != context.session_id
+                ):
+                    return False
+            source_person = meta.get("person_id")
+            if source_person not in (None, "") and source_person != context.person_id:
+                return False
         # Which of the owner's companions may see this. A record written before
         # the field existed has no audience, and is treated as the owner layer —
         # the same default writes take, so an upgrade does not hide what was

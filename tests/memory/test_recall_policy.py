@@ -76,3 +76,65 @@ def test_rank_does_not_use_transport_session_as_relevance() -> None:
     )
 
     assert [record.key for record in ranked] == ["older_session", "same_session"]
+
+
+@pytest.mark.parametrize(
+    "record_session,request_session,visible",
+    [
+        ("s", "s", True),
+        ("s", "other", False),
+        ("s", None, False),
+        (None, "s", False),
+        ("", "s", False),
+        (1, "s", False),
+    ],
+)
+def test_session_scoped_recall_requires_exact_source_session(
+    record_session, request_session, visible
+):
+    context = MemoryActorContext(memory_realm_id="r", companion_id="c", session_id=request_session)
+    record = MemoryWireRecord(
+        memory_space_id="r",
+        key="k",
+        value="session data",
+        metadata={"scope": "session", "session_id": record_session},
+    )
+    policy = RecallPolicyRegistry.default()
+    assert policy.visible(record, context=context) is visible
+    assert policy.rendered(record, context=context) is visible
+
+
+def test_same_session_does_not_allow_a_different_or_unknown_person():
+    record = MemoryWireRecord(
+        memory_space_id="r",
+        key="k",
+        value="personal data",
+        metadata={"scope": "session", "session_id": "s", "person_id": "alice"},
+    )
+    policy = RecallPolicyRegistry.default()
+    for person in ("alice", "bob", None):
+        context = MemoryActorContext(
+            memory_realm_id="r",
+            companion_id="c",
+            session_id="s",
+            person_id=person,
+            identity_epoch=1 if person else None,
+        )
+        assert policy.visible(record, context=context) is (person == "alice")
+
+
+def test_owner_export_preserves_session_records_without_weakening_realm_or_privacy():
+    context = MemoryActorContext(memory_realm_id="r")
+    record = MemoryWireRecord(
+        memory_space_id="r",
+        key="k",
+        value="retained",
+        metadata={"scope": "session", "session_id": "old", "person_id": "alice"},
+    )
+    policy = RecallPolicyRegistry.default()
+    assert policy.visible(record, context=context, every_audience=True)
+    assert not policy.visible(
+        record, context=MemoryActorContext(memory_realm_id="other"), every_audience=True
+    )
+    record.metadata["privacy"] = "do_not_recall"
+    assert not policy.visible(record, context=context, every_audience=True)
