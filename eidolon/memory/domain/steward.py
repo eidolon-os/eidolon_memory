@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Literal
 
+from eidolon_memory_contracts import ConversationTurnPayload
 from pydantic import Field
+from pydantic.json_schema import SkipJsonSchema
 
 from eidolon.memory.domain.fragments import MemoryFragment
 from eidolon.memory.domain.kg import KgInvalidationAction, KgTripleAction
@@ -100,6 +102,8 @@ class StewardDecision(BaseEidolonModel):
     repos read, so the meaning is pinned here and in a test instead.
     """
 
+    # Runtime-retained source; never a canonical assertion or projection intent.
+    source_turn: SkipJsonSchema[ConversationTurnPayload | None] = None
     reason: str = ""
     #: Empty means "not recorded" — decisions replayed from before this field
     #: existed, and test fixtures that do not care. Readers must treat it as

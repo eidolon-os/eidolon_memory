@@ -442,3 +442,132 @@ async def test_new_policy_recovers_old_empty_decision_but_respects_deletion(tmp_
     _, intents = await _decide_once(deleted_service, turn, store)
     assert intents == []
     deleted_service.decide.assert_not_awaited()
+
+
+def _provisional_turn():
+    turn = _turn()
+    return ConversationTurnPayload.model_validate(
+        {
+            **turn.model_dump(),
+            "context": {**turn.context.model_dump(), "person_id": "candidate", "identity_epoch": 1},
+            "metadata": {"person_attribution": "provisional"},
+        }
+    )
+
+
+async def test_provisional_source_is_durable_without_model_or_projections(tmp_path):
+    from eidolon.memory.domain.extraction_decision import PROVISIONAL_SOURCE_VERSION
+
+    turn = _provisional_turn()
+    path = tmp_path / "decisions.db"
+    ledger = ExtractionDecisionLedger(path)
+    steward = SimpleNamespace(decide=AsyncMock())
+    backend, kg, canonical, commitments = (AsyncMock() for _ in range(4))
+    for _ in range(2):
+        msg = _msg(turn)
+        await process_turn_message(
+            msg,
+            steward=steward,
+            backend=backend,
+            kg=kg,
+            canonical_facts=canonical,
+            commitments=commitments,
+            settings=load_memory_settings(),
+            max_deliveries=3,
+            decision_store=ledger,
+        )
+        msg.ack.assert_awaited_once()
+        msg.nak.assert_not_awaited()
+    stored = await ExtractionDecisionLedger(path).get(
+        MEMORY_SPACE_ID,
+        turn.turn_id,
+        PROVISIONAL_SOURCE_VERSION,
+    )
+    assert stored.decision.source_turn == turn
+    assert stored.intents == []
+    assert stored.decision.fragments == stored.decision.triples == []
+    assert not steward.decide.mock_calls
+    assert not any(mock.mock_calls for mock in (backend, kg, canonical, commitments))
+    await ledger.redact_source_events(MEMORY_SPACE_ID, [turn.turn_id])
+    msg = _msg(turn)
+    await process_turn_message(
+        msg,
+        steward=steward,
+        backend=backend,
+        settings=load_memory_settings(),
+        max_deliveries=3,
+        decision_store=ledger,
+    )
+    stored = await ledger.get(MEMORY_SPACE_ID, turn.turn_id, PROVISIONAL_SOURCE_VERSION)
+    assert stored.redacted and stored.decision.source_turn is None
+    msg.ack.assert_awaited_once()
+
+
+async def test_provisional_source_requires_durable_store():
+    msg = _msg(_provisional_turn())
+    steward = SimpleNamespace(decide=AsyncMock())
+    await process_turn_message(
+        msg,
+        steward=steward,
+        backend=AsyncMock(),
+        settings=load_memory_settings(),
+        max_deliveries=3,
+    )
+    msg.nak.assert_awaited_once()
+    msg.ack.assert_not_awaited()
+    steward.decide.assert_not_awaited()
+
+
+async def test_provisional_source_replay_cannot_confirm_or_change_input(tmp_path):
+    from eidolon.memory.application.turn_processor import _decide_once
+
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db")
+    turn = _provisional_turn()
+    steward = SimpleNamespace(decide=AsyncMock(), extraction_version="new-model")
+    await _decide_once(turn=turn, steward=steward, store=ledger)
+    for changed in (
+        turn.model_copy(update={"user_text": "changed"}),
+        turn.model_copy(update={"metadata": {"person_attribution": "confirmed"}}),
+    ):
+        with pytest.raises(ExtractionDecisionConflict):
+            await _decide_once(turn=changed, steward=steward, store=ledger)
+    steward.decide.assert_not_awaited()
+
+
+@pytest.mark.parametrize("provisional_first", [True, False])
+async def test_ledger_guards_attribution_across_versions_atomically(tmp_path, provisional_first):
+    from eidolon.memory.domain.extraction_decision import PROVISIONAL_SOURCE_VERSION
+
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db")
+    turn = _provisional_turn()
+    provisional = ExtractionDecisionRecord(
+        memory_space_id=MEMORY_SPACE_ID,
+        source_turn_id=turn.turn_id,
+        extractor_version=PROVISIONAL_SOURCE_VERSION,
+        input_hash=extraction_input_hash(turn),
+        decision=StewardDecision(should_write=False, source_turn=turn),
+    )
+    confirmed = provisional.model_copy(
+        update={
+            "extractor_version": "model-v2",
+            "decision": StewardDecision(should_write=False),
+        }
+    )
+    first, second = (provisional, confirmed) if provisional_first else (confirmed, provisional)
+    await ledger.put_if_absent(first)
+    with pytest.raises(ExtractionDecisionConflict):
+        await ledger.put_if_absent(second)
+
+
+@pytest.mark.parametrize("field", ["owner_id", "person_id", "session_id"])
+def test_provisional_source_requires_bound_identity(field):
+    from pydantic import ValidationError
+
+    data = _provisional_turn().model_dump()
+    data["context"][field] = None
+    with pytest.raises(ValidationError):
+        ConversationTurnPayload.model_validate(data)
+
+
+def test_retained_source_is_not_an_llm_output_field():
+    assert "source_turn" not in StewardDecision.model_json_schema()["properties"]

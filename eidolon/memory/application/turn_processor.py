@@ -60,6 +60,7 @@ from eidolon.memory.application.steward.common import (
 from eidolon.memory.config.memory_settings import MemorySettings, resolve_dlq_log_path
 from eidolon.memory.domain.command_status import CommandStatus
 from eidolon.memory.domain.extraction_decision import (
+    PROVISIONAL_SOURCE_VERSION,
     ExtractionDecisionConflict,
     ExtractionDecisionRecord,
     extraction_input_hash,
@@ -92,6 +93,33 @@ async def _decide_once(
     store: ExtractionDecisionStore | None,
 ) -> tuple[StewardDecision, list[MemoryIntent]]:
     """Return one durable extraction result for a turn + extractor version."""
+    if turn.metadata.get("person_attribution") == "provisional":
+        if store is None:
+            raise RuntimeError("provisional sources require the durable decision store")
+        stored = await store.put_if_absent(
+            ExtractionDecisionRecord(
+                memory_space_id=turn.context.memory_space_id,
+                source_turn_id=turn.turn_id,
+                extractor_version=PROVISIONAL_SOURCE_VERSION,
+                input_hash=extraction_input_hash(turn),
+                decision=StewardDecision(
+                    should_write=False,
+                    reason="provisional_person_source",
+                    produced_by=PROVISIONAL_SOURCE_VERSION,
+                    source_turn=turn,
+                ),
+                intents=[],
+            )
+        )
+        return stored.decision, []
+    if store is not None:
+        retained = await store.get(
+            turn.context.memory_space_id, turn.turn_id, PROVISIONAL_SOURCE_VERSION
+        )
+        if retained is not None and not retained.redacted:
+            raise ExtractionDecisionConflict(
+                "provisional source cannot be confirmed by event replay"
+            )
     if store is None:
         decision = await steward.decide(turn)
         return decision, memory_intents_from_decision(
@@ -487,6 +515,13 @@ async def process_turn_message(
             log.error("turn_processor_dlq_ack", deliveries=deliveries)
         else:
             await msg.nak()
+        return
+
+    if turn.metadata.get("person_attribution") == "provisional":
+        # Retention completed before ACK. No steward, canonical, KG, vector,
+        # privacy mutation or commitment is derived from provisional identity.
+        metrics.TURNS_TOTAL.labels(outcome="provisional_retained").inc()
+        await msg.ack()
         return
 
     memory_intents = [

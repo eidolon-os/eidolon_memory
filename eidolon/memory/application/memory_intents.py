@@ -64,6 +64,8 @@ def memory_intents_from_decision(
     the extractor meant before Chroma/KG projection; it does not reconcile,
     deduplicate, supersede, or write memory state.
     """
+    if decision.source_turn is not None:
+        return []
     intents: list[MemoryIntent] = []
 
     for index, fragment in enumerate(decision.fragments):

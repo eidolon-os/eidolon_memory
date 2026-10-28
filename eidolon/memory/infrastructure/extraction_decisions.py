@@ -10,6 +10,7 @@ from pathlib import Path
 from eidolon_memory_contracts import MemoryIntent
 
 from eidolon.memory.domain.extraction_decision import (
+    PROVISIONAL_SOURCE_VERSION,
     ExtractionDecisionConflict,
     ExtractionDecisionRecord,
 )
@@ -186,6 +187,25 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                 ),
             ).fetchone()
             if row is None:
+                # Serialize attribution across extractor versions as well as retries.
+                # A new extractor (or changed maturity) must not confirm an old source.
+                conflict = conn.execute(
+                    """
+                    SELECT 1 FROM extraction_decisions
+                    WHERE memory_space_id = ? AND source_turn_id = ?
+                      AND (extractor_version = ? OR ? = ?)
+                    LIMIT 1
+                    """,
+                    (
+                        record.memory_space_id,
+                        record.source_turn_id,
+                        PROVISIONAL_SOURCE_VERSION,
+                        record.extractor_version,
+                        PROVISIONAL_SOURCE_VERSION,
+                    ),
+                ).fetchone()
+                if conflict is not None:
+                    raise ExtractionDecisionConflict("source attribution cannot change on replay")
                 conn.execute(
                     """
                     INSERT INTO extraction_decisions (

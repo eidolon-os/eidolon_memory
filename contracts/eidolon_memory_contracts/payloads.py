@@ -88,6 +88,17 @@ class ConversationTurnPayload(EidolonWireModel):
     timestamp: str
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _provisional_source_requires_identity(self):
+        attribution = self.metadata.get("person_attribution")
+        if attribution not in (None, "confirmed", "provisional"):
+            raise ValueError("invalid person attribution")
+        if attribution == "provisional" and not (
+            self.context.owner_id and self.context.person_id and self.context.session_id
+        ):
+            raise ValueError("provisional source requires Owner, Person and session")
+        return self
+
 
 def build_memory_actor_context(
     *,

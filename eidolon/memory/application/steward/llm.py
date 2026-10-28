@@ -322,6 +322,8 @@ class LiteLLMSteward:
                             )
                             data["triples"].append(fact.model_dump())
                     data["unified_claims"] = True
+            # Retained sources are supplied by the runtime, never by the model.
+            data.pop("source_turn", None)
             return StewardDecision.model_validate(data)
         except (ValidationError, ValueError, TypeError) as exc:
             msg = f"invalid LLM steward output: {exc}"

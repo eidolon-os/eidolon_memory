@@ -12,6 +12,8 @@ from pydantic import Field
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.model_base import BaseEidolonModel
 
+PROVISIONAL_SOURCE_VERSION = "provisional-source-v1"
+
 
 class ExtractionDecisionConflict(RuntimeError):
     """The same extraction identity was reused for different turn input."""
