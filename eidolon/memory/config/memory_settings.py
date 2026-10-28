@@ -450,6 +450,14 @@ class ProvisionalSourceConfig(BaseModel):
     max_bytes: int = Field(default=DEFAULT_PROVISIONAL_MAX_BYTES, ge=1, strict=True)
 
 
+class DlqCapacityConfig(BaseModel):
+    """Per-Realm recovery admission; includes resolved rows, never evicts payloads."""
+
+    model_config = ConfigDict(extra="forbid")
+    max_records: int = Field(default=10_000, ge=1, strict=True)
+    max_payload_bytes: int = Field(default=64 * 1024 * 1024, ge=1, strict=True)
+
+
 class CommandStatusConfig(BaseModel):
     """Bound the asynchronous command projection over multi-year runtimes."""
 
@@ -696,6 +704,7 @@ class MemorySettings(BaseModel):
     mempalace: MempalaceBackendConfig = Field(default_factory=MempalaceBackendConfig)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     provisional_sources: ProvisionalSourceConfig = Field(default_factory=ProvisionalSourceConfig)
+    dlq_capacity: DlqCapacityConfig = Field(default_factory=DlqCapacityConfig)
     command_status: CommandStatusConfig = Field(default_factory=CommandStatusConfig)
     kg: KgConfig = Field(default_factory=KgConfig)
     ledgers: LedgerStorageConfig = Field(default_factory=LedgerStorageConfig)

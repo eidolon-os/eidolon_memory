@@ -240,7 +240,11 @@ class LocalPalaceRouter:
                         max_records=self._settings.command_status.max_records,
                         prune_every_writes=self._settings.command_status.prune_every_writes,
                     ),
-                    dlq=DlqLedger(ledgers_path / "dlq.sqlite3", space_id=space_id),
+                    dlq=DlqLedger(
+                        ledgers_path / "dlq.sqlite3", space_id=space_id,
+                        max_records=self._settings.dlq_capacity.max_records,
+                        max_payload_bytes=self._settings.dlq_capacity.max_payload_bytes,
+                    ),
                     decisions=ExtractionDecisionLedger(
                         ledgers_path / "extraction_decisions.sqlite3",
                         provisional_max_records=self._settings.provisional_sources.max_records,

@@ -45,3 +45,7 @@ class DlqStats:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+class DlqCapacityExceeded(RuntimeError):
+    """Recovery bytes were not accepted; callers must not acknowledge the source."""

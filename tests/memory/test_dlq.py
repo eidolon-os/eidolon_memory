@@ -103,3 +103,83 @@ async def test_dlq_rejects_invalid_operations(tmp_path: Path) -> None:
         await ledger.list(state="anything")
     with pytest.raises(ValueError, match="note"):
         await ledger.resolve("missing", note="")
+
+
+async def test_capacity_is_atomic_and_preserves_resolved_payload(tmp_path: Path) -> None:
+    from eidolon.memory.domain.dlq import DlqCapacityExceeded
+
+    path = tmp_path / "quota.sqlite3"
+    ledgers = [DlqLedger(path, space_id=DLQ_SPACE, max_records=1) for _ in range(2)]
+
+    async def add(ledger):
+        return await ledger.add(subject="test", payload=b"original", error="error", deliveries=3)
+
+    outcomes = await asyncio.gather(*(add(x) for x in ledgers), return_exceptions=True)
+    assert sum(isinstance(x, DlqCapacityExceeded) for x in outcomes) == 1
+    record = (await ledgers[0].list())[0]
+    await ledgers[0].resolve(record.entry_id, note="reviewed")
+    with pytest.raises(DlqCapacityExceeded):
+        await add(ledgers[1])
+    assert (await ledgers[0].get(record.entry_id)).payload_preview == "original"
+    assert (await ledgers[0].stats()).total == 1
+    # Explicit capacity adjustment can admit new rows without erasing old ones.
+    expanded = DlqLedger(path, space_id=DLQ_SPACE, max_records=2)
+    await add(expanded)
+    assert (await expanded.stats()).total == 2
+
+
+async def test_payload_budget_is_per_space_and_lowering_keeps_existing(tmp_path: Path) -> None:
+    from eidolon.memory.domain.dlq import DlqCapacityExceeded
+
+    path = tmp_path / "bytes.sqlite3"
+    ledger = DlqLedger(path, space_id=DLQ_SPACE, max_payload_bytes=6)
+    kwargs = dict(subject="test", payload="你好".encode(), error="error", deliveries=1)
+    record = await ledger.add(**kwargs)
+    with pytest.raises(DlqCapacityExceeded):
+        await ledger.add(**kwargs)
+    other = DlqLedger(path, space_id="other", max_payload_bytes=6)
+    await other.add(**kwargs)
+    lowered = DlqLedger(path, space_id=DLQ_SPACE, max_payload_bytes=1)
+    claim = await lowered.claim_replay(record.entry_id)
+    assert claim.payload == kwargs["payload"]
+    await lowered.mark_replayed(record.entry_id)
+    assert (await lowered.stats()).payload_bytes == 6
+    with pytest.raises(DlqCapacityExceeded):
+        await lowered.add(**kwargs)
+
+
+async def test_full_dlq_does_not_ack_rejected_turn(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from eidolon.memory.application.turn_processor import process_turn_message
+    from eidolon.memory.config.memory_settings import MemorySettings
+    from eidolon.memory.domain.dlq import DlqCapacityExceeded
+
+    ledger = DlqLedger(tmp_path / "full.sqlite3", space_id=DLQ_SPACE, max_records=1)
+    await ledger.add(subject="original", payload=b"keep", error="failed", deliveries=3)
+    msg = SimpleNamespace(
+        data=b"invalid-json", subject="memory.turn", ack=AsyncMock(), nak=AsyncMock()
+    )
+    with pytest.raises(DlqCapacityExceeded):
+        await process_turn_message(
+            msg,
+            steward=None,
+            backend=None,
+            settings=MemorySettings(),
+            max_deliveries=3,
+            dlq_writer=ledger,
+        )
+    msg.ack.assert_not_awaited()
+    assert (await ledger.stats()).total == 1
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "100"])
+def test_dlq_capacity_configuration_rejects_invalid_limits(value) -> None:
+    from pydantic import ValidationError
+
+    from eidolon.memory.config.memory_settings import DlqCapacityConfig
+
+    for field in ("max_records", "max_payload_bytes"):
+        with pytest.raises(ValidationError):
+            DlqCapacityConfig(**{field: value})
