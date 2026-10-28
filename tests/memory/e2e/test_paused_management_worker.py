@@ -37,3 +37,77 @@ async def test_paused_worker_management_and_subscriptions(live_agent_runner):
         assert memory_consumer_name(prefix, realm, role="sync") not in names
     finally:
         await nc.close()
+
+
+async def test_provisional_worker_consumes_only_sources_without_runtime_mcp(live_agent_runner):
+    import asyncio
+    import json
+    import sqlite3
+    from pathlib import Path
+
+    from eidolon_memory_contracts import conversation_turn_subject, envelope_memory_payload
+
+    from eidolon.memory.config.palace_directory import LEDGERS_DIR_SUFFIX
+
+    realm = "e2e_provisional_person"
+    handle = live_agent_runner(
+        user_id=realm,
+        management_only=True,
+        provisional_ingest=True,
+        env_overrides={"EIDOLON_MEMORY_API_TOKEN": "provisional-worker-test-credential"},
+    )
+    async with httpx.AsyncClient(
+        base_url=f"http://127.0.0.1:{handle.port}", trust_env=False
+    ) as client:
+        assert (await client.post("/mcp")).status_code == 403
+        assert (await client.post("/ops/mcp")).status_code == 403
+    nc = await nats.connect(handle.nats_url)
+    try:
+        js = nc.jetstream()
+        for attribution in ("confirmed", "provisional"):
+            payload = dict(
+                turn_id=attribution,
+                context=dict(
+                    memory_realm_id=realm,
+                    owner_id="o",
+                    person_id="p",
+                    identity_epoch=1,
+                    companion_id="c",
+                    session_id="s",
+                ),
+                user_text="source retained without facts",
+                assistant_text="",
+                timestamp="2026-10-29T00:00:00Z",
+                metadata={"person_attribution": attribution},
+            )
+            envelope = envelope_memory_payload(payload, kind="conversation_turn")
+            await js.publish(conversation_turn_subject(realm), envelope.model_dump_json().encode())
+        path = Path(str(handle.palace_dir) + LEDGERS_DIR_SUFFIX) / "extraction_decisions.sqlite3"
+        records = []
+        for _ in range(50):
+            with sqlite3.connect(path) as conn:
+                records = conn.execute(
+                    "SELECT source_turn_id, extractor_version, decision_json, intents_json "
+                    "FROM extraction_decisions"
+                ).fetchall()
+            if records:
+                break
+            await asyncio.sleep(0.1)
+        assert len(records) == 1
+        source_id, version, raw, intents = records[0]
+        assert source_id == "provisional" and version == "provisional-source-v1"
+        decision = json.loads(raw)
+        assert decision["source_turn"]["context"]["person_id"] == "p"
+        assert decision["fragments"] == decision["triples"] == [] and json.loads(intents) == []
+        from eidolon.memory.config.memory_settings import load_memory_settings
+
+        prefix = load_memory_settings(handle.settings_path).nats.durable_prefix
+        names = {
+            c.name
+            for stream in await js.streams_info()
+            for c in await js.consumers_info(stream.config.name)
+        }
+        assert memory_consumer_name(prefix, realm, role="turn") in names
+        assert memory_consumer_name(prefix, realm, role="sync") not in names
+    finally:
+        await nc.close()

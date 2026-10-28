@@ -210,3 +210,50 @@ async def test_erasure_retry_clears_ledgers_even_after_palace_disappeared(tmp_pa
     assert clear_palace_contents(palace, allow_missing=True) == 1
     assert list(ledger.iterdir()) == []
     assert clear_palace_contents(palace, allow_missing=True) == 0
+
+
+def test_provisional_worker_uses_management_mode_and_no_broad_runtime(tmp_path):
+    entry = UserEntry(
+        id="r_candidate",
+        owner_id="o",
+        person_id="p",
+        scope="person",
+        port=12345,
+        enabled=False,
+        management_enabled=True,
+        provisional_ingest_enabled=True,
+    )
+    args = _agent_cli_argv(entry, tmp_path)
+    assert "--management-only" in args and "--provisional-ingest" in args
+    assert UsersConfig(users=[entry]).enabled_users() == []
+    with pytest.raises(ValueError):
+        UserEntry(id="r_owner", owner_id="o", port=12346, provisional_ingest_enabled=True)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_provisional_ingest_policy_change_reconciles_worker(tmp_path, monkeypatch, enabled):
+    from unittest.mock import Mock
+
+    from tests.memory.test_supervisor_roster_refresh import _supervisor
+
+    sup = _supervisor(tmp_path, refresh_seconds=60)
+    old = UserEntry(
+        id="r_candidate",
+        owner_id="o",
+        person_id="p",
+        scope="person",
+        port=12345,
+        enabled=False,
+        management_enabled=True,
+        provisional_ingest_enabled=not enabled,
+    )
+    new = old.model_copy(update={"provisional_ingest_enabled": enabled})
+    child = SimpleNamespace(user=old, terminate=Mock())
+    sup._children[old.id] = child
+    monkeypatch.setattr(sup, "_read_users", lambda: UsersConfig(users=[new]))
+    spawn = Mock()
+    monkeypatch.setattr(sup, "_ensure_agent_child", spawn)
+    monkeypatch.setattr(sup, "_terminate_consolidator", lambda _: None)
+    await sup._reconcile()
+    child.terminate.assert_called_once()
+    spawn.assert_called_once_with(new)

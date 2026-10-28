@@ -201,6 +201,7 @@ async def _nats_subscriber_loop(
     ready: asyncio.Event | None = None,
     steward: Any,
     management_only: bool = False,
+    provisional_ingest: bool = False,
 ) -> None:
     """In-process JetStream pull-subscriber for both turn + command subjects."""
     import nats
@@ -407,7 +408,7 @@ async def _nats_subscriber_loop(
             await ensure_memory_stream(js, settings)
             psub_turn = (
                 None
-                if management_only
+                if management_only and not provisional_ingest
                 else await js.pull_subscribe(
                     turn_subject, durable=durable_turn, stream=settings.nats.stream
                 )
@@ -444,6 +445,7 @@ async def _nats_subscriber_loop(
                 return process_turn_message(
                     m,
                     steward=steward,
+                    provisional_only=management_only,
                     backend=backend,
                     kg=kg,
                     settings=settings,
@@ -498,6 +500,8 @@ async def _nats_subscriber_loop(
                 asyncio.create_task(_checkpoint_forever()),
                 asyncio.create_task(_publish_forever()),
             ]
+            if management_only and provisional_ingest:
+                workers.append(asyncio.create_task(_drain_forever(psub_turn, _turn_handler)))
             if not management_only:
                 workers.extend(
                     [
@@ -566,6 +570,7 @@ def _compose_starlette_lifespan(
     sync: Any,
     palace_path: str,
     management_only: bool = False,
+    provisional_ingest: bool = False,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
     # Beside the palace, not inside it: MemPalace's repair renames its own
@@ -622,6 +627,7 @@ def _compose_starlette_lifespan(
                     ready=nats_ready_event,
                     steward=steward,
                     management_only=management_only,
+                    provisional_ingest=provisional_ingest,
                 ),
                 name=f"nats-sub-{memory_space_id}",
             )
@@ -704,6 +710,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Which Companion is asking is per-request, not per-process: one space
     # serves every Companion this Owner has.
     parser.add_argument("--management-only", action="store_true")
+    parser.add_argument("--provisional-ingest", action="store_true")
     parser.add_argument("--owner-id", default="", help="Owner this space belongs to")
     return parser.parse_args(argv)
 
@@ -931,6 +938,7 @@ def _run_service(
         sync=sync,
         palace_path=str(palace_path),
         management_only=args.management_only,
+        provisional_ingest=args.provisional_ingest,
     )
     if args.management_only:
         starlette_app = ManagementOnlyApp(starlette_app)

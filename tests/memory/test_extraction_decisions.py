@@ -658,3 +658,25 @@ def test_provisional_payload_has_utf8_byte_limit_without_changing_legacy():
         ConversationTurnPayload.model_validate(data)
     data["metadata"] = {}
     assert ConversationTurnPayload.model_validate(data).user_text == data["user_text"]
+
+
+async def test_provisional_only_worker_quarantines_confirmed_and_retains_provisional(tmp_path):
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db")
+    steward, backend = SimpleNamespace(decide=AsyncMock()), AsyncMock()
+    dlq = AsyncMock()
+    for turn in (_turn(), _provisional_turn()):
+        msg = _msg(turn)
+        await process_turn_message(
+            msg,
+            provisional_only=True,
+            steward=steward,
+            backend=backend,
+            settings=load_memory_settings(),
+            max_deliveries=3,
+            decision_store=ledger,
+            dlq_writer=dlq,
+        )
+        msg.ack.assert_awaited_once()
+    assert len(await ledger.list_provisional_sources(_provisional_turn().context)) == 1
+    assert not steward.decide.mock_calls and not backend.mock_calls
+    dlq.add.assert_awaited_once()

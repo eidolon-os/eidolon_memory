@@ -397,6 +397,7 @@ async def process_turn_message(
     msg: Any,
     *,
     steward: StewardProtocol,
+    provisional_only: bool = False,
     backend: Any,
     kg: Any = None,
     settings: MemorySettings,
@@ -445,6 +446,18 @@ async def process_turn_message(
                 f"invalid turn payload: {exc}",
                 delivery_count(msg),
             )
+        await msg.ack()
+        return
+
+    if provisional_only and turn.metadata.get("person_attribution") != "provisional":
+        # Preserve rejected ordinary turns for review/replay; never extract facts.
+        await _record_dlq(
+            dlq_writer,
+            settings,
+            msg,
+            "provisional worker refuses ordinary memory extraction",
+            deliveries,
+        )
         await msg.ack()
         return
 
