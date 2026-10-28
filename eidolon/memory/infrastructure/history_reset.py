@@ -147,14 +147,14 @@ def acquire_realm_reset_locks(
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def clear_palace_contents(palace_path: Path) -> int:
+def clear_palace_contents(palace_path: Path, *, allow_missing: bool = False) -> int:
     """Clear the palace and sibling ledgers, preserving both directory identities."""
     palace_path = Path(palace_path).expanduser().absolute()
     directories = (palace_path, Path(str(palace_path) + LEDGERS_DIR_SUFFIX))
     for directory in directories:
         if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
             raise HistoryResetSafetyError(f"unsafe history directory: {directory}")
-    if not palace_path.is_dir():
+    if not allow_missing and not palace_path.is_dir():
         raise HistoryResetSafetyError(f"Palace directory is missing: {palace_path}")
     removed = 0
     for directory in directories:

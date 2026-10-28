@@ -198,3 +198,15 @@ async def test_reconcile_started_before_maintenance_cannot_spawn_inside_it(tmp_p
         await task
         assert entry.id not in sup._children
         monkeypatch.setattr(sup, "_reconcile", AsyncMock())
+
+
+async def test_erasure_retry_clears_ledgers_even_after_palace_disappeared(tmp_path):
+    from eidolon.memory.infrastructure.history_reset import clear_palace_contents
+
+    palace = tmp_path / "missing"
+    ledger = tmp_path / ("missing" + LEDGERS_DIR_SUFFIX)
+    ledger.mkdir()
+    (ledger / "pending-command.sqlite3").write_text("retained private content")
+    assert clear_palace_contents(palace, allow_missing=True) == 1
+    assert list(ledger.iterdir()) == []
+    assert clear_palace_contents(palace, allow_missing=True) == 0

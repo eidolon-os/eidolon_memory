@@ -65,3 +65,12 @@ Admin mission_control/service.py `_memory_summary` 取 Owner 下第一个 enable
 - Local API→Admin→独立 Data 进程 E2E：鉴权、归档、清空失败、pending 阻止恢复、重试、重复确认、恢复保持停用；Memory 清空故障用 HTTP 替身注入。
 
 这些测试不替代真人声纹辨识准确率与真实手机连续对话验收；识别服务的算法和发布策略仍由对应会话负责。
+
+
+## 现有 Host 发布验证
+
+- Data 0015 部署后发现 4 个旧版硬删除 Person 遗留的私人 Realm。新增 0016 一次性数据迁移，只为这些确实有持有数据的身份补建 deleted=true、inactive 归档，私人 Realm 同时保持 inactive。没有姓名来源时显示“已删除用户（历史档案）”，不猜测身份，不恢复声纹、人脸或授权。迁移含重复执行、默认空间不变、归档可清理测试：14 passed。
+- 首轮实际服务探测：默认 1 个、启用个人 1 个、停用个人 4 个，全部 management_reachable；每空间 library/graph/entries/export/recollections，合计 30 次 HTTP 200。
+- 发布前实际备份仅含 2 个启用 Realm；发布后实际备份含全部 6 个 Realm，证明停用空间不再漏出 Memory 备份目录。该结果仅证明 Memory 空间覆盖，Ops 仍明确报告 complete_host_backup=false：媒体对象、完整 JetStream、会话状态、部署证据不在现有整机备份范围，本次没有将其误报为完整整机恢复方案。
+- 发布使用原有 Mac Host 与原有数据；自动化故障、清空与恢复测试只针对临时测试服务/目录，没有清空现网任何用户的记忆。
+- APK 已构建；发布时 ADB 列表为空，未安装到手机，因此手机界面人工验收仍待设备重新连接。

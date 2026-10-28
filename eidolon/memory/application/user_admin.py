@@ -691,8 +691,8 @@ class UserAdmin:
                         settings.nats.durable_prefix,
                         [user_id],
                     )
-                    if palace.exists():
-                        await asyncio.to_thread(clear_palace_contents, palace)
+                    await asyncio.to_thread(clear_palace_contents, palace, allow_missing=True)
+                    if palace.parent.exists():
                         await asyncio.to_thread(clear_repair_archives, palace.parent, [palace])
             return {"memory_realm_id": user_id, "erased": True}
 
