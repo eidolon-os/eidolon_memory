@@ -14,6 +14,17 @@
 
 Mac 当前等待上限为 400 ms；已录入样本三次本机回放匹配，327–348 ms。Channel 在完整最终 ASR 证据到达时提前开始，与 EOT 收尾重叠；这不构成持出样本声学验收。详细证据见上游唯一链路说明。
 
+
+## 2026-10-28 记忆侧后续优化（工作区，尚未联合发布）
+
+当前产品约定及实现以 [隔离方案第 26 节](MULTI_PERSON_MEMORY_ISOLATION_DESIGN.md#26-连续房间对话与按轮个人记忆2026-10-28) 为准，覆盖上文的旧交接待办：
+
+- 不再以 controlled_trial / validated 阻断个人记忆。识别服务给出明确结果，记忆侧验证当轮签名绑定及 Data 权限；诊断策略信息留在识别契约和日志，不驱动用户操作或提示。
+- 已加入 Mobile 人物管理的记忆状态、启用、暂停、恢复入口，经过 Admin 到 Data；日常对话仍无 Person 选择。
+- 自动记忆编排与 voice/PTT/text 路径已接入。未知/不确定/不可用/文本不继承上轮权限，已识别人仍需有主动启用且有效的 Realm。
+- 换人保留房间 session、公开对话和正常播放策略；私人检索只用于本轮。Agent 检查签名观察与个人凭据一致，并按轮固化 Realm 归属。明确撤权仍走输出停止确认，但不清空已发生的公开对话。
+- 自动化用合成签名观察验证授权机制，不能代替真实多人声学验收。本轮 APK 已构建，尚未更新运行服务或安装到手机。
+
 ## 短句与反馈修复交接（2026-10-28）
 
 Mac 已升级 SDK `9dc18a5`、Channel `94e6b28`、Agent `0ec6a13`；Data / Memory 保持原版本，app-ready 通过。`SpeakerIdentityObservation` 新增可选 `audio_quality`，不改变 person_id / revision / session / 签名绑定，也不改变授权 `TurnContext.person_id`。Models v2 允许有效语音至少 600 ms 的会话探针，录入仍至少 1500 ms；短于 1500 ms 且匹配不足的结果为 uncertain/short_speech_inconclusive，不能当作 unknown 或沿用上一轮 Person。

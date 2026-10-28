@@ -99,6 +99,8 @@ def test_conversation_turn_payload_serializes_wire_shape() -> None:
     assert payload.model_dump(mode="json") == {
         "turn_id": "t1",
         "context": {
+            "person_id": None,
+            "identity_epoch": None,
             "owner_id": "owner-a",
             "companion_id": "companion-a",
             "council_id": None,

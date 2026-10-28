@@ -38,6 +38,8 @@ class MemoryFragment(BaseEidolonModel):
     memory_id: str = ""
     memory_space_id: str
     memory_realm_id: str | None = None
+    person_id: str | None = None
+    identity_epoch: int | None = None
     owner_id: str | None = None
     companion_id: str | None = None
     # Who may recall this, which is not the same question as who produced it.

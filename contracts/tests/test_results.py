@@ -39,6 +39,7 @@ def test_recall_result_serialises_exactly_the_agreed_fields() -> None:
     result = RecallResult.model_validate({"context": "x", "snippets": []})
 
     assert result.model_dump().keys() == {
+        "identity_binding",
         "context",
         "snippets",
         "degraded",

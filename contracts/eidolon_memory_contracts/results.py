@@ -67,6 +67,7 @@ class RecallResult(EidolonWireModel):
     ``degraded_reason`` is for operator traces. Never put it in a prompt.
     """
 
+    identity_binding: dict[str, Any] = Field(default_factory=dict)
     context: str = ""
     snippets: list[MemorySnippet] = Field(default_factory=list)
     degraded: bool = False

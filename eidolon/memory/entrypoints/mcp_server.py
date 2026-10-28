@@ -330,6 +330,7 @@ def build_control_plane_mcp(
             include_kg=include_kg,
         )
         return {
+            "identity_binding": fused["identity_binding"],
             "context": fused["context"],
             "kg_triples": fused["kg_triples"],
             "records": fused["records"],
@@ -468,6 +469,7 @@ def build_control_plane_mcp(
         )
         return {
             "memory_space_id": ctx.memory_space_id,
+            "identity_binding": ctx.identity_binding(),
             **result.model_dump(mode="json"),
         }
 

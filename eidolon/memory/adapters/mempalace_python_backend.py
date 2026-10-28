@@ -401,6 +401,10 @@ class MemPalacePythonBackend(MemoryBackend):
             "memory_id": fragment.memory_id,
             "memory_space_id": fragment.memory_space_id,
             "memory_realm_id": fragment.memory_realm_id or fragment.memory_space_id,
+            "person_id": fragment.person_id or "",
+            "identity_epoch": (
+                fragment.identity_epoch if fragment.identity_epoch is not None else -1
+            ),
             "owner_id": fragment.owner_id or "",
             "companion_id": fragment.companion_id or "",
             # Visibility, distinct from the provenance above it. Stored as a

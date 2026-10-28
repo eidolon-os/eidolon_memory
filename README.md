@@ -880,6 +880,10 @@ uv run python benchmarks/suites/probe_embedders.py --palace reports/<run>/palace
 
 ---
 
+多 Person 身份与记忆隔离的现状、推荐架构、跨服务契约、实施阶段和验收矩阵见
+[多 Person 记忆隔离方案](docs/MULTI_PERSON_MEMORY_ISOLATION_DESIGN.md)。该文档为待实施设计，
+第一阶段复用个人 Realm 隔离；家庭共享及多模态不在本阶段范围内。
+
 ## 14. License
 
 Copyright © 2026 Li Jinsong.

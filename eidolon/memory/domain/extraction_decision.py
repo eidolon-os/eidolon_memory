@@ -32,8 +32,13 @@ class ExtractionDecisionRecord(BaseEidolonModel):
 
 def extraction_input_hash(turn: ConversationTurnPayload) -> str:
     """Hash the validated turn deterministically, independent of wire formatting."""
+    payload = turn.model_dump(mode="json")
+    # Preserve persisted pre-person hashes on legacy event retries.
+    for key in ("person_id", "identity_epoch"):
+        if payload["context"].get(key) is None:
+            payload["context"].pop(key, None)
     raw = json.dumps(
-        turn.model_dump(mode="json"),
+        payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

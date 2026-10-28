@@ -220,6 +220,7 @@ class MemoryService:
 
         fused = await self.recall_fused(ctx, query, plan=plan, timeout_s=timeout_s)
         return RecallResult(
+            identity_binding=fused["identity_binding"],
             context=fused["context"],
             snippets=fused["snippets"],
             degraded=fused["degraded"],
@@ -303,6 +304,7 @@ class MemoryService:
         when it goes.
         """
 
+        ctx = ctx.model_copy(deep=True)
         plan = plan or RecallPlan()
         kind = "voice" if plan.voice else "chat"
         service_started = time.perf_counter()
@@ -320,6 +322,7 @@ class MemoryService:
             )
             return _degraded_recall(
                 str(exc),
+                identity_binding=ctx.identity_binding(),
                 trace={
                     "runtime_resolution_ms": _elapsed_ms(resolution_started),
                     "service_total_ms": _elapsed_ms(service_started),
@@ -355,6 +358,7 @@ class MemoryService:
             metrics.RECALL_TOTAL.labels(kind=kind, outcome="degraded").inc()
             return _degraded_recall(
                 str(exc),
+                identity_binding=ctx.identity_binding(),
                 trace={
                     "runtime_resolution_ms": runtime_resolution_ms,
                     "service_total_ms": _elapsed_ms(service_started),
@@ -378,6 +382,7 @@ class MemoryService:
         # inner recorder never ran, and that outcome would otherwise go unrecorded.
 
         result = FusedRecall()
+        result["identity_binding"] = ctx.identity_binding()
         result["context"] = group_recall_context(records, kg_triples=kg_records)
         result["snippets"] = [_snippet(record) for record in records]
         result["records"] = [wire_record_to_public_dict(record) for record in records]
@@ -732,8 +737,11 @@ class MemoryService:
         return list(holder()) if holder is not None else []
 
 
-def _degraded_recall(reason: str, *, trace: dict[str, float] | None = None) -> FusedRecall:
+def _degraded_recall(
+    reason: str, *, identity_binding: dict[str, Any], trace: dict[str, float] | None = None
+) -> FusedRecall:
     result = FusedRecall()
+    result["identity_binding"] = identity_binding
     result["context"] = ""
     result["snippets"] = []
     result["records"] = []

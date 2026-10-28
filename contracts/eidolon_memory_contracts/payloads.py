@@ -13,6 +13,9 @@ from .subjects import derive_memory_space_id, validate_memory_space_id
 class MemoryActorContext(EidolonWireModel):
     """Resolved actor context carried by every memory write and recall."""
 
+    # Provenance supplied by a trusted caller, never an authorization grant.
+    person_id: str | None = Field(default=None, min_length=1, max_length=128)
+    identity_epoch: int | None = Field(default=None, ge=0, strict=True)
     owner_id: str | None = None
     companion_id: str | None = None
     council_id: str | None = None
@@ -30,7 +33,7 @@ class MemoryActorContext(EidolonWireModel):
         return text
 
     @field_validator(
-        "owner_id", "companion_id", "council_id", "device_id", "session_id"
+        "owner_id", "companion_id", "council_id", "device_id", "session_id", "person_id"
     )
     @classmethod
     def _optional_text(cls, value: str | None) -> str | None:
@@ -41,17 +44,38 @@ class MemoryActorContext(EidolonWireModel):
 
     @model_validator(mode="after")
     def _fill_memory_space_id(self) -> MemoryActorContext:
+        if (self.person_id is None) != (self.identity_epoch is None):
+            raise ValueError("person_id and identity_epoch must be supplied together")
+        if self.person_id is not None and not self.session_id:
+            raise ValueError("person-bound memory requires session_id")
         expected = derive_memory_space_id(self.memory_realm_id)
         if self.memory_space_id:
             actual = validate_memory_space_id(self.memory_space_id)
             if self.memory_space_id != expected:
-                raise ValueError(
-                    "memory_space_id must equal memory_realm_id"
-                )
+                raise ValueError("memory_space_id must equal memory_realm_id")
             object.__setattr__(self, "memory_space_id", actual)
         else:
             object.__setattr__(self, "memory_space_id", expected)
         return self
+
+    def identity_binding(self) -> dict[str, Any]:
+        """Echo request identity so consumers can discard stale recall results.
+
+        This is correlation data, not proof of person-to-Realm authorization.
+        """
+        return self.model_dump(
+            include={
+                "owner_id",
+                "council_id",
+                "person_id",
+                "identity_epoch",
+                "session_id",
+                "memory_realm_id",
+                "memory_space_id",
+                "companion_id",
+                "device_id",
+            }
+        )
 
 
 class ConversationTurnPayload(EidolonWireModel):
@@ -68,6 +92,8 @@ class ConversationTurnPayload(EidolonWireModel):
 def build_memory_actor_context(
     *,
     memory_realm_id: str,
+    person_id: str | None = None,
+    identity_epoch: int | None = None,
     owner_id: str | None = None,
     companion_id: str | None = None,
     council_id: str | None = None,
@@ -77,6 +103,8 @@ def build_memory_actor_context(
     """Build the canonical memory actor context from realm identity."""
 
     return MemoryActorContext(
+        person_id=person_id,
+        identity_epoch=identity_epoch,
         owner_id=owner_id,
         companion_id=companion_id,
         council_id=council_id,

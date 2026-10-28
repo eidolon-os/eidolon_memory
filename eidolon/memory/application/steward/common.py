@@ -103,6 +103,8 @@ def stamp_fragment_identity(
     updates = {
         "memory_space_id": memory_space_id,
         "memory_realm_id": memory_realm_id or memory_space_id,
+        "person_id": getattr(context, "person_id", None),
+        "identity_epoch": getattr(context, "identity_epoch", None),
         "owner_id": owner_id,
         "companion_id": companion_id,
         "source_device_id": device_id,

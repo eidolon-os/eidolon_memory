@@ -62,6 +62,9 @@ class LiveKitRecallService:
         context: MemoryActorContext,
         top_k: int | None = None,
     ) -> dict[str, Any]:
+        # Keep the response bound to the request even if a session changes
+        # its mutable actor object while this asynchronous query is running.
+        context = context.model_copy(deep=True)
         k = top_k if top_k is not None else self._settings.recall.top_k
         timeout = self._settings.recall.livekit_timeout_seconds
         try:
@@ -81,6 +84,7 @@ class LiveKitRecallService:
             vector_records = fused["vector"]
             kg_records = fused["kg"]
             return {
+                "identity_binding": context.identity_binding(),
                 "context": group_recall_context(vector_records, kg_triples=kg_records),
                 "records": [wire_record_to_public_dict(r) for r in vector_records],
                 "kg_triples": [t.model_dump(mode="json") for t in kg_records],
@@ -91,6 +95,7 @@ class LiveKitRecallService:
         except TimeoutError:
             log.warning("livekit_recall_degraded", reason="timeout", query_len=len(query))
             return {
+                "identity_binding": context.identity_binding(),
                 "context": "",
                 "records": [],
                 "kg_triples": [],
@@ -101,6 +106,7 @@ class LiveKitRecallService:
         except Exception as exc:
             log.warning("livekit_recall_degraded", reason="error", error=str(exc))
             return {
+                "identity_binding": context.identity_binding(),
                 "context": "",
                 "records": [],
                 "kg_triples": [],

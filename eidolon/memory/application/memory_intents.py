@@ -68,6 +68,10 @@ def memory_intents_from_decision(
 
     for index, fragment in enumerate(decision.fragments):
         payload = fragment.model_dump(mode="json")
+        # Adding optional provenance must not change legacy intent IDs.
+        for key in ("person_id", "identity_epoch"):
+            if payload.get(key) is None:
+                payload.pop(key, None)
         attributes = {
             "source_kind": "fragment",
             "source_index": index,
