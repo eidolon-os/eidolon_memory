@@ -97,10 +97,10 @@ async def test_person_erasure_clears_palace_ledgers_and_queue_only_with_intent(
         await admin.erase_person_memory(entry.id, owner_id="o", person_id="p")
     entry.erasure_pending = True
     await admin.erase_person_memory(entry.id, owner_id="o", person_id="p")
-    assert list(palace.iterdir()) == [] and list(ledger.iterdir()) == []
+    assert not palace.exists() and not ledger.exists()
     purge.assert_awaited_once_with("nats://test", "MEMORY", "test", ["r_person"])
     await admin.erase_person_memory(entry.id, owner_id="o", person_id="p")
-    assert list(palace.iterdir()) == []
+    assert not palace.exists()
 
 
 @pytest.mark.parametrize(

@@ -694,6 +694,9 @@ class UserAdmin:
                     await asyncio.to_thread(clear_palace_contents, palace, allow_missing=True)
                     if palace.parent.exists():
                         await asyncio.to_thread(clear_repair_archives, palace.parent, [palace])
+                    for directory in (palace, palace.with_name(palace.name + LEDGERS_DIR_SUFFIX)):
+                        if directory.exists():
+                            await asyncio.to_thread(directory.rmdir)
             return {"memory_realm_id": user_id, "erased": True}
 
     async def cleanup_orphaned_user(

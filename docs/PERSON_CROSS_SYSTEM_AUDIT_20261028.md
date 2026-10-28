@@ -83,3 +83,6 @@ Admin mission_control/service.py `_memory_summary` 取 Owner 下第一个 enable
 - 清空中断后 Palace 不存在而账本仍存在的场景已修正，重复清空安全；history-reset/management-mode 17 passed。
 - 发布前备份：`/private/tmp/eidolon-before-person-lifecycle-20261028`；发布后覆盖 6 Realm 的备份：`/private/tmp/eidolon-person-lifecycle-complete-20261028`。临时目录不作为长期备份保管位置。
 - APK：`eidolon_client_mobile/build/app/outputs/flutter-apk/app-debug.apk`。待手机重新连接后安装；未声称完成手机人工验收或真人声纹准确率测试。
+
+
+后续产品收敛：旧“已删除用户”的软删除展示已由 [用户生命周期方案](PERSON_LIFECYCLE_PRODUCT.md) 替代，永久删除会移除人物与 Realm，而不只清空记忆。
