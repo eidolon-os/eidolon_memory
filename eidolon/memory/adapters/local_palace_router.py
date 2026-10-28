@@ -242,7 +242,9 @@ class LocalPalaceRouter:
                     ),
                     dlq=DlqLedger(ledgers_path / "dlq.sqlite3", space_id=space_id),
                     decisions=ExtractionDecisionLedger(
-                        ledgers_path / "extraction_decisions.sqlite3"
+                        ledgers_path / "extraction_decisions.sqlite3",
+                        provisional_max_records=self._settings.provisional_sources.max_records,
+                        provisional_max_bytes=self._settings.provisional_sources.max_bytes,
                     ),
                     canonical_facts=CanonicalFactLedger(ledgers_path / "canonical_facts.sqlite3"),
                     commitments=CommitmentLedger(ledgers_path / "commitments.sqlite3"),

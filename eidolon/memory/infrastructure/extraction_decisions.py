@@ -10,9 +10,12 @@ from pathlib import Path
 from eidolon_memory_contracts import ConversationTurnPayload, MemoryActorContext, MemoryIntent
 
 from eidolon.memory.domain.extraction_decision import (
+    DEFAULT_PROVISIONAL_MAX_BYTES,
+    DEFAULT_PROVISIONAL_MAX_RECORDS,
     PROVISIONAL_SOURCE_VERSION,
     ExtractionDecisionConflict,
     ExtractionDecisionRecord,
+    ProvisionalSourceCapacityExceeded,
 )
 from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.infrastructure.sqlite_writes import SerialisedSqliteWrites
@@ -25,7 +28,22 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
     writes Palace or KG state and therefore does not acquire the Realm lock.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        provisional_max_records: int = DEFAULT_PROVISIONAL_MAX_RECORDS,
+        provisional_max_bytes: int = DEFAULT_PROVISIONAL_MAX_BYTES,
+    ) -> None:
+        if (
+            type(provisional_max_records) is not int
+            or provisional_max_records < 1
+            or type(provisional_max_bytes) is not int
+            or provisional_max_bytes < 1
+        ):
+            raise ValueError("provisional budgets must be positive integers")
+        self._provisional_max_records = provisional_max_records
+        self._provisional_max_bytes = provisional_max_bytes
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_write_lock()
@@ -57,7 +75,7 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                 """
             )
             columns = {
-                str(row["name"]) for row in conn.execute("PRAGMA table_info(extraction_decisions)")
+                str(row["name"]) for row in conn.execute("PRAGMA table_xinfo(extraction_decisions)")
             }
             if "intents_json" not in columns:
                 conn.execute(
@@ -74,6 +92,21 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                 )
                 """
             )
+
+            # A generated size is correct for legacy rows and old INSERT column lists.
+            # The covering index avoids reading every saved JSON body on each write.
+            if "provisional_bytes" not in columns:
+                conn.execute("""
+                    ALTER TABLE extraction_decisions ADD COLUMN provisional_bytes INTEGER
+                    GENERATED ALWAYS AS (CASE WHEN extractor_version = 'provisional-source-v1'
+                      THEN length(CAST(decision_json AS BLOB)) + length(CAST(intents_json AS BLOB))
+                      ELSE 0 END) VIRTUAL
+                """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS ix_provisional_capacity
+                ON extraction_decisions(memory_space_id, provisional_bytes)
+                WHERE extractor_version = 'provisional-source-v1'
+            """)
 
             # Partial expression index reuses the existing durable JSON source. No
             # parallel history store or full-ledger scan is needed for session reads.
@@ -291,6 +324,32 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                 ).fetchone()
                 if conflict is not None:
                     raise ExtractionDecisionConflict("source attribution cannot change on replay")
+                decision_json = record.decision.model_dump_json()
+                intents_json = json.dumps(
+                    [intent.model_dump(mode="json") for intent in record.intents],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if record.extractor_version == PROVISIONAL_SOURCE_VERSION:
+                    usage = conn.execute(
+                        """
+                        SELECT COUNT(*) AS records, COALESCE(SUM(provisional_bytes), 0) AS bytes
+                        FROM extraction_decisions INDEXED BY ix_provisional_capacity
+                        WHERE memory_space_id = ? AND extractor_version = 'provisional-source-v1'
+                    """,
+                        (record.memory_space_id,),
+                    ).fetchone()
+                    incoming_bytes = len(decision_json.encode("utf-8")) + len(
+                        intents_json.encode("utf-8")
+                    )
+                    if (
+                        usage["records"] >= self._provisional_max_records
+                        or usage["bytes"] + incoming_bytes > self._provisional_max_bytes
+                    ):
+                        raise ProvisionalSourceCapacityExceeded(
+                            "provisional source capacity exceeded"
+                        )
                 conn.execute(
                     """
                     INSERT INTO extraction_decisions (
@@ -303,13 +362,8 @@ class ExtractionDecisionLedger(SerialisedSqliteWrites):
                         record.source_turn_id,
                         record.extractor_version,
                         record.input_hash,
-                        record.decision.model_dump_json(),
-                        json.dumps(
-                            [intent.model_dump(mode="json") for intent in record.intents],
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ),
+                        decision_json,
+                        intents_json,
                         record.created_at.isoformat(),
                     ),
                 )

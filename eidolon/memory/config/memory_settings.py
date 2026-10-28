@@ -24,6 +24,10 @@ from eidolon.memory.domain.embedding_port import (
     local_model_spec,
     mempalace_model_identity,
 )
+from eidolon.memory.domain.extraction_decision import (
+    DEFAULT_PROVISIONAL_MAX_BYTES,
+    DEFAULT_PROVISIONAL_MAX_RECORDS,
+)
 from eidolon.memory.domain.wings import CANONICAL_WINGS, WingDefinition
 from eidolon.memory.support.logging import get_logger
 
@@ -438,6 +442,14 @@ class WorkerConfig(BaseModel):
     sync_every_n_turns: int = 5  # PASSIVE checkpoint cadence (D3)
 
 
+class ProvisionalSourceConfig(BaseModel):
+    """Per-Realm admission budget; no automatic deletion or expiry."""
+
+    model_config = ConfigDict(extra="forbid")
+    max_records: int = Field(default=DEFAULT_PROVISIONAL_MAX_RECORDS, ge=1, strict=True)
+    max_bytes: int = Field(default=DEFAULT_PROVISIONAL_MAX_BYTES, ge=1, strict=True)
+
+
 class CommandStatusConfig(BaseModel):
     """Bound the asynchronous command projection over multi-year runtimes."""
 
@@ -683,6 +695,7 @@ class MemorySettings(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     mempalace: MempalaceBackendConfig = Field(default_factory=MempalaceBackendConfig)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
+    provisional_sources: ProvisionalSourceConfig = Field(default_factory=ProvisionalSourceConfig)
     command_status: CommandStatusConfig = Field(default_factory=CommandStatusConfig)
     kg: KgConfig = Field(default_factory=KgConfig)
     ledgers: LedgerStorageConfig = Field(default_factory=LedgerStorageConfig)

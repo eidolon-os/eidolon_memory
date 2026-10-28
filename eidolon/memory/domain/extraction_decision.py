@@ -13,6 +13,12 @@ from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.model_base import BaseEidolonModel
 
 PROVISIONAL_SOURCE_VERSION = "provisional-source-v1"
+DEFAULT_PROVISIONAL_MAX_RECORDS = 10_000
+DEFAULT_PROVISIONAL_MAX_BYTES = 64 * 1024 * 1024
+
+
+class ProvisionalSourceCapacityExceeded(RuntimeError):
+    """New source cannot fit; existing sources must never be silently evicted."""
 
 
 class ExtractionDecisionConflict(RuntimeError):

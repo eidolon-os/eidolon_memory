@@ -706,3 +706,136 @@ async def test_provisional_query_rejects_unbound_or_cross_realm_and_cannot_expan
         await query_provisional_sources(
             {"context": context}, memory_space_id="other", decision_store=ledger
         )
+
+
+async def test_provisional_capacity_serializes_writers_and_preserves_old_sources(tmp_path):
+    import asyncio
+
+    from eidolon.memory.domain.extraction_decision import ProvisionalSourceCapacityExceeded
+
+    path = tmp_path / "decisions.db"
+    ledgers = [ExtractionDecisionLedger(path, provisional_max_records=1) for _ in range(2)]
+    turns = [_provisional_turn().model_copy(update={"turn_id": f"candidate-{i}"}) for i in range(2)]
+    results = await asyncio.gather(
+        *(_retain(ledger, turn) for ledger, turn in zip(ledgers, turns)), return_exceptions=True
+    )
+    assert sum(isinstance(result, ProvisionalSourceCapacityExceeded) for result in results) == 1
+    kept = await ledgers[0].list_provisional_sources(turns[0].context)
+    assert len(kept) == 1
+    # Lowering limits does not evict data or reject an identical retry.
+    smaller = ExtractionDecisionLedger(path, provisional_max_records=1, provisional_max_bytes=1)
+    await _retain(smaller, kept[0])
+    with pytest.raises(ProvisionalSourceCapacityExceeded):
+        await _retain(smaller, kept[0].model_copy(update={"turn_id": "new"}))
+    assert await smaller.list_provisional_sources(turns[0].context) == kept
+    # Explicit privacy deletion frees capacity; tombstones still prevent resurrection.
+    await ledgers[0].redact_source_events(MEMORY_SPACE_ID, [kept[0].turn_id])
+    await _retain(ledgers[0], kept[0].model_copy(update={"turn_id": "new"}))
+    await _retain(ledgers[0], kept[0])
+    assert [x.turn_id for x in await ledgers[0].list_provisional_sources(turns[0].context)] == [
+        "new"
+    ]
+
+
+async def test_provisional_capacity_counts_utf8_and_legacy_insert_shapes(tmp_path):
+    from eidolon.memory.domain.extraction_decision import ProvisionalSourceCapacityExceeded
+
+    path = tmp_path / "decisions.db"
+    ledger = ExtractionDecisionLedger(path)
+    turn = _provisional_turn()
+    await _retain(ledger, turn)
+    with sqlite3.connect(path) as conn:
+        size, text, intents = conn.execute(
+            "SELECT provisional_bytes, decision_json, intents_json FROM extraction_decisions"
+        ).fetchone()
+        assert size == len(text.encode("utf-8")) + len(intents.encode("utf-8"))
+        # Legacy writers omit the generated column; accounting still follows every row.
+        conn.execute("""INSERT INTO extraction_decisions
+            (memory_space_id, source_turn_id, extractor_version, input_hash,
+             decision_json, intents_json, created_at)
+            SELECT memory_space_id, 'legacy-id', extractor_version, input_hash,
+                   decision_json, intents_json, created_at FROM extraction_decisions""")
+    limited = ExtractionDecisionLedger(path, provisional_max_bytes=2 * size)
+    with pytest.raises(ProvisionalSourceCapacityExceeded):
+        await _retain(limited, turn.model_copy(update={"turn_id": "new"}))
+    # Ordinary canonical extraction remains outside this separate budget.
+    await limited.put_if_absent(
+        ExtractionDecisionRecord(
+            memory_space_id=MEMORY_SPACE_ID,
+            source_turn_id="confirmed",
+            extractor_version="rules:v1",
+            input_hash="other",
+            decision=StewardDecision(should_write=False),
+        )
+    )
+
+
+async def test_provisional_capacity_failure_uses_existing_durable_dlq(tmp_path):
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db", provisional_max_records=1)
+    turn = _provisional_turn()
+    await _retain(ledger, turn)
+    msg = _msg(turn.model_copy(update={"turn_id": "new"}))
+    dlq = AsyncMock()
+    steward = SimpleNamespace(decide=AsyncMock())
+    await process_turn_message(
+        msg,
+        steward=steward,
+        backend=AsyncMock(),
+        settings=load_memory_settings(),
+        decision_store=ledger,
+        dlq_writer=dlq,
+        max_deliveries=1,
+    )
+    dlq.add.assert_awaited_once()
+    assert "provisional source capacity exceeded" in str(dlq.add.call_args)
+    msg.ack.assert_awaited_once()
+    steward.decide.assert_not_awaited()
+    assert len(await ledger.list_provisional_sources(turn.context)) == 1
+
+
+async def test_provisional_capacity_upgrades_existing_ledger_without_rewriting_sources(tmp_path):
+    from eidolon.memory.domain.extraction_decision import ProvisionalSourceCapacityExceeded
+
+    source = ExtractionDecisionLedger(tmp_path / "source.db")
+    turn = _provisional_turn()
+    await _retain(source, turn)
+    columns = ("memory_space_id, source_turn_id, extractor_version, input_hash, "
+               "decision_json, intents_json, created_at")
+    with sqlite3.connect(source.path) as conn:
+        row = conn.execute(f"SELECT {columns} FROM extraction_decisions").fetchone()
+    legacy = tmp_path / "legacy.db"
+    with sqlite3.connect(legacy) as conn:
+        conn.execute("""CREATE TABLE extraction_decisions (
+            memory_space_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
+            extractor_version TEXT NOT NULL, input_hash TEXT NOT NULL,
+            decision_json TEXT NOT NULL, intents_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (memory_space_id, source_turn_id, extractor_version))""")
+        conn.execute(f"INSERT INTO extraction_decisions ({columns}) VALUES (?,?,?,?,?,?,?)", row)
+    upgraded = ExtractionDecisionLedger(legacy, provisional_max_bytes=1)
+    assert await upgraded.list_provisional_sources(turn.context) == [turn]
+    with pytest.raises(ProvisionalSourceCapacityExceeded):
+        await _retain(upgraded, turn.model_copy(update={"turn_id": "new"}))
+    with sqlite3.connect(legacy) as conn:
+        assert conn.execute(f"SELECT {columns} FROM extraction_decisions").fetchone() == row
+        plan = conn.execute(
+            """EXPLAIN QUERY PLAN SELECT COUNT(*), SUM(provisional_bytes)
+            FROM extraction_decisions INDEXED BY ix_provisional_capacity
+            WHERE memory_space_id = ? AND extractor_version = 'provisional-source-v1'""",
+            (MEMORY_SPACE_ID,),
+        ).fetchall()
+        assert "ix_provisional_capacity" in str(plan)
+
+
+def test_provisional_capacity_configuration_rejects_invalid_or_ambiguous_limits():
+    from pydantic import ValidationError
+
+    from eidolon.memory.config.memory_settings import MemorySettings
+
+    for value in (0, -1, True, "10"):
+        for field in ("max_records", "max_bytes"):
+            with pytest.raises(ValidationError):
+                MemorySettings(provisional_sources={field: value})
+    settings = MemorySettings(provisional_sources={"max_records": 3, "max_bytes": 4096})
+    assert settings.provisional_sources.max_records == 3
+    assert settings.provisional_sources.max_bytes == 4096
