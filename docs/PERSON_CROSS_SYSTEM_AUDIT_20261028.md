@@ -74,3 +74,12 @@ Admin mission_control/service.py `_memory_summary` 取 Owner 下第一个 enable
 - 发布前实际备份仅含 2 个启用 Realm；发布后实际备份含全部 6 个 Realm，证明停用空间不再漏出 Memory 备份目录。该结果仅证明 Memory 空间覆盖，Ops 仍明确报告 complete_host_backup=false：媒体对象、完整 JetStream、会话状态、部署证据不在现有整机备份范围，本次没有将其误报为完整整机恢复方案。
 - 发布使用原有 Mac Host 与原有数据；自动化故障、清空与恢复测试只针对临时测试服务/目录，没有清空现网任何用户的记忆。
 - APK 已构建；发布时 ADB 列表为空，未安装到手机，因此手机界面人工验收仍待设备重新连接。
+
+### 最终发布结果
+
+- Data `2563cc6`，schema `0016_retained_person_archives`；Memory `748ad06`；Admin `3ff33fb`；Mobile APK 来源 `c4d90bf`。
+- Host `app_ready`，Memory supervisor 受控重启成功。重启过程中的暂时连接中断未计入最终验收；就绪后重跑 30 次管理调用全部 200。
+- 现网归档接口 200，返回 4 个 inactive 归档；原 1 个 active Person 保持 active；私人 Realm 无对应 Person 的数量从 4 降为 0。
+- 清空中断后 Palace 不存在而账本仍存在的场景已修正，重复清空安全；history-reset/management-mode 17 passed。
+- 发布前备份：`/private/tmp/eidolon-before-person-lifecycle-20261028`；发布后覆盖 6 Realm 的备份：`/private/tmp/eidolon-person-lifecycle-complete-20261028`。临时目录不作为长期备份保管位置。
+- APK：`eidolon_client_mobile/build/app/outputs/flutter-apk/app-debug.apk`。待手机重新连接后安装；未声称完成手机人工验收或真人声纹准确率测试。
