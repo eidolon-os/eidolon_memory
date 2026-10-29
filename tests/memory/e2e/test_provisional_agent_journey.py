@@ -45,9 +45,6 @@ async def test_data_agent_outbox_and_real_memory_sources(live_agent_runner, tmp_
         provisional_recall=True,
         env_overrides={"EIDOLON_MEMORY_API_TOKEN": "isolated-person-journey-token"},
     )
-    from eidolon.memory.config.memory_settings import load_memory_settings
-
-    stream = load_memory_settings(handle.settings_path).nats.stream
-    result = await run("verify", handle.nats_url, stream)
-    assert result["passed"] and result["read_count"] == 20 and result["capacity_recovery"]
+    result = await run("verify", handle.nats_url)
+    assert result["passed"] and result["read_count"] == 20
     print(json.dumps(result, sort_keys=True))

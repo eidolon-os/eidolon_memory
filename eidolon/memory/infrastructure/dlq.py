@@ -12,7 +12,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from eidolon.memory.domain.dlq import DlqCapacityExceeded, DlqRecord, DlqReplayItem, DlqStats
+from eidolon.memory.domain.dlq import DlqRecord, DlqReplayItem, DlqStats
 from eidolon.memory.infrastructure.ledger_sql import (
     DLQ_CLAIM,
     DLQ_COLUMNS,
@@ -39,15 +39,7 @@ def _sql(template: str) -> str:
 class DlqLedger(SerialisedSqliteWrites):
     """Operational recovery data for one space, outside the palace lock."""
 
-    def __init__(
-        self, path: Path, *, space_id: str,
-        max_records: int = 10_000, max_payload_bytes: int = 64 * 1024 * 1024,
-    ) -> None:
-        for value in (max_records, max_payload_bytes):
-            if type(value) is not int or value <= 0:
-                raise ValueError("DLQ limits must be positive integers")
-        self._max_records = max_records
-        self._max_payload_bytes = max_payload_bytes
+    def __init__(self, path: Path, *, space_id: str) -> None:
         self.path = Path(path)
         self._space_id = space_id
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,10 +66,6 @@ class DlqLedger(SerialisedSqliteWrites):
             )
             conn.execute(DLQ_ENTRIES_SCHEMA_TEMPLATE.format(blob="BLOB"))
             conn.execute(DLQ_ENTRIES_INDEX)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_dlq_payload_budget "
-                "ON dlq_entries(memory_space_id, length(payload))"
-            )
             # A claim can only have been left behind by this process dying,
             # because a palace has exactly one owning process. That reasoning does
             # not hold on shared storage, where the same reset would take an entry
@@ -134,13 +122,6 @@ class DlqLedger(SerialisedSqliteWrites):
         now = datetime.now(UTC).isoformat()
         entry_id = uuid.uuid4().hex
         with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            count, size = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(length(payload)), 0) "
-                "FROM dlq_entries WHERE memory_space_id = ?", (self._space_id,),
-            ).fetchone()
-            if count >= self._max_records or size + len(payload) > self._max_payload_bytes:
-                raise DlqCapacityExceeded("DLQ capacity exceeded; source not acknowledged")
             conn.execute(
                 _sql(DLQ_INSERT),
                 (
