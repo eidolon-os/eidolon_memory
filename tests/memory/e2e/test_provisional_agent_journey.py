@@ -14,6 +14,9 @@ async def test_data_agent_outbox_and_real_memory_sources(live_agent_runner, tmp_
     python = agent / ".venv/bin/python"
     if not python.exists():
         pytest.skip("adjacent Agent test environment is required for cross-repository journey")
+    channel = agent.parent / "eidolon_channel/.venv/bin/python"
+    if not channel.exists():
+        pytest.skip("adjacent Channel test environment is required for real RPC journey")
     script = Path(__file__).parent / "fixtures/provisional_agent_journey.py"
 
     async def run(phase, *args):
@@ -46,5 +49,6 @@ async def test_data_agent_outbox_and_real_memory_sources(live_agent_runner, tmp_
         env_overrides={"EIDOLON_MEMORY_API_TOKEN": "isolated-person-journey-token"},
     )
     result = await run("verify", handle.nats_url)
-    assert result["passed"] and result["read_count"] == 20
+    assert result["passed"] and result["read_count"] == 20 and result["channel_grpc"]
+    assert result["invalid_observation_rejected"]
     print(json.dumps(result, sort_keys=True))

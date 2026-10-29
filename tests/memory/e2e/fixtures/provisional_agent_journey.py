@@ -15,9 +15,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import grpc
 import httpx
-from eidolon_agent.app.interaction import AcceptReply, ReplyRequest
+from eidolon_agent.app.transport.grpc.chat_servicer import EidolonAgentServicer
+from eidolon_agent.app.transport.grpc.interceptors import AuthInterceptor
+from eidolon_agent.app.transport.grpc.proto import pbg
 from eidolon_agent.core.errors import NotFoundError
+from eidolon_agent.core.types.turn import TurnEvent, TurnStatus
 from eidolon_agent.domain.agent.turn import TurnEngine
 from eidolon_agent.domain.context.compiler import ContextCompiler
 from eidolon_agent.domain.history import HistoryFanout
@@ -78,6 +82,7 @@ async def main():
         bus = NatsEventBus(sys.argv[3])
         runtime = AgentRuntimeStore.open(folder / "agent.db")
         await runtime.init_schema()
+        server = None
         try:
             async with (
                 app.router.lifespan_context(app),
@@ -120,19 +125,46 @@ async def main():
                     )
                 }
                 scope = await authorizer.authorize(**args)
+                received = asyncio.Queue()
+
+                class CapturingAgent:
+                    async def run_turn(self, value):
+                        await received.put(value)
+                        yield TurnEvent.delta(value.turn_id, 0, "accepted", 0.0)
+                        yield TurnEvent.done(value.turn_id, 1, TurnStatus.OK, 0.0)
+
                 registry = SimpleNamespace(
                     resolve_runtime=AsyncMock(
                         return_value=SimpleNamespace(
                             owner_id=OWNER,
                             companion_id=COMPANION,
                             genome_id=scope.runtime.genome_id,
-                            agent=object(),
+                            agent=CapturingAgent(),
                         )
                     )
                 )
-                ingress = AcceptReply(registry, speaker_secret=SECRET)
+                server = grpc.aio.server(
+                    interceptors=[
+                        AuthInterceptor(RuntimeTokenVerifier(secret=SECRET, allow_provisional=True))
+                    ]
+                )
+                pbg.add_EidolonAgentServicer_to_server(
+                    EidolonAgentServicer(
+                        agent_registry=registry,
+                        signals_bus=SimpleNamespace(recent=AsyncMock(return_value=[])),
+                        proactive_bus=None,
+                        runtime_sessions=authorizer,
+                        speaker_secret=SECRET,
+                    ),
+                    server,
+                )
+                port_number = server.add_insecure_port("127.0.0.1:0")
+                assert port_number
+                await server.start()
+                channel = Path(__file__).resolve().parents[5] / "eidolon_channel"
+                channel_script = Path(__file__).with_name("provisional_channel_client.py")
 
-                async def turn(trace, text, *, observed=True):
+                async def turn(trace, text, *, observed=True, signed_text=None):
                     now = time.time()
                     observation = SpeakerIdentityObservation(
                         owner_id=OWNER,
@@ -163,27 +195,47 @@ async def main():
                             end_sample=32000,
                         ),
                     )
-                    metadata = (
-                        {
-                            "speaker_observation_token": sign_observation(
-                                observation, secret=SECRET, text=text
-                            )
-                        }
-                        if observed
-                        else {}
-                    )
-                    return (
-                        await ingress.prepare(
-                            scope,
-                            ReplyRequest(
-                                conversation_id="room-session:room",
-                                text=text,
-                                trace_id=trace,
-                                input_modality="voice",
-                                metadata=metadata,
-                            ),
+                    observation_token = (
+                        sign_observation(
+                            observation,
+                            secret=SECRET,
+                            text=text if signed_text is None else signed_text,
                         )
-                    ).turn
+                        if observed
+                        else None
+                    )
+                    process = await asyncio.create_subprocess_exec(
+                        str(channel / ".venv/bin/python"),
+                        str(channel_script),
+                        cwd=channel,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    try:
+                        stdout, stderr = await asyncio.wait_for(
+                            process.communicate(
+                                json.dumps(
+                                    dict(
+                                        target=f"127.0.0.1:{port_number}",
+                                        runtime_token=token,
+                                        observation_token=observation_token,
+                                        trace=trace,
+                                        text=text,
+                                    )
+                                ).encode()
+                            ),
+                            timeout=20,
+                        )
+                    except BaseException:
+                        if process.returncode is None:
+                            process.kill()
+                        await process.wait()
+                        raise
+                    assert process.returncode == 0, stderr.decode() + stdout.decode()
+                    value = await asyncio.wait_for(received.get(), timeout=2)
+                    assert value.context.trace_id == trace and value.text == text
+                    return value
 
                 first = await turn("first", "我暂时喜欢青色")
                 assert first.context.provisional_memory_save and not first.context.memory_enabled
@@ -232,6 +284,11 @@ async def main():
                 unknown = await turn("unknown", "谁的颜色", observed=False)
                 assert not unknown.context.memory_write_enabled
                 assert await compiler._memory_recall(unknown, timeout_s=0.2) is None
+                mismatched = await turn("mismatched", "另一个请求", signed_text="原签名文本")
+                assert mismatched.context.person_id is None
+                assert not mismatched.context.memory_write_enabled
+                assert await compiler._memory_recall(mismatched, timeout_s=0.2) is None
+                assert mismatched.metadata.get("speaker_observation_rejected") is True
                 latencies = []
                 for _ in range(20):
                     start = time.perf_counter()
@@ -250,12 +307,16 @@ async def main():
                         {
                             "passed": True,
                             "read_count": 20,
+                            "channel_grpc": True,
+                            "invalid_observation_rejected": True,
                             "warm_read_p95_ms": sorted(latencies)[18],
                             "warm_read_max_ms": max(latencies),
                         }
                     )
                 )
         finally:
+            if server is not None:
+                await server.stop(0)
             await bus.close()
             await runtime.close()
     finally:
