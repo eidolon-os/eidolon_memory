@@ -36,7 +36,11 @@ from eidolon_data.api.companion_authority import create_app
 from eidolon_sdk.biz.person import PersonCreate
 from eidolon_sdk.biz.runtime import RuntimeTokenVerifier, sign_runtime_token
 from eidolon_sdk.biz.speaker_attestation import sign_observation
-from eidolon_sdk.biz.speaker_identity import SpeakerIdentityObservation
+from eidolon_sdk.biz.speaker_identity import (
+    IdentityDecisions,
+    PersonEvidence,
+    SpeakerIdentityObservation,
+)
 from eidolon_sdk.biz.system_data import SystemDataRuntimeClient
 from eidolon_sdk.biz.system_data.models import PersonMemoryDefaults
 
@@ -166,23 +170,35 @@ async def main():
 
                 async def turn(trace, text, *, observed=True, signed_text=None):
                     now = time.time()
+                    # The unnamed candidate meets the personal-memory and
+                    # speaker-label thresholds; addressing by name does not apply.
                     observation = SpeakerIdentityObservation(
                         owner_id=OWNER,
                         session_id="room",
                         turn_id=trace,
-                        person_id=PERSON,
-                        person_revision=1,
-                        maturity="candidate",
-                        status="identified",
-                        confidence="controlled_trial",
-                        reason="voice_match",
-                        profile_id="v",
-                        profile_revision=1,
+                        status="compared",
+                        reason="compared",
                         model_id="m",
                         weights_hash="a" * 64,
                         preprocessing_version="v",
-                        scoring_version="v",
-                        decision_version="trial",
+                        backend_version="b",
+                        policy_version="trial",
+                        evidence=[
+                            PersonEvidence(
+                                person_id=PERSON,
+                                person_revision=1,
+                                maturity="candidate",
+                                is_named=False,
+                                profile_id="v",
+                                profile_revision=1,
+                                llr=6.0,
+                                posterior=0.995,
+                            )
+                        ],
+                        posterior_unknown=0.004,
+                        decisions=IdentityDecisions(
+                            personal_memory=PERSON, speaker_label=PERSON
+                        ),
                         issued_at=now,
                         expires_at=now + 10,
                         source=dict(
@@ -193,6 +209,7 @@ async def main():
                             sample_rate=16000,
                             start_sample=0,
                             end_sample=32000,
+                            channel="mobile",
                         ),
                     )
                     observation_token = (
