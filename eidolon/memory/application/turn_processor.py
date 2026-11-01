@@ -61,6 +61,7 @@ from eidolon.memory.config.memory_settings import MemorySettings, resolve_dlq_lo
 from eidolon.memory.domain.command_status import CommandStatus
 from eidolon.memory.domain.extraction_decision import (
     PROVISIONAL_SOURCE_VERSION,
+    RETAINED_ATTRIBUTIONS,
     ExtractionDecisionConflict,
     ExtractionDecisionRecord,
     extraction_input_hash,
@@ -93,9 +94,10 @@ async def _decide_once(
     store: ExtractionDecisionStore | None,
 ) -> tuple[StewardDecision, list[MemoryIntent]]:
     """Return one durable extraction result for a turn + extractor version."""
-    if turn.metadata.get("person_attribution") == "provisional":
+    attribution = turn.metadata.get("person_attribution")
+    if attribution in RETAINED_ATTRIBUTIONS:
         if store is None:
-            raise RuntimeError("provisional sources require the durable decision store")
+            raise RuntimeError(f"{attribution} sources require the durable decision store")
         stored = await store.put_if_absent(
             ExtractionDecisionRecord(
                 memory_space_id=turn.context.memory_space_id,
@@ -104,7 +106,7 @@ async def _decide_once(
                 input_hash=extraction_input_hash(turn),
                 decision=StewardDecision(
                     should_write=False,
-                    reason="provisional_person_source",
+                    reason=f"{attribution}_person_source",
                     produced_by=PROVISIONAL_SOURCE_VERSION,
                     source_turn=turn,
                 ),
@@ -530,10 +532,12 @@ async def process_turn_message(
             await msg.nak()
         return
 
-    if turn.metadata.get("person_attribution") == "provisional":
+    attribution = turn.metadata.get("person_attribution")
+    if attribution in RETAINED_ATTRIBUTIONS:
         # Retention completed before ACK. No steward, canonical, KG, vector,
-        # privacy mutation or commitment is derived from provisional identity.
-        metrics.TURNS_TOTAL.labels(outcome="provisional_retained").inc()
+        # privacy mutation or commitment is derived from provisional identity,
+        # nor from a turn whose voice is not attributed yet.
+        metrics.TURNS_TOTAL.labels(outcome=f"{attribution}_retained").inc()
         await msg.ack()
         return
 

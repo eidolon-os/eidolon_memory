@@ -89,16 +89,28 @@ class ConversationTurnPayload(EidolonWireModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _provisional_source_requires_identity(self):
+    def _attribution_requires_identity(self):
         attribution = self.metadata.get("person_attribution")
-        if attribution not in (None, "confirmed", "provisional"):
+        if attribution not in (None, "confirmed", "provisional", "pending"):
             raise ValueError("invalid person attribution")
         if attribution == "provisional" and not (
             self.context.owner_id and self.context.person_id and self.context.session_id
         ):
             raise ValueError("provisional source requires Owner, Person and session")
-        if attribution == "provisional" and len(self.model_dump_json().encode("utf-8")) > 65536:
-            raise ValueError("provisional source exceeds 64 KiB")
+        if attribution == "pending":
+            # Nobody is attributed yet: the turn's personal facts wait for Data's
+            # attribution of the voice heard in it, named by the Channel session
+            # and turn the speaker observation was signed for.
+            if not self.context.owner_id or self.context.person_id is not None:
+                raise ValueError("pending source requires Owner and no Person")
+            for key in ("voice_session_id", "voice_turn_id"):
+                value = self.metadata.get(key)
+                if not isinstance(value, str) or not 0 < len(value) <= 128:
+                    raise ValueError("pending source requires the voice it heard")
+        if attribution in ("provisional", "pending") and len(
+            self.model_dump_json().encode("utf-8")
+        ) > 65536:
+            raise ValueError(f"{attribution} source exceeds 64 KiB")
         return self
 
 

@@ -839,3 +839,81 @@ def test_provisional_capacity_configuration_rejects_invalid_or_ambiguous_limits(
     settings = MemorySettings(provisional_sources={"max_records": 3, "max_bytes": 4096})
     assert settings.provisional_sources.max_records == 3
     assert settings.provisional_sources.max_bytes == 4096
+
+
+def _pending_turn(**metadata):
+    turn = _turn()
+    return ConversationTurnPayload.model_validate(
+        {
+            **turn.model_dump(),
+            "metadata": {
+                "person_attribution": "pending",
+                "voice_session_id": "channel-session",
+                "voice_turn_id": "channel-turn",
+                **metadata,
+            },
+        }
+    )
+
+
+async def test_pending_source_is_retained_and_nothing_is_derived(tmp_path):
+    """A turn nobody is attributed to yet waits for Data's attribution (design §3.5)."""
+    from eidolon.memory.domain.extraction_decision import PROVISIONAL_SOURCE_VERSION
+
+    turn = _pending_turn()
+    ledger = ExtractionDecisionLedger(tmp_path / "decisions.db")
+    steward = SimpleNamespace(decide=AsyncMock())
+    backend, kg, canonical, commitments = (AsyncMock() for _ in range(4))
+    msg = _msg(turn)
+    await process_turn_message(
+        msg,
+        steward=steward,
+        backend=backend,
+        kg=kg,
+        canonical_facts=canonical,
+        commitments=commitments,
+        settings=load_memory_settings(),
+        max_deliveries=3,
+        decision_store=ledger,
+    )
+    msg.ack.assert_awaited_once()
+    stored = await ledger.get(MEMORY_SPACE_ID, turn.turn_id, PROVISIONAL_SOURCE_VERSION)
+    assert stored.decision.source_turn == turn and stored.intents == []
+    assert stored.decision.reason == "pending_person_source"
+    assert not steward.decide.mock_calls
+    assert not any(mock.mock_calls for mock in (backend, kg, canonical, commitments))
+    # Never offered as a candidate's provisional source, never confirmed by replay.
+    candidate = _provisional_turn().context
+    assert await ledger.list_provisional_sources(candidate) == []
+    confirmed = turn.model_copy(update={"metadata": {"person_attribution": "confirmed"}})
+    with pytest.raises(ExtractionDecisionConflict):
+        await _retain(ledger, confirmed)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"voice_turn_id": None},
+        {"voice_session_id": ""},
+        {"voice_turn_id": "x" * 129},
+    ],
+)
+def test_pending_source_names_the_voice_it_heard(change):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="voice it heard"):
+        _pending_turn(**change)
+
+
+def test_pending_source_has_an_owner_and_no_person():
+    from pydantic import ValidationError
+
+    data = _pending_turn().model_dump()
+    with pytest.raises(ValidationError, match="no Person"):
+        ConversationTurnPayload.model_validate(
+            {**data, "context": {**data["context"], "person_id": "p", "identity_epoch": 1}}
+        )
+    with pytest.raises(ValidationError, match="no Person"):
+        ConversationTurnPayload.model_validate(
+            {**data, "context": {**data["context"], "owner_id": None}}
+        )

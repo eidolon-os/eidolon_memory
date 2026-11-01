@@ -13,6 +13,9 @@ from eidolon.memory.domain.steward import StewardDecision
 from eidolon.memory.support.model_base import BaseEidolonModel
 
 PROVISIONAL_SOURCE_VERSION = "provisional-source-v1"
+# Sources kept, nothing derived: a candidate's provisional turns, and turns whose
+# voice Data has not attributed yet (design §3.5).
+RETAINED_ATTRIBUTIONS = frozenset({"provisional", "pending"})
 DEFAULT_PROVISIONAL_MAX_RECORDS = 10_000
 DEFAULT_PROVISIONAL_MAX_BYTES = 64 * 1024 * 1024
 
