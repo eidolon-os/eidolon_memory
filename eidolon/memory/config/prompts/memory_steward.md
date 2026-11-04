@@ -51,6 +51,7 @@
 - `event_<short_topic>`：重要事件
 - `preference_<category>`：偏好
 - `privacy_<topic>`：禁记或封存主题
+- `home_<topic>`：家里的事（`layer` 为 `household` 的 claim 用这一类），如 `home_storage`、`home_schedule`、`home_chores`
 
 ## 重要性评分（claims 用）
 
