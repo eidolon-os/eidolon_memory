@@ -43,8 +43,11 @@ class VerbatimTestSteward:
             importance=max(3, self._settings.steward.min_importance_to_write),
             confidence=1.0,
         )
+        # No classification: the turn is projected into both layers and each
+        # Realm keeps its own (design §3.6), so a test sees which Realms a turn
+        # reached. The personal copy comes first and keeps its id.
         fragments = finalize_fragments(
-            [fragment],
+            [fragment, fragment.model_copy(update={"layer": "household"})],
             steward="test-verbatim",
             context=turn.context,
             source_turn_id=turn.turn_id,
