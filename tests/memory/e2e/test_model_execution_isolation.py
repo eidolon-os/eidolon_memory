@@ -5,7 +5,12 @@ import asyncio
 import pytest
 
 from eidolon.memory.application.discovery import probe_mcp_http
-from tests.memory.e2e.conftest import mcp_tool_json, nats_publish_turn, wait_for_visible
+from tests.memory.e2e.conftest import (
+    E2E_PERSON,
+    mcp_tool_json,
+    nats_publish_turn,
+    wait_for_visible,
+)
 from tests.memory.llm_fixture import model_sdk_fixture  # noqa: F401
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
@@ -65,6 +70,8 @@ async def test_recall_and_discovery_survive_blocking_model_then_see_written_fact
                         "companion_id": "e2e",
                         "device_id": "e2e",
                         "session_id": "e2e",
+                        "person_id": E2E_PERSON,
+                        "identity_epoch": 1,
                     },
                 },
             )

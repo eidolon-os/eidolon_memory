@@ -112,6 +112,7 @@ TurnTrigger = agent_turn_types.TurnTrigger
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 MEMORY_SPACE_ID = "default.default.agent_e2e"
+PERSON_ID = "agent-e2e-person"
 OWNER_USER_ID = "default"
 COMPANION_ID = "agent_e2e"
 
@@ -232,6 +233,9 @@ async def test_natural_turn_is_recalled_by_voice_after_device_reenters(
             memory_realm_id=MEMORY_SPACE_ID,
             device_id="default-device",
             session_id=session_a,
+            # One person's Realm keeps that person's facts (design §3.6).
+            person_id=PERSON_ID,
+            identity_epoch=1,
             turn_id=f"turn-{marker}",
             user_text=f"书房那盆绿植叫{marker}。",
             assistant_text="听起来很有画面。",
@@ -258,6 +262,8 @@ async def test_natural_turn_is_recalled_by_voice_after_device_reenters(
                 companion_id=COMPANION_ID,
                 device_id="default-device",
                 session_id=session_b,
+                person_id=PERSON_ID,
+                identity_epoch=1,
             )
             assert result.degraded is False
             return marker in result.context

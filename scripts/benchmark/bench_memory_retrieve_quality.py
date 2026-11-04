@@ -393,7 +393,8 @@ def _spawn_agent(
         agent_cli = Path(cli)
 
     proc = subprocess.Popen(
-        [str(agent_cli), "--memory-space-id", user_id, "--port", str(port)],
+        [str(agent_cli), "--memory-space-id", user_id, "--port", str(port),
+         "--realm-scope", "person"],
         stdout=log_path.open("ab"),
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
@@ -437,6 +438,10 @@ async def _mcp_session(url: str):
             yield session
 
 
+# One person's memory: the benchmark's Realm is a Person's (design §3.6).
+_BENCH_PERSON = {"person_id": "quality_bench_person", "identity_epoch": 1}
+
+
 async def _publish_turn(nats_url: str, *, user_id: str, turn: dict) -> None:
     context = build_memory_actor_context(
         owner_id="quality_bench",
@@ -444,6 +449,7 @@ async def _publish_turn(nats_url: str, *, user_id: str, turn: dict) -> None:
         memory_realm_id=user_id,
         device_id="quality_bench",
         session_id="quality_bench",
+        **_BENCH_PERSON,
     )
     payload = ConversationTurnPayload(
         turn_id=turn["turn_id"],
@@ -1219,6 +1225,7 @@ async def amain(args: argparse.Namespace) -> int:
         memory_realm_id=args.user_id,
         device_id="quality_bench",
         session_id="quality_bench",
+        **_BENCH_PERSON,
     ).model_dump(mode="json")
 
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")

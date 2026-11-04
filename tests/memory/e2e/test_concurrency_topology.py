@@ -66,6 +66,8 @@ async def test_second_agent_for_same_realm_is_rejected_before_serving(
                 owner.user_id,
                 "--port",
                 "19111",
+                "--realm-scope",
+                "person",
             ],
             stdout=log_fp,
             stderr=subprocess.STDOUT,

@@ -55,12 +55,13 @@ def test_supervisor_never_pins_a_companion_at_startup() -> None:
 
 def test_the_runner_accepts_the_owner_and_defaults_to_none() -> None:
     parsed = _parse_args(
-        ["--memory-space-id", "r_a", "--port", "10030", "--owner-id", "o_1"]
+        ["--memory-space-id", "r_a", "--port", "10030", "--owner-id", "o_1",
+         "--realm-scope", "person"]
     )
     assert parsed.owner_id == "o_1"
     assert not hasattr(parsed, "companion_id")
 
-    bare = _parse_args(["--memory-space-id", "r_a"])
+    bare = _parse_args(["--memory-space-id", "r_a", "--realm-scope", "owner"])
     assert bare.owner_id == ""
 
 

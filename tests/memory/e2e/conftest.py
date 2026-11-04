@@ -294,6 +294,7 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
         management_only: bool = False,
         provisional_ingest: bool = False,
         provisional_recall: bool = False,
+        realm_scope: str = "person",
     ) -> _AgentHandle:
         memory_space_id = _e2e_memory_space_id(user_id)
         # Not a parameter. Where an agent listens is a fact about running two
@@ -434,6 +435,8 @@ def live_agent_runner(live_nats: str, tmp_path_factory: pytest.TempPathFactory):
                     memory_space_id,
                     "--port",
                     str(port),
+                    "--realm-scope",
+                    realm_scope,
                     *(["--management-only"] if management_only else []),
                     *(["--provisional-ingest"] if provisional_ingest else []),
                     *(["--provisional-recall"] if provisional_recall else []),
@@ -640,6 +643,15 @@ async def _publish_command(nats_url: str, payload: dict[str, Any]) -> None:
     )
 
 
+#: Whose memory an e2e worker holds by default: one Person's Realm, which keeps
+#: personal facts and takes only turns bound to that Person (design §3.6).
+E2E_PERSON = "e2e-person"
+
+
+def _identity(person_id: str | None) -> dict[str, Any]:
+    return {"person_id": person_id, "identity_epoch": 1} if person_id else {}
+
+
 async def nats_publish_turn(
     nats_url: str,
     *,
@@ -649,6 +661,7 @@ async def nats_publish_turn(
     turn_id: str | None = None,
     session_id: str = "e2e",
     metadata: dict[str, Any] | None = None,
+    person_id: str | None = E2E_PERSON,
 ) -> str:
     """Publish a ConversationTurnPayload to ``eidolon.memory.turn.<space_token>``.
 
@@ -667,6 +680,7 @@ async def nats_publish_turn(
         companion_id="e2e",
         device_id="e2e",
         session_id=session_id,
+        **_identity(person_id),
     )
     turn = ConversationTurnPayload(
         turn_id=turn_id or uuid.uuid4().hex,
@@ -692,6 +706,7 @@ def e2e_actor_context(
     device_id: str = "e2e",
     owner_id: str = "e2e",
     companion_id: str = "e2e",
+    person_id: str | None = E2E_PERSON,
 ) -> dict[str, Any]:
     """Build the ``MemoryActorContext`` dict the recall/search MCP tools now
     require, mirroring the identity ``nats_publish_turn`` attributes writes to.
@@ -717,6 +732,7 @@ def e2e_actor_context(
         companion_id=companion_id,
         device_id=device_id,
         session_id=session_id,
+        **_identity(person_id),
     ).model_dump(mode="json")
 
 

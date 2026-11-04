@@ -739,10 +739,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--provisional-ingest", action="store_true")
     parser.add_argument("--provisional-recall", action="store_true")
     parser.add_argument("--owner-id", default="", help="Owner this space belongs to")
-    # Whose memory: an Owner's household Realm or one Person's (design §3.6).
-    # The supervisor always passes it from Data's roster; without it nothing is
-    # filtered by layer, which only tests written before the layer rely on.
-    parser.add_argument("--realm-scope", choices=("owner", "person"), default="")
+    # Whose memory: an Owner's household Realm or one Person's (design §3.6),
+    # from Data's roster. It decides which layer the Realm keeps and recalls.
+    parser.add_argument("--realm-scope", choices=("owner", "person"), required=True)
     return parser.parse_args(argv)
 
 
@@ -842,9 +841,7 @@ def _run_service(
 ) -> None:
     """Bind the MCP surface and serve until shut down."""
 
-    realm_layer: MemoryLayer | None = {"owner": "household", "person": "personal"}.get(
-        args.realm_scope
-    )
+    realm_layer: MemoryLayer = {"owner": "household", "person": "personal"}[args.realm_scope]
     host = (args.host or settings.mcp_http.host).strip() or "127.0.0.1"
     port = args.port if args.port else settings.mcp_http.port
 
