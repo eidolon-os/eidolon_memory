@@ -147,8 +147,12 @@ class MemoryService:
         command_status: CommandStatusStore | None = None,
         turn_publisher: Any = None,
         signer: PrivacyConfirmationSigner | None = None,
+        household_spaces: frozenset[str] = frozenset(),
     ) -> None:
         self._router = router
+        # Realms that are an Owner's household layer (design §3.6), from the
+        # roster Data publishes; every other space is a Person's own.
+        self._household_spaces = household_spaces
         self._settings = settings
         self._command_publisher = command_publisher
         self._command_status = command_status
@@ -201,6 +205,16 @@ class MemoryService:
 
     async def _runtime(self, ctx: MemoryActorContext) -> MemorySpaceRuntime:
         return await self.runtime_for(ctx)
+
+    def recalled_layers(self, ctx: MemoryActorContext) -> tuple[str, ...] | None:
+        """The layers a conversation in this space may recall; ``None`` is all.
+
+        The household Realm recalls only household facts. What it held before
+        the layer existed — one person's memory, from when the Owner's Realm was
+        theirs — waits there unrecalled until it is classified.
+        """
+
+        return ("household",) if ctx.memory_realm_id in self._household_spaces else None
 
     # ── the read contract ────────────────────────────────────────────────────
 
@@ -262,6 +276,7 @@ class MemoryService:
                 # Raises only when the store degraded *and* nothing was found:
                 # partial results are still an answer, and the caller gets them.
                 raise_on_degraded=True,
+                layers=self.recalled_layers(ctx),
             )
         except (UnknownMemorySpace, MemorySpaceUnavailable):
             raise
@@ -331,9 +346,11 @@ class MemoryService:
         runtime_resolution_ms = _elapsed_ms(resolution_started)
 
         # A caller may turn the graph off for one request; it can never turn one
-        # on that this deployment does not have.
+        # on that this deployment does not have. The household layer has no
+        # graph: its facts are text, and the graph there is one person's.
+        layers = self.recalled_layers(ctx)
         wanted = self._settings.recall.kg_in_recall if include_kg is None else include_kg
-        want_kg = bool(wanted) and runtime.has_kg
+        want_kg = bool(wanted) and runtime.has_kg and layers is None
         subjects = [
             value.strip()
             for value in plan.focus_subjects[: self._settings.recall.kg_max_entities]
@@ -352,6 +369,7 @@ class MemoryService:
                 palace_path=runtime.palace_path,
                 include_sensitive_kg=include_sensitive_kg,
                 kg_subjects=subjects,
+                layers=layers,
             )
         except Exception as exc:  # noqa: BLE001 - contract: never raise on storage
             log.warning("recall_degraded", memory_space_id=ctx.memory_realm_id, error=str(exc))
@@ -417,6 +435,9 @@ class MemoryService:
         answers, and only one of them should make a companion say there are none.
         """
 
+        if self.recalled_layers(ctx) is not None:
+            # A promise is one person's; the household layer holds none.
+            return CommitmentReadResult()
         runtime = await self._runtime(ctx)
         ledger = runtime.ledgers.commitments
         if ledger is None:

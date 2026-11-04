@@ -87,7 +87,15 @@ def _agent_cli_argv(user: UserEntry, palace_path: Path) -> list[str]:
     filter to whichever one happened to be named.
     """
     del palace_path
-    argv = [_AGENT_CLI, "--memory-space-id", user.id, "--port", str(user.port)]
+    argv = [
+        _AGENT_CLI,
+        "--memory-space-id",
+        user.id,
+        "--port",
+        str(user.port),
+        "--realm-scope",
+        user.scope,
+    ]
     if user.owner_id:
         argv += ["--owner-id", user.owner_id]
     if not user.enabled:
@@ -845,6 +853,7 @@ class Supervisor:
             new_def = wanted[user_id]
             if (
                 new_def.port != child.user.port
+                or new_def.scope != child.user.scope
                 or new_def.enabled != child.user.enabled
                 or new_def.provisional_ingest_enabled != child.user.provisional_ingest_enabled
                 or new_def.provisional_recall_enabled != child.user.provisional_recall_enabled

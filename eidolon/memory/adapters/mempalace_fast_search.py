@@ -23,6 +23,7 @@ def search_memories_shared_embedding(
     wings: list[str],
     room: str | None,
     audiences: tuple[str, ...] | None = None,
+    layers: tuple[str, ...] | None = None,
     #: The caller's device, so ``current_device`` rows it cannot be shown
     #: are excluded by the query instead of after it. See
     #: ``_device_visibility_filter``.
@@ -75,7 +76,7 @@ def search_memories_shared_embedding(
         )
         _record_ms(diagnostics, "storage_open_ms", open_started)
         metric = str(drawers_col.distance_metric)
-        where = _combined_where(wings, room, audiences, device_id)
+        where = _combined_where(wings, room, audiences, device_id, layers)
         limit = max(n_results * max(3, len(wings) * 3), n_results)
         query_started = time.perf_counter()
         drawer_results = _query_collection(
@@ -217,8 +218,9 @@ def _combined_where(
     room: str | None,
     audiences: tuple[str, ...] | None,
     device_id: str | None = None,
+    layers: tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
-    if not wings and not room and audiences is None and device_id is None:
+    if not wings and not room and audiences is None and device_id is None and layers is None:
         return None
     wing_filter: dict[str, Any] | None
     if not wings:
@@ -234,6 +236,10 @@ def _combined_where(
         # caller be shown this row", and pushing one down while post-filtering
         # the other is what let invisible rows spend the window.
         filters.append(_device_visibility_filter(device_id))
+    if layers is not None:
+        # Pushed down with the rest: unclassified rows in the household Realm
+        # outnumber its household facts, and would spend the window.
+        filters.append({"layer": {"$in": list(layers)}})
     if not filters:
         return None
     if len(filters) == 1:

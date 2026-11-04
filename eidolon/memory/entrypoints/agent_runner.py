@@ -56,6 +56,7 @@ from eidolon.memory.config.palace_directory import (
     resolve_palaces_root,
     validate_memory_space_id,
 )
+from eidolon.memory.domain.fragments import MemoryLayer
 from eidolon.memory.entrypoints.mcp_server import build_control_plane_mcp
 from eidolon.memory.entrypoints.owner_memory_http import owner_memory_routes
 from eidolon.memory.infrastructure.canonical_facts import CanonicalFactLedger
@@ -203,6 +204,7 @@ async def _nats_subscriber_loop(
     management_only: bool = False,
     provisional_ingest: bool = False,
     provisional_recall: bool = False,
+    realm_layer: MemoryLayer | None = None,
 ) -> None:
     """In-process JetStream pull-subscriber for both turn + command subjects."""
     import nats
@@ -470,6 +472,7 @@ async def _nats_subscriber_loop(
                     settings=settings,
                     max_deliveries=settings.nats.worker_max_deliveries,
                     expected_memory_space_id=memory_space_id,
+                    realm_layer=realm_layer,
                     # Fanout absorption/rejection is high-frequency operational
                     # telemetry, already represented by Memory metrics and
                     # local ledgers. It must not synchronously write the shared
@@ -591,6 +594,7 @@ def _compose_starlette_lifespan(
     management_only: bool = False,
     provisional_ingest: bool = False,
     provisional_recall: bool = False,
+    realm_layer: MemoryLayer | None = None,
 ):
     """Compose FastMCP's session-manager lifespan with our startup hooks."""
     # Beside the palace, not inside it: MemPalace's repair renames its own
@@ -649,6 +653,7 @@ def _compose_starlette_lifespan(
                     management_only=management_only,
                     provisional_ingest=provisional_ingest,
                     provisional_recall=provisional_recall,
+                    realm_layer=realm_layer,
                 ),
                 name=f"nats-sub-{memory_space_id}",
             )
@@ -734,6 +739,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--provisional-ingest", action="store_true")
     parser.add_argument("--provisional-recall", action="store_true")
     parser.add_argument("--owner-id", default="", help="Owner this space belongs to")
+    # Whose memory: an Owner's household Realm or one Person's (design §3.6).
+    # The supervisor always passes it from Data's roster; without it nothing is
+    # filtered by layer, which only tests written before the layer rely on.
+    parser.add_argument("--realm-scope", choices=("owner", "person"), default="")
     return parser.parse_args(argv)
 
 
@@ -833,6 +842,9 @@ def _run_service(
 ) -> None:
     """Bind the MCP surface and serve until shut down."""
 
+    realm_layer: MemoryLayer | None = {"owner": "household", "person": "personal"}.get(
+        args.realm_scope
+    )
     host = (args.host or settings.mcp_http.host).strip() or "127.0.0.1"
     port = args.port if args.port else settings.mcp_http.port
 
@@ -854,6 +866,9 @@ def _run_service(
         settings,
         command_publisher=command_publisher,
         command_status=command_status,
+        household_spaces=(
+            frozenset({memory_space_id}) if realm_layer == "household" else frozenset()
+        ),
     )
 
     # Two surfaces, one port, one set of handles. The agent's keeps the path it
@@ -962,6 +977,7 @@ def _run_service(
         management_only=args.management_only,
         provisional_ingest=args.provisional_ingest,
         provisional_recall=args.provisional_recall,
+        realm_layer=realm_layer,
     )
     if args.management_only:
         starlette_app = ManagementOnlyApp(starlette_app)

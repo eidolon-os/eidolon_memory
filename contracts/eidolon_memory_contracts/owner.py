@@ -171,6 +171,10 @@ class MemoryEntry(OwnerWireModel):
     preview: str = ""
     provenance: MemoryProvenance = Field(default_factory=MemoryProvenance)
     value: str = ""
+    #: ``personal`` or ``household`` (design §3.6); empty for what was written
+    #: before the layer existed. In the household Realm anything not household
+    #: is unclaimed: kept and listed, never recalled.
+    layer: str = ""
 
 
 class MemoryEntries(OwnerWireModel):

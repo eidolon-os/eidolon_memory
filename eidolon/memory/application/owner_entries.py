@@ -90,6 +90,7 @@ async def build_owner_entries(
                 "preview": _preview(record.value),
                 "value": str(record.value or ""),
                 "provenance": record.provenance.model_dump(mode="json"),
+                "layer": str(record.metadata.get("layer") or ""),
             }
             for when, record in page
         ],

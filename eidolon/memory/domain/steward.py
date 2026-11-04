@@ -8,7 +8,7 @@ from eidolon_memory_contracts import ConversationTurnPayload
 from pydantic import Field
 from pydantic.json_schema import SkipJsonSchema
 
-from eidolon.memory.domain.fragments import MemoryFragment
+from eidolon.memory.domain.fragments import MemoryFragment, MemoryLayer
 from eidolon.memory.domain.kg import KgInvalidationAction, KgTripleAction
 from eidolon.memory.support.model_base import BaseEidolonModel
 
@@ -117,6 +117,25 @@ class StewardDecision(BaseEidolonModel):
     invalidations: list[KgInvalidationAction] = Field(default_factory=list)
     privacy_actions: list[PrivacyAction] = Field(default_factory=list)
     mentions: list[EntityMention] = Field(default_factory=list)
+
+    def for_layer(self, layer: MemoryLayer) -> StewardDecision:
+        """What one Realm keeps of this decision (design §3.6).
+
+        A Person's Realm keeps the personal claims and everything structured. The
+        household Realm keeps only household claims, which the parser has already
+        made text: graph facts, corrections and aliases speak of one person, and
+        in a Realm every speaker shares there is no one for ``self`` to be.
+        Privacy actions belong to the turn and reach both.
+        """
+
+        fragments = [fragment for fragment in self.fragments if fragment.layer == layer]
+        update: dict[str, object] = {
+            "fragments": fragments,
+            "should_write": self.should_write and bool(fragments),
+        }
+        if layer == "household":
+            update.update(triples=[], invalidations=[], mentions=[])
+        return self.model_copy(update=update)
 
     def stamped_by(self, producer: str) -> StewardDecision:
         """Record ``producer`` as the extractor, unless one is already recorded.

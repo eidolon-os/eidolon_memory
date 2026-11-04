@@ -160,6 +160,7 @@ class MemPalacePythonBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        layers: tuple[str, ...] | None = None,
         device_id: str | None = None,
     ) -> list[MemoryWireRecord]:
         return await asyncio.to_thread(
@@ -169,6 +170,7 @@ class MemPalacePythonBackend(MemoryBackend):
             n_results=n_results,
             room=room,
             audiences=audiences,
+            layers=layers,
             device_id=device_id,
         )
 
@@ -180,6 +182,7 @@ class MemPalacePythonBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        layers: tuple[str, ...] | None = None,
         device_id: str | None = None,
     ) -> list[MemoryWireRecord]:
         return self.search_scoped_sync(
@@ -188,6 +191,7 @@ class MemPalacePythonBackend(MemoryBackend):
             n_results=n_results,
             room=room,
             audiences=audiences,
+            layers=layers,
             device_id=device_id,
         )
 
@@ -199,6 +203,7 @@ class MemPalacePythonBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        layers: tuple[str, ...] | None = None,
         device_id: str | None = None,
         skip_closets: bool = False,
         diagnostics: dict[str, float] | None = None,
@@ -211,6 +216,7 @@ class MemPalacePythonBackend(MemoryBackend):
             n_results=n_results,
             room=room,
             audiences=audiences,
+            layers=layers,
             device_id=device_id,
             skip_closets=skip_closets,
             diagnostics=diagnostics,
@@ -224,6 +230,7 @@ class MemPalacePythonBackend(MemoryBackend):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        layers: tuple[str, ...] | None = None,
         device_id: str | None = None,
         skip_closets: bool = False,
         diagnostics: dict[str, float] | None = None,
@@ -237,6 +244,7 @@ class MemPalacePythonBackend(MemoryBackend):
             wings=wings,
             room=room,
             audiences=audiences,
+            layers=layers,
             device_id=device_id,
             n_results=n_results,
             skip_closets=skip_closets,
@@ -412,6 +420,9 @@ class MemPalacePythonBackend(MemoryBackend):
             # down: chroma takes it in a where clause, and milvus's dynamic
             # fields make it a queryable column.
             "audience": fragment.audience,
+            # Top-level for the same reason: the household Realm's recall
+            # pushes ``layer`` into the query (design §3.6).
+            "layer": fragment.layer,
             "scope": fragment.scope,
             "visibility": fragment.visibility,
             "source_device_id": fragment.source_device_id or "",

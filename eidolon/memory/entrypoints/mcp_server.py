@@ -288,6 +288,7 @@ def build_control_plane_mcp(
             room=room,
             for_voice=False,
             palace_path=runtime.palace_path,
+            layers=service.recalled_layers(ctx),
         )
         return [wire_record_to_public_dict(r) for r in records]
 

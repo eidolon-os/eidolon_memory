@@ -15,6 +15,9 @@ MemoryType = str
 PrivacyLevel = Literal["normal", "sensitive", "private", "do_not_recall"]
 MemoryScope = Literal["global", "persona", "agent", "device", "session"]
 MemoryVisibility = Literal["all_devices", "current_device", "private"]
+#: Whose fact this is: one person's, or the household's (design §3.6). Not
+#: ``scope``, which says where on the devices a fact applies.
+MemoryLayer = Literal["personal", "household"]
 
 _EXTENSION_NAMESPACE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
@@ -53,6 +56,9 @@ class MemoryFragment(BaseEidolonModel):
     audience: str = OWNER_AUDIENCE
     scope: MemoryScope = "persona"
     visibility: MemoryVisibility = "all_devices"
+    # The steward classifies; a Realm keeps only its own layer. Unclear is
+    # personal: losing a household fact costs less than exposing a private one.
+    layer: MemoryLayer = "personal"
     source_device_id: str | None = None
     target_device_id: str | None = None
     source_instance_id: str | None = None

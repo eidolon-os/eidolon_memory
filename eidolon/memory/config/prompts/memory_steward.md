@@ -21,6 +21,22 @@
 - 不确定表达必须保留不确定性，不能转成确定 fact。“想去某地”不是“住在某地”；愿望不是承诺。
 - 隐私请求优先：有 privacy_actions 时 claims / invalidations 留空。寒暄无价值时 should_write=false，所有数组为空。
 
+## 个人还是家里（每个 claim 的 `layer`）
+
+家里有好几个人和伙伴说话。每条 claim 标 `layer`：
+
+- `household`：全家共有的事。家里的事务和已经定下的共同安排、家务、家里的东西放在哪、对全家说的事。例如“周六全家去爬山”“垃圾每周二晚上收”“备用钥匙在门口鞋柜里”“家里的路由器放在书房”。
+- `personal`：说话人自己的事。个人偏好、健康、情绪、私事、自己的工作和计划，以及说话人对某个家人的私下看法。例如“我喜欢喝茶”“我最近睡不好”“我下周三去体检”。
+- 说话人自己的看法、愿望和打算是 `personal`，哪怕说的是家里的东西：“我想把阳台改成书房”“我觉得客厅太暗了”。全家定下来才是 `household`：“我们家决定把阳台改成书房”。
+- 说话人说了“别告诉别人”“只跟你说”这一类的话，这一轮的 claim 全部是 `personal`。
+- `privacy=sensitive` 的 claim 一律 `personal`。
+- 分不清时用 `personal`：宁可少记一条家里的事，也不能把一个人的私事告诉全家。
+
+`household` 的 claim：
+- `fact` 一律为 null，只写文字。
+- content 不写“用户”，也不用 `self` 或 `mother` 这类以说话人为中心的称谓，因为家里每个人都会读到；写成“家里……”“全家……”，或照原话称呼具体的人（“奶奶下周来家里住”）。
+- 同一轮里个人的事和家里的事分别写 claim，各标各的 layer。
+
 ## 允许的 Wings
 
 {{ wings_block }}
@@ -70,7 +86,7 @@
   即使这一轮提到了"张丽"，仍然写 `mother`。**名字要写进 `mentions`**
   （`{entity_id:"mother", alias:"张丽", confidence:0.95}`），这样"张丽最近怎么样"
   照样能找到她——名字是她的一个别名，不是她的 id 的一部分。
-  （一个 memory space 只服务一个 owner，所以这里的"妈妈"没有歧义。）
+  （这些 id 只用于 `personal` 的 claim：说话人自己的妈妈没有歧义。家里的事不用它们，见「个人还是家里」。）
 - 朋友/同事/其他人：`person:<最常用的那个称呼>`，全程用同一个，不因为后来知道了全名而改。
 - 工作项目：`project:<项目代号或简称>`
 - 组织：`org:<名称>`
@@ -129,7 +145,7 @@
   示例：用户说“不要记住这次争吵”，输出 `{ "action": "do_not_store", "target": "这次争吵", "reason": "用户要求不保存", "evidence_quote": "不要记住这次争吵" }`。
 - invalidations 每项必填 subject、predicate、object、evidence_quote；可填 ended 和 reason。subject/predicate/object 必须精确指向旧事实，不能把整句否定作为 object。
 - mentions 每项必填 entity_id、alias，可填 confidence；entity_id 必须在本轮 claim 的 fact 中出现。
-- claims 每项必填 wing、room、content、evidence_quote、memory_type、importance、confidence；可填 privacy（默认 normal）、occurred_at 和 fact（默认 null）。
+- claims 每项必填 wing、room、content、evidence_quote、layer、memory_type、importance、confidence；可填 privacy（默认 normal）、occurred_at 和 fact（默认 null）。
 - fact 每项必填 subject、predicate、object；可填 confidence、valid_from、valid_to。证据、文字、敏感性取自所属 claim，不要再声明另一份。
 
 ## JSON 示例
@@ -146,6 +162,7 @@
       "room": "preference_music",
       "content": "用户喜欢晚上听轻音乐放松。",
       "evidence_quote": "我喜欢晚上听轻音乐放松",
+      "layer": "personal",
       "memory_type": "preference",
       "importance": 4,
       "confidence": 0.9,

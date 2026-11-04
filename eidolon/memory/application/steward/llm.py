@@ -166,9 +166,11 @@ class LiteLLMSteward:
             # this list — the system prompt demanded it and this one did not,
             # which is the same contradiction as the identity fields, pointing
             # the other way.
-            "每个 claims[] 必须包含 evidence_quote, scope, visibility, "
+            "每个 claims[] 必须包含 evidence_quote, layer, scope, visibility, "
             "target_device_id, wing, room, content, memory_type, importance, "
             "confidence, metadata, extensions。\n"
+            "layer 只能是 personal/household，规则见系统提示「个人还是家里」；"
+            "分不清时用 personal。\n"
             "claims/invalidations/privacy_actions 每一项的 "
             "evidence_quote 都必须逐字取自本轮 [USER]，缺失或非原文会让整轮作废。\n"
             "不要输出身份字段：memory_space_id、memory_realm_id、owner_id、"
@@ -291,7 +293,13 @@ class LiteLLMSteward:
                     data["fragments"] = []
                     data["triples"] = []
                     for claim in claims:
-                        if claim.fact is None or not self._settings.kg.enabled:
+                        if (
+                            claim.fact is None
+                            or not self._settings.kg.enabled
+                            # A household fact is text: its graph form would
+                            # need a ``self`` that no one speaker is.
+                            or claim.layer == "household"
+                        ):
                             # With the graph disabled, retain the same claim as
                             # a text assertion through the existing ledger path.
                             data["fragments"].append(claim.model_dump(exclude={"fact"}))

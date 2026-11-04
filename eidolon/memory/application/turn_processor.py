@@ -66,7 +66,7 @@ from eidolon.memory.domain.extraction_decision import (
     ExtractionDecisionRecord,
     extraction_input_hash,
 )
-from eidolon.memory.domain.fragments import MemoryFragment
+from eidolon.memory.domain.fragments import MemoryFragment, MemoryLayer
 from eidolon.memory.domain.ports import (
     CanonicalFactWriter,
     CommandStatusWriter,
@@ -92,8 +92,13 @@ async def _decide_once(
     steward: StewardProtocol,
     turn: ConversationTurnPayload,
     store: ExtractionDecisionStore | None,
+    layer: MemoryLayer | None = None,
 ) -> tuple[StewardDecision, list[MemoryIntent]]:
-    """Return one durable extraction result for a turn + extractor version."""
+    """Return one durable extraction result for a turn + extractor version.
+
+    With ``layer``, the result is what this Realm keeps of the steward's
+    decision, and that is what is stored: a Realm's layer never changes.
+    """
     attribution = turn.metadata.get("person_attribution")
     if attribution in RETAINED_ATTRIBUTIONS:
         if store is None:
@@ -123,7 +128,7 @@ async def _decide_once(
                 "provisional source cannot be confirmed by event replay"
             )
     if store is None:
-        decision = await steward.decide(turn)
+        decision = _kept(await steward.decide(turn), layer)
         return decision, memory_intents_from_decision(
             decision,
             memory_space_id=turn.context.memory_space_id,
@@ -164,7 +169,7 @@ async def _decide_once(
         )
         return existing.decision, intents
 
-    decision = await steward.decide(turn)
+    decision = _kept(await steward.decide(turn), layer)
     intents = memory_intents_from_decision(
         decision,
         memory_space_id=turn.context.memory_space_id,
@@ -236,6 +241,20 @@ def delivery_count(msg: Any) -> int:
     return int(getattr(meta, "num_delivered", None) or 1)
 
 
+def _misrouted(turn: ConversationTurnPayload, layer: MemoryLayer | None) -> str | None:
+    """Why this Realm refuses the turn, if it does."""
+
+    if layer == "household" and turn.context.person_id is not None:
+        return "household realm accepts no person identity"
+    if layer == "personal" and turn.context.person_id is None:
+        return "person realm requires the person's identity"
+    return None
+
+
+def _kept(decision: StewardDecision, layer: MemoryLayer | None) -> StewardDecision:
+    return decision if layer is None else decision.for_layer(layer)
+
+
 def _stamped_for_turn(
     fragment: MemoryFragment,
     *,
@@ -249,6 +268,13 @@ def _stamped_for_turn(
         context=turn.context,
         source_turn_id=turn.turn_id,
     )
+    if stamped.layer == "household":
+        # A household turn carries no identity, so who said it is provenance,
+        # never a binding: empty when the speaker was not recognised.
+        speaker = str(turn.metadata.get("speaker_person_id") or "")
+        stamped = stamped.model_copy(
+            update={"metadata": {**stamped.metadata, "speaker_person_id": speaker}}
+        )
     if stamped.occurred_at:
         return stamped
     return stamped.model_copy(update={"occurred_at": turn_ts})
@@ -405,6 +431,10 @@ async def process_turn_message(
     settings: MemorySettings,
     max_deliveries: int,
     expected_memory_space_id: str | None = None,
+    #: This Realm's layer, from the roster Data publishes: a Person's Realm is
+    #: ``personal``, the Owner's is ``household`` (design §3.6). It decides what
+    #: the Realm keeps of each turn and which turns it accepts at all.
+    realm_layer: MemoryLayer | None = None,
     #: Optional observer of turn absorption. Duck-typed on ``record_absorbed`` and
     #: ``record_rejected``; see the calls below for the arguments.
     #:
@@ -484,6 +514,20 @@ async def process_turn_message(
         await msg.ack()
         return
 
+    misrouted = _misrouted(turn, realm_layer)
+    if misrouted is not None:
+        # Identity is part of the immutable message: a household Realm that
+        # took a Person's turn would hand that Person's facts to everyone.
+        log.error(
+            "turn_processor_realm_layer_mismatch",
+            turn_id=turn.turn_id,
+            memory_space_id=memory_space_id,
+            realm_layer=realm_layer,
+        )
+        await _record_dlq(dlq_writer, settings, msg, misrouted, deliveries)
+        await msg.ack()
+        return
+
     try:
         turn_audience = interaction_audience(turn.context)
     except MissingInteractionIdentity as exc:
@@ -511,6 +555,7 @@ async def process_turn_message(
                 steward,
                 turn,
                 decision_store,
+                realm_layer,
             )
     except Exception as exc:
         metrics.TURNS_TOTAL.labels(outcome="steward_failed").inc()

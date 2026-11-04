@@ -60,6 +60,8 @@ class MemoryReader(Protocol):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        #: Which layers to return; ``None`` is every one (design §3.6).
+        layers: tuple[str, ...] | None = None,
         #: The caller's device. Rows scoped to a different one are excluded by
         #: the query rather than after it — see ``_device_visibility_filter``.
         device_id: str | None = None,
@@ -86,6 +88,8 @@ class ScopedMemoryReader(Protocol):
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        #: Which layers to return; ``None`` is every one (design §3.6).
+        layers: tuple[str, ...] | None = None,
         #: The caller's device. Rows scoped to a different one are excluded by
         #: the query rather than after it — see ``_device_visibility_filter``.
         device_id: str | None = None,

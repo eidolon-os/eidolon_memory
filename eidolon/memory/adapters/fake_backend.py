@@ -38,6 +38,7 @@ class FakeMemoryBackend:
         n_results: int = 5,
         room: str | None = None,
         audiences: tuple[str, ...] | None = None,
+        layers: tuple[str, ...] | None = None,
         device_id: str | None = None,
     ) -> list[MemoryWireRecord]:
         self.searches.append((query, wing, n_results, room))
@@ -52,6 +53,8 @@ class FakeMemoryBackend:
                 audiences is not None
                 and str(rec.metadata.get("audience") or "owner") not in audiences
             ):
+                continue
+            if layers is not None and rec.metadata.get("layer") not in layers:
                 continue
             blob = json.dumps(rec.value, ensure_ascii=False).lower() if rec.value else ""
             if q in blob or q in rec.key.lower():
@@ -98,6 +101,7 @@ class FakeMemoryBackend:
             # tests, so a field it silently drops is a rule those tests cannot
             # check. Audience is exactly such a field.
             "audience": fragment.audience,
+            "layer": fragment.layer,
             "scope": fragment.scope,
             "visibility": fragment.visibility,
             "source_device_id": fragment.source_device_id or "",

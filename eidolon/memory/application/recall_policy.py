@@ -91,8 +91,14 @@ class RecallPolicyRegistry:
         include_private: bool = False,
         every_audience: bool = False,
         owner_shared_only: bool = False,
+        layers: tuple[str, ...] | None = None,
     ) -> bool:
         """Whether this caller may see this record.
+
+        ``layers`` narrows a conversation to the layers its Realm recalls: the
+        household Realm recalls only what was classified as household, so a
+        record without a layer — everything written there before the household
+        layer existed — stays out until it is classified (design §3.6).
 
         ``every_audience`` is for the one caller that is not a Companion: the
         Owner asking for their own copy. The audience axis says which of their
@@ -105,6 +111,8 @@ class RecallPolicyRegistry:
 
         meta = record.metadata or {}
         if meta.get("wing") == "Wing_Privacy":
+            return False
+        if layers is not None and meta.get("layer") not in layers:
             return False
         privacy = str(meta.get("privacy", "")).lower()
         if privacy in {"do_not_recall"}:

@@ -95,6 +95,7 @@ async def recall_with_kg_fusion(
     palace_path: str | None = None,
     include_sensitive_kg: bool = False,
     kg_subjects: list[str] | None = None,
+    layers: tuple[str, ...] | None = None,
 ) -> dict[str, list]:
     """KG plan §5: parallel vector + KG via ``asyncio.gather``.
 
@@ -130,6 +131,7 @@ async def recall_with_kg_fusion(
             palace_path=palace_path,
             raise_on_degraded=True,
             diagnostics=diagnostics,
+            layers=layers,
         )
         diagnostics["vector_total_ms"] = _elapsed_ms(vector_started)
         return result
@@ -236,7 +238,7 @@ async def recall_with_kg_fusion(
         # truncation of vector_records). Dedup on key avoids double-counting
         # if a theme happened to win a vector top-K slot too.
         theme_started = time.perf_counter()
-        theme_records = await _fetch_themes(backend, query, context, settings)
+        theme_records = await _fetch_themes(backend, query, context, settings, layers=layers)
         if theme_records:
             existing_keys = {r.key for r in vector_records}
             # Themes go first in the merged list so the renderer's split-by-
@@ -315,6 +317,8 @@ async def _fetch_themes(
     query: str,
     context: MemoryActorContext,
     settings: MemorySettings,
+    *,
+    layers: tuple[str, ...] | None = None,
 ) -> list[MemoryWireRecord]:
     """Pull up to ``recall.theme_top_k`` Wing_Theme drawers.
 
@@ -332,10 +336,15 @@ async def _fetch_themes(
             n_results=cap,
             room=None,
             audiences=interaction_readable_audiences(context),
+            layers=layers,
         )
     except Exception as exc:  # noqa: BLE001 - never break recall
         log.warning("theme_fetch_failed", error=str(exc))
         return []
+    if layers is not None:
+        # Again after the query: a store without vector search answers from a
+        # fallback that applies no filter at all.
+        hits = [r for r in hits if (r.metadata or {}).get("layer") in layers]
 
     # Phase 4.1 — relevance floor. Themes are broad cross-time summaries;
     # fetched unconditionally they leak onto out-of-scope queries (a pet
@@ -579,6 +588,7 @@ async def search_all_wings_mcp_style(
     raise_on_degraded: bool = False,
     diagnostics: dict[str, float] | None = None,
     owner_view: bool = False,
+    layers: tuple[str, ...] | None = None,
 ) -> list[MemoryWireRecord]:
     """Search configured wings in parallel, filter, rank, and cap top_k.
 
@@ -594,7 +604,9 @@ async def search_all_wings_mcp_style(
     policy = RecallPolicyRegistry.default()
 
     def _visible(record: MemoryWireRecord) -> bool:
-        return policy.visible(record, context=context, every_audience=owner_view)
+        return policy.visible(
+            record, context=context, every_audience=owner_view, layers=layers
+        )
     if diagnostics is not None:
         diagnostics["scope_resolution_ms"] = _elapsed_ms(scope_started)
     vector_degraded = False
@@ -616,6 +628,7 @@ async def search_all_wings_mcp_style(
                 wings=wings,
                 room=room,
                 audiences=audiences,
+                layers=layers,
                 # Excludes rows scoped to another device in the query rather
                 # than after it: a population of them otherwise fills the
                 # n_results window and is then dropped, starving recall of
@@ -659,6 +672,7 @@ async def search_all_wings_mcp_style(
                     n_results=top_k,
                     room=room,
                     audiences=audiences,
+                    layers=layers,
                     # Excludes rows scoped to another device in the query rather
                     # than after it: a population of them otherwise fills the
                     # n_results window and is then dropped, starving recall of
