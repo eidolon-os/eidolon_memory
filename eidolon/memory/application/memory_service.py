@@ -209,9 +209,8 @@ class MemoryService:
     def recalled_layers(self, ctx: MemoryActorContext) -> tuple[str, ...] | None:
         """The layers a conversation in this space may recall; ``None`` is all.
 
-        The household Realm recalls only household facts. What it held before
-        the layer existed — one person's memory, from when the Owner's Realm was
-        theirs — waits there unrecalled until it is classified.
+        The household Realm recalls only household facts: anything else there
+        is not the household's to share.
         """
 
         return ("household",) if ctx.memory_realm_id in self._household_spaces else None

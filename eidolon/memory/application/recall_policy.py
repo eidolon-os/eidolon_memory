@@ -96,9 +96,8 @@ class RecallPolicyRegistry:
         """Whether this caller may see this record.
 
         ``layers`` narrows a conversation to the layers its Realm recalls: the
-        household Realm recalls only what was classified as household, so a
-        record without a layer — everything written there before the household
-        layer existed — stays out until it is classified (design §3.6).
+        household Realm recalls only what was classified as household, and a
+        record without that layer stays out (design §3.6).
 
         ``every_audience`` is for the one caller that is not a Companion: the
         Owner asking for their own copy. The audience axis says which of their
