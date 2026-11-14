@@ -99,7 +99,7 @@ async def seed(store):
     # Registered as the phone does it: three samples, then a completed enrollment.
     voiceprints = store.voiceprints
     enrollment = await voiceprints.create_enrollment(
-        OWNER, EnrollmentCreate(person_id=PERSON, operation_id="enroll", display_name=NAME))
+        OWNER, EnrollmentCreate(person_id=PERSON, operation_id="enroll"))
     for i in range(3):
         await voiceprints.add_sample(OWNER, enrollment.enrollment_id, str(i), _sample(i))
     recording = VoiceAudioRequest(pcm_base64=base64.b64encode(b"\x01\x00" * 32000).decode())
